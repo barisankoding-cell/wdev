@@ -57,6 +57,8 @@ Tanpa argumen, skrip menampilkan menu utama:
 
 Opsi per komponen: `--base`, `--node`, `--rust`, `--go`, `--java`, `--android`, `--flutter`/`-fl`, `--postgres`/`--pg`, `--redis`, `--nginx`, `--php`, `--composer`, `--php-stack`/`--web-stack`, `--ssl`/`--mkcert`, `--zsh`/`--ohmyzsh`, `--sync`/`--sync-hosts`.
 
+Opsi akses jaringan: `--lan`/`--lan-access` membuka PostgreSQL & Redis ke LAN/Netbird (mewajibkan password non-default), `--no-lan`/`--local-only` mengunci ke localhost (default).
+
 Opsi Orca ADE dan passthrough helper:
 
 | Opsi | Keterangan |
@@ -137,9 +139,11 @@ sudo dev-site delete myapp.test
 |---|---|---|
 | `REDIS_PASSWORD` | `redis` | Password Redis/Valkey |
 | `PG_SUPERUSER_PASSWORD` | `postgres` | Password superuser PostgreSQL |
-| `DEV_LAN_ACCESS` | `1` | `1` = buka Redis/PostgreSQL ke LAN & Netbird, `0` = lokal saja |
+| `DEV_LAN_ACCESS` | `0` | `1` = buka Redis/PostgreSQL ke LAN & Netbird, `0` = lokal saja |
 
-Nilai password yang mengandung karakter di luar `[A-Za-z0-9_.-]` otomatis dikembalikan ke default.
+Akses LAN juga bisa diaktifkan lewat flag `--lan`, atau dimatikan eksplisit lewat `--no-lan`.
+
+Nilai password hanya boleh berisi `[A-Za-z0-9_.-]`. Nilai tidak valid akan **ditampilkan sebagai error** (tidak lagi diganti diam-diam ke default). Saat akses LAN aktif (`--lan`), password default `postgres`/`redis` ditolak.
 
 ### Log & Lock
 
@@ -194,7 +198,9 @@ wdev/
 ## Catatan Keamanan
 
 - Skrip membutuhkan `sudo` dan menulis ke `/usr/local`, `/etc`, serta `/var`.
-- Default password Redis/PostgreSQL bersifat publik dan `DEV_LAN_ACCESS=1` membuka port ke LAN. Ganti lewat variabel environment sebelum instalasi.
+- Default `DEV_LAN_ACCESS=0`: Redis/PostgreSQL hanya mendengarkan di localhost. Akses LAN harus dibuka eksplisit dengan `--lan` dan mewajibkan password non-default.
+- Default password Redis/PostgreSQL bersifat publik. Ganti lewat variabel environment bila layanan akan diakses dari luar mesin.
+- Log instalasi (`/var/log/dev-install.log`) dibuat dengan mode `600` dan tidak menampilkan nilai password.
 - CA `mkcert` ditambahkan ke trust store sistem dan browser; hanya untuk pengembangan lokal.
 - Jangan commit kredensial, token, atau berkas `.env`; gunakan `.gitignore` yang disertakan.
 - Review skrip sebelum menjalankannya sebagai root.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -euo pipefail
 
 export COMPOSER_ALLOW_SUPERUSER=1
 export COMPOSER_NO_INTERACTION=1
@@ -11,12 +11,44 @@ LOCK_FILE="/var/lock/dev-install.lock"
 TOTAL_STEPS=8
 CURRENT_STEP=0
 
-# Kredensial & akses jaringan dapat dioverride via environment
+# Kredensial & akses jaringan dapat dioverride via environment.
+# Default aman: layanan hanya mendengarkan di localhost. Buka ke LAN secara eksplisit (--lan).
 REDIS_PASSWORD="${REDIS_PASSWORD:-redis}"
 PG_SUPERUSER_PASSWORD="${PG_SUPERUSER_PASSWORD:-postgres}"
-DEV_LAN_ACCESS="${DEV_LAN_ACCESS:-1}"
-case "$PG_SUPERUSER_PASSWORD" in *[!A-Za-z0-9_.-]*|"") PG_SUPERUSER_PASSWORD="postgres" ;; esac
-case "$REDIS_PASSWORD" in *[!A-Za-z0-9_.-]*|"") REDIS_PASSWORD="redis" ;; esac
+DEV_LAN_ACCESS="${DEV_LAN_ACCESS:-0}"
+
+# Teruskan ke helper turunan (pg-switch, dev-site, dll.) agar override tidak hilang.
+export REDIS_PASSWORD PG_SUPERUSER_PASSWORD DEV_LAN_ACCESS
+
+# Validasi kredensial: tolak nilai tidak aman, jangan diam-diam kembali ke default.
+validate_credentials() {
+  local allow_default="1"
+  [ "$DEV_LAN_ACCESS" = "1" ] && allow_default="0"
+  local name value
+  for name in PG_SUPERUSER_PASSWORD REDIS_PASSWORD; do
+    value="${!name}"
+    case "$value" in
+      "") echo "Error: ${name} tidak boleh kosong." >&2; return 1 ;;
+      *[!A-Za-z0-9_.-]*)
+        echo "Error: ${name} hanya boleh berisi huruf, angka, titik, garis bawah, atau tanda hubung." >&2
+        return 1 ;;
+    esac
+    if [ "$allow_default" != "1" ]; then
+      case "${name}=${value}" in
+        PG_SUPERUSER_PASSWORD=postgres|REDIS_PASSWORD=redis)
+          echo "Error: ${name} masih memakai nilai default; wajib diganti saat DEV_LAN_ACCESS=1." >&2
+          return 1 ;;
+      esac
+    fi
+  done
+  return 0
+}
+
+warn_lan_exposure() {
+  [ "$DEV_LAN_ACCESS" = "1" ] || return 0
+  echo "Peringatan: DEV_LAN_ACCESS=1 - PostgreSQL & Redis terbuka ke LAN/Netbird (bind 0.0.0.0)."
+  echo "           Pastikan password non-default dan firewall sudah dikonfigurasi."
+}
 
 # --- WARNA GLOBAL (dipakai seluruh fungsi & helper) ---
 C_RESET="\e[0m"
@@ -35,6 +67,8 @@ log_run_header() {
  echo " RUN: $(date -Is) | argumen: ${ORIG_ARGS[*]:-interaktif}"
  echo "================================================================"
  } >> "$LOG_FILE" 2>/dev/null || true
+ # Log bisa memuat keluaran perintah; batasi hanya untuk root.
+ chmod 600 "$LOG_FILE" 2>/dev/null || true
 }
 
 acquire_lock() {
@@ -1393,7 +1427,32 @@ step_rust() {
  echo "Rustup sudah terpasang. Memperbarui stable toolchain..."
  "$CARGO_HOME/bin/rustup" update stable --no-self-update || true
  else
- curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile default
+ local RUSTUP_TRIPLE=""
+ case "$(uname -m)" in
+   x86_64) RUSTUP_TRIPLE="x86_64-unknown-linux-gnu" ;;
+   aarch64|arm64) RUSTUP_TRIPLE="aarch64-unknown-linux-gnu" ;;
+ esac
+ if [ -z "$RUSTUP_TRIPLE" ]; then
+   echo "Error: arsitektur $(uname -m) tidak didukung untuk instalasi rustup otomatis."
+   exit 1
+ fi
+ local RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/dist/${RUSTUP_TRIPLE}/rustup-init"
+ local RUSTUP_TMP RUSTUP_SHA
+ RUSTUP_TMP=$(mktemp)
+ if ! curl --proto '=https' --tlsv1.2 -fsSL -m 120 "$RUSTUP_INIT_URL" -o "$RUSTUP_TMP"; then
+   rm -f "$RUSTUP_TMP"
+   echo "Error: gagal mengunduh rustup-init."
+   exit 1
+ fi
+ RUSTUP_SHA=$(curl --proto '=https' --tlsv1.2 -fsSL -m 30 "${RUSTUP_INIT_URL}.sha256" 2>/dev/null | awk '{print $1}' || true)
+ if [ -z "$RUSTUP_SHA" ] || ! verify_sha256 "$RUSTUP_TMP" "$RUSTUP_SHA" "rustup-init"; then
+   rm -f "$RUSTUP_TMP"
+   echo "Error: checksum rustup-init tidak tersedia atau tidak cocok."
+   exit 1
+ fi
+ chmod +x "$RUSTUP_TMP"
+ "$RUSTUP_TMP" -y --no-modify-path --profile default
+ rm -f "$RUSTUP_TMP"
  fi
 
  local TARGET_USER="${SUDO_USER:-$USER}"
@@ -1908,7 +1967,11 @@ C_CYAN="\e[36m"
 C_DIM="\e[2m"
 
 PG_SUPERUSER_PASSWORD="${PG_SUPERUSER_PASSWORD:-postgres}"
-case "$PG_SUPERUSER_PASSWORD" in *[!A-Za-z0-9_.-]*|"") PG_SUPERUSER_PASSWORD="postgres" ;; esac
+DEV_LAN_ACCESS="${DEV_LAN_ACCESS:-0}"
+case "$PG_SUPERUSER_PASSWORD" in
+ "") echo "Error: PG_SUPERUSER_PASSWORD tidak boleh kosong." >&2; exit 1 ;;
+ *[!A-Za-z0-9_.-]*) echo "Error: PG_SUPERUSER_PASSWORD hanya boleh berisi [A-Za-z0-9_.-]." >&2; exit 1 ;;
+esac
 
 # Impor dump secara ketat: berhenti pada error pertama dan kembalikan status sebenarnya
 psql_import_dump() {
@@ -2514,6 +2577,8 @@ ensure_pg_switch_helper() {
 
 step_postgres() {
   check_root
+  validate_credentials
+  warn_lan_exposure
   detect_os
   prompt_pg_options
 
@@ -2529,6 +2594,8 @@ step_postgres() {
 
 # --- STEP 9: Redis Server ---
 step_redis() {
+  validate_credentials
+  warn_lan_exposure
   detect_os
   if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
     echo "Menginstal Redis / Valkey server (RPM/DNF)..."
@@ -4643,8 +4710,10 @@ check_updates() {
 }
 
 run_installation() {
-  check_root
- acquire_lock
+   check_root
+  validate_credentials
+  warn_lan_exposure
+  acquire_lock
   prompt_node_options
   prompt_java_options
   prompt_android_options
@@ -4690,6 +4759,8 @@ run_single_component() {
       prompt_android_options
       ;;
     step_postgres)
+      validate_credentials
+      warn_lan_exposure
       prompt_pg_options
       ;;
     step_php|step_php_full_stack)
@@ -4697,6 +4768,12 @@ run_single_component() {
       ;;
     step_zsh)
       prompt_zsh_theme
+      ;;
+  esac
+  case "$func" in
+    step_redis)
+      validate_credentials
+      warn_lan_exposure
       ;;
   esac
   log_run_header
@@ -5232,7 +5309,7 @@ show_info() {
   # Test auth koneksi lokal
   if command -v psql >/dev/null 2>&1; then
     if PGPASSWORD="$PG_SUPERUSER_PASSWORD" psql -U postgres -h 127.0.0.1 -c '\q' >/dev/null 2>&1; then
-      echo "  Autentikasi       : OK (user: postgres / pass: postgres)"
+      echo "  Autentikasi       : OK (user: postgres)"
     else
       echo "  Autentikasi       : Gagal / Belum terkonfigurasi"
     fi
@@ -5273,7 +5350,7 @@ show_info() {
     local REDIS_PING
     REDIS_PING=$(REDISCLI_AUTH="$REDIS_PASSWORD" "$REDIS_CLI_BIN" ping 2>/dev/null || true)
     if [ "$REDIS_PING" = "PONG" ]; then
-      echo "  Autentikasi       : OK (requirepass: ${REDIS_PASSWORD})"
+      echo "  Autentikasi       : OK (requirepass aktif)"
     elif "$REDIS_CLI_BIN" ping 2>/dev/null | grep -q "PONG"; then
       echo "  Autentikasi       : OK (Tanpa Password)"
     else
@@ -6408,6 +6485,18 @@ self_check() {
 
 
 # --- CLI ARGS HANDLER ---
+# Flag akses LAN diproses lebih dulu agar urutan argumen tidak berpengaruh.
+_filtered_args=()
+for _arg in "$@"; do
+  case "$_arg" in
+    --lan|--lan-access) DEV_LAN_ACCESS=1 ;;
+    --no-lan|--local-only) DEV_LAN_ACCESS=0 ;;
+    *) _filtered_args+=("$_arg") ;;
+  esac
+done
+set -- ${_filtered_args[@]+"${_filtered_args[@]}"}
+unset _arg
+
 # Parse optional parameter overrides
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -6669,7 +6758,8 @@ case "${1:-}" in
  echo "Variabel Environment (opsional):"
  echo " REDIS_PASSWORD=... Password Redis (default: redis)"
  echo " PG_SUPERUSER_PASSWORD=... Password user postgres (default: postgres)"
- echo " DEV_LAN_ACCESS=1|0 Buka Redis/PostgreSQL ke LAN & Netbird (default: 1)"
+ echo " DEV_LAN_ACCESS=1|0 Buka Redis/PostgreSQL ke LAN & Netbird (default: 0)"
+ echo " --lan, --no-lan Aktifkan/matikan akses LAN secara eksplisit"
     echo ""
     echo "Opsi Komponen Core & Mobile:"
     echo "  --base                   Instal dependensi dasar sistem"
