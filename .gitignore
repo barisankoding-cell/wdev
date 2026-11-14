@@ -1,0 +1,30 @@
+# Log & berkas sementara
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# Kredensial / konfigurasi lokal
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Artefak unduhan/ekstraksi saat pengujian skrip
+*.deb
+*.tar.*
+*.zip
+
+# Backup & patch gagal
+*.bak
+*.orig
+*.rej
