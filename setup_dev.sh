@@ -5384,6 +5384,24 @@ get_orca_configured_mode() {
   fi
 }
 
+is_orca_installed() {
+  local TARGET_USER="${SUDO_USER:-$USER}"
+  local TARGET_HOME
+  TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
+  [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
+  [ -x "$TARGET_HOME/.local/bin/orca" ] || [ -x "$TARGET_HOME/.local/lib/orca-ide/resources/bin/orca-ide" ]
+}
+
+get_orca_status_label() {
+  if is_orca_installed; then
+    local cur_m
+    cur_m="$(get_orca_configured_mode)"
+    echo "Terpasang: $([ "$cur_m" = "desktop" ] && echo "Desktop GUI" || echo "Headless Server")"
+  else
+    echo "Belum Terpasang"
+  fi
+}
+
 ensure_orca_browser_env() {
   local TARGET_USER="${SUDO_USER:-$USER}"
   local TARGET_HOME
@@ -6025,34 +6043,50 @@ setup_orca() {
 
   detect_desktop_environment || true
 
+  local orca_args=("$@")
+  local target_mode="auto"
+  local arg
+  for arg in ${orca_args[@]+"${orca_args[@]}"}; do
+    case "$arg" in
+      --desktop) target_mode="desktop" ;;
+      --headless) target_mode="headless" ;;
+    esac
+  done
+  if [ "$target_mode" = "auto" ]; then
+    [ "$HAS_DE" -eq 1 ] && target_mode="desktop" || target_mode="headless"
+  fi
+
   echo ""
   echo "=========================================="
-  if [ "$HAS_DE" -eq 1 ]; then
+  if [ "$target_mode" = "desktop" ]; then
     echo "       SETUP ORCA ADE (DESKTOP GUI)       "
   else
     echo "    SETUP ORCA ADE HEADLESS SERVER        "
   fi
   echo "=========================================="
-  if [ "$HAS_DE" -eq 1 ]; then
-    echo "[✓] Lingkungan Desktop terdeteksi: $DETECTED_DE"
+  if [ "$target_mode" = "desktop" ]; then
+    [ "$HAS_DE" -eq 1 ] && echo "[✓] Lingkungan Desktop terdeteksi: $DETECTED_DE"
     echo "[*] Menginstal Orca ADE versi Desktop GUI & integrasi menu..."
     echo "    (Mode Headless dinonaktifkan agar hanya versi Desktop yang berjalan)."
   else
-    echo "[*] Mode Headless Server (tidak terdeteksi Lingkungan Desktop GUI)."
+    if [ "$HAS_DE" -eq 1 ]; then
+      echo "[*] Mode Headless Server dipilih (Lingkungan Desktop: $DETECTED_DE)."
+    else
+      echo "[*] Mode Headless Server (tidak terdeteksi Lingkungan Desktop GUI)."
+    fi
     echo "    (Mode Desktop dinonaktifkan agar hanya versi Server yang berjalan)."
   fi
 
   ensure_orca_browser_env
-  local orca_args=("$@")
   if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
     echo "Menjalankan instalasi sebagai user: $SUDO_USER..."
-    sudo -u "$SUDO_USER" bash "$ORCA_SCRIPT" "${orca_args[@]}"
+    sudo -u "$SUDO_USER" bash "$ORCA_SCRIPT" ${orca_args[@]+"${orca_args[@]}"}
   elif [ "$EUID" -eq 0 ] && [ -z "${SUDO_USER:-}" ]; then
     echo "Peringatan: Anda menjalankan script sebagai root murni (bukan via sudo user)."
     echo "Orca disarankan diinstal di user reguler."
-    bash "$ORCA_SCRIPT" "${orca_args[@]}"
+    bash "$ORCA_SCRIPT" ${orca_args[@]+"${orca_args[@]}"}
   else
-    bash "$ORCA_SCRIPT" "${orca_args[@]}"
+    bash "$ORCA_SCRIPT" ${orca_args[@]+"${orca_args[@]}"}
   fi
   ensure_orca_browser_env
 }
@@ -6332,12 +6366,44 @@ PYEOF
 
 # --- SUBMENU ORCA ADE (DESKTOP GUI <-> HEADLESS SERVER) ---
 menu_orca() {
- local TARGET_USER="${SUDO_USER:-$USER}"
- local TARGET_HOME
- TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
- [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
+  local TARGET_USER="${SUDO_USER:-$USER}"
+  local TARGET_HOME
+  TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
+  [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
   detect_desktop_environment || true
   while true; do
+    if ! is_orca_installed; then
+      echo ""
+      echo "=========================================="
+      echo "            INSTALASI ORCA ADE            "
+      echo "=========================================="
+      echo "Status Instalasi  : Belum Terpasang"
+      if [ "$HAS_DE" -eq 1 ]; then
+        echo "Lingkungan Sistem : Desktop Terdeteksi ($DETECTED_DE)"
+      else
+        echo "Lingkungan Sistem : Headless (Tanpa Desktop)"
+      fi
+      echo "------------------------------------------"
+      echo "Pilih mode instalasi Orca ADE (single-instance):"
+      echo "1. Instal Orca ADE - Desktop GUI (Aplikasi Visual, Menu & Ikon)"
+      echo "2. Instal Orca ADE - Headless Server (Background Service 24/7 + Pairing QR)"
+      echo "3. Instal Otomatis (Sesuai Deteksi Lingkungan Sistem)"
+      echo "4. Cek Status Lengkap"
+      echo "0. Kembali"
+      echo "=========================================="
+      read -rp "Pilih opsi [0-4]: " orca_opt
+
+      case $orca_opt in
+        1) setup_orca --desktop ;;
+        2) setup_orca --headless ;;
+        3) setup_orca ;;
+        4) show_info ;;
+        0|q|Q) break ;;
+        *) echo "Pilihan tidak valid." ;;
+      esac
+      continue
+    fi
+
     local cur_mode
     cur_mode="$(get_orca_configured_mode)"
 
@@ -6373,11 +6439,12 @@ menu_orca() {
       echo "3. Toggle Autostart Desktop [Saat ini: $autostart_info]"
       echo "4. Konfigurasi Default Git Commit Generator (AI)"
       echo "5. Tutup Orca IDE Desktop (Stop)"
-      echo "6. Instal / Update Orca ADE"
-      echo "7. Cek Status Lengkap"
-      echo "0 / 8. Kembali ke Menu Utama"
+      echo "6. Instal / Update Orca ADE (Desktop GUI)"
+      echo "7. Instal / Pindah ke Orca ADE (Headless Server)"
+      echo "8. Cek Status Lengkap"
+      echo "0 / 9. Kembali ke Menu Utama"
       echo "=========================================="
-      read -rp "Pilih opsi [0-8]: " orca_opt
+      read -rp "Pilih opsi [0-9]: " orca_opt
 
       case $orca_opt in
         1) launch_orca_desktop ;;
@@ -6404,13 +6471,17 @@ menu_orca() {
           ;;
         6) setup_orca --desktop ;;
         7)
+          stop_orca_service
+          setup_orca --headless
+          ;;
+        8)
           if [ -x "$TARGET_HOME/.local/bin/orca-switch" ]; then
             "$TARGET_HOME/.local/bin/orca-switch" status
           else
             show_info
           fi
           ;;
-        0|8|q|Q) break ;;
+        0|9|q|Q) break ;;
         *) echo "Pilihan tidak valid." ;;
       esac
     else
@@ -6429,11 +6500,12 @@ menu_orca() {
       echo "3. Konfigurasi Default Git Commit Generator (AI)"
       echo "4. Start / Restart Layanan Orca Server"
       echo "5. Stop Layanan Orca Server"
-      echo "6. Instal / Update Orca ADE"
-      echo "7. Cek Status Lengkap"
-      echo "0 / 8. Kembali ke Menu Utama"
+      echo "6. Instal / Update Orca ADE (Headless Server)"
+      echo "7. Instal / Pindah ke Orca ADE (Desktop GUI)"
+      echo "8. Cek Status Lengkap"
+      echo "0 / 9. Kembali ke Menu Utama"
       echo "=========================================="
-      read -rp "Pilih opsi [0-8]: " orca_opt
+      read -rp "Pilih opsi [0-9]: " orca_opt
 
       case $orca_opt in
         1) show_orca_pair ;;
@@ -6464,13 +6536,17 @@ menu_orca() {
           ;;
         6) setup_orca --headless ;;
         7)
+          stop_orca_service
+          setup_orca --desktop
+          ;;
+        8)
           if [ -x "$TARGET_HOME/.local/bin/orca-switch" ]; then
             "$TARGET_HOME/.local/bin/orca-switch" status
           else
             show_info
           fi
           ;;
-        0|8|q|Q) break ;;
+        0|9|q|Q) break ;;
         *) echo "Pilihan tidak valid." ;;
       esac
     fi
@@ -6797,7 +6873,7 @@ menu_toolchains() {
     echo "5. Android SDK & Command Line Tools"
     echo "6. Redis / Valkey Cache Server"
     echo "7. Dependensi Dasar Sistem (Build Tools & Libs)"
-    echo "8. Buka Menu Modular Komponen Lengkap (17 Item)"
+    echo "8. Buka Menu Modular Komponen Lengkap (18 Item)"
     echo "0. Kembali ke Menu Utama"
     echo "=========================================="
     read -rp "Pilih opsi [0-8]: " tc_opt
@@ -6820,21 +6896,27 @@ menu_toolchains() {
 # --- SUBMENU WORKSPACE, ADE & SHELL ---
 menu_workspace_shell() {
   while true; do
-    local cur_m
-    cur_m="$(get_orca_configured_mode)"
+    local orca_status
+    orca_status="$(get_orca_status_label)"
     echo ""
     echo "=========================================="
     echo "         WORKSPACE, ADE & SHELL           "
     echo "=========================================="
-    echo "1. Orca ADE ($([ "$cur_m" = "desktop" ] && echo "Desktop GUI" || echo "Headless Server"))"
-    echo "2. Oh My Zsh (Plugin & Tema Populer)"
+    echo "Status Orca ADE: $orca_status"
+    echo "------------------------------------------"
+    echo "1. Instal Orca ADE - Desktop GUI (Aplikasi Visual & Menu)"
+    echo "2. Instal Orca ADE - Headless Server (Background Service 24/7 + Pairing QR)"
+    echo "3. Kelola Orca ADE (Menu Manajemen, Switch Mode, Pairing, Autostart & AI)"
+    echo "4. Oh My Zsh (Plugin & Tema Populer)"
     echo "0. Kembali ke Menu Utama"
     echo "=========================================="
-    read -rp "Pilih opsi [0-2]: " ws_opt
+    read -rp "Pilih opsi [0-4]: " ws_opt
 
     case $ws_opt in
-      1) menu_orca ;;
-      2) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
+      1) setup_orca --desktop ;;
+      2) setup_orca --headless ;;
+      3) menu_orca ;;
+      4) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
       0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
@@ -6844,6 +6926,8 @@ menu_workspace_shell() {
 # --- MENU INSTALASI MODULAR ---
 menu_custom_install() {
   while true; do
+    local orca_status
+    orca_status="$(get_orca_status_label)"
     echo ""
     echo "=========================================="
     echo "       INSTALASI PER KOMPONEN             "
@@ -6863,12 +6947,11 @@ menu_custom_install() {
     echo "13. Local SSL (mkcert) & Helper dev-site"
     echo "14. Full PHP Web Stack (Nginx + PHP + Composer + SSL)"
     echo "15. Oh My Zsh (Plugin & Tema Populer)"
-    local cur_m
-    cur_m="$(get_orca_configured_mode)"
-    echo "16. Orca ADE ($([ "$cur_m" = "desktop" ] && echo "Desktop GUI" || echo "Headless Server"))"
-    echo "0 / 17. Kembali ke Menu Utama"
+    echo "16. Orca ADE - Desktop GUI (Aplikasi Desktop & Menu) [$orca_status]"
+    echo "17. Orca ADE - Headless Server (Service 24/7 + Pairing QR) [$orca_status]"
+    echo "0 / 18. Kembali ke Menu Utama"
     echo "=========================================="
-    read -rp "Pilih komponen [0-17]: " c_opt
+    read -rp "Pilih komponen [0-18]: " c_opt
 
     case $c_opt in
       1) run_single_component "Dependensi Dasar" step_base_deps ;;
@@ -6886,8 +6969,9 @@ menu_custom_install() {
       13) run_single_component "Local SSL (mkcert)" step_local_ssl ;;
       14) run_single_component "Full PHP Web Stack" step_php_full_stack ;;
       15) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
-      16) setup_orca ;;
-      0|17|q|Q) break ;;
+      16) setup_orca --desktop ;;
+      17) setup_orca --headless ;;
+      0|18|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
@@ -7280,8 +7364,7 @@ while true; do
   echo -e "      ${C_DIM}└─ Rust & Sccache, Golang, Java, Flutter & Android SDK, Redis${C_RESET}"
   echo ""
   echo -e "  ${C_CYAN}[5]${C_RESET} 💻 Workspace, ADE & Shell"
-  cur_mode="$(get_orca_configured_mode)"
-  echo -e "      ${C_DIM}└─ Orca ADE ($([ "$cur_mode" = "desktop" ] && echo "Desktop GUI" || echo "Headless Server")), Oh My Zsh & Tema${C_RESET}"
+  echo -e "      ${C_DIM}└─ Orca ADE (Desktop GUI / Headless Server — $(get_orca_status_label)), Oh My Zsh & Tema${C_RESET}"
   echo ""
   echo -e "  ${C_CYAN}[6]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
   echo -e "      ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol${C_RESET}"
