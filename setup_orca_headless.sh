@@ -2042,6 +2042,7 @@ try:
             repo['sourceControlAi'] = {
                 'enabled': True,
                 'agentId': agent,
+                'actionOverrides': {'commitMessage': {'agentId': agent, 'commandInputTemplate': '{basePrompt}'}},
                 'actions': {'commitMessage': {'agentId': agent, 'commandInputTemplate': '{basePrompt}'}},
                 'instructionsByOperation': {'commitMessage': prompt}
             }

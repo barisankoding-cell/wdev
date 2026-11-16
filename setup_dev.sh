@@ -5241,16 +5241,19 @@ run_as_target_user() {
   local TARGET_USER="${SUDO_USER:-$USER}"
   local TARGET_UID
   TARGET_UID=$(id -u "$TARGET_USER" 2>/dev/null || echo "1000")
+  local TARGET_HOME
+  TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
+  [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
   local XDG_DIR="/run/user/$TARGET_UID"
 
   if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
     if command -v runuser >/dev/null 2>&1; then
-      runuser -u "$TARGET_USER" -- env "XDG_RUNTIME_DIR=$XDG_DIR" "$@"
+      runuser -u "$TARGET_USER" -- env "HOME=$TARGET_HOME" "USER=$TARGET_USER" "XDG_RUNTIME_DIR=$XDG_DIR" "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_DIR/bus" "$@"
     else
-      sudo -u "$TARGET_USER" env "XDG_RUNTIME_DIR=$XDG_DIR" "$@"
+      sudo -u "$TARGET_USER" env "HOME=$TARGET_HOME" "USER=$TARGET_USER" "XDG_RUNTIME_DIR=$XDG_DIR" "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_DIR/bus" "$@"
     fi
   else
-    env "XDG_RUNTIME_DIR=$XDG_DIR" "$@"
+    env "XDG_RUNTIME_DIR=$XDG_DIR" "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_DIR/bus" "$@"
   fi
 }
 
@@ -5389,7 +5392,46 @@ is_orca_installed() {
   local TARGET_HOME
   TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
   [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
-  [ -x "$TARGET_HOME/.local/bin/orca" ] || [ -x "$TARGET_HOME/.local/lib/orca-ide/resources/bin/orca-ide" ]
+  [ -x "$TARGET_HOME/.local/bin/orca" ] || \
+  [ -x "$TARGET_HOME/.local/bin/orca-ide" ] || \
+  [ -x "$TARGET_HOME/.config/orca/cli/bin/orca" ] || \
+  [ -x "$TARGET_HOME/.config/orca/cli/bin/orca-ide" ] || \
+  [ -x "/usr/local/bin/orca" ] || \
+  [ -x "/usr/local/bin/orca-ide" ] || \
+  [ -x "$TARGET_HOME/.local/lib/orca-ide/resources/bin/orca-ide" ] || \
+  command -v orca >/dev/null 2>&1 || \
+  command -v orca-ide >/dev/null 2>&1
+}
+
+get_orca_bin() {
+  local TARGET_USER="${SUDO_USER:-$USER}"
+  local TARGET_HOME
+  TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
+  [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
+
+  for b in \
+    "$TARGET_HOME/.local/bin/orca-ide" \
+    "$TARGET_HOME/.local/bin/orca" \
+    "$TARGET_HOME/.config/orca/cli/bin/orca-ide" \
+    "$TARGET_HOME/.config/orca/cli/bin/orca" \
+    "/usr/local/bin/orca-ide" \
+    "/usr/local/bin/orca" \
+    "$TARGET_HOME/.local/lib/orca-ide/resources/bin/orca-ide"; do
+    if [ -x "$b" ]; then
+      echo "$b"
+      return 0
+    fi
+  done
+
+  if command -v orca-ide >/dev/null 2>&1; then
+    command -v orca-ide
+    return 0
+  fi
+  if command -v orca >/dev/null 2>&1; then
+    command -v orca
+    return 0
+  fi
+  return 1
 }
 
 get_orca_status_label() {
@@ -5530,7 +5572,7 @@ start_orca_service() {
 
   ensure_orca_browser_env
 
-  # Jika user unit ada
+  # 1. Coba start via user systemd jika servicenya ada
   if [ -f "$TARGET_HOME/.config/systemd/user/orca.service" ]; then
     run_as_target_user systemctl --user daemon-reload 2>/dev/null || true
     run_as_target_user systemctl --user enable orca.service 2>/dev/null || true
@@ -5540,15 +5582,46 @@ start_orca_service() {
     fi
   fi
 
-  # Fallback background
-  local ORCA_BIN="$TARGET_HOME/.local/bin/orca-ide"
-  [ ! -x "$ORCA_BIN" ] && ORCA_BIN="$TARGET_HOME/.local/bin/orca"
-  if [ -x "$ORCA_BIN" ]; then
+  # 2. Coba start via system systemd jika servicenya ada
+  if [ -f "/etc/systemd/system/orca.service" ]; then
+    if [ "$EUID" -eq 0 ]; then
+      systemctl daemon-reload 2>/dev/null || true
+      systemctl enable orca.service 2>/dev/null || true
+      if systemctl start orca.service 2>/dev/null; then
+        echo "Layanan systemd orca.service berhasil diaktifkan."
+        return 0
+      fi
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo systemctl daemon-reload 2>/dev/null || true
+      sudo systemctl enable orca.service 2>/dev/null || true
+      if sudo systemctl start orca.service 2>/dev/null; then
+        echo "Layanan systemd orca.service berhasil diaktifkan."
+        return 0
+      fi
+    fi
+  fi
+
+  # 3. Fallback background (nohup)
+  local ORCA_BIN
+  ORCA_BIN="$(get_orca_bin || true)"
+  if [ -n "$ORCA_BIN" ] && [ -x "$ORCA_BIN" ]; then
     local BROWSER_BIN
     BROWSER_BIN=$(detect_chrome_browser 2>/dev/null || echo "")
     [ -n "$BROWSER_BIN" ] && export ORCA_BROWSER_EXECUTABLE="$BROWSER_BIN"
+    export ORCA_ALLOW_INSECURE_WEB_PAIRING=1
+    export HOME="$TARGET_HOME"
+    export USER="$TARGET_USER"
+    export ORCA_USER_DATA_PATH="$TARGET_HOME/.config/orca"
+    mkdir -p "$TARGET_HOME/.config/orca" 2>/dev/null || true
+
     if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-      run_as_target_user nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
+      run_as_target_user env \
+        "HOME=$TARGET_HOME" \
+        "USER=$TARGET_USER" \
+        "ORCA_USER_DATA_PATH=$TARGET_HOME/.config/orca" \
+        "ORCA_ALLOW_INSECURE_WEB_PAIRING=1" \
+        ${BROWSER_BIN:+"ORCA_BROWSER_EXECUTABLE=$BROWSER_BIN"} \
+        nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
     else
       nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
     fi
@@ -5581,10 +5654,16 @@ restart_orca_service() {
   if systemctl is-active --quiet orca 2>/dev/null || [ -f "/etc/systemd/system/orca.service" ]; then
     if [ "$EUID" -eq 0 ]; then
       systemctl daemon-reload 2>/dev/null || true
-      systemctl restart orca 2>/dev/null && { echo "Layanan systemd orca.service berhasil direstart."; return 0; }
+      if systemctl restart orca 2>/dev/null; then
+        echo "Layanan systemd orca.service berhasil direstart."
+        return 0
+      fi
     elif command -v sudo >/dev/null 2>&1; then
       sudo systemctl daemon-reload 2>/dev/null || true
-      sudo systemctl restart orca 2>/dev/null && { echo "Layanan systemd orca.service berhasil direstart."; return 0; }
+      if sudo systemctl restart orca 2>/dev/null; then
+        echo "Layanan systemd orca.service berhasil direstart."
+        return 0
+      fi
     fi
   fi
 
@@ -5596,8 +5675,8 @@ restart_orca_service() {
     return 0
   fi
 
-  echo "Layanan Orca belum terpasang atau sedang tidak aktif."
-  return 1
+  # Fallback: jika belum berjalan, coba jalankan
+  start_orca_service
 }
 
 stop_orca_service() {
@@ -6175,18 +6254,41 @@ show_orca_pair() {
   local TARGET_HOME
   TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
   [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
-  local ORCA_PAIR="$TARGET_HOME/.local/bin/orca-pair"
 
-  if [ -x "$ORCA_PAIR" ]; then
+  local ORCA_PAIR=""
+  for p in \
+    "$TARGET_HOME/.local/bin/orca-pair" \
+    "/usr/local/bin/orca-pair" \
+    "$TARGET_HOME/.config/orca/cli/bin/orca-pair"; do
+    if [ -x "$p" ]; then
+      ORCA_PAIR="$p"
+      break
+    fi
+  done
+
+  if [ -n "$ORCA_PAIR" ]; then
     if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-      sudo -u "$SUDO_USER" "$ORCA_PAIR" "$@"
+      run_as_target_user "$ORCA_PAIR" "$@"
     else
       "$ORCA_PAIR" "$@"
     fi
-  else
-    echo "Skrip orca-pair belum terpasang di $ORCA_PAIR."
-    echo "Silakan jalankan Setup Orca Server terlebih dahulu."
+    return 0
   fi
+
+  # Fallback gunakan binary / wrapper orca dengan argumen pair
+  local ORCA_BIN
+  ORCA_BIN="$(get_orca_bin || true)"
+  if [ -n "$ORCA_BIN" ]; then
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+      run_as_target_user "$ORCA_BIN" pair "$@"
+    else
+      "$ORCA_BIN" pair "$@"
+    fi
+    return 0
+  fi
+
+  echo "Skrip orca-pair belum terpasang."
+  echo "Silakan jalankan Setup Orca Server terlebih dahulu."
 }
 
 configure_orca_commit_ai() {
@@ -6258,30 +6360,52 @@ configure_orca_commit_ai() {
   esac
 
   echo ""
-  echo "Menerapkan konfigurasi ke Orca Server..."
+  echo "Menerapkan konfigurasi ke Orca..."
   echo "  - AI Agent : $CHOSEN_AGENT"
   echo "  - Prompt   : $CHOSEN_PROMPT"
 
+  local cur_mode
+  cur_mode="$(get_orca_configured_mode)"
+
+  local WAS_DESKTOP_RUNNING=0
+  local WAS_HEADLESS_RUNNING=0
   local WAS_RUNNING=0
-  if is_orca_running; then
+
+  if is_orca_desktop_running; then
+    WAS_DESKTOP_RUNNING=1
     WAS_RUNNING=1
-    echo "Menghentikan layanan Orca sementara agar pembaruan database tersimpan permanen..."
+  fi
+  if is_orca_headless_running; then
+    WAS_HEADLESS_RUNNING=1
+    WAS_RUNNING=1
+  elif is_orca_running; then
+    WAS_RUNNING=1
+  fi
+
+  if [ "$WAS_RUNNING" -eq 1 ]; then
+    echo "Menghentikan Orca sementara agar pembaruan database tersimpan permanen..."
     stop_orca_service
   fi
 
- if ! command -v python3 >/dev/null 2>&1; then
- echo "Error: python3 tidak ditemukan; konfigurasi AI tidak dapat diterapkan."
- [ "$WAS_RUNNING" -eq 1 ] && start_orca_service
- return 1
- fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 tidak ditemukan; konfigurasi AI tidak dapat diterapkan."
+    if [ "$WAS_RUNNING" -eq 1 ]; then
+      if [ "$cur_mode" = "desktop" ] && [ "$WAS_DESKTOP_RUNNING" -eq 1 ]; then
+        launch_orca_desktop
+      else
+        restart_orca_service
+      fi
+    fi
+    return 1
+  fi
 
- local PY_RC=0
- trap 'start_orca_service 2>/dev/null || true; exit 130' INT
- if ! run_as_target_user env \
- ORCA_DB_PATH="$DB_PATH" \
- ORCA_AGENT="$CHOSEN_AGENT" \
- ORCA_PROMPT="$CHOSEN_PROMPT" \
- python3 - <<'PYEOF'
+  local PY_RC=0
+  trap '[ "$WAS_RUNNING" -eq 1 ] && { [ "$cur_mode" = "desktop" ] && [ "$WAS_DESKTOP_RUNNING" -eq 1 ] && launch_orca_desktop 2>/dev/null || restart_orca_service 2>/dev/null; }; exit 130' INT
+  if ! run_as_target_user env \
+    ORCA_DB_PATH="$DB_PATH" \
+    ORCA_AGENT="$CHOSEN_AGENT" \
+    ORCA_PROMPT="$CHOSEN_PROMPT" \
+    python3 - <<'PYEOF'
 import sqlite3, json, hashlib, time, os
 
 db_path = os.environ["ORCA_DB_PATH"]
@@ -6352,6 +6476,18 @@ if repo_row:
             sc = {}
         sc["enabled"] = True
         sc["agentId"] = agent
+
+        action_overrides = sc.get("actionOverrides")
+        if not isinstance(action_overrides, dict):
+            action_overrides = {}
+        commit_override = action_overrides.get("commitMessage")
+        if not isinstance(commit_override, dict):
+            commit_override = {}
+        commit_override["agentId"] = agent
+        commit_override["commandInputTemplate"] = "{basePrompt}"
+        action_overrides["commitMessage"] = commit_override
+        sc["actionOverrides"] = action_overrides
+
         actions = sc.get("actions")
         if not isinstance(actions, dict):
             actions = {}
@@ -6362,6 +6498,7 @@ if repo_row:
         commit_message["commandInputTemplate"] = "{basePrompt}"
         actions["commitMessage"] = commit_message
         sc["actions"] = actions
+
         instructions = sc.get("instructionsByOperation")
         if not isinstance(instructions, dict):
             instructions = {}
@@ -6395,20 +6532,51 @@ conn.commit()
 c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 conn.close()
 PYEOF
- then
- PY_RC=1
- fi
- trap 'exit 130' INT
+  then
+    PY_RC=1
+  fi
+  trap 'exit 130' INT
 
- if [ "$WAS_RUNNING" -eq 1 ]; then
- echo "Menjalankan kembali layanan Orca Server..."
- start_orca_service
- fi
+  if [ "$cur_mode" = "desktop" ]; then
+    if [ "$WAS_DESKTOP_RUNNING" -eq 1 ]; then
+      echo "Merestart Orca IDE Desktop (GUI)..."
+      launch_orca_desktop
+    else
+      echo "Orca IDE Desktop sedang tidak aktif. Pengaturan baru akan otomatis dimuat saat aplikasi dibuka."
+    fi
+  else
+    # Mode Headless Server
+    if [ "$WAS_RUNNING" -eq 1 ] || [ "$WAS_HEADLESS_RUNNING" -eq 1 ]; then
+      echo "Merestart layanan Orca Server..."
+      restart_orca_service
+    else
+      echo "Memulai layanan Orca Server agar konfigurasi baru langsung aktif..."
+      start_orca_service
+    fi
 
- if [ "$PY_RC" -ne 0 ]; then
- echo "Error: gagal memperbarui database Orca; layanan sudah dijalankan kembali."
- return 1
- fi
+    # Tunggu beberapa detik agar server siap dan port aktif
+    echo "Menunggu Orca Server siap menerima koneksi..."
+    local wait_count=0
+    while [ "$wait_count" -lt 15 ]; do
+      if is_orca_running; then
+        break
+      fi
+      sleep 1
+      wait_count=$((wait_count + 1))
+    done
+    sleep 1
+
+    echo ""
+    echo "=================================================="
+    echo "       INFORMASI AKSES & PAIRING ORCA SERVER      "
+    echo "=================================================="
+    show_orca_pair || true
+  fi
+
+  if [ "$PY_RC" -ne 0 ]; then
+    echo "Error: gagal memperbarui database Orca; layanan sudah dipulihkan."
+    return 1
+  fi
 
   echo ""
   echo "[✓] Default Git Commit Generator ($CHOSEN_AGENT) berhasil diperbarui dan tersimpan permanen!"
