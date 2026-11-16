@@ -71,16 +71,66 @@ log_run_header() {
  chmod 600 "$LOG_FILE" 2>/dev/null || true
 }
 
+LOCK_HELD_PID=""
+
+is_lock_owner_alive() {
+  local lock_pid=$1
+  [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null || return 1
+  if [ -r "/proc/$lock_pid/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$lock_pid/cmdline" 2>/dev/null | grep -q "setup_dev"
+    return $?
+  fi
+  return 0
+}
+
+release_lock() {
+  if [ "${LOCK_HELD_PID:-}" = "$$" ]; then
+    flock -u 9 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$LOCK_FILE" 2>/dev/null || true
+    LOCK_HELD_PID=""
+  fi
+}
+
 acquire_lock() {
- command -v flock >/dev/null 2>&1 || return 0
- if ! exec 9>"$LOCK_FILE" 2>/dev/null; then
- return 0
- fi
- if ! flock -n 9; then
- echo "Error: instance setup_dev.sh lain sedang berjalan (lock: $LOCK_FILE)."
- echo "Jika yakin tidak ada proses lain, hapus lock: sudo rm -f $LOCK_FILE"
- exit 1
- fi
+  command -v flock >/dev/null 2>&1 || return 0
+  [ "${LOCK_HELD_PID:-}" = "$$" ] && return 0
+
+  mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
+  local attempt
+  for attempt in 1 2; do
+    if ! exec 9>>"$LOCK_FILE" 2>/dev/null; then
+      return 0
+    fi
+    if flock -n 9; then
+      : > "$LOCK_FILE" 2>/dev/null || true
+      printf '%s\n' "$$" >&9 2>/dev/null || true
+      LOCK_HELD_PID="$$"
+      return 0
+    fi
+
+    local lock_pid=""
+    lock_pid=$(head -n1 "$LOCK_FILE" 2>/dev/null | tr -dc '0-9' || true)
+    if [ -z "$lock_pid" ]; then
+      sleep 0.2
+      lock_pid=$(head -n1 "$LOCK_FILE" 2>/dev/null | tr -dc '0-9' || true)
+    fi
+
+    if is_lock_owner_alive "$lock_pid"; then
+      exec 9>&- 2>/dev/null || true
+      echo "Error: instance setup_dev.sh lain sedang berjalan (PID: $lock_pid, lock: $LOCK_FILE)."
+      echo "Jika yakin tidak ada proses lain, hapus lock: sudo rm -f $LOCK_FILE"
+      exit 1
+    fi
+
+    exec 9>&- 2>/dev/null || true
+    if [ "$attempt" -eq 1 ] && rm -f "$LOCK_FILE" 2>/dev/null; then
+      echo "Catatan: membersihkan lock usang ($LOCK_FILE)..."
+      continue
+    fi
+    echo "Error: tidak dapat mengambil lock ($LOCK_FILE)."
+    exit 1
+  done
 }
 
 ver_ge() {
@@ -229,12 +279,18 @@ get_redis_conf() {
 }
 
 get_redis_service() {
-  if systemctl list-unit-files 2>/dev/null | grep -q "^redis\.service"; then
-    echo "redis"
-  elif systemctl list-unit-files 2>/dev/null | grep -q "^valkey\.service"; then
+  local unit_list
+  unit_list=$(systemctl list-unit-files 2>/dev/null || true)
+  if echo "$unit_list" | grep -qE "^valkey\.service[[:space:]]+(enabled|disabled|static|indirect)"; then
     echo "valkey"
-  elif systemctl list-unit-files 2>/dev/null | grep -q "^redis-server\.service"; then
+  elif echo "$unit_list" | grep -qE "^redis\.service[[:space:]]+(enabled|disabled|static|indirect)"; then
+    echo "redis"
+  elif echo "$unit_list" | grep -qE "^redis-server\.service[[:space:]]+(enabled|disabled|static|indirect)"; then
     echo "redis-server"
+  elif echo "$unit_list" | grep -q "^valkey\.service"; then
+    echo "valkey"
+  elif echo "$unit_list" | grep -q "^redis\.service"; then
+    echo "redis"
   else
     echo "redis-server"
   fi
@@ -251,6 +307,7 @@ cleanup_tmp() {
   for f in "${TMP_CLEANUP_FILES[@]}"; do
     [ -e "$f" ] && rm -rf "$f" 2>/dev/null || true
   done
+  release_lock
 }
 trap cleanup_tmp EXIT
 trap 'exit 130' INT
@@ -330,7 +387,7 @@ verify_sha256() {
  [ -n "$expected" ] || return 0
  local actual
  actual=$(sha256sum "$file" | awk '{print $1}')
- if [ "$actual" != "$expected" ]; then
+ if [ "${actual,,}" != "${expected,,}" ]; then
  echo "Error: checksum ${label} tidak cocok (harap: $expected, aktual: $actual)."
  return 1
  fi
@@ -377,18 +434,30 @@ get_component_version() {
     "OpenJDK (Java)")
       local jv=""
       if command -v java >/dev/null 2>&1; then
-        local j_major
-        j_major=$(java -version 2>&1 | head -n1 | grep -oE '[0-9]+' | head -n1 || true)
-        if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
-          if [ -n "$j_major" ]; then
-            jv=$(rpm -q --qf "%{version}\n" "java-${j_major}-openjdk-devel" 2>/dev/null | grep -v 'not installed' | head -n1 || true)
-            [ -z "$jv" ] && jv=$(rpm -q --qf "%{version}\n" "java-${j_major}-openjdk" 2>/dev/null | grep -v 'not installed' | head -n1 || true)
+        local real_java=""
+        real_java=$(readlink -f "$(command -v java)" 2>/dev/null || true)
+        if [[ "$real_java" == /usr/lib/jvm/temurin-* ]]; then
+          jv=$(java -version 2>&1 | head -n1 | awk -F '"' '{print $2}' || true)
+        else
+          local j_major
+          j_major=$(java -version 2>&1 | head -n1 | grep -oE '[0-9]+' | head -n1 || true)
+          if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
+            if [ -n "$j_major" ]; then
+              jv=$(rpm -q --qf "%{version}\n" "java-${j_major}-openjdk-devel" 2>/dev/null | grep -v 'not installed' | head -n1 || true)
+              [ -z "$jv" ] && jv=$(rpm -q --qf "%{version}\n" "java-${j_major}-openjdk" 2>/dev/null | grep -v 'not installed' | head -n1 || true)
+            fi
           fi
-          [ -z "$jv" ] && jv=$(rpm -qa "java*openjdk-devel*" --qf "%{version}\n" 2>/dev/null | head -n1 || true)
+          [ -z "$jv" ] && jv=$(java -version 2>&1 | head -n1 | awk -F '"' '{print $2}' || true)
         fi
-        [ -z "$jv" ] && jv=$(java -version 2>&1 | head -n1 | awk -F '"' '{print $2}' || true)
-      elif [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
-        jv=$(rpm -qa "java*openjdk-devel*" --qf "%{version}\n" 2>/dev/null | head -n1 || true)
+      else
+        if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
+          jv=$(rpm -qa "java*openjdk-devel*" --qf "%{version}\n" 2>/dev/null | head -n1 || true)
+        fi
+        if [ -z "$jv" ]; then
+          local t_bin
+          t_bin=$(find /usr/lib/jvm -maxdepth 3 -path '/usr/lib/jvm/temurin-*-jdk/bin/java' -type f 2>/dev/null | sort -V | tail -n1 || true)
+          [ -n "$t_bin" ] && jv=$("$t_bin" -version 2>&1 | head -n1 | awk -F '"' '{print $2}' || true)
+        fi
       fi
       [ -n "$jv" ] && echo "$jv" || echo "-"
       ;;
@@ -561,18 +630,23 @@ get_latest_version() {
       ;;
  "OpenJDK (Java)")
  # Ikuti major yang terpasang; jangan tawarkan upgrade major (mis. 21 -> 25)
- local major=""
+ local major="" real_java=""
  if command -v java >/dev/null 2>&1; then
+ real_java=$(readlink -f "$(command -v java)" 2>/dev/null || true)
  major=$(java -version 2>&1 | head -n1 | grep -oE '[0-9]+' | head -n1 || true)
  fi
  [ -n "$major" ] || major="${JAVA_VER_OPTION:-21}"
  local v=""
+ if [[ "$real_java" != /usr/lib/jvm/temurin-* ]]; then
  if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
- v=$(dnf $DNF_RO_OPTS -y repoquery -q --latest-limit=1 --qf "%{version}" "java-${major}-openjdk-devel" 2>/dev/null | cut -d- -f1)
- [ -z "$v" ] && v=$(dnf $DNF_RO_OPTS -y repoquery -q --latest-limit=1 --qf "%{version}" "java-${major}-openjdk" 2>/dev/null | cut -d- -f1)
+ v=$(dnf $DNF_RO_OPTS -y repoquery -q --latest-limit=1 --qf "%{version}\n" "java-${major}-openjdk-devel" 2>/dev/null | grep -E '^[0-9]' | head -n1 | cut -d- -f1 || true)
+ [ -z "$v" ] && v=$(dnf $DNF_RO_OPTS -y repoquery -q --latest-limit=1 --qf "%{version}\n" "java-${major}-openjdk" 2>/dev/null | grep -E '^[0-9]' | head -n1 | cut -d- -f1 || true)
  else
- v=$(apt-cache policy "openjdk-${major}-jdk" 2>/dev/null | awk '/Candidate:/ {print $2}' | cut -d+ -f1)
+ v=$(apt-cache policy "openjdk-${major}-jdk" 2>/dev/null | awk '/Candidate:/ {print $2}' | cut -d+ -f1 || true)
+ [ "$v" = "(none)" ] && v=""
  fi
+ fi
+ [ -z "$v" ] && v=$(adoptium_latest_version "$major" 5)
  [ -n "$v" ] && echo "$v" || echo "-"
  ;;
  "PostgreSQL")
@@ -1350,26 +1424,35 @@ step_rust() {
       apt-get install -y mold 2>/dev/null || true
     fi
 
- if ! command -v mold >/dev/null 2>&1; then
- local MOLD_VER
- MOLD_VER=$(get_github_latest_tag "rui314/mold" "v3.0.0")
- local MOLD_TMP_DIR
- MOLD_TMP_DIR=$(mktemp -d)
- TMP_CLEANUP_FILES+=("$MOLD_TMP_DIR")
- local MOLD_TAR="$MOLD_TMP_DIR/mold.tar.gz"
- local MOLD_ASSET="mold-${MOLD_VER#v}-${ARCH}-linux.tar.gz"
- wget -qO "$MOLD_TAR" "https://github.com/rui314/mold/releases/download/${MOLD_VER}/${MOLD_ASSET}"
- local MOLD_SHA
- MOLD_SHA=$(get_github_asset_digest "rui314/mold" "$MOLD_ASSET")
- if ! verify_sha256 "$MOLD_TAR" "$MOLD_SHA" "mold ${MOLD_VER}"; then
-  rm -rf "$MOLD_TMP_DIR"
-  return 1
- fi
- if tar -tzf "$MOLD_TAR" >/dev/null 2>&1; then
- tar -C /usr/local --strip-components=1 -xzf "$MOLD_TAR"
- fi
- rm -rf "$MOLD_TMP_DIR"
- fi
+    if ! command -v mold >/dev/null 2>&1; then
+      local MOLD_VER MOLD_TMP_DIR MOLD_TAR MOLD_ASSET MOLD_SHA
+      MOLD_VER=$(get_github_latest_tag "rui314/mold" "v3.0.0")
+      MOLD_TMP_DIR=$(mktemp -d)
+      TMP_CLEANUP_FILES+=("$MOLD_TMP_DIR")
+      MOLD_TAR="$MOLD_TMP_DIR/mold.tar.gz"
+      MOLD_ASSET="mold-${MOLD_VER#v}-${ARCH}-linux.tar.gz"
+      if ! wget -qO "$MOLD_TAR" "https://github.com/rui314/mold/releases/download/${MOLD_VER}/${MOLD_ASSET}"; then
+        rm -rf "$MOLD_TMP_DIR"
+        echo "Error: gagal mengunduh mold ${MOLD_VER}."
+        return 1
+      fi
+      MOLD_SHA=$(get_github_asset_digest "rui314/mold" "$MOLD_ASSET")
+      if ! verify_sha256 "$MOLD_TAR" "$MOLD_SHA" "mold ${MOLD_VER}"; then
+        rm -rf "$MOLD_TMP_DIR"
+        return 1
+      fi
+      if ! tar -tzf "$MOLD_TAR" >/dev/null 2>&1; then
+        rm -rf "$MOLD_TMP_DIR"
+        echo "Error: arsip mold ${MOLD_VER} rusak atau tidak valid."
+        return 1
+      fi
+      if ! tar --no-same-owner -C /usr/local --strip-components=1 -xzf "$MOLD_TAR"; then
+        rm -rf "$MOLD_TMP_DIR"
+        echo "Error: gagal mengekstrak mold ${MOLD_VER}."
+        return 1
+      fi
+      rm -rf "$MOLD_TMP_DIR"
+    fi
   fi
 
   # 2. Sccache (Deteksi Dinamis Versi Terbaru GitHub)
@@ -1390,31 +1473,46 @@ step_rust() {
 
   if [ "$NEED_SCCACHE" -eq 1 ]; then
     echo "Mengunduh Sccache rilis terbaru: $SCCACHE_VER ($ARCH)..."
-    local SCCACHE_TAR
-    local SCCACHE_DIR
+    local SCCACHE_TAR SCCACHE_DIR SCCACHE_ASSET SCCACHE_SHA SCCACHE_BIN
     SCCACHE_TAR=$(mktemp)
     SCCACHE_DIR=$(mktemp -d)
     TMP_CLEANUP_FILES+=("$SCCACHE_TAR" "$SCCACHE_DIR")
- local SCCACHE_ASSET="sccache-${SCCACHE_VER}-${ARCH}-unknown-linux-musl.tar.gz"
-    wget -qO "$SCCACHE_TAR" "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VER}/${SCCACHE_ASSET}"
-    local SCCACHE_SHA
-    SCCACHE_SHA=$(curl -sSL -m 5 "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VER}/${SCCACHE_ASSET}.sha256" 2>/dev/null | tr -d '[:space:]' | cut -c1-64 || true)
-    if ! verify_sha256 "$SCCACHE_TAR" "$SCCACHE_SHA" "sccache ${SCCACHE_VER}"; then
-     rm -f "$SCCACHE_TAR"
-     rm -rf "$SCCACHE_DIR"
-     return 1
-    fi
-    if tar -tzf "$SCCACHE_TAR" >/dev/null 2>&1; then
-      mkdir -p "$SCCACHE_DIR"
-      tar -C "$SCCACHE_DIR" -xzf "$SCCACHE_TAR"
-      local SCCACHE_BIN
-      SCCACHE_BIN=$(find "$SCCACHE_DIR" -type f -name sccache | head -n1)
-      if [ -n "$SCCACHE_BIN" ]; then
-        mv "$SCCACHE_BIN" /usr/local/bin/sccache
-        chmod +x /usr/local/bin/sccache
-      fi
+    SCCACHE_ASSET="sccache-${SCCACHE_VER}-${ARCH}-unknown-linux-musl.tar.gz"
+    if ! wget -qO "$SCCACHE_TAR" "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VER}/${SCCACHE_ASSET}"; then
+      rm -f "$SCCACHE_TAR"
       rm -rf "$SCCACHE_DIR"
+      echo "Error: gagal mengunduh sccache ${SCCACHE_VER}."
+      return 1
     fi
+    SCCACHE_SHA=$(curl -fsSL -m 10 "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VER}/${SCCACHE_ASSET}.sha256" 2>/dev/null | awk '{print $1}' | head -n1 || true)
+    [[ "$SCCACHE_SHA" =~ ^[0-9a-fA-F]{64}$ ]] || SCCACHE_SHA=""
+    [ -z "$SCCACHE_SHA" ] && SCCACHE_SHA=$(get_github_asset_digest "mozilla/sccache" "$SCCACHE_ASSET")
+    if ! verify_sha256 "$SCCACHE_TAR" "$SCCACHE_SHA" "sccache ${SCCACHE_VER}"; then
+      rm -f "$SCCACHE_TAR"
+      rm -rf "$SCCACHE_DIR"
+      return 1
+    fi
+    if ! tar -tzf "$SCCACHE_TAR" >/dev/null 2>&1; then
+      rm -f "$SCCACHE_TAR"
+      rm -rf "$SCCACHE_DIR"
+      echo "Error: arsip sccache ${SCCACHE_VER} rusak atau tidak valid."
+      return 1
+    fi
+    mkdir -p "$SCCACHE_DIR"
+    if ! tar --no-same-owner -C "$SCCACHE_DIR" -xzf "$SCCACHE_TAR"; then
+      rm -f "$SCCACHE_TAR"
+      rm -rf "$SCCACHE_DIR"
+      echo "Error: gagal mengekstrak sccache ${SCCACHE_VER}."
+      return 1
+    fi
+    SCCACHE_BIN=$(find "$SCCACHE_DIR" -type f -name sccache | head -n1 || true)
+    if [ -z "$SCCACHE_BIN" ] || ! install -m 755 "$SCCACHE_BIN" /usr/local/bin/sccache; then
+      rm -f "$SCCACHE_TAR"
+      rm -rf "$SCCACHE_DIR"
+      echo "Error: binary sccache tidak ditemukan atau gagal dipasang."
+      return 1
+    fi
+    rm -rf "$SCCACHE_DIR"
     rm -f "$SCCACHE_TAR"
   fi
 
@@ -1423,51 +1521,63 @@ step_rust() {
   export CARGO_HOME=/usr/local/cargo
   export PATH="$CARGO_HOME/bin:$PATH"
 
- if [ -x "$CARGO_HOME/bin/rustup" ]; then
- echo "Rustup sudah terpasang. Memperbarui stable toolchain..."
- "$CARGO_HOME/bin/rustup" update stable --no-self-update || true
- else
- local RUSTUP_TRIPLE=""
- case "$(uname -m)" in
-   x86_64) RUSTUP_TRIPLE="x86_64-unknown-linux-gnu" ;;
-   aarch64|arm64) RUSTUP_TRIPLE="aarch64-unknown-linux-gnu" ;;
- esac
- if [ -z "$RUSTUP_TRIPLE" ]; then
-   echo "Error: arsitektur $(uname -m) tidak didukung untuk instalasi rustup otomatis."
-   exit 1
- fi
- local RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/dist/${RUSTUP_TRIPLE}/rustup-init"
- local RUSTUP_TMP RUSTUP_SHA
- RUSTUP_TMP=$(mktemp)
- if ! curl --proto '=https' --tlsv1.2 -fsSL -m 120 "$RUSTUP_INIT_URL" -o "$RUSTUP_TMP"; then
-   rm -f "$RUSTUP_TMP"
-   echo "Error: gagal mengunduh rustup-init."
-   exit 1
- fi
- RUSTUP_SHA=$(curl --proto '=https' --tlsv1.2 -fsSL -m 30 "${RUSTUP_INIT_URL}.sha256" 2>/dev/null | awk '{print $1}' || true)
- if [ -z "$RUSTUP_SHA" ] || ! verify_sha256 "$RUSTUP_TMP" "$RUSTUP_SHA" "rustup-init"; then
-   rm -f "$RUSTUP_TMP"
-   echo "Error: checksum rustup-init tidak tersedia atau tidak cocok."
-   exit 1
- fi
- chmod +x "$RUSTUP_TMP"
- "$RUSTUP_TMP" -y --no-modify-path --profile default
- rm -f "$RUSTUP_TMP"
- fi
+  if [ -x "$CARGO_HOME/bin/rustup" ] && [ -x "$CARGO_HOME/bin/rustc" ]; then
+    echo "Rustup sudah terpasang. Memperbarui stable toolchain..."
+    "$CARGO_HOME/bin/rustup" update stable --no-self-update || true
+  else
+    local RUSTUP_TRIPLE=""
+    case "$(uname -m)" in
+      x86_64) RUSTUP_TRIPLE="x86_64-unknown-linux-gnu" ;;
+      aarch64|arm64) RUSTUP_TRIPLE="aarch64-unknown-linux-gnu" ;;
+    esac
+    if [ -z "$RUSTUP_TRIPLE" ]; then
+      echo "Error: arsitektur $(uname -m) tidak didukung untuk instalasi rustup otomatis."
+      return 1
+    fi
+    local RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/dist/${RUSTUP_TRIPLE}/rustup-init"
+    local RUSTUP_TMP_DIR RUSTUP_BIN RUSTUP_SHA
+    # rustup-init membaca argv[0] sebagai nama proxy; nama file wajib "rustup-init"
+    RUSTUP_TMP_DIR=$(mktemp -d)
+    TMP_CLEANUP_FILES+=("$RUSTUP_TMP_DIR")
+    RUSTUP_BIN="$RUSTUP_TMP_DIR/rustup-init"
+    if ! curl --proto '=https' --tlsv1.2 -fsSL -m 120 "$RUSTUP_INIT_URL" -o "$RUSTUP_BIN"; then
+      rm -rf "$RUSTUP_TMP_DIR"
+      echo "Error: gagal mengunduh rustup-init."
+      return 1
+    fi
+    RUSTUP_SHA=$(curl --proto '=https' --tlsv1.2 -fsSL -m 30 "${RUSTUP_INIT_URL}.sha256" 2>/dev/null | awk '{print $1}' | head -n1 || true)
+    if [ -z "$RUSTUP_SHA" ] || ! verify_sha256 "$RUSTUP_BIN" "$RUSTUP_SHA" "rustup-init"; then
+      rm -rf "$RUSTUP_TMP_DIR"
+      echo "Error: checksum rustup-init tidak tersedia atau tidak cocok."
+      return 1
+    fi
+    chmod +x "$RUSTUP_BIN"
+    if ! "$RUSTUP_BIN" -y --no-modify-path --profile default; then
+      rm -rf "$RUSTUP_TMP_DIR"
+      echo "Error: rustup-init gagal memasang Rust toolchain."
+      return 1
+    fi
+    rm -rf "$RUSTUP_TMP_DIR"
+  fi
 
- local TARGET_USER="${SUDO_USER:-$USER}"
- if id "$TARGET_USER" >/dev/null 2>&1; then
- chown -R "$TARGET_USER:$TARGET_USER" "$RUSTUP_HOME" "$CARGO_HOME" 2>/dev/null || true
- fi
- chmod -R u+rwX,go+rX "$RUSTUP_HOME" "$CARGO_HOME" 2>/dev/null || true
+  if [ ! -x "$CARGO_HOME/bin/rustc" ] || [ ! -x "$CARGO_HOME/bin/cargo" ]; then
+    echo "Error: rustc/cargo tidak ditemukan di $CARGO_HOME/bin setelah instalasi Rust."
+    return 1
+  fi
 
- mkdir -p "$CARGO_HOME"
- local SCCACHE_PATH
- SCCACHE_PATH=$(command -v sccache 2>/dev/null || true)
- [ -n "$SCCACHE_PATH" ] || SCCACHE_PATH="/usr/local/bin/sccache"
- local CARGO_CFG="$CARGO_HOME/config.toml"
- if [ ! -f "$CARGO_CFG" ]; then
- cat <<EOF_CARGO > "$CARGO_CFG"
+  local TARGET_USER="${SUDO_USER:-$USER}"
+  if id "$TARGET_USER" >/dev/null 2>&1; then
+    chown -R "$TARGET_USER:$TARGET_USER" "$RUSTUP_HOME" "$CARGO_HOME" 2>/dev/null || true
+  fi
+  chmod -R u+rwX,go+rX "$RUSTUP_HOME" "$CARGO_HOME" 2>/dev/null || true
+
+  mkdir -p "$CARGO_HOME"
+  local SCCACHE_PATH
+  SCCACHE_PATH=$(command -v sccache 2>/dev/null || true)
+  [ -n "$SCCACHE_PATH" ] || SCCACHE_PATH="/usr/local/bin/sccache"
+  local CARGO_CFG="$CARGO_HOME/config.toml"
+  if [ ! -f "$CARGO_CFG" ]; then
+    cat <<EOF_CARGO > "$CARGO_CFG"
 [build]
 rustc-wrapper = "$SCCACHE_PATH"
 
@@ -1479,14 +1589,14 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 EOF_CARGO
- elif ! grep -q '^[[:space:]]*rustc-wrapper[[:space:]]*=' "$CARGO_CFG"; then
- cp "$CARGO_CFG" "${CARGO_CFG}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
- if grep -q '^\[build\]' "$CARGO_CFG"; then
- sed -i "/^\[build\]/a rustc-wrapper = \"$SCCACHE_PATH\"" "$CARGO_CFG"
- else
- printf '\n[build]\nrustc-wrapper = "%s"\n' "$SCCACHE_PATH" >> "$CARGO_CFG"
- fi
- fi
+  elif ! grep -q '^[[:space:]]*rustc-wrapper[[:space:]]*=' "$CARGO_CFG"; then
+    cp "$CARGO_CFG" "${CARGO_CFG}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+    if grep -q '^\[build\]' "$CARGO_CFG"; then
+      sed -i "/^\[build\]/a rustc-wrapper = \"$SCCACHE_PATH\"" "$CARGO_CFG"
+    else
+      printf '\n[build]\nrustc-wrapper = "%s"\n' "$SCCACHE_PATH" >> "$CARGO_CFG"
+    fi
+  fi
 
   cat <<'EOF' > /etc/profile.d/rust.sh
 export RUSTUP_HOME=/usr/local/rustup
@@ -1542,17 +1652,18 @@ step_golang() {
  local GO_TMP
  GO_TMP=$(mktemp)
  TMP_CLEANUP_FILES+=("$GO_TMP")
- wget -qO "$GO_TMP" "https://go.dev/dl/${GO_FILE}"
+ if ! wget -qO "$GO_TMP" "https://go.dev/dl/${GO_FILE}"; then
+   rm -f "$GO_TMP"
+   echo "Error: gagal mengunduh Golang $LATEST_VER ($GO_FILE)."
+   return 1
+ fi
 
  # Validasi checksum resmi dari go.dev
  if [ -n "$GO_SHA" ] && [ "$GO_SHA" != "null" ]; then
- local GO_ACTUAL
- GO_ACTUAL=$(sha256sum "$GO_TMP" | awk '{print $1}')
- if [ "$GO_ACTUAL" != "$GO_SHA" ]; then
- echo "Error: checksum SHA256 Go tidak cocok (harap: $GO_SHA, aktual: $GO_ACTUAL)."
- rm -f "$GO_TMP"
- return 1
- fi
+   if ! verify_sha256 "$GO_TMP" "$GO_SHA" "Go ${LATEST_VER}"; then
+     rm -f "$GO_TMP"
+     return 1
+   fi
  fi
 
  # Validasi integritas arsip sebelum menghapus instalasi lama
@@ -1563,7 +1674,11 @@ step_golang() {
  fi
 
  rm -rf /usr/local/go
- tar -C /usr/local -xzf "$GO_TMP"
+ if ! tar --no-same-owner -C /usr/local -xzf "$GO_TMP"; then
+   rm -f "$GO_TMP"
+   echo "Error: gagal mengekstrak Golang $LATEST_VER."
+   return 1
+ fi
  rm -f "$GO_TMP"
 
  cat <<'EOF' > /etc/profile.d/golang.sh
@@ -1612,74 +1727,317 @@ prompt_java_options() {
   esac
 }
 
+adoptium_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo "x64" ;;
+    aarch64|arm64) echo "aarch64" ;;
+    armv7l|armhf) echo "arm" ;;
+    *) return 1 ;;
+  esac
+}
+
+adoptium_latest_version() {
+  local major=$1 timeout_sec=${2:-10} api_arch
+  api_arch=$(adoptium_arch 2>/dev/null || true)
+  [ -n "$api_arch" ] || return 0
+  curl -fsSL -m "$timeout_sec" "https://api.adoptium.net/v3/assets/latest/${major}/hotspot?architecture=${api_arch}&image_type=jdk&os=linux&vendor=eclipse" 2>/dev/null \
+    | jq -r '.[0].version.openjdk_version // empty' 2>/dev/null \
+    | sed 's/[+-].*$//' || true
+}
+
+find_java_home_for_major() {
+  local major=$1 d=""
+  for pattern in "java-${major}-openjdk*" "java-1.${major}.0-openjdk*" "temurin-${major}-jdk*" "java-${major}-temurin*"; do
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      if [ -x "$d/bin/java" ] && [ -x "$d/bin/javac" ]; then
+        echo "$d"
+        return 0
+      fi
+    done < <(find /usr/lib/jvm -maxdepth 1 -type d -name "$pattern" 2>/dev/null | sort -V)
+  done
+  return 1
+}
+
+is_distro_jdk_available() {
+  local major=$1
+  if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
+    local pkg="java-${major}-openjdk-devel"
+    rpm -q "$pkg" >/dev/null 2>&1 && return 0
+    dnf $DNF_RO_OPTS -y repoquery -q --latest-limit=1 --qf "%{name}\n" "$pkg" 2>/dev/null | grep -qx "$pkg"
+    return $?
+  elif [ "$PKG_MGR" = "apt" ]; then
+    local pkg="openjdk-${major}-jdk"
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" && return 0
+    local cand
+    cand=$(apt-cache policy "$pkg" 2>/dev/null | awk '/Candidate:/ {print $2}' || true)
+    if [ -z "$cand" ] && ! ls -A /var/lib/apt/lists 2>/dev/null | grep -qvE '^(lock|partial)$'; then
+      apt-get update -y >/dev/null 2>&1 || true
+      cand=$(apt-cache policy "$pkg" 2>/dev/null | awk '/Candidate:/ {print $2}' || true)
+    fi
+    [ -n "$cand" ] && [ "$cand" != "(none)" ]
+    return $?
+  fi
+  return 1
+}
+
+install_adoptium_jdk() {
+  local major=$1 api_arch
+  if ! api_arch=$(adoptium_arch); then
+    echo "Error: arsitektur $(uname -m) tidak didukung untuk unduhan Adoptium Temurin."
+    return 1
+  fi
+
+  local api_url="https://api.adoptium.net/v3/assets/latest/${major}/hotspot?architecture=${api_arch}&image_type=jdk&os=linux&vendor=eclipse"
+  local api_json rel_name dl_url dl_sha
+  api_json=$(curl -fsSL -m 15 "$api_url" 2>/dev/null || true)
+  if [ -z "$api_json" ]; then
+    echo "Error: gagal menghubungi Adoptium API untuk Eclipse Temurin OpenJDK ${major}."
+    return 1
+  fi
+  rel_name=$(echo "$api_json" | jq -r '.[0].release_name // empty' 2>/dev/null || true)
+  dl_url=$(echo "$api_json" | jq -r '.[0].binary.package.link // empty' 2>/dev/null || true)
+  dl_sha=$(echo "$api_json" | jq -r '.[0].binary.package.checksum // empty' 2>/dev/null || true)
+  if [ -z "$dl_url" ] || [ -z "$dl_sha" ]; then
+    echo "Error: paket Eclipse Temurin OpenJDK ${major} (${api_arch}) tidak ditemukan di Adoptium API."
+    return 1
+  fi
+
+  local install_dir="/usr/lib/jvm/temurin-${major}-jdk"
+  local marker_file="$install_dir/.adoptium-release"
+  if [ -x "$install_dir/bin/java" ] && [ -x "$install_dir/bin/javac" ] && [ -n "$rel_name" ] && [ -f "$marker_file" ] && [ "$(cat "$marker_file" 2>/dev/null)" = "$rel_name" ]; then
+    echo "Eclipse Temurin OpenJDK ${major} (${rel_name}) sudah versi terbaru."
+    return 0
+  fi
+
+  echo "Mengunduh Eclipse Temurin OpenJDK ${major} (${rel_name:-latest}, ${api_arch})..."
+  local tmp_dir tmp_tar stage_dir backup_dir
+  tmp_dir=$(mktemp -d)
+  TMP_CLEANUP_FILES+=("$tmp_dir")
+  tmp_tar="$tmp_dir/temurin-jdk.tar.gz"
+  stage_dir="$tmp_dir/jdk"
+  mkdir -p "$stage_dir"
+
+  if ! curl -fsSL -m 300 "$dl_url" -o "$tmp_tar"; then
+    rm -rf "$tmp_dir"
+    echo "Error: gagal mengunduh Eclipse Temurin OpenJDK ${major}."
+    return 1
+  fi
+  if ! verify_sha256 "$tmp_tar" "$dl_sha" "Temurin OpenJDK ${major}"; then
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  if ! tar -tzf "$tmp_tar" >/dev/null 2>&1; then
+    rm -rf "$tmp_dir"
+    echo "Error: arsip Eclipse Temurin OpenJDK ${major} rusak atau tidak valid."
+    return 1
+  fi
+  if ! tar --no-same-owner -C "$stage_dir" --strip-components=1 -xzf "$tmp_tar"; then
+    rm -rf "$tmp_dir"
+    echo "Error: gagal mengekstrak Eclipse Temurin OpenJDK ${major}."
+    return 1
+  fi
+  if [ ! -x "$stage_dir/bin/java" ] || [ ! -x "$stage_dir/bin/javac" ]; then
+    rm -rf "$tmp_dir"
+    echo "Error: binary java/javac tidak ditemukan di arsip Temurin OpenJDK ${major}."
+    return 1
+  fi
+
+  mkdir -p /usr/lib/jvm
+  backup_dir="${install_dir}.bak.$$"
+  if [ -e "$install_dir" ]; then
+    mv "$install_dir" "$backup_dir"
+  fi
+  if mv "$stage_dir" "$install_dir"; then
+    rm -rf "$backup_dir"
+  else
+    [ -e "$backup_dir" ] && mv "$backup_dir" "$install_dir" || true
+    rm -rf "$tmp_dir"
+    echo "Error: gagal memasang Eclipse Temurin OpenJDK ${major} ke $install_dir."
+    return 1
+  fi
+
+  printf '%s\n' "$rel_name" > "$marker_file"
+  chown -R root:root "$install_dir" 2>/dev/null || true
+  chmod -R u+rwX,go+rX "$install_dir" 2>/dev/null || true
+  rm -rf "$tmp_dir"
+}
+
+register_java_alternatives() {
+  local jvm_dir=$1 major=$2
+  local prio=$(( major * 1000 ))
+  local tool
+
+  if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
+    if command -v alternatives >/dev/null 2>&1; then
+      local follower_flag="--slave"
+      if alternatives --help 2>&1 | grep -q -- '--follower'; then
+        follower_flag="--follower"
+      fi
+
+      if ! alternatives --display java 2>/dev/null | grep -Fq "$jvm_dir/bin/java"; then
+        local java_followers=()
+        [ -x "$jvm_dir/bin/keytool" ] && java_followers+=("$follower_flag" /usr/bin/keytool keytool "$jvm_dir/bin/keytool")
+        [ -x "$jvm_dir/bin/rmiregistry" ] && java_followers+=("$follower_flag" /usr/bin/rmiregistry rmiregistry "$jvm_dir/bin/rmiregistry")
+        [ -d "$jvm_dir" ] && java_followers+=("$follower_flag" /usr/lib/jvm/jre jre "$jvm_dir")
+        if ! alternatives --install /usr/bin/java java "$jvm_dir/bin/java" "$prio" "${java_followers[@]}" 2>/dev/null; then
+          alternatives --install /usr/bin/java java "$jvm_dir/bin/java" "$prio" 2>/dev/null || true
+        fi
+      fi
+      alternatives --set java "$jvm_dir/bin/java" 2>/dev/null || true
+
+      if [ -x "$jvm_dir/bin/javac" ]; then
+        if ! alternatives --display javac 2>/dev/null | grep -Fq "$jvm_dir/bin/javac"; then
+          local javac_followers=()
+          for tool in jar jarsigner javadoc javap jcmd jconsole jdb jdeps jinfo jlink jmap jmod jpackage jps jshell jstack jstat serialver; do
+            [ -x "$jvm_dir/bin/$tool" ] && javac_followers+=("$follower_flag" "/usr/bin/$tool" "$tool" "$jvm_dir/bin/$tool")
+          done
+          if ! alternatives --install /usr/bin/javac javac "$jvm_dir/bin/javac" "$prio" "${javac_followers[@]}" 2>/dev/null; then
+            alternatives --install /usr/bin/javac javac "$jvm_dir/bin/javac" "$prio" 2>/dev/null || true
+          fi
+        fi
+        alternatives --set javac "$jvm_dir/bin/javac" 2>/dev/null || true
+      fi
+    fi
+  elif command -v update-alternatives >/dev/null 2>&1; then
+    if ! update-alternatives --list java 2>/dev/null | grep -Fxq "$jvm_dir/bin/java"; then
+      update-alternatives --install /usr/bin/java java "$jvm_dir/bin/java" "$prio" 2>/dev/null || true
+    fi
+    update-alternatives --set java "$jvm_dir/bin/java" 2>/dev/null || true
+
+    if [ -x "$jvm_dir/bin/javac" ]; then
+      if ! update-alternatives --list javac 2>/dev/null | grep -Fxq "$jvm_dir/bin/javac"; then
+        update-alternatives --install /usr/bin/javac javac "$jvm_dir/bin/javac" "$prio" 2>/dev/null || true
+      fi
+      update-alternatives --set javac "$jvm_dir/bin/javac" 2>/dev/null || true
+    fi
+
+    for tool in keytool rmiregistry jar jarsigner javadoc javap jcmd jps jshell jlink jdeps; do
+      [ -x "$jvm_dir/bin/$tool" ] || continue
+      if [ ! -e "/usr/bin/$tool" ] || update-alternatives --list "$tool" >/dev/null 2>&1; then
+        if ! update-alternatives --list "$tool" 2>/dev/null | grep -Fxq "$jvm_dir/bin/$tool"; then
+          update-alternatives --install "/usr/bin/$tool" "$tool" "$jvm_dir/bin/$tool" "$prio" 2>/dev/null || true
+        fi
+        update-alternatives --set "$tool" "$jvm_dir/bin/$tool" 2>/dev/null || true
+      fi
+    done
+  fi
+
+  local need_path_export=0
+  local cur_java_real="" cur_javac_real=""
+  command -v java >/dev/null 2>&1 && cur_java_real=$(readlink -f "$(command -v java)" 2>/dev/null || true)
+  command -v javac >/dev/null 2>&1 && cur_javac_real=$(readlink -f "$(command -v javac)" 2>/dev/null || true)
+  if [ "$cur_java_real" != "$(readlink -f "$jvm_dir/bin/java" 2>/dev/null || echo "$jvm_dir/bin/java")" ] || \
+     [ "$cur_javac_real" != "$(readlink -f "$jvm_dir/bin/javac" 2>/dev/null || echo "$jvm_dir/bin/javac")" ]; then
+    need_path_export=1
+    export PATH="$jvm_dir/bin:$PATH"
+  fi
+
+  export JAVA_HOME="$jvm_dir"
+  {
+    echo "export JAVA_HOME=\"$jvm_dir\""
+    if [ "$need_path_export" -eq 1 ]; then
+      echo 'export PATH="$JAVA_HOME/bin:$PATH"'
+    fi
+  } > /etc/profile.d/java.sh
+  chmod 644 /etc/profile.d/java.sh 2>/dev/null || true
+}
+
+update_installed_temurin_jdks() {
+  local dir j_major
+  for dir in /usr/lib/jvm/temurin-*-jdk; do
+    [ -d "$dir" ] || continue
+    j_major=$(basename "$dir" | sed -n 's/^temurin-\([0-9]*\)-jdk$/\1/p')
+    [ -n "$j_major" ] || continue
+    install_adoptium_jdk "$j_major" || echo "Peringatan: gagal memeriksa pembaruan Temurin OpenJDK ${j_major}."
+  done
+}
+
 step_java() {
- detect_os
- prompt_java_options
- local target_java="${JAVA_VER_OPTION:-21}"
+  detect_os
+  prompt_java_options
+  local target_java="${JAVA_VER_OPTION:-21}"
 
- if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
- local cur_jv
- cur_jv=$(java -version 2>&1 | head -n1 | grep -oE '[0-9]+(\.[0-9]+)*' | head -n1 | cut -d. -f1)
- if [ "$cur_jv" = "$target_java" ]; then
- echo "Java $target_java sudah aktif ($(java -version 2>&1 | head -n1)). Memeriksa pembaruan..."
- if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
- dnf -y upgrade "java-${target_java}-openjdk-devel" 2>/dev/null || true
- else
- export DEBIAN_FRONTEND=noninteractive
- apt-get install -y --only-upgrade "openjdk-${target_java}-jdk" 2>/dev/null || true
- fi
- return 0
- fi
- fi
+  case "$target_java" in
+    17|21|25) ;;
+    *)
+      echo "Error: versi Java '$target_java' tidak didukung. Gunakan 17, 21, atau 25."
+      return 1
+      ;;
+  esac
 
- echo "Menginstal & mengonfigurasi OpenJDK $target_java sebagai default..."
- local install_ok=0
- if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
- case "$target_java" in
- 17) dnf -y install java-17-openjdk-devel && install_ok=1 ;;
- 25) dnf -y install java-25-openjdk-devel && install_ok=1 ;;
- *) dnf -y install java-21-openjdk-devel && install_ok=1 ;;
- esac
- else
- export DEBIAN_FRONTEND=noninteractive
- case "$target_java" in
- 17) apt-get install -y openjdk-17-jdk && install_ok=1 ;;
- 25) apt-get install -y openjdk-25-jdk && install_ok=1 ;;
- *) apt-get install -y openjdk-21-jdk && install_ok=1 ;;
- esac
- fi
- if [ "$install_ok" -ne 1 ]; then
- echo "Error: paket OpenJDK ${target_java} tidak tersedia di repositori ${PKG_MGR}."
- echo "Pilihan: gunakan --java-ver 21 atau 25, atau tambahkan repo Adoptium/Temurin."
- return 1
- fi
+  if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
+    local cur_jv real_java jvm_dir
+    cur_jv=$(java -version 2>&1 | head -n1 | grep -oE '[0-9]+(\.[0-9]+)*' | head -n1 | cut -d. -f1 || true)
+    if [ "$cur_jv" = "$target_java" ]; then
+      echo "Java $target_java sudah aktif ($(java -version 2>&1 | head -n1)). Memeriksa pembaruan..."
+      real_java=$(readlink -f "$(command -v java)" 2>/dev/null || true)
+      if [[ "$real_java" == /usr/lib/jvm/temurin-* ]]; then
+        install_adoptium_jdk "$target_java" || true
+      elif [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
+        dnf -y upgrade "java-${target_java}-openjdk-devel" 2>/dev/null || true
+      else
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y --only-upgrade "openjdk-${target_java}-jdk" 2>/dev/null || true
+      fi
+      jvm_dir=$(find_java_home_for_major "$target_java" 2>/dev/null || true)
+      [ -n "$jvm_dir" ] && register_java_alternatives "$jvm_dir" "$target_java"
+      return 0
+    fi
+  fi
 
- local jvm_dir
- jvm_dir=$(find /usr/lib/jvm -maxdepth 1 -type d -name "java-${target_java}-openjdk*" 2>/dev/null | head -n1 || true)
- if [ -z "$jvm_dir" ]; then
- echo "Error: direktori JVM untuk OpenJDK ${target_java} tidak ditemukan."
- return 1
- fi
+  echo "Menginstal & mengonfigurasi OpenJDK $target_java sebagai default..."
+  local install_ok=0
+  if is_distro_jdk_available "$target_java"; then
+    if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
+      dnf -y install "java-${target_java}-openjdk-devel" && install_ok=1
+    elif [ "$PKG_MGR" = "apt" ]; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y >/dev/null 2>&1 || true
+      apt-get install -y "openjdk-${target_java}-jdk" && install_ok=1
+    fi
+  else
+    echo "Paket OpenJDK ${target_java} tidak tersedia di repositori ${PKG_MGR}. Menggunakan Eclipse Temurin (Adoptium)..."
+  fi
 
- if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
- alternatives --set java "$jvm_dir/bin/java" 2>/dev/null || true
- [ -x "$jvm_dir/bin/javac" ] && alternatives --set javac "$jvm_dir/bin/javac" 2>/dev/null || true
- else
- update-alternatives --set java "$jvm_dir/bin/java" 2>/dev/null || true
- [ -x "$jvm_dir/bin/javac" ] && update-alternatives --set javac "$jvm_dir/bin/javac" 2>/dev/null || true
- fi
+  if [ "$install_ok" -ne 1 ]; then
+    install_adoptium_jdk "$target_java" && install_ok=1 || true
+  fi
 
- local active_jv
- active_jv=$(java -version 2>&1 | head -n1 | grep -oE '[0-9]+(\.[0-9]+)*' | head -n1 | cut -d. -f1)
- if [ "$active_jv" != "$target_java" ]; then
- echo "Error: Java aktif ($active_jv) bukan versi target ($target_java)."
- return 1
- fi
- if ! command -v javac >/dev/null 2>&1; then
- echo "Error: javac tidak tersedia setelah instalasi OpenJDK ${target_java}."
- return 1
- fi
- echo "OpenJDK ${target_java} aktif: $(java -version 2>&1 | head -n1) | $(javac -version 2>&1 | head -n1)"
+  if [ "$install_ok" -ne 1 ]; then
+    echo "Error: OpenJDK ${target_java} tidak tersedia di repositori ${PKG_MGR} dan unduhan Eclipse Temurin gagal."
+    local avail_vers=() v_chk
+    for v_chk in 17 21 25; do
+      is_distro_jdk_available "$v_chk" && avail_vers+=("$v_chk")
+    done
+    if [ ${#avail_vers[@]} -gt 0 ]; then
+      echo "Versi yang tersedia di repositori ${PKG_MGR}: ${avail_vers[*]} (gunakan --java-ver <versi>), atau periksa koneksi internet untuk Adoptium Temurin."
+    else
+      echo "Periksa koneksi internet Anda untuk mengunduh Eclipse Temurin dari api.adoptium.net."
+    fi
+    return 1
+  fi
+
+  local jvm_dir
+  jvm_dir=$(find_java_home_for_major "$target_java" || true)
+  if [ -z "$jvm_dir" ]; then
+    echo "Error: direktori JVM JDK untuk OpenJDK ${target_java} tidak ditemukan."
+    return 1
+  fi
+
+  register_java_alternatives "$jvm_dir" "$target_java"
+
+  local active_jv
+  active_jv=$(java -version 2>&1 | head -n1 | grep -oE '[0-9]+(\.[0-9]+)*' | head -n1 | cut -d. -f1 || true)
+  if [ "$active_jv" != "$target_java" ]; then
+    echo "Error: Java aktif ($active_jv) bukan versi target ($target_java)."
+    return 1
+  fi
+  if ! command -v javac >/dev/null 2>&1; then
+    echo "Error: javac tidak tersedia setelah instalasi OpenJDK ${target_java}."
+    return 1
+  fi
+  echo "OpenJDK ${target_java} aktif: $(java -version 2>&1 | head -n1) | $(javac -version 2>&1 | head -n1)"
 }
 
 # --- STEP 6: Android SDK & Command Line Tools ---
@@ -1725,10 +2083,10 @@ step_android_sdk() {
   prompt_android_options
   export DEBIAN_FRONTEND=noninteractive
 
-  # Pastikan Java terpasang karena sdkmanager membutuhkan Java runtime
-  if ! command -v java >/dev/null 2>&1; then
-    echo "Java diperlukan untuk Android SDK. Menginstal OpenJDK 21..."
-    step_java
+  # Pastikan Java JDK terpasang karena sdkmanager & Android build membutuhkan Java + javac
+  if ! command -v java >/dev/null 2>&1 || ! command -v javac >/dev/null 2>&1; then
+    echo "Java JDK diperlukan untuk Android SDK. Menginstal OpenJDK ${JAVA_VER_OPTION:-21}..."
+    step_java || return 1
   fi
 
   # Deteksi JAVA_HOME
@@ -1761,7 +2119,7 @@ step_android_sdk() {
 
  wget -qO "$TMP_ZIP" "https://dl.google.com/android/repository/${CMDLINE_ZIP}"
  local CMDLINE_SHA=""
- CMDLINE_SHA=$(curl -fsSL -m 15 "https://dl.google.com/android/repository/repository2-3.xml" 2>/dev/null | tr -d '\r' | grep -B1 -F "<url>${CMDLINE_ZIP}</url>" | sed -n 's#.*<checksum type="sha1">\([0-9a-f]*\)</checksum>.*#\1#p' | head -n1)
+ CMDLINE_SHA=$(curl -fsSL -m 15 "https://dl.google.com/android/repository/repository2-3.xml" 2>/dev/null | tr -d '\r' | grep -B1 -F "<url>${CMDLINE_ZIP}</url>" | sed -n 's#.*<checksum type="sha1">\([0-9a-f]*\)</checksum>.*#\1#p' | head -n1 || true)
  if ! verify_sha1 "$TMP_ZIP" "$CMDLINE_SHA" "Android cmdline-tools"; then
   rm -rf "$TMP_DIR"
   return 1
@@ -1850,7 +2208,10 @@ step_flutter() {
 
   if [ ! -d "$FLUTTER_DIR/.git" ]; then
     echo "Mengkloning Flutter SDK (channel stable) ke $FLUTTER_DIR..."
-    git clone -b stable https://github.com/flutter/flutter.git "$FLUTTER_DIR"
+    if ! git clone -b stable https://github.com/flutter/flutter.git "$FLUTTER_DIR"; then
+      echo "Error: gagal mengkloning Flutter SDK."
+      return 1
+    fi
   else
     echo "Flutter SDK sudah terpasang di $FLUTTER_DIR."
   fi
@@ -1973,15 +2334,61 @@ case "$PG_SUPERUSER_PASSWORD" in
  *[!A-Za-z0-9_.-]*) echo "Error: PG_SUPERUSER_PASSWORD hanya boleh berisi [A-Za-z0-9_.-]." >&2; exit 1 ;;
 esac
 
+run_as_postgres() {
+ if command -v runuser >/dev/null 2>&1; then
+ runuser -u postgres -- "$@"
+ else
+ sudo -u postgres "$@"
+ fi
+}
+
 # Impor dump secara ketat: berhenti pada error pertama dan kembalikan status sebenarnya
 psql_import_dump() {
  local dump_file="$1"
  local db="${2:-postgres}"
- gunzip -c "$dump_file" | sudo -u postgres psql -v ON_ERROR_STOP=1 -q -d "$db" -f -
+ gunzip -c "$dump_file" | run_as_postgres psql -v ON_ERROR_STOP=1 -q -d "$db" -f -
 }
 
 pg_set_superuser_password() {
- sudo -u postgres psql -q -c "ALTER USER postgres WITH PASSWORD '$PG_SUPERUSER_PASSWORD';" >/dev/null 2>&1 || true
+ run_as_postgres psql -q -c "ALTER USER postgres WITH PASSWORD '$PG_SUPERUSER_PASSWORD';" >/dev/null 2>&1 || true
+}
+
+ensure_dnf_isolated_data_dir() {
+ local fallback_ver="${1:-18}"
+ # Paket RPM postgresql*-server membuat direktori kosong /var/lib/pgsql/data saat instalasi.
+ # Pindahkan hanya jika berisi cluster valid (PG_VERSION); jika kosong hapus agar symlink dapat dibuat.
+ if [ -d "/var/lib/pgsql/data" ] && [ ! -L "/var/lib/pgsql/data" ]; then
+ if [ -f "/var/lib/pgsql/data/PG_VERSION" ]; then
+ local cv
+ cv=$(tr -d '[:space:]' < "/var/lib/pgsql/data/PG_VERSION" 2>/dev/null || true)
+ [[ "$cv" =~ ^[0-9]+$ ]] || cv="$fallback_ver"
+ local dest="/var/lib/pgsql/data-${cv}"
+ if [ ! -e "$dest" ]; then
+ echo "Mengonversi cluster /var/lib/pgsql/data ke direktori terisolasi data-${cv}..."
+ mv /var/lib/pgsql/data "$dest"
+ ln -s "data-${cv}" /var/lib/pgsql/data
+ chown -h postgres:postgres /var/lib/pgsql/data 2>/dev/null || true
+ else
+ mv /var/lib/pgsql/data "/var/lib/pgsql/data.bak.$$"
+ fi
+ elif [ -z "$(ls -A /var/lib/pgsql/data 2>/dev/null)" ]; then
+ rmdir /var/lib/pgsql/data
+ else
+ mv /var/lib/pgsql/data "/var/lib/pgsql/data.uninitialized.$$"
+ fi
+ fi
+}
+
+is_cluster_ready() {
+ local pm="$1" target_ver="$2"
+ if [ "$pm" = "dnf" ]; then
+ [ -L "/var/lib/pgsql/data" ] && \
+ [ "$(readlink /var/lib/pgsql/data 2>/dev/null || true)" = "data-${target_ver}" ] && \
+ [ -f "/var/lib/pgsql/data-${target_ver}/PG_VERSION" ]
+ else
+ [ -f "/etc/postgresql/${target_ver}/main/postgresql.conf" ] && \
+ [ -f "/var/lib/postgresql/${target_ver}/main/PG_VERSION" ]
+ fi
 }
 
 detect_pm() {
@@ -2048,8 +2455,8 @@ cmd_backup() {
   
   local dump_ok=0
   if [ "$EUID" -eq 0 ]; then
-    if sudo -u postgres pg_isready -q 2>/dev/null; then
-      if sudo -u postgres pg_dumpall --clean --if-exists 2>/dev/null | gzip > "$outfile"; then
+    if run_as_postgres pg_isready -q 2>/dev/null; then
+      if run_as_postgres pg_dumpall --clean --if-exists 2>/dev/null | gzip > "$outfile"; then
         dump_ok=1
       fi
     elif PGPASSWORD="$PG_SUPERUSER_PASSWORD" pg_dumpall -U postgres -h 127.0.0.1 --clean --if-exists 2>/dev/null | gzip > "$outfile"; then
@@ -2198,19 +2605,21 @@ pg_rollback_switch() {
  sed -i "s/^port\s*=.*/port = 5433/" "/etc/postgresql/${target}/main/postgresql.conf" 2>/dev/null || true
  update-alternatives --set psql "/usr/lib/postgresql/${rb}/bin/psql" 2>/dev/null || true
  systemctl start "postgresql@${rb}-main" 2>/dev/null || systemctl restart postgresql 2>/dev/null || true
- if sudo -u postgres pg_isready -q 2>/dev/null; then
- echo -e "${C_GREEN}Rollback berhasil: PostgreSQL ${rb} aktif kembali di port 5432.${C_RESET}"
- else
- echo -e "${C_RED}Rollback gagal. Jalankan manual: systemctl start postgresql@${rb}-main${C_RESET}"
- fi
- fi
- else
- systemctl stop postgresql 2>/dev/null || true
- if [ -n "$old_link" ] && [ -d "/var/lib/pgsql/${old_link}" ]; then
- ln -sfn "$old_link" /var/lib/pgsql/data
- chown -h postgres:postgres /var/lib/pgsql/data
- systemctl start postgresql 2>/dev/null || true
- if sudo -u postgres pg_isready -q 2>/dev/null; then
+   if run_as_postgres pg_isready -q 2>/dev/null; then
+     echo -e "${C_GREEN}Rollback berhasil: PostgreSQL ${rb} aktif kembali di port 5432.${C_RESET}"
+   else
+     echo -e "${C_RED}Rollback gagal. Jalankan manual: systemctl start postgresql@${rb}-main${C_RESET}"
+   fi
+   fi
+   else
+   systemctl stop postgresql 2>/dev/null || true
+   if [ -n "$old_link" ] && [ -d "/var/lib/pgsql/${old_link}" ]; then
+   ensure_dnf_isolated_data_dir "$old_v"
+   [ -L "/var/lib/pgsql/data" ] && rm -f /var/lib/pgsql/data
+   ln -sfn "$old_link" /var/lib/pgsql/data
+   chown -h postgres:postgres /var/lib/pgsql/data
+   systemctl start postgresql 2>/dev/null || true
+   if run_as_postgres pg_isready -q 2>/dev/null; then
  echo -e "${C_GREEN}Rollback berhasil: cluster ${old_link} aktif kembali.${C_RESET}"
  else
  echo -e "${C_RED}Rollback butuh tindakan manual: pasang ulang paket PostgreSQL ${old_v}, lalu systemctl start postgresql.${C_RESET}"
@@ -2250,7 +2659,8 @@ cmd_switch() {
   active_v=$(get_active_version)
   old_link=""
 
-  if [ "$target_ver" = "$active_v" ]; then
+  if [ "$target_ver" = "$active_v" ] && is_cluster_ready "$pm" "$target_ver" && \
+     (systemctl is-active --quiet postgresql 2>/dev/null || systemctl is-active --quiet "postgresql@*" 2>/dev/null); then
     echo -e "${C_GREEN}PostgreSQL versi $target_ver sudah aktif saat ini.${C_RESET}"
     return 0
   fi
@@ -2281,16 +2691,7 @@ cmd_switch() {
   # 3. Ganti paket biner RPM / APT
   echo "Langkah 3/5: Menyiapkan paket biner PostgreSQL $target_ver ($pm)..."
   if [ "$pm" = "dnf" ]; then
-    # Fedora: konversi unversioned data directory ke data-<v> jika ada
-    if [ -d "/var/lib/pgsql/data" ] && [ ! -L "/var/lib/pgsql/data" ]; then
-      local cv="$active_v"
-      [ -f "/var/lib/pgsql/data/PG_VERSION" ] && cv=$(cat "/var/lib/pgsql/data/PG_VERSION" | tr -d ' ')
-      [ -z "$cv" ] || [ "$cv" = "unknown" ] && cv="18"
-      echo "Mengonversi cluster /var/lib/pgsql/data ke direktori terisolasi data-${cv}..."
-      mv /var/lib/pgsql/data "/var/lib/pgsql/data-${cv}"
-      ln -s "data-${cv}" /var/lib/pgsql/data
-      chown -h postgres:postgres /var/lib/pgsql/data
-    fi
+    ensure_dnf_isolated_data_dir "$active_v"
 
     old_link=$(readlink /var/lib/pgsql/data 2>/dev/null || true)
 
@@ -2334,28 +2735,33 @@ cmd_switch() {
     if [ ! -f "$target_data/PG_VERSION" ]; then
       is_new_cluster=1
       echo "Menginisialisasi cluster baru untuk PostgreSQL $target_ver..."
+      if [ -d "$target_data" ] && [ -n "$(ls -A "$target_data" 2>/dev/null)" ]; then
+        rm -rf "${target_data:?}/"* "${target_data:?}/".[!.]* 2>/dev/null || true
+      fi
       mkdir -p "$target_data"
       chown -R postgres:postgres "$target_data"
       chmod 700 "$target_data"
-      su - postgres -c "initdb -D '$target_data'"
-      command -v chcon >/dev/null 2>&1 && chcon -R -t postgresql_db_t "$target_data" 2>/dev/null || true
+      run_as_postgres initdb -D "$target_data"
     fi
+    command -v chcon >/dev/null 2>&1 && chcon -R -t postgresql_db_t "$target_data" 2>/dev/null || true
 
-    # Update symlink
-    rm -f /var/lib/pgsql/data
-    ln -s "data-${target_ver}" /var/lib/pgsql/data
+    # Hapus direktori kosong /var/lib/pgsql/data yang dibuat RPM sebelum membuat symlink
+    ensure_dnf_isolated_data_dir "$target_ver"
+    [ -L "/var/lib/pgsql/data" ] && rm -f /var/lib/pgsql/data
+    ln -sfn "data-${target_ver}" /var/lib/pgsql/data
     chown -h postgres:postgres /var/lib/pgsql/data
+    command -v chcon >/dev/null 2>&1 && chcon -h -t postgresql_db_t /var/lib/pgsql/data 2>/dev/null || true
     conf_file="$target_data/postgresql.conf"
     local hba_file="$target_data/pg_hba.conf"
 
     # Konfigurasi listen_addresses dan pg_hba.conf
     if [ "$DEV_LAN_ACCESS" = "1" ]; then
-     sed -i "s/^#*listen_addresses\s*=.*/listen_addresses = '*'/" "$conf_file" 2>/dev/null || true
+      sed -i "s/^#*listen_addresses\s*=.*/listen_addresses = '*'/" "$conf_file" 2>/dev/null || true
     else
-     sed -i "s/^#*listen_addresses\s*=.*/listen_addresses = 'localhost'/" "$conf_file" 2>/dev/null || true
+      sed -i "s/^#*listen_addresses\s*=.*/listen_addresses = 'localhost'/" "$conf_file" 2>/dev/null || true
     fi
-    sed -i -E 's/(host\s+all\s+all\s+127\.0\.0\.1\/32\s+)ident/\1scram-sha-256/' "$hba_file" 2>/dev/null || true
-    sed -i -E 's/(host\s+all\s+all\s+::1\/128\s+)ident/\1scram-sha-256/' "$hba_file" 2>/dev/null || true
+    sed -i -E 's/(host\s+all\s+all\s+127\.0\.0\.1\/32\s+)(ident|trust)/\1scram-sha-256/' "$hba_file" 2>/dev/null || true
+    sed -i -E 's/(host\s+all\s+all\s+::1\/128\s+)(ident|trust)/\1scram-sha-256/' "$hba_file" 2>/dev/null || true
     if [ "$DEV_LAN_ACCESS" = "1" ] && ! grep -q "Akses LAN & Netbird" "$hba_file" 2>/dev/null; then
       cat <<'EOF_HBA' >> "$hba_file"
 
@@ -2366,13 +2772,15 @@ host    all             all             192.168.0.0/16          scram-sha-256
 host    all             all             100.64.0.0/10           scram-sha-256
 EOF_HBA
     fi
+    chown postgres:postgres "$conf_file" "$hba_file" 2>/dev/null || true
+    chmod 600 "$conf_file" "$hba_file" 2>/dev/null || true
   else
     # Debian
     local deb_conf="/etc/postgresql/${target_ver}/main/postgresql.conf"
     local deb_hba="/etc/postgresql/${target_ver}/main/pg_hba.conf"
     if [ ! -f "$deb_conf" ]; then
       is_new_cluster=1
-      pg_createcluster "$target_ver" main 2>/dev/null || su - postgres -c "initdb -D /var/lib/postgresql/${target_ver}/main"
+      pg_createcluster "$target_ver" main 2>/dev/null || run_as_postgres initdb -D "/var/lib/postgresql/${target_ver}/main"
     fi
  local alt_port=5433
  for other_c in /etc/postgresql/*/main/postgresql.conf; do
@@ -2388,8 +2796,8 @@ EOF_HBA
      sed -i "s/^#*listen_addresses\s*=.*/listen_addresses = 'localhost'/" "$deb_conf" 2>/dev/null || true
     fi
     if [ -f "$deb_hba" ]; then
-      sed -i -E 's/(host\s+all\s+all\s+127\.0\.0\.1\/32\s+)ident/\1scram-sha-256/' "$deb_hba" 2>/dev/null || true
-      sed -i -E 's/(host\s+all\s+all\s+::1\/128\s+)ident/\1scram-sha-256/' "$deb_hba" 2>/dev/null || true
+      sed -i -E 's/(host\s+all\s+all\s+127\.0\.0\.1\/32\s+)(ident|trust)/\1scram-sha-256/' "$deb_hba" 2>/dev/null || true
+      sed -i -E 's/(host\s+all\s+all\s+::1\/128\s+)(ident|trust)/\1scram-sha-256/' "$deb_hba" 2>/dev/null || true
       if [ "$DEV_LAN_ACCESS" = "1" ] && ! grep -q "Akses LAN & Netbird" "$deb_hba" 2>/dev/null; then
         cat <<'EOF_HBA_DEB' >> "$deb_hba"
 
@@ -2407,14 +2815,16 @@ EOF_HBA_DEB
   # 5. Jalankan Service & Verifikasi
   echo "Langkah 5/5: Menjalankan layanan PostgreSQL $target_ver..."
   if [ "$pm" = "apt" ]; then
+    systemctl enable "postgresql@${target_ver}-main" 2>/dev/null || systemctl enable postgresql 2>/dev/null || true
     systemctl restart "postgresql@${target_ver}-main" 2>/dev/null || systemctl restart postgresql 2>/dev/null || true
   else
+    systemctl enable postgresql 2>/dev/null || true
     systemctl restart postgresql
   fi
 
   local ready=0
   for ((i=1; i<=20; i++)); do
-    if sudo -u postgres pg_isready -q 2>/dev/null; then
+    if run_as_postgres pg_isready -q 2>/dev/null; then
       ready=1
       break
     fi
@@ -2462,27 +2872,29 @@ cmd_internal_setup() {
   chmod 750 "${base_dir}/backups" 2>/dev/null || true
 
   if [ "$pm" = "dnf" ]; then
-    if [ -d "/var/lib/pgsql/data" ] && [ ! -L "/var/lib/pgsql/data" ]; then
-      local cv="18"
-      [ -f "/var/lib/pgsql/data/PG_VERSION" ] && cv=$(cat "/var/lib/pgsql/data/PG_VERSION" | tr -d ' ')
-      [ -z "$cv" ] || [ "$cv" = "unknown" ] && cv="18"
-      mv /var/lib/pgsql/data "/var/lib/pgsql/data-${cv}"
-      ln -s "data-${cv}" /var/lib/pgsql/data
-      chown -h postgres:postgres /var/lib/pgsql/data
-    fi
+    ensure_dnf_isolated_data_dir "$target_ver"
   fi
 
   local active_v
   active_v=$(get_active_version)
 
-  if [ "$active_v" != "$target_ver" ]; then
+  if [ "$active_v" != "$target_ver" ] || ! is_cluster_ready "$pm" "$target_ver"; then
     cmd_switch "$target_ver" --migrate
- else
- systemctl enable postgresql 2>/dev/null || true
- systemctl restart postgresql 2>/dev/null || true
- pg_set_superuser_password
- echo "PostgreSQL $target_ver sudah aktif dan terkonfigurasi."
- fi
+  else
+    if [ "$pm" = "apt" ]; then
+      systemctl enable "postgresql@${target_ver}-main" 2>/dev/null || systemctl enable postgresql 2>/dev/null || true
+      systemctl restart "postgresql@${target_ver}-main" 2>/dev/null || systemctl restart postgresql
+    else
+      systemctl enable postgresql 2>/dev/null || true
+      systemctl restart postgresql
+    fi
+    if ! run_as_postgres pg_isready -q 2>/dev/null; then
+      echo -e "${C_RED}Error: layanan PostgreSQL $target_ver gagal merespons.${C_RESET}"
+      return 1
+    fi
+    pg_set_superuser_password
+    echo "PostgreSQL $target_ver sudah aktif dan terkonfigurasi."
+  fi
 }
 
 case "${1:-}" in
@@ -2599,55 +3011,82 @@ step_redis() {
   detect_os
   if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
     echo "Menginstal Redis / Valkey server (RPM/DNF)..."
-    dnf -y install redis 2>/dev/null || dnf -y install valkey valkey-compat-redis
+    if dnf $DNF_RO_OPTS -y repoquery -q --latest-limit=1 --qf "%{name}\n" redis 2>/dev/null | grep -qx "redis"; then
+      dnf -y install redis || return 1
+    elif dnf $DNF_RO_OPTS -y repoquery -q --latest-limit=1 --qf "%{name}\n" valkey-compat-redis 2>/dev/null | grep -qx "valkey-compat-redis"; then
+      dnf -y install valkey valkey-compat-redis || return 1
+    else
+      dnf -y install valkey || return 1
+    fi
   else
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y redis-server redis-tools
+    apt-get update -y || return 1
+    apt-get install -y redis-server redis-tools || return 1
   fi
 
   local REDIS_CONF
   REDIS_CONF=$(get_redis_conf)
 
   if [ -f "$REDIS_CONF" ]; then
- # Bind ke LAN hanya jika DEV_LAN_ACCESS=1 (default); selain itu localhost
- if [ "$DEV_LAN_ACCESS" = "1" ]; then
- sed -i "s/^bind .*/bind 0.0.0.0/" "$REDIS_CONF"
- else
- sed -i "s/^bind .*/bind 127.0.0.1 -::1/" "$REDIS_CONF"
- fi
+    local tmp_conf
+    tmp_conf=$(mktemp)
+    TMP_CLEANUP_FILES+=("$tmp_conf")
+    cp "$REDIS_CONF" "$tmp_conf"
 
- # Konfigurasi requirepass (dapat dioverride via REDIS_PASSWORD)
- if grep -q "^#* *requirepass " "$REDIS_CONF"; then
- sed -i "s|^#* *requirepass .*|requirepass ${REDIS_PASSWORD}|" "$REDIS_CONF"
- elif ! grep -q "^requirepass " "$REDIS_CONF"; then
- echo "requirepass ${REDIS_PASSWORD}" >> "$REDIS_CONF"
- fi
+    # Bind ke LAN hanya jika DEV_LAN_ACCESS=1 (default); selain itu localhost
+    local target_bind="127.0.0.1 -::1"
+    [ "$DEV_LAN_ACCESS" = "1" ] && target_bind="0.0.0.0"
+    if grep -q "^#* *bind " "$tmp_conf"; then
+      sed -i "s/^#* *bind .*/bind ${target_bind}/" "$tmp_conf"
+    else
+      echo "bind ${target_bind}" >> "$tmp_conf"
+    fi
+
+    # Konfigurasi requirepass (dapat dioverride via REDIS_PASSWORD)
+    if grep -q "^#* *requirepass " "$tmp_conf"; then
+      sed -i "s|^#* *requirepass .*|requirepass ${REDIS_PASSWORD}|" "$tmp_conf"
+    else
+      echo "requirepass ${REDIS_PASSWORD}" >> "$tmp_conf"
+    fi
 
     # Pastikan protected-mode tetap yes (dengan requirepass, koneksi luar tetap aman dan diizinkan)
-    sed -i "s/^protected-mode no/protected-mode yes/" "$REDIS_CONF"
+    sed -i "s/^#* *protected-mode no/protected-mode yes/" "$tmp_conf"
+
+    # Tulis balik ke inode asli agar owner/group (mis. root:valkey 0640) tetap utuh
+    cat "$tmp_conf" > "$REDIS_CONF"
+    rm -f "$tmp_conf"
   fi
 
   local REDIS_SVC
   REDIS_SVC=$(get_redis_service)
   systemctl enable "$REDIS_SVC" 2>/dev/null || true
-  systemctl restart "$REDIS_SVC" 2>/dev/null || systemctl restart redis 2>/dev/null || systemctl restart valkey 2>/dev/null || true
+  if ! systemctl restart "$REDIS_SVC" 2>/dev/null; then
+    systemctl restart valkey 2>/dev/null || systemctl restart redis 2>/dev/null || systemctl restart redis-server 2>/dev/null || true
+  fi
 
   # Tunggu redis siap menerima koneksi (mencegah race condition)
   local ready=0
-  local CLI_BIN="redis-cli"
-  command -v redis-cli >/dev/null 2>&1 || CLI_BIN="valkey-cli"
+  local CLI_BIN=""
+  if command -v redis-cli >/dev/null 2>&1; then
+    CLI_BIN="redis-cli"
+  elif command -v valkey-cli >/dev/null 2>&1; then
+    CLI_BIN="valkey-cli"
+  fi
 
-  for ((i=1; i<=15; i++)); do
-    if REDISCLI_AUTH="$REDIS_PASSWORD" "$CLI_BIN" ping 2>/dev/null | grep -q "PONG"; then
-      ready=1
-      break
-    fi
-    sleep 1
-  done
+  if [ -n "$CLI_BIN" ]; then
+    for ((i=1; i<=15; i++)); do
+      if REDISCLI_AUTH="$REDIS_PASSWORD" "$CLI_BIN" ping 2>/dev/null | grep -q "PONG"; then
+        ready=1
+        break
+      fi
+      sleep 1
+    done
+  fi
 
   if [ "$ready" -ne 1 ]; then
-    echo "Peringatan: Redis server belum merespons PONG dalam batas waktu 15 detik!"
+    echo "Error: Redis / Valkey server belum merespons PONG dalam batas waktu 15 detik!"
+    systemctl status "$REDIS_SVC" --no-pager 2>/dev/null || true
+    return 1
   fi
 }
 
@@ -4187,15 +4626,19 @@ EOF_CHROME_POLICY
 
 step_php_full_stack() {
   check_root
- acquire_lock
+  local own_lock=0
+  [ "${LOCK_HELD_PID:-}" != "$$" ] && own_lock=1
+  acquire_lock
   prompt_php_options
   echo "============================================================"
   echo "       MEMASANG FULL PHP WEB STACK & LOCAL SSL              "
   echo "============================================================"
-  step_nginx
-  step_php
-  step_composer
-  step_local_ssl
+  local rc=0
+  step_nginx && step_php && step_composer && step_local_ssl || rc=$?
+  [ "$own_lock" -eq 1 ] && release_lock
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
   echo -e "\nFull PHP Web Stack berhasil dipasang dan dikonfigurasi!"
 }
 
@@ -4280,7 +4723,7 @@ step_zsh() {
     local label=$3
     if [ -d "$dest_dir/.git" ]; then
       echo "Memperbarui $label..."
-      git -C "$dest_dir" pull --rebase 2>/dev/null || true
+      git -c safe.directory="$dest_dir" -C "$dest_dir" pull --rebase 2>/dev/null || true
     else
       echo "Mengunduh $label..."
       rm -rf "$dest_dir"
@@ -4389,7 +4832,7 @@ fi
 export PATH="\$HOME/.local/bin:\$HOME/bin:/usr/local/bin:/usr/local/cargo/bin:/usr/local/go/bin:/usr/local/flutter/bin:/usr/local/android-sdk/cmdline-tools/latest/bin:\$PATH"
 
 # Muat environment profile dev
-for prof in /etc/profile.d/rust.sh /etc/profile.d/golang.sh /etc/profile.d/flutter.sh; do
+for prof in /etc/profile.d/rust.sh /etc/profile.d/golang.sh /etc/profile.d/flutter.sh /etc/profile.d/java.sh; do
   [ -r "\$prof" ] && . "\$prof" >/dev/null 2>&1
 done
 
@@ -4506,6 +4949,8 @@ step_update_system_pkgs() {
  postgresql-16 postgresql-17 postgresql-18 postgresql-client-16 postgresql-client-17 postgresql-client-18 \
  redis-server mold nginx php-fpm php8.1-fpm php8.2-fpm php8.3-fpm php8.4-fpm mkcert zsh
  fi
+
+ update_installed_temurin_jdks
 
  if [ -x "/usr/local/bin/composer" ]; then
  echo "Memperbarui Composer self-update..."
@@ -4624,6 +5069,7 @@ run_update() {
   [ -f /etc/profile.d/rust.sh ] && . /etc/profile.d/rust.sh
   [ -f /etc/profile.d/golang.sh ] && . /etc/profile.d/golang.sh
   [ -f /etc/profile.d/flutter.sh ] && . /etc/profile.d/flutter.sh
+  [ -f /etc/profile.d/java.sh ] && . /etc/profile.d/java.sh
   export PATH="/usr/local/cargo/bin:/usr/local/go/bin:/usr/local/flutter/bin:/usr/local/android-sdk/cmdline-tools/latest/bin:$PATH"
 
   echo "============================================================"
@@ -4651,6 +5097,7 @@ run_update() {
 
   print_version_table VERSIONS_BEFORE VERSIONS_AFTER "RINGKASAN PERBANDINGAN PEMBARUAN VERSI" "Versi Sebelum" "Versi Sesudah" "update"
 
+  release_lock
   echo "Muat environment: source /etc/profile"
 }
 
@@ -4660,6 +5107,7 @@ check_updates() {
   [ -f /etc/profile.d/rust.sh ] && . /etc/profile.d/rust.sh
   [ -f /etc/profile.d/golang.sh ] && . /etc/profile.d/golang.sh
   [ -f /etc/profile.d/flutter.sh ] && . /etc/profile.d/flutter.sh
+  [ -f /etc/profile.d/java.sh ] && . /etc/profile.d/java.sh
   export PATH="/usr/local/cargo/bin:/usr/local/go/bin:/usr/local/flutter/bin:/usr/local/android-sdk/cmdline-tools/latest/bin:$PATH"
 
   echo "============================================================"
@@ -4740,6 +5188,7 @@ run_installation() {
   run_step "14/14 Menginstal Oh My Zsh, Plugin & Tema" step_zsh
 
   echo -e "\n\nInstalasi selesai!"
+  release_lock
   echo "Muat environment: source /etc/profile"
 }
 
@@ -4747,7 +5196,7 @@ run_single_component() {
   local name=$1
   local func=$2
   check_root
- acquire_lock
+  acquire_lock
   case "$func" in
     step_nodejs)
       prompt_node_options
@@ -4781,6 +5230,7 @@ run_single_component() {
   TOTAL_STEPS=1
 
   run_step "1/1 Menginstal/Memperbarui $name" "$func"
+  release_lock
 
   echo -e "\n\nProses selesai!"
   echo "Muat environment: source /etc/profile"
@@ -5164,6 +5614,7 @@ show_info() {
   [ -f /etc/profile.d/rust.sh ] && . /etc/profile.d/rust.sh
   [ -f /etc/profile.d/golang.sh ] && . /etc/profile.d/golang.sh
   [ -f /etc/profile.d/flutter.sh ] && . /etc/profile.d/flutter.sh
+  [ -f /etc/profile.d/java.sh ] && . /etc/profile.d/java.sh
   export PATH="/usr/local/cargo/bin:/usr/local/go/bin:/usr/local/flutter/bin:/usr/local/android-sdk/cmdline-tools/latest/bin:$PATH"
 
   # Deteksi user non-root target (jika dijalankan via sudo)
