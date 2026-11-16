@@ -1165,7 +1165,7 @@ Type=simple
 ExecStart=$BIN_DIR/orca-ide serve --supervise --force
 Restart=always
 RestartSec=5
-Environment="PATH=$BIN_DIR:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=$BIN_DIR:$HOME/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="ORCA_ALLOW_INSECURE_WEB_PAIRING=1"
 Environment="ORCA_BROWSER_EXECUTABLE=$browser_bin"
 
@@ -1799,7 +1799,7 @@ Type=simple
 ExecStart=$BIN_DIR/orca-ide serve --supervise --force
 Restart=always
 RestartSec=5
-Environment="PATH=$BIN_DIR:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=$BIN_DIR:$HOME/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="ORCA_ALLOW_INSECURE_WEB_PAIRING=1"
 Environment="ORCA_BROWSER_EXECUTABLE=${ORCA_BROWSER:-/usr/bin/google-chrome}"
 
@@ -1854,7 +1854,7 @@ WorkingDirectory=$USER_HOME
 ExecStart=$BIN_DIR/orca-ide serve --supervise --force
 Restart=always
 RestartSec=5
-Environment="PATH=$BIN_DIR:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=$BIN_DIR:$USER_HOME/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="HOME=$USER_HOME"
 Environment="ORCA_ALLOW_INSECURE_WEB_PAIRING=1"
 Environment="ORCA_BROWSER_EXECUTABLE=${ORCA_BROWSER:-/usr/bin/google-chrome}"
@@ -1966,6 +1966,8 @@ if [ -f "$DB_FILE" ] && command -v python3 >/dev/null 2>&1; then
         AUTO_AGENT="opencode"
     elif [ -x "$HOME/.local/bin/agy" ] || command -v agy >/dev/null 2>&1; then
         AUTO_AGENT="antigravity"
+    elif [ -x "$HOME/.local/bin/omp" ] || command -v omp >/dev/null 2>&1; then
+        AUTO_AGENT="omp"
     fi
 
     if [ -n "$AUTO_AGENT" ]; then

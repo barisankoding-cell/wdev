@@ -5614,16 +5614,21 @@ start_orca_service() {
     export ORCA_USER_DATA_PATH="$TARGET_HOME/.config/orca"
     mkdir -p "$TARGET_HOME/.config/orca" 2>/dev/null || true
 
+    local AGENT_PATH="$TARGET_HOME/.local/bin:$TARGET_HOME/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
+    [ -d "/usr/local/go/bin" ] && AGENT_PATH="/usr/local/go/bin:$AGENT_PATH"
+    [ -d "/usr/local/cargo/bin" ] && AGENT_PATH="/usr/local/cargo/bin:$AGENT_PATH"
+
     if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
       run_as_target_user env \
         "HOME=$TARGET_HOME" \
         "USER=$TARGET_USER" \
+        "PATH=$AGENT_PATH:$PATH" \
         "ORCA_USER_DATA_PATH=$TARGET_HOME/.config/orca" \
         "ORCA_ALLOW_INSECURE_WEB_PAIRING=1" \
         ${BROWSER_BIN:+"ORCA_BROWSER_EXECUTABLE=$BROWSER_BIN"} \
         nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
     else
-      nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
+      PATH="$AGENT_PATH:$PATH" nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
     fi
     echo "Layanan Orca server berhasil dijalankan di background."
     return 0
@@ -6313,31 +6318,97 @@ configure_orca_commit_ai() {
   echo "sehingga tiap device baru yang dipairing otomatis menggunakannya."
   echo ""
 
-  # Cek ketersediaan agent AI di mesin lokal
+  # Baca agent aktif saat ini dari database profil jika ada
+  local CURRENT_ACTIVE_AGENT=""
+  if command -v python3 >/dev/null 2>&1; then
+    CURRENT_ACTIVE_AGENT=$(python3 -c "
+import sqlite3, json
+try:
+    c = sqlite3.connect('$DB_PATH')
+    r = c.cursor().execute(\"SELECT payload FROM profile_state_documents WHERE domain = 'settings'\").fetchone()
+    if r:
+        d = json.loads(r[0])
+        print(d.get('sourceControlAi', {}).get('agentId') or d.get('commitMessageAi', {}).get('agentId') or '')
+except:
+    pass
+" 2>/dev/null || true)
+  fi
+
+  if [ -n "$CURRENT_ACTIVE_AGENT" ]; then
+    echo "AI Agent aktif saat ini: $CURRENT_ACTIVE_AGENT"
+    echo ""
+  fi
+
+  # Cek ketersediaan agent AI di mesin lokal yang didukung Orca ADE
   local HAS_OPENCODE=0
   local HAS_AGY=0
-  ([ -x "$TARGET_HOME/.opencode/bin/opencode" ] || command -v opencode >/dev/null 2>&1) && HAS_OPENCODE=1
+  local HAS_OMP=0
+  local HAS_CLAUDE=0
+  local HAS_COPILOT=0
+  local HAS_CODEX=0
+  local HAS_CURSOR=0
+
+  ([ -x "$TARGET_HOME/.opencode/bin/opencode" ] || [ -x "$TARGET_HOME/.local/bin/opencode" ] || command -v opencode >/dev/null 2>&1) && HAS_OPENCODE=1
   ([ -x "$TARGET_HOME/.local/bin/agy" ] || command -v agy >/dev/null 2>&1) && HAS_AGY=1
+  ([ -x "$TARGET_HOME/.local/bin/omp" ] || command -v omp >/dev/null 2>&1) && HAS_OMP=1
+  command -v claude >/dev/null 2>&1 && HAS_CLAUDE=1
+  command -v copilot >/dev/null 2>&1 && HAS_COPILOT=1
+  command -v codex >/dev/null 2>&1 && HAS_CODEX=1
+  command -v cursor-agent >/dev/null 2>&1 && HAS_CURSOR=1
+
+  # Tentukan opsi default (prioritaskan agent aktif saat ini jika terpasang)
+  local DEFAULT_OPT="1"
+  if [ "$CURRENT_ACTIVE_AGENT" = "opencode" ] && [ "$HAS_OPENCODE" -eq 1 ]; then
+    DEFAULT_OPT="1"
+  elif [ "$CURRENT_ACTIVE_AGENT" = "antigravity" ] && [ "$HAS_AGY" -eq 1 ]; then
+    DEFAULT_OPT="2"
+  elif [ "$CURRENT_ACTIVE_AGENT" = "omp" ] && [ "$HAS_OMP" -eq 1 ]; then
+    DEFAULT_OPT="3"
+  elif [ "$CURRENT_ACTIVE_AGENT" = "claude" ] && [ "$HAS_CLAUDE" -eq 1 ]; then
+    DEFAULT_OPT="4"
+  elif [ "$CURRENT_ACTIVE_AGENT" = "copilot" ] && [ "$HAS_COPILOT" -eq 1 ]; then
+    DEFAULT_OPT="5"
+  elif [ "$HAS_OPENCODE" -eq 1 ]; then
+    DEFAULT_OPT="1"
+  elif [ "$HAS_AGY" -eq 1 ]; then
+    DEFAULT_OPT="2"
+  elif [ "$HAS_OMP" -eq 1 ]; then
+    DEFAULT_OPT="3"
+  elif [ "$HAS_CLAUDE" -eq 1 ]; then
+    DEFAULT_OPT="4"
+  elif [ "$HAS_COPILOT" -eq 1 ]; then
+    DEFAULT_OPT="5"
+  fi
 
   echo "Pilih Default AI Agent untuk Git Commit Generator:"
   echo "1. OpenCode $([ $HAS_OPENCODE -eq 1 ] && echo '[Terpasang]' || echo '[Belum terpasang]')"
   echo "2. Antigravity / AGY $([ $HAS_AGY -eq 1 ] && echo '[Terpasang]' || echo '[Belum terpasang]')"
-  echo "3. Custom Agent CLI (ketik nama agent)"
-  read -rp "Pilihan [1-3, default: $([ $HAS_OPENCODE -eq 1 ] && echo '1' || echo '2')]: " a_choice
+  echo "3. OMP $([ $HAS_OMP -eq 1 ] && echo '[Terpasang]' || echo '[Belum terpasang]')"
+  echo "4. Claude Code $([ $HAS_CLAUDE -eq 1 ] && echo '[Terpasang]' || echo '[Belum terpasang]')"
+  echo "5. GitHub Copilot CLI $([ $HAS_COPILOT -eq 1 ] && echo '[Terpasang]' || echo '[Belum terpasang]')"
+  echo "6. Custom Agent CLI (ketik nama agent: cursor, codex, kimi, dll.)"
+  read -rp "Pilihan [1-6, default: $DEFAULT_OPT]: " a_choice
+  [ -z "$a_choice" ] && a_choice="$DEFAULT_OPT"
 
   local CHOSEN_AGENT="opencode"
   case "$a_choice" in
+    1) CHOSEN_AGENT="opencode" ;;
     2) CHOSEN_AGENT="antigravity" ;;
-    3)
-      read -rp "Masukkan ID agent (contoh: opencode, antigravity, claude, copilot, cursor): " input_agent
+    3) CHOSEN_AGENT="omp" ;;
+    4) CHOSEN_AGENT="claude" ;;
+    5) CHOSEN_AGENT="copilot" ;;
+    6)
+      read -rp "Masukkan ID agent (contoh: opencode, antigravity, omp, claude, copilot, cursor): " input_agent
       [ -n "$input_agent" ] && CHOSEN_AGENT="$input_agent"
       ;;
     *)
-      if [ "$HAS_OPENCODE" -eq 1 ]; then
-        CHOSEN_AGENT="opencode"
-      elif [ "$HAS_AGY" -eq 1 ]; then
-        CHOSEN_AGENT="antigravity"
-      fi
+      case "$DEFAULT_OPT" in
+        2) CHOSEN_AGENT="antigravity" ;;
+        3) CHOSEN_AGENT="omp" ;;
+        4) CHOSEN_AGENT="claude" ;;
+        5) CHOSEN_AGENT="copilot" ;;
+        *) CHOSEN_AGENT="opencode" ;;
+      esac
       ;;
   esac
 
