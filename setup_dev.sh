@@ -6079,8 +6079,11 @@ setup_orca() {
 
   ensure_orca_browser_env
   if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    local target_home
+    target_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)
+    [ -z "$target_home" ] && target_home="/home/$SUDO_USER"
     echo "Menjalankan instalasi sebagai user: $SUDO_USER..."
-    sudo -u "$SUDO_USER" bash "$ORCA_SCRIPT" ${orca_args[@]+"${orca_args[@]}"}
+    sudo -u "$SUDO_USER" env HOME="$target_home" bash "$ORCA_SCRIPT" ${orca_args[@]+"${orca_args[@]}"}
   elif [ "$EUID" -eq 0 ] && [ -z "${SUDO_USER:-}" ]; then
     echo "Peringatan: Anda menjalankan script sebagai root murni (bukan via sudo user)."
     echo "Orca disarankan diinstal di user reguler."
@@ -6089,6 +6092,53 @@ setup_orca() {
     bash "$ORCA_SCRIPT" ${orca_args[@]+"${orca_args[@]}"}
   fi
   ensure_orca_browser_env
+}
+
+uninstall_orca() {
+  local SCRIPT_DIR ORCA_SCRIPT
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ORCA_SCRIPT="$SCRIPT_DIR/setup_orca_headless.sh"
+
+  if [ ! -f "$ORCA_SCRIPT" ]; then
+    echo "Error: File skrip $ORCA_SCRIPT tidak ditemukan!"
+    return 1
+  fi
+
+  chmod +x "$ORCA_SCRIPT"
+  local u_args=("--uninstall")
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --purge|--keep-config) u_args+=("$arg") ;;
+    esac
+  done
+
+  if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    local target_home
+    target_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)
+    [ -z "$target_home" ] && target_home="/home/$SUDO_USER"
+    sudo -u "$SUDO_USER" env HOME="$target_home" bash "$ORCA_SCRIPT" "${u_args[@]}"
+  else
+    bash "$ORCA_SCRIPT" "${u_args[@]}"
+  fi
+
+  # Pastikan berkas sistem juga bersih bila dijalankan lewat sudo ./setup_dev.sh
+  if [ "$EUID" -eq 0 ]; then
+    systemctl stop orca.service orca-update.service orca-update.timer 2>/dev/null || true
+    systemctl disable orca.service orca-update.service orca-update.timer 2>/dev/null || true
+    rm -f /etc/systemd/system/orca.service \
+          /etc/systemd/system/orca-update.service \
+          /etc/systemd/system/orca-update.timer \
+          /usr/local/bin/orca-desktop \
+          /usr/share/applications/orca-ide.desktop \
+          /usr/share/pixmaps/orca-ide.png \
+          /usr/share/pixmaps/orca.png \
+          /etc/profile.d/orca-browser.sh 2>/dev/null || true
+    find /usr/share/icons/hicolor -type f -name "orca-ide.png" -delete 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications 2>/dev/null || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+  fi
 }
 
 launch_orca_desktop() {
@@ -6442,9 +6492,10 @@ menu_orca() {
       echo "6. Instal / Update Orca ADE (Desktop GUI)"
       echo "7. Instal / Pindah ke Orca ADE (Headless Server)"
       echo "8. Cek Status Lengkap"
-      echo "0 / 9. Kembali ke Menu Utama"
+      echo "9. Uninstall Orca ADE"
+      echo "0 / 10. Kembali ke Menu Utama"
       echo "=========================================="
-      read -rp "Pilih opsi [0-9]: " orca_opt
+      read -rp "Pilih opsi [0-10]: " orca_opt
 
       case $orca_opt in
         1) launch_orca_desktop ;;
@@ -6481,7 +6532,8 @@ menu_orca() {
             show_info
           fi
           ;;
-        0|9|q|Q) break ;;
+        9) uninstall_orca ;;
+        0|10|q|Q) break ;;
         *) echo "Pilihan tidak valid." ;;
       esac
     else
@@ -6503,9 +6555,10 @@ menu_orca() {
       echo "6. Instal / Update Orca ADE (Headless Server)"
       echo "7. Instal / Pindah ke Orca ADE (Desktop GUI)"
       echo "8. Cek Status Lengkap"
-      echo "0 / 9. Kembali ke Menu Utama"
+      echo "9. Uninstall Orca ADE"
+      echo "0 / 10. Kembali ke Menu Utama"
       echo "=========================================="
-      read -rp "Pilih opsi [0-9]: " orca_opt
+      read -rp "Pilih opsi [0-10]: " orca_opt
 
       case $orca_opt in
         1) show_orca_pair ;;
@@ -6546,7 +6599,8 @@ menu_orca() {
             show_info
           fi
           ;;
-        0|9|q|Q) break ;;
+        9) uninstall_orca ;;
+        0|10|q|Q) break ;;
         *) echo "Pilihan tidak valid." ;;
       esac
     fi
@@ -6907,16 +6961,18 @@ menu_workspace_shell() {
     echo "1. Instal Orca ADE - Desktop GUI (Aplikasi Visual & Menu)"
     echo "2. Instal Orca ADE - Headless Server (Background Service 24/7 + Pairing QR)"
     echo "3. Kelola Orca ADE (Menu Manajemen, Switch Mode, Pairing, Autostart & AI)"
-    echo "4. Oh My Zsh (Plugin & Tema Populer)"
+    echo "4. Uninstall Orca ADE (Hapus Aplikasi, Service & Shortcut)"
+    echo "5. Oh My Zsh (Plugin & Tema Populer)"
     echo "0. Kembali ke Menu Utama"
     echo "=========================================="
-    read -rp "Pilih opsi [0-4]: " ws_opt
+    read -rp "Pilih opsi [0-5]: " ws_opt
 
     case $ws_opt in
       1) setup_orca --desktop ;;
       2) setup_orca --headless ;;
       3) menu_orca ;;
-      4) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
+      4) uninstall_orca ;;
+      5) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
       0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
@@ -7255,6 +7311,11 @@ case "${1:-}" in
     setup_orca --headless
     exit 0
     ;;
+  --orca-uninstall)
+    shift
+    uninstall_orca "$@"
+    exit 0
+    ;;
   --orca-ai)
     configure_orca_commit_ai
     exit 0
@@ -7330,6 +7391,7 @@ case "${1:-}" in
     echo "  -o, --orca               Setup Orca ADE (Otomatis: Desktop GUI jika ada DE, Headless jika tanpa DE)"
     echo "  --orca-desktop           Paksa konfigurasi Orca ADE versi Desktop GUI"
     echo "  --orca-headless          Paksa konfigurasi Orca ADE versi Headless Server"
+    echo "  --orca-uninstall         Hapus instalasi Orca ADE (tambahkan --purge untuk hapus ~/.config/orca)"
     echo "  --orca-switch <mode>     Beralih mode operasi Orca ADE (desktop / headless / autostart / status)"
     echo "  --orca-ai                Konfigurasi default Git Commit Generator AI di Orca"
     echo "  -p, --orca-pair          Tampilkan QR code & URL pairing Orca Server"

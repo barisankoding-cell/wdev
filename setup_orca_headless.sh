@@ -11,6 +11,8 @@ set -euo pipefail
 # Mode instalasi: auto (jika ada DE -> desktop, jika tidak ada -> headless)
 # Orca ADE bersifat single-instance, sehingga hanya SALAH SATU yang dipasang/dijalankan.
 INSTALL_MODE="auto"
+ACTION_MODE="install"
+PURGE_CONFIG=""
 for arg in "$@"; do
     case "$arg" in
         --desktop) INSTALL_MODE="desktop" ;;
@@ -18,6 +20,15 @@ for arg in "$@"; do
         --both)
             # Kompatibilitas mundur: alihkan ke auto karena single-instance lock
             INSTALL_MODE="auto"
+            ;;
+        --uninstall|uninstall)
+            ACTION_MODE="uninstall"
+            ;;
+        --purge)
+            PURGE_CONFIG="1"
+            ;;
+        --keep-config)
+            PURGE_CONFIG="0"
             ;;
         --help|-h)
             echo "Penggunaan: $0 [opsi]"
@@ -27,13 +38,199 @@ for arg in "$@"; do
             echo "  - Jika tanpa Desktop (Headless)            -> Pasang versi Headless Server"
             echo ""
             echo "Opsi:"
-            echo "  --desktop     Paksa instal Orca ADE versi Desktop (GUI, Menu, Ikon)"
-            echo "  --headless    Paksa instal Orca ADE versi Headless Server (Background Service)"
-            echo "  -h, --help    Tampilkan bantuan ini"
+            echo "  --desktop      Paksa instal Orca ADE versi Desktop (GUI, Menu, Ikon)"
+            echo "  --headless     Paksa instal Orca ADE versi Headless Server (Background Service)"
+            echo "  --uninstall    Hapus instalasi Orca ADE (aplikasi, service, helper, shortcut)"
+            echo "  --purge        Hapus seluruh konfigurasi & data pairing (~/.config/orca) saat uninstall"
+            echo "  --keep-config  Pertahankan konfigurasi & data pairing saat uninstall"
+            echo "  -h, --help     Tampilkan bantuan ini"
             exit 0
             ;;
     esac
 done
+
+strip_orca_rc_block() {
+    local rc_file="$1"
+    [ -f "$rc_file" ] || return 0
+    grep -q 'ORCA_BROWSER_EXECUTABLE' "$rc_file" 2>/dev/null || return 0
+
+    local tmp_rc
+    tmp_rc="$(mktemp /tmp/orca-rc-XXXXXX)"
+    awk '
+        /^# Orca ADE Browser Automation Backend$/ {
+            skip = 1
+            depth = 0
+            next
+        }
+        skip {
+            if ($0 ~ /^[[:space:]]*if[[:space:]]/) depth++
+            if ($0 ~ /^[[:space:]]*fi([[:space:]]|$)/) {
+                depth--
+                if (depth <= 0) skip = 0
+            }
+            next
+        }
+        { print }
+    ' "$rc_file" > "$tmp_rc"
+    cat "$tmp_rc" > "$rc_file"
+    rm -f "$tmp_rc"
+}
+
+uninstall_orca() {
+    local target_user="${SUDO_USER:-${USER:-$(id -un)}}"
+    local target_home=""
+    target_home="$(getent passwd "$target_user" 2>/dev/null | cut -d: -f6 || true)"
+    [ -z "$target_home" ] && target_home="${HOME:-/home/$target_user}"
+    local target_uid
+    target_uid="$(id -u "$target_user" 2>/dev/null || id -u)"
+
+    echo "=================================================="
+    echo "          UNINSTALL ORCA ADE                      "
+    echo "=================================================="
+    echo "[*] User target : $target_user ($target_home)"
+
+    run_user_ctl() {
+        if [ "$EUID" -eq 0 ] && [ "$target_user" != "root" ]; then
+            if command -v runuser >/dev/null 2>&1; then
+                runuser -u "$target_user" -- env XDG_RUNTIME_DIR="/run/user/$target_uid" "$@"
+            else
+                sudo -u "$target_user" env XDG_RUNTIME_DIR="/run/user/$target_uid" "$@"
+            fi
+        else
+            "$@"
+        fi
+    }
+
+    # 1. Hentikan seluruh proses Orca yang berjalan
+    echo "[*] Menghentikan proses Orca ADE yang sedang berjalan..."
+    pkill -u "$target_user" -x "orca-ide" 2>/dev/null || true
+    pkill -u "$target_user" -f "/orca-ide/orca-ide|orcad-server|daemon-entry|serve-supervisor|orca.*serve" 2>/dev/null || true
+    sleep 1
+
+    # 2. Hentikan & hapus unit systemd user
+    local user_systemd_dir="$target_home/.config/systemd/user"
+    if command -v systemctl >/dev/null 2>&1; then
+        run_user_ctl systemctl --user stop orca.service orca-update.service orca-update.timer 2>/dev/null || true
+        run_user_ctl systemctl --user disable orca.service orca-update.service orca-update.timer 2>/dev/null || true
+        run_user_ctl systemctl --user unset-environment ORCA_BROWSER_EXECUTABLE 2>/dev/null || true
+    fi
+    rm -f "$user_systemd_dir/orca.service" \
+          "$user_systemd_dir/orca-update.service" \
+          "$user_systemd_dir/orca-update.timer" 2>/dev/null || true
+    if command -v systemctl >/dev/null 2>&1; then
+        run_user_ctl systemctl --user daemon-reload 2>/dev/null || true
+    fi
+
+    # 3. Hentikan & hapus unit systemd system (jika punya akses root/sudo)
+    local can_sys=0
+    if [ "$EUID" -eq 0 ]; then
+        can_sys=1
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        can_sys=2
+    fi
+
+    run_as_sys() {
+        if [ "$can_sys" -eq 1 ]; then
+            "$@"
+        elif [ "$can_sys" -eq 2 ]; then
+            sudo "$@"
+        fi
+    }
+
+    if [ "$can_sys" -ne 0 ]; then
+        run_as_sys systemctl stop orca.service orca-update.service orca-update.timer 2>/dev/null || true
+        run_as_sys systemctl disable orca.service orca-update.service orca-update.timer 2>/dev/null || true
+        run_as_sys rm -f /etc/systemd/system/orca.service \
+                         /etc/systemd/system/orca-update.service \
+                         /etc/systemd/system/orca-update.timer 2>/dev/null || true
+        run_as_sys systemctl daemon-reload 2>/dev/null || true
+    fi
+
+    # 4. Hapus aplikasi, binary CLI, & helper scripts
+    echo "[*] Menghapus aplikasi dan binary Orca ADE..."
+    rm -rf "$target_home/.local/lib/orca-ide" "$target_home/.local/lib/orca-ide.old"
+    rm -f "$target_home/.local/bin/orca" \
+          "$target_home/.local/bin/orca-ide" \
+          "$target_home/.local/bin/orca-desktop" \
+          "$target_home/.local/bin/orca-pair" \
+          "$target_home/.local/bin/orca-update" \
+          "$target_home/.local/bin/orca-switch"
+    if [ "$can_sys" -ne 0 ]; then
+        run_as_sys rm -f /usr/local/bin/orca-desktop 2>/dev/null || true
+    fi
+
+    # 5. Hapus integrasi desktop, autostart, ikon, dan env sistem
+    echo "[*] Menghapus shortcut desktop, autostart, dan ikon..."
+    local apps_dir="$target_home/.local/share/applications"
+    local icons_dir="$target_home/.local/share/icons/hicolor"
+    local pixmaps_dir="$target_home/.local/share/pixmaps"
+    rm -f "$apps_dir/orca-ide.desktop" \
+          "$target_home/.config/autostart/orca-ide.desktop" \
+          "$pixmaps_dir/orca-ide.png" \
+          "$pixmaps_dir/orca.png"
+    find "$icons_dir" -type f -name "orca-ide.png" -delete 2>/dev/null || true
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps_dir" 2>/dev/null || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$icons_dir" 2>/dev/null || true
+
+    if [ "$can_sys" -ne 0 ]; then
+        run_as_sys rm -f /usr/share/applications/orca-ide.desktop \
+                         /usr/share/pixmaps/orca-ide.png \
+                         /usr/share/pixmaps/orca.png \
+                         /etc/profile.d/orca-browser.sh 2>/dev/null || true
+        run_as_sys find /usr/share/icons/hicolor -type f -name "orca-ide.png" -delete 2>/dev/null || true
+        command -v update-desktop-database >/dev/null 2>&1 && run_as_sys update-desktop-database /usr/share/applications 2>/dev/null || true
+        command -v gtk-update-icon-cache >/dev/null 2>&1 && run_as_sys gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+    else
+        local sys_leftovers=()
+        for p in /etc/systemd/system/orca.service /usr/local/bin/orca-desktop /usr/share/applications/orca-ide.desktop /etc/profile.d/orca-browser.sh; do
+            [ -e "$p" ] && sys_leftovers+=("$p")
+        done
+        if [ ${#sys_leftovers[@]} -gt 0 ]; then
+            echo "[!] Catatan: berkas sistem berikut membutuhkan akses root/sudo untuk dihapus:"
+            printf '    - %s\n' "${sys_leftovers[@]}"
+            echo "    Jalankan: sudo $0 --uninstall"
+        fi
+    fi
+
+    # 6. Bersihkan blok environment Orca dari .bashrc / .zshrc
+    strip_orca_rc_block "$target_home/.bashrc"
+    strip_orca_rc_block "$target_home/.zshrc"
+
+    # 7. Tangani direktori konfigurasi ~/.config/orca
+    local config_dir="$target_home/.config/orca"
+    if [ -d "$config_dir" ]; then
+        local do_purge="$PURGE_CONFIG"
+        if [ -z "$do_purge" ]; then
+            if [ -w /dev/tty ] && [ -r /dev/tty ]; then
+                printf "%s" "Hapus juga konfigurasi, database profil & keypair pairing ($config_dir)? [y/N]: " > /dev/tty
+                local ans=""
+                read -r ans < /dev/tty || true
+                case "$ans" in
+                    y|Y|yes|YES) do_purge="1" ;;
+                    *) do_purge="0" ;;
+                esac
+            else
+                do_purge="0"
+            fi
+        fi
+
+        if [ "$do_purge" = "1" ]; then
+            rm -rf "$config_dir"
+            echo "[✓] Direktori konfigurasi $config_dir dihapus."
+        else
+            rm -rf "$config_dir/cli" "$config_dir/.mode" "$config_dir/orca-runtime.json" "$config_dir/orca.log" 2>/dev/null || true
+            echo "[i] Data konfigurasi & pairing di $config_dir dipertahankan (gunakan --purge untuk menghapus total)."
+        fi
+    fi
+
+    echo ""
+    echo "[✓] Orca ADE berhasil di-uninstall."
+}
+
+if [ "$ACTION_MODE" = "uninstall" ]; then
+    uninstall_orca
+    exit 0
+fi
 
 # --- DETEKSI DESKTOP ENVIRONMENT (DE) ---
 HAS_DE=0

@@ -65,6 +65,7 @@ Opsi Orca ADE dan passthrough helper:
 |---|---|
 | `-o`, `--orca` | Setup Orca ADE (otomatis pilih desktop/headless) |
 | `--orca-desktop`, `--orca-headless` | Paksa mode Orca tertentu |
+| `--orca-uninstall [--purge\|--keep-config]` | Hapus instalasi Orca ADE |
 | `--orca-switch <mode>` | Teruskan ke `orca-switch` |
 | `--orca-ai` | Konfigurasi default Git Commit Generator AI |
 | `-p`, `--orca-pair` | Tampilkan QR code & URL pairing |
@@ -158,6 +159,7 @@ Installer Orca ADE (mengunduh rilis `.deb` dari GitHub `stablyai/orca` dan menge
 ./setup_orca_headless.sh              # auto: desktop bila DE terdeteksi, headless bila tidak
 ./setup_orca_headless.sh --desktop    # paksa Desktop GUI
 ./setup_orca_headless.sh --headless   # paksa Headless Server
+./setup_orca_headless.sh --uninstall  # hapus Orca ADE (tambahkan --purge untuk hapus ~/.config/orca)
 ./setup_orca_headless.sh --help
 ```
 
