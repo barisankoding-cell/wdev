@@ -443,6 +443,44 @@ trap cleanup_tmp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+restore_tty_state() {
+  if [ -t 0 ]; then
+    stty echo icanon opost onlcr </dev/tty 2>/dev/null || stty echo icanon opost onlcr 2>/dev/null || true
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import fcntl, os
+for fd in (0, 1, 2):
+    try:
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        if fl & os.O_NONBLOCK:
+            fcntl.fcntl(fd, fcntl.F_SETFL, fl & ~os.O_NONBLOCK)
+    except OSError:
+        pass' 2>/dev/null || true
+    fi
+    printf '\e[?25h\e[0m' 2>/dev/null || true
+  fi
+}
+
+read_menu_input() {
+  local __var=$1
+  local __prompt=$2
+  local __out="/dev/stdout"
+  if [ ! -t 1 ] && [ -t 0 ] && [ -w /dev/tty ]; then
+    __out="/dev/tty"
+  fi
+  if [ -t 0 ]; then
+    printf '\e[0m\e[?25h' > "$__out" 2>/dev/null || true
+  fi
+  printf '%s' "$__prompt" > "$__out"
+  local __val=""
+  if ! IFS= read -r __val; then
+    printf '\n' > "$__out" 2>/dev/null || true
+    printf -v "$__var" '%s' ""
+    return 1
+  fi
+  printf -v "$__var" '%s' "$__val"
+  return 0
+}
+
 draw_progress() {
   local step=$1
   local total=$2
@@ -461,18 +499,20 @@ draw_progress() {
   printf "\r[%s] %3d%% | %s\e[K" "$bar" "$percent" "$msg"
 }
 
- run_step() {
- local msg=$1
- shift
- draw_progress "$CURRENT_STEP" "$TOTAL_STEPS" "$msg..."
- if ! "$@" >> "$LOG_FILE" 2>&1; then
- echo -e "\n\n[GAGAL] Terjadi kesalahan saat: $msg"
- echo "Periksa log di: $LOG_FILE"
- echo "--- 30 baris terakhir log ---"
- tail -n 30 "$LOG_FILE" 2>/dev/null || true
- echo "-----------------------------"
- exit 1
- fi
+run_step() {
+  local msg=$1
+  shift
+  draw_progress "$CURRENT_STEP" "$TOTAL_STEPS" "$msg..."
+  if ! "$@" < /dev/null >> "$LOG_FILE" 2>&1; then
+    restore_tty_state
+    echo -e "\n\n[GAGAL] Terjadi kesalahan saat: $msg"
+    echo "Periksa log di: $LOG_FILE"
+    echo "--- 30 baris terakhir log ---"
+    tail -n 30 "$LOG_FILE" 2>/dev/null || true
+    echo "-----------------------------"
+    exit 1
+  fi
+  restore_tty_state
   CURRENT_STEP=$((CURRENT_STEP + 1))
   draw_progress "$CURRENT_STEP" "$TOTAL_STEPS" "$msg selesai"
 }
@@ -635,9 +675,9 @@ get_component_version() {
         "$REAL_ORCA" --version 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
       elif [ -x "$ORCA_BIN" ]; then
         if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-          sudo -u "$SUDO_USER" "$ORCA_BIN" --version 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
+          sudo -u "$SUDO_USER" "$ORCA_BIN" --version < /dev/null 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
         else
-          "$ORCA_BIN" --version 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
+          "$ORCA_BIN" --version < /dev/null 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
         fi
  elif command -v orca-ide >/dev/null 2>&1; then
  orca-ide --version 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
@@ -924,7 +964,7 @@ collect_installed_versions() {
  tmp_dir=$(mktemp -d)
  for comp in "${components[@]}"; do
  i=$((i + 1))
- ( get_component_version "$comp" > "$tmp_dir/$i" 2>/dev/null ) &
+ ( get_component_version "$comp" < /dev/null > "$tmp_dir/$i" 2>/dev/null ) &
  done
  wait || true
  i=0
@@ -943,7 +983,7 @@ collect_latest_versions() {
  tmp_dir=$(mktemp -d)
  for comp in "${components[@]}"; do
  i=$((i + 1))
- ( get_latest_version "$comp" > "$tmp_dir/$i" 2>/dev/null ) &
+ ( get_latest_version "$comp" < /dev/null > "$tmp_dir/$i" 2>/dev/null ) &
  done
  wait || true
  i=0
@@ -5007,11 +5047,13 @@ prompt_php_options() {
     echo "2. Standar / Minimal (FPM, CLI, MySQL, Mbstring, XML, Zip, OPcache)" > "$TTY_OUT"
     echo "3. Kustom (Tentukan daftar ekstensi sendiri)" > "$TTY_OUT"
     echo "==========================================" > "$TTY_OUT"
-    read -rp "Pilih opsi ekstensi [1-3, default: 1]: " e_choice < "$TTY_IN"
+    printf "%s" "Pilih opsi ekstensi [1-3, default: 1]: " > "$TTY_OUT"
+    read -r e_choice < "$TTY_IN"
     case "$e_choice" in
       2) PHP_EXTS_OPTION="minimal" ;;
       3)
-        read -rp "Masukkan ekstensi yang dipisahkan spasi/koma (contoh: mysql pgsql redis zip gd): " user_exts < "$TTY_IN"
+        printf "%s" "Masukkan ekstensi yang dipisahkan spasi/koma (contoh: mysql pgsql redis zip gd): " > "$TTY_OUT"
+        read -r user_exts < "$TTY_IN"
         PHP_EXTS_OPTION="${user_exts:-full}"
         ;;
       *) PHP_EXTS_OPTION="full" ;;
@@ -5373,6 +5415,7 @@ step_php_full_stack() {
   local rc=0
   step_nginx && step_php && step_composer && step_local_ssl || rc=$?
   [ "$own_lock" -eq 1 ] && release_lock
+  restore_tty_state
   if [ "$rc" -ne 0 ]; then
     return "$rc"
   fi
@@ -5729,9 +5772,9 @@ step_update_orca() {
   if [ -x "$ORCA_UPDATE" ]; then
     echo "Menjalankan pembaruan Orca ADE..."
     if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-      sudo -u "$SUDO_USER" bash "$ORCA_UPDATE" || true
+      sudo -u "$SUDO_USER" bash "$ORCA_UPDATE" < /dev/null || true
     else
-      bash "$ORCA_UPDATE" || true
+      bash "$ORCA_UPDATE" < /dev/null || true
     fi
   else
     echo "Orca IDE belum terpasang atau skrip orca-update tidak ditemukan."
@@ -5849,6 +5892,7 @@ run_update() {
   print_version_table VERSIONS_BEFORE VERSIONS_AFTER "RINGKASAN PERBANDINGAN PEMBARUAN VERSI" "Versi Sebelum" "Versi Sesudah" "update"
 
   release_lock
+  restore_tty_state
   echo "Muat environment: source /etc/profile"
 }
 
@@ -5940,6 +5984,7 @@ run_installation() {
 
   echo -e "\n\nInstalasi selesai!"
   release_lock
+  restore_tty_state
   echo "Muat environment: source /etc/profile"
 }
 
@@ -5982,6 +6027,7 @@ run_single_component() {
 
   run_step "1/1 Menginstal/Memperbarui $name" "$func"
   release_lock
+  restore_tty_state
 
   echo -e "\n\nProses selesai!"
   echo "Muat environment: source /etc/profile"
@@ -6377,9 +6423,9 @@ start_orca_service() {
         "ORCA_USER_DATA_PATH=$TARGET_HOME/.config/orca" \
         "ORCA_ALLOW_INSECURE_WEB_PAIRING=1" \
         ${BROWSER_BIN:+"ORCA_BROWSER_EXECUTABLE=$BROWSER_BIN"} \
-        nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
+        nohup "$ORCA_BIN" serve --supervise --force < /dev/null > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
     else
-      PATH="$AGENT_PATH:$PATH" nohup "$ORCA_BIN" serve --supervise --force > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
+      PATH="$AGENT_PATH:$PATH" nohup "$ORCA_BIN" serve --supervise --force < /dev/null > "$TARGET_HOME/.config/orca/orca.log" 2>&1 9>&- &
     fi
     echo "Layanan Orca server berhasil dijalankan di background."
     return 0
@@ -6950,6 +6996,7 @@ setup_orca() {
     bash "$ORCA_SCRIPT" ${orca_args[@]+"${orca_args[@]}"}
   fi
   ensure_orca_browser_env
+  restore_tty_state
 }
 
 uninstall_orca() {
@@ -6997,6 +7044,7 @@ uninstall_orca() {
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications 2>/dev/null || true
     command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
   fi
+  restore_tty_state
 }
 
 launch_orca_desktop() {
@@ -7016,9 +7064,9 @@ launch_orca_desktop() {
   echo "Menjalankan Orca Desktop GUI..."
   if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
     if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-      sudo -u "$SUDO_USER" nohup "$ORCA_DESKTOP" >/dev/null 2>&1 9>&- &
+      sudo -u "$SUDO_USER" nohup "$ORCA_DESKTOP" < /dev/null >/dev/null 2>&1 9>&- &
     else
-      nohup "$ORCA_DESKTOP" >/dev/null 2>&1 9>&- &
+      nohup "$ORCA_DESKTOP" < /dev/null >/dev/null 2>&1 9>&- &
     fi
     echo "[✓] Orca Desktop berhasil diluncurkan di background layar aktif."
   else
@@ -7161,7 +7209,7 @@ except:
   echo "4. Claude Code $([ $HAS_CLAUDE -eq 1 ] && echo '[Terpasang]' || echo '[Belum terpasang]')"
   echo "5. GitHub Copilot CLI $([ $HAS_COPILOT -eq 1 ] && echo '[Terpasang]' || echo '[Belum terpasang]')"
   echo "6. Custom Agent CLI (ketik nama agent: cursor, codex, kimi, dll.)"
-  read -rp "Pilihan [1-6, default: $DEFAULT_OPT]: " a_choice
+  read_menu_input a_choice "Pilihan [1-6, default: $DEFAULT_OPT]: " || a_choice=""
   [ -z "$a_choice" ] && a_choice="$DEFAULT_OPT"
 
   local CHOSEN_AGENT="opencode"
@@ -7172,7 +7220,7 @@ except:
     4) CHOSEN_AGENT="claude" ;;
     5) CHOSEN_AGENT="copilot" ;;
     6)
-      read -rp "Masukkan ID agent (contoh: opencode, antigravity, omp, claude, copilot, cursor): " input_agent
+      read_menu_input input_agent "Masukkan ID agent (contoh: opencode, antigravity, omp, claude, copilot, cursor): " || input_agent=""
       [ -n "$input_agent" ] && CHOSEN_AGENT="$input_agent"
       ;;
     *)
@@ -7191,7 +7239,7 @@ except:
   echo "1. Conventional Commits (Bahasa Indonesia)"
   echo "2. Conventional Commits (English)"
   echo "3. Kustom (ketik sendiri instruksi prompt)"
-  read -rp "Pilih format [1-3, default: 1]: " p_choice
+  read_menu_input p_choice "Pilih format [1-3, default: 1]: " || p_choice=""
 
   local CHOSEN_PROMPT="Gunakan format Conventional Commits (feat, fix, refactor, docs, chore, test). Judul maksimal 72 karakter. Tulis pesan commit dalam Bahasa Indonesia yang singkat, padat, dan jelas."
   case "$p_choice" in
@@ -7199,7 +7247,7 @@ except:
       CHOSEN_PROMPT="Follow Conventional Commits (feat, fix, refactor, docs, chore, test). Keep title under 72 characters. Write in clear and concise English."
       ;;
     3)
-      read -rp "Masukkan instruksi kustom: " custom_p
+      read_menu_input custom_p "Masukkan instruksi kustom: " || custom_p=""
       [ -n "$custom_p" ] && CHOSEN_PROMPT="$custom_p"
       ;;
   esac
@@ -7463,7 +7511,7 @@ menu_orca() {
       echo -e "  ${C_CYAN}[4]${C_RESET} Cek Status Lengkap"
       echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
       echo -e "${C_BOLD}================================================================${C_RESET}"
-      read -rp "Pilih opsi [0-4]: " orca_opt
+      read_menu_input orca_opt "Pilih opsi [0-4]: " || break
 
       case $orca_opt in
         1) setup_orca --desktop ;;
@@ -7508,7 +7556,7 @@ menu_orca() {
       echo -e "  ${C_CYAN}[8]${C_RESET} Uninstall Orca ADE"
       echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
       echo -e "${C_BOLD}================================================================${C_RESET}"
-      read -rp "Pilih opsi [0-8]: " orca_opt
+      read_menu_input orca_opt "Pilih opsi [0-8]: " || break
 
       case $orca_opt in
         1) launch_orca_desktop ;;
@@ -7573,7 +7621,7 @@ menu_orca() {
       echo -e "  ${C_CYAN}[8]${C_RESET} Uninstall Orca ADE"
       echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
       echo -e "${C_BOLD}================================================================${C_RESET}"
-      read -rp "Pilih opsi [0-8]: " orca_opt
+      read_menu_input orca_opt "Pilih opsi [0-8]: " || break
 
       case $orca_opt in
         1) show_orca_pair ;;
@@ -7673,10 +7721,12 @@ menu_cf_pick_profile() {
     printf '  %d. %s\n' "$((i + 1))" "${profs[$i]}" >&2
   done
   if [ "${#profs[@]}" -eq 1 ]; then
-    read -rp "Pilih nomor atau nama profil [default: 1 (${profs[0]})]: " p
+    printf '%s' "Pilih nomor atau nama profil [default: 1 (${profs[0]})]: " >&2
+    IFS= read -r p || return 1
     [ -z "$p" ] && p="1"
   else
-    read -rp "Pilih nomor atau nama profil: " p
+    printf '%s' "Pilih nomor atau nama profil: " >&2
+    IFS= read -r p || return 1
   fi
   [ -n "$p" ] || return 1
   if [[ "$p" =~ ^[0-9]+$ ]]; then
@@ -7705,11 +7755,11 @@ menu_cf_account() {
     echo -e "  ${C_CYAN}[5]${C_RESET} Hapus Akun"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-5]: " a_opt
+    read_menu_input a_opt "Pilih opsi [0-5]: " || break
     case "$a_opt" in
       1) run_cf_menu account list ;;
       2)
-        read -rp "Nama profil baru (contoh: cf1): " p
+        read_menu_input p "Nama profil baru (contoh: cf1): " || continue
         [ -n "$p" ] && run_cf_menu account add "$p"
         ;;
       3)
@@ -7739,7 +7789,7 @@ menu_cf_tunnel() {
     echo -e "  ${C_CYAN}[3]${C_RESET} Info Tunnel & Konektor"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-3]: " t_opt
+    read_menu_input t_opt "Pilih opsi [0-3]: " || break
     case "$t_opt" in
       1|2)
         p=$(menu_cf_pick_profile) || continue
@@ -7773,7 +7823,7 @@ menu_cf_service() {
     echo -e "  ${C_CYAN}[8]${C_RESET} Disable (Nonaktifkan Autostart)"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih aksi [0-8]: " action
+    read_menu_input action "Pilih aksi [0-8]: " || break
     case "$action" in
       0|q|Q) return 0 ;;
       1) action="start" ;;
@@ -7786,7 +7836,7 @@ menu_cf_service() {
       8) action="disable" ;;
       *) echo "Aksi tidak valid."; continue ;;
     esac
-    read -rp "Profil (nama profil atau 'all', kosongkan untuk batal): " target
+    read_menu_input target "Profil (nama profil atau 'all', kosongkan untuk batal): " || continue
     [ -z "$target" ] && continue
     if [ "$target" = "all" ]; then
       run_cf_menu service "$action" --all
@@ -7806,7 +7856,7 @@ menu_cf_dns() {
     echo -e "  ${C_CYAN}[4]${C_RESET} Sinkronkan Semua Eksposur Profil"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih aksi [0-4]: " action
+    read_menu_input action "Pilih aksi [0-4]: " || break
     case "$action" in
       0|q|Q) return 0 ;;
       1|2|3|4) ;;
@@ -7816,11 +7866,11 @@ menu_cf_dns() {
     case "$action" in
       1) run_cf_menu dns list --profile "$p" ;;
       2)
-        read -rp "Host publik (contoh: app-dev.example.com, kosongkan untuk batal): " host
+        read_menu_input host "Host publik (contoh: app-dev.example.com, kosongkan untuk batal): " || continue
         [ -n "$host" ] && run_cf_menu dns add --profile "$p" "$host"
         ;;
       3)
-        read -rp "Host publik yang dihapus (kosongkan untuk batal): " host
+        read_menu_input host "Host publik yang dihapus (kosongkan untuk batal): " || continue
         [ -n "$host" ] && run_cf_menu dns rm --profile "$p" "$host"
         ;;
       4) run_cf_menu dns ensure --profile "$p" ;;
@@ -7844,7 +7894,7 @@ menu_cf_expose() {
     echo "Virtual host lokal tersedia:"
     for i in "${!sites[@]}"; do printf '  %d. %s\n' "$((i + 1))" "${sites[$i]}"; done
   fi
-  read -rp "Domain lokal (nomor atau nama, contoh: myapp.test, kosongkan untuk batal): " d
+  read_menu_input d "Domain lokal (nomor atau nama, contoh: myapp.test, kosongkan untuk batal): " || return 1
   [ -n "$d" ] || return 1
   if [[ "$d" =~ ^[0-9]+$ ]]; then
     i=$((d - 1))
@@ -7854,7 +7904,7 @@ menu_cf_expose() {
     fi
     d="${sites[$i]}"
   fi
-  read -rp "Host publik (contoh: app-dev.example.com, kosongkan untuk batal): " host
+  read_menu_input host "Host publik (contoh: app-dev.example.com, kosongkan untuk batal): " || return 1
   [ -n "$host" ] || return 1
   p=$(menu_cf_pick_profile) || return 1
   local zone zrc=0
@@ -7864,7 +7914,7 @@ menu_cf_expose() {
   if [ "$zrc" -eq 2 ]; then
     echo -e "${C_YELLOW}[!] '${host}' adalah subdomain bertingkat di bawah '${zone}'.${C_RESET}"
     echo "    Universal SSL gratis hanya *.${zone}; host bertingkat butuh Total TLS / ACM di Cloudflare."
-    read -rp "Lanjutkan dengan --allow-deep? [y/N]: " ans_deep
+    read_menu_input ans_deep "Lanjutkan dengan --allow-deep? [y/N]: " || return 1
     case "$ans_deep" in y|Y|yes) extra_flags+=("--allow-deep") ;; *) return 1 ;; esac
   fi
   if [ "$EUID" -eq 0 ]; then
@@ -7877,9 +7927,9 @@ menu_cf_expose() {
 menu_cf_unexpose() {
   local ds d host
   ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
-  read -rp "Domain lokal (contoh: myapp.test, kosongkan untuk batal): " d
+  read_menu_input d "Domain lokal (contoh: myapp.test, kosongkan untuk batal): " || return 1
   [ -n "$d" ] || return 1
-  read -rp "Host publik (kosongkan untuk semua eksposur domain): " host
+  read_menu_input host "Host publik (kosongkan untuk semua eksposur domain): " || host=""
   if [ "$EUID" -eq 0 ]; then
     if [ -n "$host" ]; then
       "$ds" unexpose "$d" "$host" || true
@@ -7904,7 +7954,7 @@ menu_cf_exposures() {
     echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Eksposur Publik"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-3]: " action
+    read_menu_input action "Pilih opsi [0-3]: " || break
     case "$action" in
       1)
         ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; continue; }
@@ -7929,18 +7979,18 @@ menu_cf_quick() {
     echo -e "  ${C_CYAN}[5]${C_RESET} Hentikan Quick Tunnel"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-5]: " opt
+    read_menu_input opt "Pilih opsi [0-5]: " || break
     case "$opt" in
       1|2)
-        read -rp "Target (port mis. 3000, URL http(s)://..., atau domain proxy): " target
+        read_menu_input target "Target (port mis. 3000, URL http(s)://..., atau domain proxy): " || continue
         [ -n "$target" ] || continue
         local -a q_args=("quick" "$target")
         if [[ "$target" == https://* ]]; then
-          read -rp "Abaikan verifikasi TLS lokal (--no-tls-verify)? [y/N]: " bg_ans
+          read_menu_input bg_ans "Abaikan verifikasi TLS lokal (--no-tls-verify)? [y/N]: " || bg_ans="n"
           [[ "$bg_ans" =~ ^[yY] ]] && q_args+=("--no-tls-verify")
         fi
         if [ "$opt" = "2" ]; then
-          read -rp "Label nama (opsional, Enter untuk otomatis): " label
+          read_menu_input label "Label nama (opsional, Enter untuk otomatis): " || label=""
           q_args+=("--bg")
           [ -n "$label" ] && q_args+=("--name" "$label")
         fi
@@ -7948,11 +7998,11 @@ menu_cf_quick() {
         ;;
       3) run_cf_menu quick status ;;
       4)
-        read -rp "Label Quick Tunnel: " label
+        read_menu_input label "Label Quick Tunnel: " || continue
         [ -n "$label" ] && run_cf_menu quick logs "$label"
         ;;
       5)
-        read -rp "Label Quick Tunnel (atau 'all' untuk semua): " label
+        read_menu_input label "Label Quick Tunnel (atau 'all' untuk semua): " || continue
         if [ "$label" = "all" ]; then
           run_cf_menu quick stop --all
         elif [ -n "$label" ]; then
@@ -7977,26 +8027,26 @@ menu_cf_routes() {
     echo -e "  ${C_CYAN}[6]${C_RESET} Hapus Private Network CIDR"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-6]: " opt
+    read_menu_input opt "Pilih opsi [0-6]: " || break
     case "$opt" in
       1) run_cf_menu route list --all ;;
       2)
         p=$(menu_cf_pick_profile) || continue
-        read -rp "Host publik (mis. api.example.com / ssh.example.com): " host
-        read -rp "Service URL (mis. http://127.0.0.1:8080 / ssh://127.0.0.1:22 / tcp://127.0.0.1:5432): " svc
+        read_menu_input host "Host publik (mis. api.example.com / ssh.example.com): " || continue
+        read_menu_input svc "Service URL (mis. http://127.0.0.1:8080 / ssh://127.0.0.1:22 / tcp://127.0.0.1:5432): " || continue
         [ -n "$host" ] && [ -n "$svc" ] || continue
-        read -rp "Path regex (opsional, Enter untuk semua): " path_val
+        read_menu_input path_val "Path regex (opsional, Enter untuk semua): " || path_val=""
         local -a r_args=("route" "add" "--profile" "$p" "$host" "$svc")
         [ -n "$path_val" ] && r_args+=("--path" "$path_val")
         if [[ "$svc" == https://* ]]; then
-          read -rp "No TLS Verify? [y/N]: " notls_ans
+          read_menu_input notls_ans "No TLS Verify? [y/N]: " || notls_ans="n"
           [[ "$notls_ans" =~ ^[yY] ]] && r_args+=("--no-tls-verify")
         fi
         run_cf_menu "${r_args[@]}"
         ;;
       3)
         p=$(menu_cf_pick_profile) || continue
-        read -rp "Host publik route yang dihapus: " host
+        read_menu_input host "Host publik route yang dihapus: " || continue
         [ -n "$host" ] && run_cf_menu route rm --profile "$p" "$host"
         ;;
       4)
@@ -8005,9 +8055,9 @@ menu_cf_routes() {
         ;;
       5)
         p=$(menu_cf_pick_profile) || continue
-        read -rp "CIDR (mis. 10.10.0.0/24 atau 192.168.1.0/24): " cidr
+        read_menu_input cidr "CIDR (mis. 10.10.0.0/24 atau 192.168.1.0/24): " || continue
         [ -n "$cidr" ] || continue
-        read -rp "Komentar (opsional): " comment
+        read_menu_input comment "Komentar (opsional): " || comment=""
         if [ -n "$comment" ]; then
           run_cf_menu cidr add --profile "$p" "$cidr" --comment "$comment"
         else
@@ -8016,7 +8066,7 @@ menu_cf_routes() {
         ;;
       6)
         p=$(menu_cf_pick_profile) || continue
-        read -rp "CIDR yang dihapus: " cidr
+        read_menu_input cidr "CIDR yang dihapus: " || continue
         [ -n "$cidr" ] && run_cf_menu cidr rm --profile "$p" "$cidr"
         ;;
       0|q|Q) return 0 ;;
@@ -8034,21 +8084,21 @@ menu_cf_access() {
     echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Proteksi Access dari Host"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-3]: " opt
+    read_menu_input opt "Pilih opsi [0-3]: " || break
     case "$opt" in
       1) run_cf_menu access list --all ;;
       2)
         p=$(menu_cf_pick_profile) || continue
-        read -rp "Host publik (mis. app.example.com): " host
-        read -rp "Zero Trust Team Name (<team>.cloudflareaccess.com): " team
+        read_menu_input host "Host publik (mis. app.example.com): " || continue
+        read_menu_input team "Zero Trust Team Name (<team>.cloudflareaccess.com): " || continue
         [ -n "$host" ] && [ -n "$team" ] || continue
-        read -rp "AUD Tag (kosongkan untuk buat/ambil otomatis via API): " aud
+        read_menu_input aud "AUD Tag (kosongkan untuk buat/ambil otomatis via API): " || aud=""
         local -a a_args=("access" "protect" "--profile" "$p" "$host" "--team" "$team")
         if [ -n "$aud" ]; then
           a_args+=("--aud" "$aud")
         else
-          read -rp "Izinkan email (pisahkan koma, opsional): " emails
-          read -rp "Izinkan domain email (pisahkan koma, opsional): " domains
+          read_menu_input emails "Izinkan email (pisahkan koma, opsional): " || emails=""
+          read_menu_input domains "Izinkan domain email (pisahkan koma, opsional): " || domains=""
           [ -n "$emails" ] && a_args+=("--allow-emails" "$emails")
           [ -n "$domains" ] && a_args+=("--allow-domains" "$domains")
         fi
@@ -8056,9 +8106,9 @@ menu_cf_access() {
         ;;
       3)
         p=$(menu_cf_pick_profile) || continue
-        read -rp "Host publik yang dibuka proteksinya: " host
+        read_menu_input host "Host publik yang dibuka proteksinya: " || continue
         [ -n "$host" ] || continue
-        read -rp "Hapus juga Access App di Cloudflare API? [y/N]: " del_ans
+        read_menu_input del_ans "Hapus juga Access App di Cloudflare API? [y/N]: " || del_ans="n"
         if [[ "$del_ans" =~ ^[yY] ]]; then
           run_cf_menu access unprotect --profile "$p" "$host" --delete-app
         else
@@ -8088,7 +8138,7 @@ menu_cloudflare() {
     echo -e "  ${C_CYAN}[12]${C_RESET} 📥 Install / Perbarui cloudflared"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-12]: " cf_opt
+    read_menu_input cf_opt "Pilih opsi [0-12]: " || break
 
     case $cf_opt in
       1) run_cf_menu status --all ;;
@@ -8096,7 +8146,7 @@ menu_cloudflare() {
       3) menu_cf_account ;;
       4) menu_cf_tunnel ;;
       5)
-        read -rp "Push juga konfigurasi remote mode token via API (--remote)? [y/N]: " sync_rem
+        read_menu_input sync_rem "Push juga konfigurasi remote mode token via API (--remote)? [y/N]: " || sync_rem="n"
         if [[ "$sync_rem" =~ ^[yY] ]]; then
           run_cf_menu sync --all --remote
         else
@@ -8136,7 +8186,7 @@ menu_php_switch() {
     echo -e "  ${C_CYAN}[6]${C_RESET} Beralih ke Versi Tertentu (Input Manual)"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-6]: " p_opt
+    read_menu_input p_opt "Pilih opsi [0-6]: " || break
 
     case $p_opt in
       1)
@@ -8164,7 +8214,7 @@ menu_php_switch() {
       6)
         if [ -x "/usr/local/bin/php-switch" ]; then
           php-switch list
-          read -rp "Masukkan versi target (contoh: 8.4, 8.3, 8.2, 8.1, kosongkan untuk batal): " target_v
+          read_menu_input target_v "Masukkan versi target (contoh: 8.4, 8.3, 8.2, 8.1, kosongkan untuk batal): " || target_v=""
           if [ -n "$target_v" ]; then
             if [ "$EUID" -eq 0 ]; then
               php-switch "$target_v"
@@ -8200,7 +8250,7 @@ menu_java() {
     echo -e "  ${C_CYAN}[5]${C_RESET} Beralih Interaktif via alternatives"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-5]: " j_opt
+    read_menu_input j_opt "Pilih opsi [0-5]: " || break
 
     case $j_opt in
       1)
@@ -8268,14 +8318,14 @@ menu_php_stack() {
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
     echo -e "  ${C_CYAN}ℹ️  Eksposur publik:${C_RESET} ${C_DIM}Gunakan menu [6] Cloudflare Tunnel & DNS${C_RESET}"
-    read -rp "Pilih opsi [0-6]: " p_opt
+    read_menu_input p_opt "Pilih opsi [0-6]: " || break
 
     case $p_opt in
       1) step_php_full_stack ;;
       2)
-        read -rp "Masukkan nama domain (contoh: myapp.test atau mygo.test): " in_dom
-        read -rp "Masukkan document root ATAU port proxy (contoh: /var/www/myapp atau 3221): " in_root
-        read -rp "Masukkan versi PHP atau ketik 'proxy' (contoh: 8.4, 8.3, atau proxy): " in_ver
+        read_menu_input in_dom "Masukkan nama domain (contoh: myapp.test atau mygo.test): " || continue
+        read_menu_input in_root "Masukkan document root ATAU port proxy (contoh: /var/www/myapp atau 3221): " || continue
+        read_menu_input in_ver "Masukkan versi PHP atau ketik 'proxy' (contoh: 8.4, 8.3, atau proxy): " || in_ver=""
         if [ -n "$in_dom" ] && [ -n "$in_root" ]; then
           if [ -x "/usr/local/bin/dev-site" ]; then
             if [ "$in_ver" = "proxy" ] || [[ "$in_root" =~ ^[0-9]+$ ]]; then
@@ -8291,7 +8341,7 @@ menu_php_stack() {
         fi
         ;;
       3)
-        read -rp "Masukkan nama domain yang ingin dihapus: " del_dom
+        read_menu_input del_dom "Masukkan nama domain yang ingin dihapus: " || continue
         if [ -n "$del_dom" ]; then
           if [ -x "/usr/local/bin/dev-site" ]; then
             sudo dev-site delete "$del_dom"
@@ -8379,7 +8429,7 @@ menu_postgres() {
     echo -e "  ${C_CYAN}[7]${C_RESET} Pulihkan Database dari Snapshot Cadangan"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-7]: " pg_opt
+    read_menu_input pg_opt "Pilih opsi [0-7]: " || break
 
     case $pg_opt in
       1)
@@ -8393,7 +8443,7 @@ menu_postgres() {
       3) run_pg_cmd switch 17 ;;
       4) run_pg_cmd switch 16 ;;
       5)
-        read -rp "Pilih versi target [16/17/18]: " target_v
+        read_menu_input target_v "Pilih versi target [16/17/18]: " || continue
         if [ "$target_v" = "16" ] || [ "$target_v" = "17" ] || [ "$target_v" = "18" ]; then
           run_pg_cmd switch "$target_v" --migrate
         else
@@ -8404,7 +8454,7 @@ menu_postgres() {
       7)
         if [ -n "$pg_bin" ]; then
           "$pg_bin" list
-          read -rp "Masukkan path lengkap file backup .sql.gz: " b_file
+          read_menu_input b_file "Masukkan path lengkap file backup .sql.gz: " || continue
           [ -n "$b_file" ] && run_pg_cmd restore "$b_file"
         else
           echo "pg-switch belum terpasang."
@@ -8457,7 +8507,7 @@ menu_nodejs() {
     echo -e "  ${C_CYAN}[6]${C_RESET} Hapus Versi Node.js Tertentu"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-6]: " n_opt
+    read_menu_input n_opt "Pilih opsi [0-6]: " || break
 
     case $n_opt in
       1)
@@ -8471,13 +8521,13 @@ menu_nodejs() {
       3) run_node_cmd switch 20 ;;
       4) run_node_cmd switch 24 ;;
       5)
-        read -rp "Masukkan versi target (contoh: 18, 20.18.0, 24): " custom_v
+        read_menu_input custom_v "Masukkan versi target (contoh: 18, 20.18.0, 24): " || continue
         [ -n "$custom_v" ] && run_node_cmd switch "$custom_v"
         ;;
       6)
         if [ -n "$node_bin" ]; then
           "$node_bin" list
-          read -rp "Masukkan versi yang ingin dihapus (contoh: 20): " del_v
+          read_menu_input del_v "Masukkan versi yang ingin dihapus (contoh: 20): " || continue
           [ -n "$del_v" ] && run_node_cmd remove "$del_v"
         fi
         ;;
@@ -8501,7 +8551,7 @@ menu_status_updates() {
     echo -e "      ${C_DIM}└─ Tes bash -n dan shellcheck seluruh generator helper${C_RESET}"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-4]: " su_opt
+    read_menu_input su_opt "Pilih opsi [0-4]: " || break
 
     case $su_opt in
       1) show_info ;;
@@ -8524,7 +8574,7 @@ menu_multi_version() {
     echo -e "  ${C_CYAN}[4]${C_RESET} ☕ Kelola Versi Java OpenJDK (17 / 21 / 25)"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-4]: " mv_opt
+    read_menu_input mv_opt "Pilih opsi [0-4]: " || break
 
     case $mv_opt in
       1) menu_nodejs ;;
@@ -8551,7 +8601,7 @@ menu_toolchains() {
     echo -e "  ${C_CYAN}[8]${C_RESET} 📋 Buka Menu Modular Komponen Lengkap (18 Item)"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-8]: " tc_opt
+    read_menu_input tc_opt "Pilih opsi [0-8]: " || break
 
     case $tc_opt in
       1) run_single_component "Rust, Mold & Sccache" step_rust ;;
@@ -8588,7 +8638,7 @@ menu_workspace_shell() {
     echo -e "      ${C_DIM}└─ Hapus aplikasi Orca, service background & shortcut${C_RESET}"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-5]: " ws_opt
+    read_menu_input ws_opt "Pilih opsi [0-5]: " || break
 
     case $ws_opt in
       1) menu_orca ;;
@@ -8598,7 +8648,7 @@ menu_workspace_shell() {
         else
           echo ""
           echo "Orca ADE sudah terpasang ($orca_status)."
-          read -rp "Pilih target instal ulang: [1] Desktop GUI, [2] Headless Server, [0] Batal: " r_opt
+          read_menu_input r_opt "Pilih target instal ulang: [1] Desktop GUI, [2] Headless Server, [0] Batal: " || continue
           case "$r_opt" in
             1) setup_orca --desktop ;;
             2) setup_orca --headless ;;
@@ -8651,7 +8701,7 @@ menu_custom_install() {
     echo -e "    ${C_CYAN}[18]${C_RESET} Orca ADE - Headless Server (Service 24/7) [$orca_status]"
     echo -e "  ${C_YELLOW}[0]${C_RESET}  Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih komponen [0-18]: " c_opt
+    read_menu_input c_opt "Pilih komponen [0-18]: " || break
 
     case $c_opt in
       1) run_single_component "Dependensi Dasar" step_base_deps ;;
@@ -9112,7 +9162,7 @@ while true; do
   echo ""
   echo -e "  ${C_YELLOW}[0]${C_RESET} 🚪 Keluar"
   echo -e "${C_BOLD}================================================================${C_RESET}"
-  read -rp "Pilih kategori [0-8]: " opt
+  read_menu_input opt "Pilih kategori [0-8]: " || exit 0
 
   case $opt in
     1) menu_status_updates ;;
@@ -9123,7 +9173,7 @@ while true; do
     6) menu_cloudflare ;;
     7)
       echo ""
-      read -rp "Jalankan instalasi otomatis 14 langkah sekarang? [y/N]: " confirm_install
+      read_menu_input confirm_install "Jalankan instalasi otomatis 14 langkah sekarang? [y/N]: " || confirm_install="n"
       if [[ "$confirm_install" =~ ^[yY]([eE][sS])?$ ]]; then
         run_installation
       else
