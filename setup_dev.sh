@@ -157,6 +157,117 @@ hosts_remove_domain() {
  rm -f "$tmp"
 }
 
+# --- STATE EKSPOSUR CLOUDFLARE (dipakai setup_dev.sh, dev-site, cf-tunnel) ---
+WDEV_ETC="${WDEV_ETC:-/etc/wdev}"
+WDEV_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export WDEV_ETC
+
+wdev_exposures_dir() { printf '%s/exposures\n' "$WDEV_ETC"; }
+wdev_accounts_dir() { printf '%s/cloudflare/accounts\n' "$WDEV_ETC"; }
+wdev_exposure_file() { printf '%s/exposures/%s.conf\n' "$WDEV_ETC" "$1"; }
+
+wdev_exposure_lines() {
+ local f
+ f=$(wdev_exposure_file "$1")
+ [ -f "$f" ] || return 0
+ awk 'NF >= 2 && $1 !~ /^#/ { print $1 "\t" $2 }' "$f"
+}
+
+wdev_public_hosts() { wdev_exposure_lines "$1" | cut -f1; }
+
+wdev_host_owner() {
+ local host="$1" f domain
+ while IFS= read -r f; do
+ [ -f "$f" ] || continue
+ domain=$(basename "$f" .conf)
+ awk -v h="$host" -v d="$domain" 'NF >= 2 && $1 == h { print d "\t" $2; exit }' "$f"
+ done < <(find "$(wdev_exposures_dir)" -maxdepth 1 -type f -name '*.conf' -print 2>/dev/null | sort)
+}
+
+wdev_profile_list() {
+ local d
+ d=$(wdev_accounts_dir)
+ [ -d "$d" ] || return 0
+ find "$d" -maxdepth 1 -type f -name '*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort
+}
+
+wdev_profile_exists() { [ -f "$(wdev_accounts_dir)/$1.conf" ]; }
+
+wdev_profile_get() {
+ local f
+ f="$(wdev_accounts_dir)/$1.conf"
+ [ -f "$f" ] || return 0
+ awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$f"
+}
+
+wdev_profile_zone() { wdev_profile_get "$1" CF_ZONE; }
+
+wdev_host_in_zone() {
+ local host="$1" zone="$2" rel
+ [ -n "$host" ] && [ -n "$zone" ] || return 1
+ [ "$host" = "$zone" ] && return 0
+ case "$host" in *."$zone") ;; *) return 1 ;; esac
+ rel="${host%.$zone}"
+ [ -n "$rel" ] && [[ "$rel" != *.* ]]
+}
+
+wdev_apply_server_names() {
+ local domain="$1" conf names host tmp indent
+ conf="/etc/nginx/sites-available/${domain}.conf"
+ [ -f "$conf" ] || return 1
+ names="${domain} *.${domain}"
+ while IFS= read -r host; do
+ [ -n "$host" ] && names="$names $host"
+ done < <(wdev_public_hosts "$domain")
+ indent=$(printf '%*s' 4 '')
+ tmp=$(mktemp)
+ if ! awk -v sn="$names" -v ind="$indent" '/^[[:space:]]*server_name[[:space:]]/ { print ind "server_name " sn ";"; next } { print }' "$conf" > "$tmp"; then
+ rm -f "$tmp"
+ return 1
+ fi
+ mv -f "$tmp" "$conf"
+ chmod 644 "$conf" 2>/dev/null || true
+}
+
+wdev_cert_covers_publics() {
+ local domain="$1" cert="$2" text host
+ [ -f "$cert" ] || return 1
+ text=$(openssl x509 -in "$cert" -noout -text 2>/dev/null) || return 1
+ while IFS= read -r host; do
+ [ -n "$host" ] || continue
+ printf '%s' "$text" | grep -q "DNS:${host}" || return 1
+ done < <(wdev_public_hosts "$domain")
+ return 0
+}
+
+wdev_regen_cert() {
+ local domain="$1" cert key host
+ cert="/etc/ssl/local-certs/${domain}.pem"
+ key="/etc/ssl/local-certs/${domain}-key.pem"
+ command -v mkcert >/dev/null 2>&1 || return 1
+ mkdir -p /etc/ssl/local-certs
+ [ -d /etc/ssl/local-certs/ca ] && export CAROOT="/etc/ssl/local-certs/ca"
+ local -a sans=("$domain" "*.$domain" "localhost" "127.0.0.1" "::1")
+ while IFS= read -r host; do
+ [ -n "$host" ] && sans+=("$host")
+ done < <(wdev_public_hosts "$domain")
+ mkcert -cert-file "$cert" -key-file "$key" "${sans[@]}" >/dev/null 2>&1 || return 1
+ chmod 644 "$cert" 2>/dev/null || true
+ chmod 600 "$key" 2>/dev/null || true
+ command -v chcon >/dev/null 2>&1 && chcon -t cert_t "$cert" "$key" 2>/dev/null || true
+ return 0
+}
+
+wdev_refresh_site() {
+ local domain="$1" cert
+ wdev_apply_server_names "$domain" || return 1
+ cert="/etc/ssl/local-certs/${domain}.pem"
+ if [ ! -f "$cert" ] || ! wdev_cert_covers_publics "$domain" "$cert"; then
+ wdev_regen_cert "$domain" || return 1
+ fi
+ return 0
+}
+
 # --- DETEKSI OS & PACKAGE MANAGER ---
 OS_ID="unknown"
 OS_NAME="Linux"
@@ -509,12 +620,22 @@ get_component_version() {
         else
           "$ORCA_BIN" --version 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
         fi
-      elif command -v orca-ide >/dev/null 2>&1; then
-        orca-ide --version 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
-      else
-        echo "-"
-      fi
-      ;;
+ elif command -v orca-ide >/dev/null 2>&1; then
+ orca-ide --version 2>/dev/null | head -n1 | tr -d 'v' | awk '{print $1}' || echo "-"
+ else
+ echo "-"
+ fi
+ ;;
+ "cloudflared")
+ local cf_bin
+ cf_bin=$(command -v cloudflared 2>/dev/null || true)
+ [ -z "$cf_bin" ] && [ -x /usr/local/bin/cloudflared ] && cf_bin=/usr/local/bin/cloudflared
+ if [ -n "$cf_bin" ]; then
+ "$cf_bin" --version 2>/dev/null | awk '{print $3}'
+ else
+ echo "-"
+ fi
+ ;;
  "Nginx")
  local nginx_bin=""
  if command -v nginx >/dev/null 2>&1; then
@@ -700,11 +821,16 @@ get_latest_version() {
  echo "-"
  fi
       ;;
-    "Orca IDE")
-      local v
-      v=$(curl -sSL -m 5 "https://api.github.com/repos/stablyai/orca/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null | tr -d 'v' || true)
-      [ -n "$v" ] && echo "$v" || echo "-"
-      ;;
+ "Orca IDE")
+ local v
+ v=$(curl -sSL -m 5 "https://api.github.com/repos/stablyai/orca/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null | tr -d 'v' || true)
+ [ -n "$v" ] && echo "$v" || echo "-"
+ ;;
+ "cloudflared")
+ local v
+ v=$(get_github_latest_tag "cloudflare/cloudflared" "-")
+ [ -n "$v" ] && [ "$v" != "-" ] && echo "${v#v}" || echo "-"
+ ;;
     "Nginx")
       local v
       if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
@@ -774,7 +900,7 @@ get_latest_version() {
 
 collect_installed_versions() {
  local -n target_map=$1
- local components=("Node.js" "Rustc" "Cargo" "Mold Linker" "Sccache" "Golang" "OpenJDK (Java)" "PostgreSQL" "Redis" "Nginx" "PHP" "Composer" "Zsh" "Oh My Zsh" "Flutter" "Android SDK" "Orca IDE")
+ local components=("Node.js" "Rustc" "Cargo" "Mold Linker" "Sccache" "Golang" "OpenJDK (Java)" "PostgreSQL" "Redis" "Nginx" "PHP" "Composer" "Zsh" "Oh My Zsh" "Flutter" "Android SDK" "Orca IDE" "cloudflared")
  local tmp_dir i=0 comp
  tmp_dir=$(mktemp -d)
  for comp in "${components[@]}"; do
@@ -793,7 +919,7 @@ collect_installed_versions() {
 
 collect_latest_versions() {
  local -n target_map=$1
- local components=("Node.js" "Rustc" "Cargo" "Mold Linker" "Sccache" "Golang" "OpenJDK (Java)" "PostgreSQL" "Redis" "Nginx" "PHP" "Composer" "Zsh" "Oh My Zsh" "Flutter" "Android SDK" "Orca IDE")
+ local components=("Node.js" "Rustc" "Cargo" "Mold Linker" "Sccache" "Golang" "OpenJDK (Java)" "PostgreSQL" "Redis" "Nginx" "PHP" "Composer" "Zsh" "Oh My Zsh" "Flutter" "Android SDK" "Orca IDE" "cloudflared")
  local tmp_dir i=0 comp
  tmp_dir=$(mktemp -d)
  for comp in "${components[@]}"; do
@@ -832,7 +958,7 @@ print_version_table() {
   printf "${c_bold} %-18s | %-20s | %-20s | %-20s ${c_reset}\n" "Komponen" "$col1_label" "$col2_label" "Status"
   echo "-------------------+----------------------+----------------------+----------------------"
 
-  local components=("Node.js" "Rustc" "Cargo" "Mold Linker" "Sccache" "Golang" "OpenJDK (Java)" "PostgreSQL" "Redis" "Nginx" "PHP" "Composer" "Zsh" "Oh My Zsh" "Flutter" "Android SDK" "Orca IDE")
+  local components=("Node.js" "Rustc" "Cargo" "Mold Linker" "Sccache" "Golang" "OpenJDK (Java)" "PostgreSQL" "Redis" "Nginx" "PHP" "Composer" "Zsh" "Oh My Zsh" "Flutter" "Android SDK" "Orca IDE" "cloudflared")
 
  for comp in "${components[@]}"; do
  local v1="${col1_map[$comp]:--}"
@@ -3495,24 +3621,55 @@ sync_vhosts_and_hosts() {
  count_added=$((count_added + 1))
  fi
 
-      # 2. Pastikan SSL cert ada dan valid untuk domain ini
-      local cert_file="/etc/ssl/local-certs/${domain}.pem"
-      local key_file="/etc/ssl/local-certs/${domain}-key.pem"
-      if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        if command -v mkcert >/dev/null 2>&1; then
-          echo -e "${C_CYAN:-}[*] Menghasilkan sertifikat SSL mkcert untuk ${domain}...${C_RESET:-}"
-          mkcert -cert-file "$cert_file" -key-file "$key_file" "$domain" "*.$domain" "localhost" 127.0.0.1 ::1 >/dev/null 2>&1 || true
-          chmod 644 "$cert_file" 2>/dev/null || true
-          chmod 600 "$key_file" 2>/dev/null || true
-          count_certs=$((count_certs + 1))
-        fi
-      fi
-    done
-  fi
+ # 2. Pastikan SSL cert ada dan valid (termasuk host publik Cloudflare)
+ local cert_file="/etc/ssl/local-certs/${domain}.pem"
+ local key_file="/etc/ssl/local-certs/${domain}-key.pem"
+ if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ] || ! wdev_cert_covers_publics "$domain" "$cert_file"; then
+ if command -v mkcert >/dev/null 2>&1; then
+ echo -e "${C_CYAN:-}[*] Menghasilkan sertifikat SSL mkcert untuk ${domain}...${C_RESET:-}"
+ wdev_regen_cert "$domain" || true
+ count_certs=$((count_certs + 1))
+ fi
+ fi
+
+ # 3. Pastikan server_name memuat host publik hasil expose
+ wdev_apply_server_names "$domain" 2>/dev/null || true
+ done
+ fi
 
   if [ "$count_added" -gt 0 ] || [ "$count_certs" -gt 0 ]; then
     echo -e "${C_GREEN:-}[✓] Sinkronisasi hosts & SSL selesai: +${count_added} entri hosts, +${count_certs} sertifikat SSL.${C_RESET:-}"
   fi
+}
+
+install_cf_tunnel_helper() {
+ local target_dest="${1:-/usr/local/bin/cf-tunnel}"
+ local src="${WDEV_SCRIPT_DIR}/cf-tunnel.sh"
+ local tmp_dest="${target_dest}.tmp.$$"
+ if [ ! -f "$src" ]; then
+ echo "Error: cf-tunnel.sh tidak ditemukan di ${WDEV_SCRIPT_DIR}." >&2
+ return 1
+ fi
+ mkdir -p "$(dirname "$target_dest")" 2>/dev/null || true
+ if [ ! -w "$(dirname "$target_dest")" ] && [ -e "$target_dest" ] && [ ! -w "$target_dest" ]; then
+ return 0
+ fi
+ cp -f "$src" "$tmp_dest" 2>/dev/null || return 1
+ chmod 755 "$tmp_dest"
+ mv -f "$tmp_dest" "$target_dest"
+}
+
+ensure_cf_tunnel_helper() {
+ local u_user="${SUDO_USER:-$USER}"
+ local u_home u_dir
+ u_home=$(getent passwd "$u_user" 2>/dev/null | cut -d: -f6)
+ [ -z "$u_home" ] && u_home="$HOME"
+ u_dir="$u_home/.local/bin"
+ mkdir -p "$u_dir" 2>/dev/null || true
+ install_cf_tunnel_helper "$u_dir/cf-tunnel" || true
+ if [ "$EUID" -eq 0 ]; then
+ install_cf_tunnel_helper "/usr/local/bin/cf-tunnel" || true
+ fi
 }
 
 install_dev_site_helper() {
@@ -3542,6 +3699,8 @@ C_YELLOW="\e[33m"
 C_RED="\e[31m"
 C_CYAN="\e[36m"
 
+WDEV_ETC="${WDEV_ETC:-/etc/wdev}"
+
 validate_domain() {
  local d="${1:-}"
  if [ -z "$d" ] || [ ${#d} -gt 253 ] || [[ "$d" == *..* ]] || [[ ! "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
@@ -3570,8 +3729,27 @@ grant_web_write() {
 check_root() {
  if [ "$EUID" -ne 0 ]; then
  echo -e "${C_RED}Error: Jalankan perintah ini dengan hak akses root (sudo dev-site ...)${C_RESET}"
-    exit 1
-  fi
+ exit 1
+ fi
+}
+
+find_cf_tunnel_bin() {
+ local b
+ for b in /usr/local/bin/cf-tunnel "$HOME/.local/bin/cf-tunnel"; do
+ if [ -x "$b" ]; then
+ echo "$b"
+ return 0
+ fi
+ done
+ command -v cf-tunnel 2>/dev/null || return 1
+}
+
+validate_public_host() {
+ local h="${1:-}"
+ if [ -z "$h" ] || [ ${#h} -gt 253 ] || [[ "$h" == *..* ]] || [[ ! "$h" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
+ echo -e "${C_RED}Error: host publik tidak valid: '$h'.${C_RESET}" >&2
+ return 1
+ fi
 }
 
 
@@ -3975,6 +4153,12 @@ EOF_INCLUDE
 
   ln -sf "$conf_avail" "$conf_enabled"
 
+ # Terapkan eksposur Cloudflare yang sudah ada (jika vhost dibuat ulang)
+ wdev_apply_server_names "$domain" 2>/dev/null || true
+ if [ -f "/etc/ssl/local-certs/${domain}.pem" ] && ! wdev_cert_covers_publics "$domain" "/etc/ssl/local-certs/${domain}.pem"; then
+ wdev_regen_cert "$domain" 2>/dev/null || true
+ fi
+
  if ! hosts_has_domain "$domain"; then
  hosts_add_domain "$domain"
     echo -e "${C_CYAN}Menambahkan ${domain} ke /etc/hosts (127.0.0.1)${C_RESET}"
@@ -4019,10 +4203,31 @@ cmd_delete() {
   local conf_enabled="/etc/nginx/sites-enabled/${domain}.conf"
   local custom_conf="/etc/nginx/sites-available/${domain}.custom.conf"
 
-  local d_root="-"
-  if [ -f "$conf_avail" ]; then
-    d_root=$(grep -E '^[[:space:]]*root[[:space:]]+' "$conf_avail" | head -n1 | awk '{print $2}' | tr -d ';' || echo "-")
-  fi
+ local d_root="-"
+ if [ -f "$conf_avail" ]; then
+ d_root=$(grep -E '^[[:space:]]*root[[:space:]]+' "$conf_avail" | head -n1 | awk '{print $2}' | tr -d ';' || echo "-")
+ fi
+
+ # Hapus eksposur Cloudflare lebih dulu agar tidak ada ingress/CNAME menggantung
+ if [ -f "$WDEV_ETC/exposures/${domain}.conf" ]; then
+ local cf_bin h p
+ local -a profs=()
+ cf_bin=$(find_cf_tunnel_bin) || true
+ while IFS=$'\t' read -r h p; do
+ [ -n "$h" ] || continue
+ profs+=("$p")
+ if [ -n "$cf_bin" ]; then
+ "$cf_bin" dns rm --profile "$p" "$h" >/dev/null 2>&1 || true
+ fi
+ done < <(read_exposures "$domain")
+ rm -f "$WDEV_ETC/exposures/${domain}.conf"
+ if [ -n "$cf_bin" ]; then
+ for p in $(printf '%s\n' ${profs[@]+"${profs[@]}"} | sort -u); do
+ [ -n "$p" ] && "$cf_bin" sync --profile "$p" >/dev/null 2>&1 || true
+ done
+ fi
+ echo -e "${C_CYAN}[+] Eksposur Cloudflare untuk ${domain} dihapus.${C_RESET}"
+ fi
 
   rm -f "$conf_enabled" "$conf_avail" "$custom_conf"
   rm -f "/etc/ssl/local-certs/${domain}.pem" "/etc/ssl/local-certs/${domain}-key.pem"
@@ -4040,8 +4245,8 @@ cmd_list() {
   echo -e "${C_BOLD}========================================================================================================${C_RESET}"
   echo -e "${C_BOLD}                                DAFTAR VIRTUAL HOST (DEV-SITE)                                          ${C_RESET}"
   echo -e "${C_BOLD}========================================================================================================${C_RESET}"
-  printf "${C_BOLD}%-22s | %-9s | %-10s | %-32s | %-16s${C_RESET}\n" "Domain" "Status" "Tipe" "Document Root" "PHP Socket"
-  echo "-----------------------+-----------+------------+----------------------------------+------------------"
+  printf "${C_BOLD}%-22s | %-9s | %-10s | %-32s | %-16s | %s${C_RESET}\n" "Domain" "Status" "Tipe" "Document Root" "PHP Socket" "Public Host"
+  echo "-----------------------+-----------+------------+----------------------------------+------------------+------------------------------"
 
   local count=0
   if [ -d "/etc/nginx/sites-available" ]; then
@@ -4060,7 +4265,10 @@ cmd_list() {
       f_sock=$(grep -E 'fastcgi_pass unix:' "$conf" | head -n1 | sed -E 's/.*fastcgi_pass unix:([^;]+);.*/\1/' || echo "-")
       local short_sock
       short_sock=$(basename "$f_sock" 2>/dev/null || echo "$f_sock")
-      printf "%-22s | %-9s | %-10s | %-32s | %-16s\n" "$dname" "$is_enabled" "${stype^^}" "$d_root" "$short_sock"
+      local public_hosts
+      public_hosts=$(wdev_public_hosts "$dname" | paste -sd, - 2>/dev/null || true)
+      [ -n "$public_hosts" ] || public_hosts="-"
+      printf "%-22s | %-9s | %-10s | %-32s | %-16s | %s\n" "$dname" "$is_enabled" "${stype^^}" "$d_root" "$short_sock" "$public_hosts"
       count=$((count + 1))
     done
   fi
@@ -4079,23 +4287,25 @@ cmd_cert() {
     exit 1
   fi
  validate_domain "$domain" || exit 1
-  mkdir -p /etc/ssl/local-certs
-  [ -d /etc/ssl/local-certs/ca ] && export CAROOT="/etc/ssl/local-certs/ca"
-  local cert_file="/etc/ssl/local-certs/${domain}.pem"
-  local key_file="/etc/ssl/local-certs/${domain}-key.pem"
-  mkcert -cert-file "$cert_file" -key-file "$key_file" "$domain" "*.$domain" "localhost" 127.0.0.1 ::1
-  chmod 644 "$cert_file"
-  chmod 600 "$key_file"
-  command -v chcon >/dev/null 2>&1 && chcon -t cert_t "$cert_file" "$key_file" 2>/dev/null || true
+ mkdir -p /etc/ssl/local-certs
+ [ -d /etc/ssl/local-certs/ca ] && export CAROOT="/etc/ssl/local-certs/ca"
+ local cert_file="/etc/ssl/local-certs/${domain}.pem"
+ if ! wdev_regen_cert "$domain"; then
+ echo -e "${C_RED}Error: gagal membuat sertifikat untuk ${domain}.${C_RESET}" >&2
+ exit 1
+ fi
+ wdev_apply_server_names "$domain" 2>/dev/null || true
 
-  # Otomatis pastikan domain ada di /etc/hosts (127.0.0.1)
+ # Otomatis pastikan domain ada di /etc/hosts (127.0.0.1)
  if ! hosts_has_domain "$domain"; then
  hosts_add_domain "$domain"
-    echo -e "${C_CYAN}[+] Menambahkan ${domain} ke /etc/hosts (127.0.0.1)${C_RESET}"
+ echo -e "${C_CYAN}[+] Menambahkan ${domain} ke /etc/hosts (127.0.0.1)${C_RESET}"
  fi
 
-  sync_browser_ssl_policies
-  echo -e "${C_GREEN}[✓] Sertifikat SSL untuk ${domain} berhasil diperbarui di /etc/ssl/local-certs/${C_RESET}"
+ sync_browser_ssl_policies
+ local pub
+ pub=$(wdev_public_hosts "$domain" | paste -sd, - 2>/dev/null || true)
+ echo -e "${C_GREEN}[✓] Sertifikat SSL untuk ${domain} diperbarui${pub:+ (SAN: ${pub})}${C_RESET}"
 }
 
 cmd_sync() {
@@ -4151,15 +4361,315 @@ EOF_INIT
   fi
 }
 
+read_exposures() {
+ local f
+ f="$WDEV_ETC/exposures/${1}.conf"
+ [ -f "$f" ] || return 0
+ awk 'NF >= 2 && $1 !~ /^#/ { print $1 "\t" $2 }' "$f"
+}
+
+write_exposures() {
+ local domain="$1" file tmp
+ shift
+ file="$WDEV_ETC/exposures/${domain}.conf"
+ tmp="${file}.tmp.$$"
+ mkdir -p "$WDEV_ETC/exposures"
+ if [ "$#" -eq 0 ]; then
+ rm -f "$file"
+ return 0
+ fi
+ {
+ echo "# Eksposur Cloudflare untuk ${domain} (dikelola dev-site, jangan edit manual)"
+ printf '%s\n' "$@"
+ } > "$tmp"
+ chmod 644 "$tmp"
+ mv -f "$tmp" "$file"
+}
+
+exposure_profile_exists() {
+ [ -f "$WDEV_ETC/cloudflare/accounts/${1}.conf" ]
+}
+
+cmd_expose() {
+ check_root
+ local domain="" public_host="" profile="" keep=0 positional=0
+ while [ $# -gt 0 ]; do
+ case "$1" in
+ --profile) profile=${2:-}; shift 2 ;;
+ --profile=*) profile=${1#*=}; shift ;;
+ --keep-cert) keep=1; shift ;;
+ -*) echo -e "${C_RED}Error: argumen tidak dikenal: $1${C_RESET}" >&2; exit 1 ;;
+ *)
+ case "$positional" in
+ 0) domain=$1 ;;
+ 1) public_host=$1 ;;
+ *) echo -e "${C_RED}Error: terlalu banyak argumen: $1${C_RESET}" >&2; exit 1 ;;
+ esac
+ positional=$((positional + 1))
+ shift
+ ;;
+ esac
+ done
+ if [ -z "$domain" ] || [ -z "$public_host" ]; then
+ echo -e "${C_RED}Error: Parameter tidak lengkap!${C_RESET}"
+ echo "Penggunaan: sudo dev-site expose <domain> <public-host> --profile <profil>"
+ exit 1
+ fi
+ validate_domain "$domain" || exit 1
+ validate_public_host "$public_host" || exit 1
+ [ -f "/etc/nginx/sites-available/${domain}.conf" ] || {
+ echo -e "${C_RED}Error: vhost '${domain}' tidak ditemukan. Buat dulu: sudo dev-site create ${domain} <path>${C_RESET}" >&2
+ exit 1
+ }
+ if [ -z "$profile" ]; then
+ local -a _profs=()
+ local p
+ while IFS= read -r p; do [ -n "$p" ] && _profs+=("$p"); done < <(find "$WDEV_ETC/cloudflare/accounts" -maxdepth 1 -name '*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort)
+ if [ "${#_profs[@]}" -eq 1 ]; then
+ profile="${_profs[0]}"
+ echo "Menggunakan profil satu-satunya: ${profile}"
+ else
+ echo -e "${C_RED}Error: --profile wajib diisi. Profil tersedia:${C_RESET}"
+ for p in "${_profs[@]}"; do echo " - $p"; done
+ exit 1
+ fi
+ fi
+ exposure_profile_exists "$profile" || {
+ echo -e "${C_RED}Error: profil '${profile}' belum ada. Tambah dengan: sudo cf-tunnel account add ${profile}${C_RESET}" >&2
+ exit 1
+ }
+ local profile_mode
+ profile_mode=$(awk -F= '$1 == "CF_MODE" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
+ if [ "$profile_mode" != "local" ]; then
+ echo -e "${C_RED}Error: profil '${profile}' memakai mode '${profile_mode}' (remotely-managed).${C_RESET}" >&2
+ echo "Ingress mode token diatur di dashboard Cloudflare. Gunakan profil mode local untuk expose otomatis." >&2
+ exit 1
+ fi
+ local zone rel
+ zone=$(awk -F= '$1 == "CF_ZONE" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
+ if [ -z "$zone" ] || [ "$public_host" = "$zone" ]; then
+ echo -e "${C_RED}Error: host '${public_host}' harus satu label di bawah zone '${zone:-?}' (profil ${profile}).${C_RESET}" >&2
+ exit 1
+ fi
+ case "$public_host" in
+ *."$zone")
+ rel="${public_host%.$zone}"
+ if [ -z "$rel" ] || [[ "$rel" == *.* ]]; then
+ echo -e "${C_RED}Error: host '${public_host}' harus satu label di bawah zone '${zone}' (profil ${profile}).${C_RESET}" >&2
+ echo "Contoh valid: app-dev.${zone}" >&2
+ exit 1
+ fi
+ ;;
+ *)
+ echo -e "${C_RED}Error: host '${public_host}' bukan bagian dari zone '${zone}' (profil ${profile}).${C_RESET}" >&2
+ exit 1
+ ;;
+ esac
+
+ # Host publik tidak boleh dipakai site/profil lain
+ local owner_domain="" owner_profile="" f
+ if [ -d "$WDEV_ETC/exposures" ]; then
+ while IFS= read -r f; do
+ [ -f "$f" ] || continue
+ local op
+ op=$(awk -v h="$public_host" 'NF >= 2 && $1 == h { print $2; exit }' "$f")
+ if [ -n "$op" ]; then
+ owner_domain=$(basename "$f" .conf)
+ owner_profile="$op"
+ break
+ fi
+ done < <(find "$WDEV_ETC/exposures" -maxdepth 1 -type f -name '*.conf' -print 2>/dev/null | sort)
+ fi
+ if [ -n "$owner_domain" ]; then
+ if [ "$owner_domain" = "$domain" ] && [ "$owner_profile" = "$profile" ]; then
+ echo "Eksposur ${public_host} sudah terdaftar untuk ${domain} (profil ${profile})."
+ return 0
+ fi
+ echo -e "${C_RED}Error: host '${public_host}' sudah dipakai oleh '${owner_domain}' (profil ${owner_profile}).${C_RESET}" >&2
+ exit 1
+ fi
+
+ # Host lokal tidak boleh berupa domain Cloudflare aktif
+ if [ "$public_host" = "$domain" ]; then
+ echo -e "${C_RED}Error: host publik tidak boleh sama dengan domain lokal '${domain}'.${C_RESET}" >&2
+ exit 1
+ fi
+
+ local -a lines=()
+ local h p
+ while IFS=$'\t' read -r h p; do
+ [ -n "$h" ] && lines+=("${h}	${p}")
+ done < <(read_exposures "$domain")
+ local prev_count=${#lines[@]}
+ lines+=("${public_host}	${profile}")
+ write_exposures "$domain" "${lines[@]}"
+
+ rollback_expose() {
+ if [ "$prev_count" -eq 0 ]; then
+ write_exposures "$domain"
+ else
+ write_exposures "$domain" "${lines[@]:0:$prev_count}"
+ fi
+ wdev_apply_server_names "$domain" 2>/dev/null || true
+ wdev_regen_cert "$domain" 2>/dev/null || true
+ }
+
+ echo -e "${C_CYAN}[*] Memperbarui server_name & sertifikat mkcert untuk ${domain}...${C_RESET}"
+ wdev_apply_server_names "$domain" || { rollback_expose; echo -e "${C_RED}Error: gagal memperbarui server_name.${C_RESET}" >&2; exit 1; }
+ if [ "$keep" -ne 1 ]; then
+ wdev_regen_cert "$domain" || { rollback_expose; echo -e "${C_RED}Error: gagal regenerate sertifikat (mkcert).${C_RESET}" >&2; exit 1; }
+ fi
+
+ if nginx -t >/dev/null 2>&1; then
+ systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+ else
+ rollback_expose
+ echo -e "${C_RED}Error: konfigurasi Nginx tidak valid setelah expose; perubahan dibatalkan.${C_RESET}" >&2
+ exit 1
+ fi
+
+ local cf_bin
+ cf_bin=$(find_cf_tunnel_bin) || true
+ if [ -n "$cf_bin" ]; then
+ "$cf_bin" sync --profile "$profile" >/dev/null 2>&1 || echo -e "${C_YELLOW}[!] Sinkronisasi tunnel '${profile}' gagal; jalankan: sudo cf-tunnel sync --profile ${profile}${C_RESET}" >&2
+ "$cf_bin" dns ensure --profile "$profile" >/dev/null 2>&1 || echo -e "${C_YELLOW}[!] DNS '${public_host}' belum tentu dibuat; jalankan: sudo cf-tunnel dns add --profile ${profile} ${public_host}${C_RESET}" >&2
+ else
+ echo -e "${C_YELLOW}[!] cf-tunnel belum terpasang; ingress & DNS belum disinkronkan.${C_RESET}" >&2
+ fi
+
+ echo -e "${C_GREEN}[✓] ${public_host} -> https://${domain} (profil ${profile})${C_RESET}"
+ echo "Uji lokal : curl -kI https://${public_host} --resolve ${public_host}:443:127.0.0.1"
+ echo "Uji publik : curl -sI https://${public_host} | grep -i cf-ray"
+}
+
+cmd_unexpose() {
+ check_root
+ local domain="" public_host="" force=0 positional=0
+ while [ $# -gt 0 ]; do
+ case "$1" in
+ --force|-f) force=1; shift ;;
+ -*) echo -e "${C_RED}Error: argumen tidak dikenal: $1${C_RESET}" >&2; exit 1 ;;
+ *)
+ case "$positional" in
+ 0) domain=$1 ;;
+ 1) public_host=$1 ;;
+ *) echo -e "${C_RED}Error: terlalu banyak argumen: $1${C_RESET}" >&2; exit 1 ;;
+ esac
+ positional=$((positional + 1))
+ shift
+ ;;
+ esac
+ done
+ if [ -z "$domain" ]; then
+ echo -e "${C_RED}Error: Masukkan domain!${C_RESET}"
+ echo "Penggunaan: sudo dev-site unexpose <domain> [public-host]"
+ exit 1
+ fi
+ validate_domain "$domain" || exit 1
+
+ local -a all=() remaining=()
+ local h p profile_of_target=""
+ while IFS=$'\t' read -r h p; do
+ [ -n "$h" ] || continue
+ all+=("${h}	${p}")
+ if [ -z "$public_host" ] || [ "$h" = "$public_host" ]; then
+ profile_of_target="$p"
+ else
+ remaining+=("${h}	${p}")
+ fi
+ done < <(read_exposures "$domain")
+
+ if [ "${#all[@]}" -eq 0 ]; then
+ echo "Tidak ada eksposur untuk '${domain}'."
+ return 0
+ fi
+ if [ -n "$public_host" ] && [ "${#all[@]}" -eq "${#remaining[@]}" ]; then
+ echo -e "${C_RED}Error: '${public_host}' tidak terdaftar untuk '${domain}'.${C_RESET}" >&2
+ exit 1
+ fi
+
+ if [ "$force" -ne 1 ]; then
+ echo "Eksposur yang akan dihapus:"
+ local kept=0
+ local e ep
+ for e in "${all[@]}"; do
+ ep="${e#*$'\t'}"
+ if [ -z "$public_host" ] || [ "${e%%$'\t'*}" = "$public_host" ]; then
+ echo " - ${e%%$'\t'*} (profil ${ep})"
+ kept=$((kept + 1))
+ fi
+ done
+ if [ -t 0 ]; then
+ local ans
+ read -rp "Hapus ${kept} eksposur (ingress + CNAME + SAN cert)? [y/N]: " ans
+ case "$ans" in y|Y|yes) ;; *) echo "Dibatalkan."; return 0 ;; esac
+ fi
+ fi
+
+ write_exposures "$domain" ${remaining[@]+"${remaining[@]}"}
+ wdev_apply_server_names "$domain" 2>/dev/null || true
+ wdev_regen_cert "$domain" 2>/dev/null || true
+
+ local cf_bin
+ cf_bin=$(find_cf_tunnel_bin) || true
+ if [ -n "$cf_bin" ]; then
+ if [ -n "$public_host" ]; then
+ [ -n "$profile_of_target" ] && "$cf_bin" dns rm --profile "$profile_of_target" "$public_host" >/dev/null 2>&1 || true
+ else
+ local e
+ for e in "${all[@]}"; do
+ "$cf_bin" dns rm --profile "${e#*$'\t'}" "${e%%$'\t'*}" >/dev/null 2>&1 || true
+ done
+ fi
+ "$cf_bin" sync --all >/dev/null 2>&1 || true
+ fi
+
+ if nginx -t >/dev/null 2>&1; then
+ systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+ fi
+ echo -e "${C_GREEN}[✓] Eksposur '${domain}'${public_host:+ (${public_host})} dihapus. Virtual host lokal tetap aktif.${C_RESET}"
+}
+
+cmd_exposures() {
+ local f domain host profile status count=0
+ echo -e "${C_BOLD}=================================================================================================${C_RESET}"
+ echo -e "${C_BOLD} DAFTAR EKSPOSUR CLOUDFLARE (DEV-SITE) ${C_RESET}"
+ echo -e "${C_BOLD}=================================================================================================${C_RESET}"
+ printf "${C_BOLD}%-24s | %-40s | %-12s | %s${C_RESET}\n" "Domain" "Public Host" "Profile" "Tunnel"
+ echo "-------------------------+------------------------------------------+--------------+------------------"
+ if [ -d "$WDEV_ETC/exposures" ]; then
+ for f in "$WDEV_ETC/exposures"/*.conf; do
+ [ -f "$f" ] || continue
+ domain=$(basename "$f" .conf)
+ while IFS=$'\t' read -r host profile; do
+ [ -n "$host" ] || continue
+ status="-"
+ if [ -f "$WDEV_ETC/cloudflare/accounts/${profile}.conf" ]; then
+ status=$(awk -F= '$1 == "CF_TUNNEL_NAME" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
+ fi
+ printf "%-24s | %-40s | %-12s | %s\n" "$domain" "$host" "$profile" "${status:--}"
+ count=$((count + 1))
+ done < <(read_exposures "$domain")
+ done
+ fi
+ if [ "$count" -eq 0 ]; then
+ echo " Belum ada eksposur. Gunakan: sudo dev-site expose <domain> <public-host> --profile <profil>"
+ fi
+ echo -e "${C_BOLD}=================================================================================================${C_RESET}"
+}
+
 show_help() {
   echo "Penggunaan: dev-site <perintah> [argumen]"
   echo ""
   echo "Perintah Utama:"
-  echo "  create <domain> <docroot> [php_ver] [type]   Buat virtual host Nginx baru + SSL + aturan framework"
-  echo "  delete <domain>                              Hapus virtual host, SSL cert, dan entri hosts"
-  echo "  list, ls                                     Tampilkan semua virtual host dev-site"
-  echo "  cert <domain>                                Buat / perbarui SSL certificate untuk domain"
-  echo "  sync, update-ssl                             Sinkronisasi /etc/hosts, SSL certs, & trust store browser"
+  echo " create <domain> <docroot> [php_ver] [type] Buat virtual host Nginx baru + SSL + aturan framework"
+  echo " delete <domain> Hapus virtual host, SSL cert, dan entri hosts"
+  echo " list, ls Tampilkan semua virtual host dev-site"
+  echo " cert <domain> Buat / perbarui SSL certificate untuk domain"
+  echo " expose <domain> <public-host> --profile <p> Ekspos vhost ke Cloudflare Tunnel"
+  echo " unexpose <domain> [public-host] Hapus eksposur publik (vhost lokal tetap ada)"
+  echo " exposures Tampilkan semua eksposur publik per profil"
+  echo " sync, update-ssl Sinkronisasi /etc/hosts, SSL certs, & trust store browser"
   echo "  custom <domain>                              Buka/tampilkan berkas aturan kustom (pengganti .htaccess)"
   echo "  help, --help                                 Tampilkan bantuan ini"
   echo ""
@@ -4196,11 +4706,22 @@ case "${1:-}" in
   list|ls)
     cmd_list
     ;;
-  cert)
-    shift
-    cmd_cert "$@"
-    ;;
-  sync|sync-hosts|update-ssl)
+cert)
+ shift
+ cmd_cert "$@"
+ ;;
+ expose)
+ shift
+ cmd_expose "$@"
+ ;;
+ unexpose)
+ shift
+ cmd_unexpose "$@"
+ ;;
+ exposures|exposure-list)
+ cmd_exposures
+ ;;
+ sync|sync-hosts|update-ssl)
     shift
     cmd_sync "$@"
     ;;
@@ -4220,7 +4741,12 @@ esac
 EOF_DEVSITE
  local shared_file
  shared_file=$(mktemp)
- declare -f hosts_has_domain hosts_add_domain hosts_remove_domain get_php_fpm_socket sync_browser_ssl_policies sync_vhosts_and_hosts > "$shared_file"
+ declare -f hosts_has_domain hosts_add_domain hosts_remove_domain \
+ wdev_exposures_dir wdev_accounts_dir wdev_exposure_file wdev_exposure_lines \
+ wdev_public_hosts wdev_host_owner wdev_profile_list wdev_profile_exists \
+ wdev_profile_get wdev_profile_zone wdev_host_in_zone wdev_apply_server_names \
+ wdev_cert_covers_publics wdev_regen_cert wdev_refresh_site \
+ get_php_fpm_socket sync_browser_ssl_policies sync_vhosts_and_hosts > "$shared_file"
  printf 'get_socket() { get_php_fpm_socket "$@"; }\n' >> "$shared_file"
  awk -v shared="$shared_file" '
  $0 == "# @@SHARED_FUNCTIONS@@" {
@@ -4622,6 +5148,93 @@ EOF_CHROME_POLICY
   install_dev_site_helper
   install_php_switch_helper
   echo "Local SSL (mkcert) dan CLI dev-site berhasil disiapkan!"
+}
+
+step_cloudflare() {
+ check_root
+ detect_os
+ echo "Menyiapkan Cloudflare Tunnel (cloudflared)..."
+
+ if ! command -v cloudflared >/dev/null 2>&1 && [ ! -x /usr/local/bin/cloudflared ]; then
+ if [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
+ curl -fsSL https://pkg.cloudflare.com/cloudflared.repo -o /etc/yum.repos.d/cloudflared.repo 2>/dev/null || true
+ dnf -y install cloudflared 2>/dev/null || true
+ elif [ "$PKG_MGR" = "apt" ]; then
+ mkdir -p /usr/share/keyrings 2>/dev/null || true
+ curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg 2>/dev/null || true
+ if [ -s /usr/share/keyrings/cloudflare-main.gpg ]; then
+ echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list
+ apt-get update -y >/dev/null 2>&1 || true
+ apt-get install -y cloudflared 2>/dev/null || true
+ fi
+ fi
+ fi
+
+ if ! command -v cloudflared >/dev/null 2>&1 && [ ! -x /usr/local/bin/cloudflared ]; then
+ echo "Repo paket tidak tersedia; mengunduh binary cloudflared dari GitHub..."
+ local CF_ARCH CF_VER CF_ASSET CF_TMP CF_SHA
+ case "$(uname -m)" in
+ x86_64|amd64) CF_ARCH="amd64" ;;
+ aarch64|arm64) CF_ARCH="arm64" ;;
+ *) echo "Error: arsitektur $(uname -m) belum didukung unduhan cloudflared otomatis."; return 1 ;;
+ esac
+ CF_VER=$(get_github_latest_tag "cloudflare/cloudflared" "-")
+ if [ -z "$CF_VER" ] || [ "$CF_VER" = "-" ]; then
+ echo "Error: gagal menentukan rilis cloudflared terbaru."
+ return 1
+ fi
+ CF_ASSET="cloudflared-linux-${CF_ARCH}"
+ CF_TMP=$(mktemp)
+ TMP_CLEANUP_FILES+=("$CF_TMP")
+ if ! curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CF_VER}/${CF_ASSET}" -o "$CF_TMP"; then
+ rm -f "$CF_TMP"
+ echo "Error: gagal mengunduh cloudflared ${CF_VER} (${CF_ARCH})."
+ return 1
+ fi
+ CF_SHA=$(get_github_asset_digest "cloudflare/cloudflared" "$CF_ASSET")
+ if ! verify_sha256 "$CF_TMP" "$CF_SHA" "cloudflared ${CF_VER}"; then
+ rm -f "$CF_TMP"
+ return 1
+ fi
+ if [ "$(head -c 4 "$CF_TMP" | od -An -tx1 | tr -d '[:space:]')" != "7f454c46" ]; then
+ rm -f "$CF_TMP"
+ echo "Error: berkas cloudflared yang diunduh bukan binary ELF."
+ return 1
+ fi
+ install -m 755 "$CF_TMP" /usr/local/bin/cloudflared
+ rm -f "$CF_TMP"
+ fi
+
+ local cf_bin cf_ver
+ cf_bin=$(command -v cloudflared 2>/dev/null || true)
+ [ -z "$cf_bin" ] && [ -x /usr/local/bin/cloudflared ] && cf_bin=/usr/local/bin/cloudflared
+ [ -n "$cf_bin" ] || { echo "Error: cloudflared gagal dipasang."; return 1; }
+ cf_ver=$("$cf_bin" --version 2>/dev/null | awk '{print $3}')
+
+ mkdir -p "$WDEV_ETC/cloudflare/accounts" "$WDEV_ETC/exposures" /etc/cloudflared
+ chmod 700 "$WDEV_ETC/cloudflare" "$WDEV_ETC/cloudflare/accounts" /etc/cloudflared 2>/dev/null || true
+ chmod 755 "$WDEV_ETC" "$WDEV_ETC/exposures" 2>/dev/null || true
+
+ install_cf_tunnel_helper "/usr/local/bin/cf-tunnel" || return 1
+ if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+ local u_home
+ u_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+ if [ -n "$u_home" ]; then
+ mkdir -p "$u_home/.local/bin"
+ install_cf_tunnel_helper "$u_home/.local/bin/cf-tunnel" || true
+ fi
+ fi
+ ensure_dev_site_helper
+
+ echo "cloudflared ${cf_ver:-Terpasang} siap."
+ if [ ! -f "/etc/ssl/local-certs/ca/rootCA.pem" ]; then
+ echo "Peringatan: CA mkcert belum ada. Jalankan 'sudo $0 --ssl' agar origin HTTPS tervalidasi tunnel."
+ fi
+ if [ -z "$(wdev_profile_list)" ]; then
+ echo "Belum ada akun Cloudflare. Tambah dengan:"
+ echo " sudo cf-tunnel account add <profil>"
+ echo " sudo dev-site expose <domain> <public-host> --profile <profil>"
+ fi
 }
 
 step_php_full_stack() {
@@ -5045,19 +5658,32 @@ step_verify_services() {
   systemctl restart "$REDIS_SVC" 2>/dev/null || systemctl restart redis 2>/dev/null || systemctl restart valkey 2>/dev/null || true
   systemctl restart nginx 2>/dev/null || true
   systemctl restart php-fpm 2>/dev/null || true
-  for fpm_svc in $(systemctl list-unit-files 'php*-fpm.service' --no-legend 2>/dev/null | awk '{print $1}'); do
-    systemctl restart "$fpm_svc" 2>/dev/null || true
-  done
-  restart_orca_service 2>/dev/null || true
+ for fpm_svc in $(systemctl list-unit-files 'php*-fpm.service' --no-legend 2>/dev/null | awk '{print $1}'); do
+ systemctl restart "$fpm_svc" 2>/dev/null || true
+ done
+ for cf_unit in $(systemctl list-unit-files 'cloudflared-*.service' --no-legend 2>/dev/null | awk '{print $1}'); do
+ systemctl restart "$cf_unit" 2>/dev/null || true
+ done
+ restart_orca_service 2>/dev/null || true
+}
+
+step_update_cloudflare() {
+ if command -v cloudflared >/dev/null 2>&1 || [ -x /usr/local/bin/cloudflared ]; then
+ step_cloudflare
+ else
+ echo "cloudflared tidak terpasang; pembaruan Cloudflare dilewati."
+ fi
+ ensure_cf_tunnel_helper
 }
 
 step_update_helpers() {
-  echo "Memperbarui helper CLI (dev-site, php-switch, pg-switch, node-switch)..."
-  ensure_dev_site_helper 
-  ensure_pg_switch_helper 
-  ensure_node_switch_helper
-  install_php_switch_helper
-  install_node_switch_helper
+ echo "Memperbarui helper CLI (dev-site, cf-tunnel, php-switch, pg-switch, node-switch)..."
+ ensure_dev_site_helper
+ ensure_cf_tunnel_helper
+ ensure_pg_switch_helper
+ ensure_node_switch_helper
+ install_php_switch_helper
+ install_node_switch_helper
 }
 
 run_update() {
@@ -5080,15 +5706,16 @@ run_update() {
   collect_installed_versions VERSIONS_BEFORE
 
   CURRENT_STEP=0
-  TOTAL_STEPS=7
+  TOTAL_STEPS=8
 
-  run_step "1/7 Memperbarui repository & paket sistem ($PKG_MGR_NAME)" step_update_system_pkgs
-  run_step "2/7 Memperbarui Rust toolchain & Sccache" step_rust
-  run_step "3/7 Memeriksa & memperbarui Golang" step_golang
-  run_step "4/7 Memperbarui Flutter & Android SDK" step_update_flutter
-  run_step "5/7 Memperbarui Orca ADE" step_update_orca
-  run_step "6/7 Memperbarui helper CLI (dev-site, php-switch, pg-switch, node-switch)" step_update_helpers
-  run_step "7/7 Memverifikasi layanan PostgreSQL, Redis, Nginx, PHP-FPM & Orca" step_verify_services
+  run_step "1/8 Memperbarui repository & paket sistem ($PKG_MGR_NAME)" step_update_system_pkgs
+  run_step "2/8 Memperbarui Rust toolchain & Sccache" step_rust
+  run_step "3/8 Memeriksa & memperbarui Golang" step_golang
+  run_step "4/8 Memperbarui Flutter & Android SDK" step_update_flutter
+  run_step "5/8 Memperbarui Orca ADE" step_update_orca
+  run_step "6/8 Memperbarui helper CLI (dev-site, cf-tunnel, php-switch, pg-switch, node-switch)" step_update_helpers
+  run_step "7/8 Memperbarui cloudflared & konfigurasi Cloudflare" step_update_cloudflare
+  run_step "8/8 Memverifikasi layanan PostgreSQL, Redis, Nginx, PHP-FPM, Cloudflare & Orca" step_verify_services
 
   echo -e "\n\nSemua langkah pembaruan selesai!"
 
@@ -5972,11 +6599,34 @@ show_info() {
     if [ -d "/etc/nginx/sites-available" ]; then
       SITE_COUNT=$(find /etc/nginx/sites-available -type f -name "*.conf" ! -name "*.custom.conf" 2>/dev/null | wc -l)
     fi
-    printf "  %-18s: Terpasang (/usr/local/bin/dev-site, %d vhosts)\n" "Dev-Site Helper" "$SITE_COUNT"
-  fi
+ printf " %-18s: Terpasang (/usr/local/bin/dev-site, %d vhosts)\n" "Dev-Site Helper" "$SITE_COUNT"
+ fi
 
-  echo "------------------------------------------------------------"
-  echo "STATUS SHELL & OH MY ZSH:"
+ echo "------------------------------------------------------------"
+ echo "STATUS CLOUDFLARE TUNNEL:"
+ local CF_BIN=""
+ if command -v cloudflared >/dev/null 2>&1; then
+ CF_BIN=$(command -v cloudflared)
+ elif [ -x /usr/local/bin/cloudflared ]; then
+ CF_BIN=/usr/local/bin/cloudflared
+ fi
+ if [ -n "$CF_BIN" ]; then
+ printf " %-18s: %s\n" "cloudflared" "$("$CF_BIN" --version 2>/dev/null | head -n1)"
+ else
+ printf " %-18s: Belum terinstal\n" "cloudflared"
+ fi
+ if [ -x /usr/local/bin/cf-tunnel ]; then
+ if [ "$EUID" -eq 0 ]; then
+ /usr/local/bin/cf-tunnel status --all 2>/dev/null || true
+ else
+ printf " %-18s: Terpasang (jalankan dengan sudo untuk detail profil)\n" "cf-tunnel"
+ fi
+ else
+ printf " %-18s: Belum terinstal (sudo $0 --cloudflare)\n" "cf-tunnel"
+ fi
+
+ echo "------------------------------------------------------------"
+ echo "STATUS SHELL & OH MY ZSH:"
   if command -v zsh >/dev/null 2>&1; then
     local ZSH_VER
     ZSH_VER=$(zsh --version 2>/dev/null | head -n1)
@@ -6847,6 +7497,209 @@ menu_orca() {
 }
 
 # --- SUBMENU PHP WEB STACK & LOCAL SSL ---
+cf_tunnel_menu_bin() {
+ local b
+ for b in /usr/local/bin/cf-tunnel "$HOME/.local/bin/cf-tunnel"; do
+ if [ -x "$b" ]; then
+ echo "$b"
+ return 0
+ fi
+ done
+ command -v cf-tunnel 2>/dev/null || return 1
+}
+
+dev_site_menu_bin() {
+ local b
+ for b in /usr/local/bin/dev-site "$HOME/.local/bin/dev-site"; do
+ if [ -x "$b" ]; then
+ echo "$b"
+ return 0
+ fi
+ done
+ command -v dev-site 2>/dev/null || return 1
+}
+
+run_cf_menu() {
+ local b
+ b=$(cf_tunnel_menu_bin) || {
+ echo "cf-tunnel belum terpasang. Jalankan: sudo $0 --cloudflare"
+ return 1
+ }
+ if [ "$EUID" -eq 0 ]; then
+ "$b" "$@"
+ else
+ sudo "$b" "$@"
+ fi
+}
+
+menu_cf_pick_profile() {
+ local -a profs=()
+ local p
+ while IFS= read -r p; do
+ [ -n "$p" ] && profs+=("$p")
+ done < <(wdev_profile_list)
+ if [ "${#profs[@]}" -eq 0 ]; then
+ echo "Belum ada profil Cloudflare. Tambah dulu lewat menu 2."
+ return 1
+ fi
+ printf 'Profil tersedia: %s\n' "${profs[*]}"
+ read -rp "Nama profil: " p
+ [ -n "$p" ] || return 1
+ printf '%s\n' "$p"
+}
+
+menu_cf_service() {
+ local action target
+ echo "Aksi service:"
+ echo "1. start   2. stop   3. restart   4. logs   5. status"
+ echo "6. install 7. enable 8. disable"
+ read -rp "Pilih aksi [1-8]: " action
+ case "$action" in
+ 1) action="start" ;;
+ 2) action="stop" ;;
+ 3) action="restart" ;;
+ 4) action="logs" ;;
+ 5) action="status" ;;
+ 6) action="install" ;;
+ 7) action="enable" ;;
+ 8) action="disable" ;;
+ *) echo "Aksi tidak valid."; return 1 ;;
+ esac
+ read -rp "Profil (nama profil atau 'all'): " target
+ if [ "$target" = "all" ]; then
+ run_cf_menu service "$action" --all
+ else
+ [ -n "$target" ] && run_cf_menu service "$action" --profile "$target"
+ fi
+}
+
+menu_cf_dns() {
+ local action p host
+ echo "1. List CNAME   2. Tambah host   3. Hapus host   4. Sync semua eksposur"
+ read -rp "Pilih aksi [1-4]: " action
+ p=$(menu_cf_pick_profile) || return 1
+ case "$action" in
+ 1) run_cf_menu dns list --profile "$p" ;;
+ 2)
+ read -rp "Host publik (contoh: app-dev.example.com): " host
+ [ -n "$host" ] && run_cf_menu dns add --profile "$p" "$host"
+ ;;
+ 3)
+ read -rp "Host publik yang dihapus: " host
+ [ -n "$host" ] && run_cf_menu dns rm --profile "$p" "$host"
+ ;;
+ 4) run_cf_menu dns ensure --profile "$p" ;;
+ *) echo "Aksi tidak valid." ;;
+ esac
+}
+
+menu_cf_expose() {
+ local ds d host p
+ ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
+ read -rp "Domain lokal (contoh: myapp.test): " d
+ [ -n "$d" ] || return 1
+ read -rp "Host publik (contoh: app-dev.example.com): " host
+ [ -n "$host" ] || return 1
+ p=$(menu_cf_pick_profile) || return 1
+ if [ "$EUID" -eq 0 ]; then
+ "$ds" expose "$d" "$host" --profile "$p"
+ else
+ sudo "$ds" expose "$d" "$host" --profile "$p"
+ fi
+}
+
+menu_cf_unexpose() {
+ local ds d host
+ ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
+ read -rp "Domain lokal (contoh: myapp.test): " d
+ [ -n "$d" ] || return 1
+ read -rp "Host publik (kosongkan untuk semua eksposur domain): " host
+ if [ "$EUID" -eq 0 ]; then
+ if [ -n "$host" ]; then
+ "$ds" unexpose "$d" "$host"
+ else
+ "$ds" unexpose "$d"
+ fi
+ else
+ if [ -n "$host" ]; then
+ sudo "$ds" unexpose "$d" "$host"
+ else
+ sudo "$ds" unexpose "$d"
+ fi
+ fi
+}
+
+menu_cloudflare() {
+ while true; do
+ echo ""
+ echo "=========================================="
+ echo " CLOUDFLARE TUNNEL & DNS MANAGER "
+ echo "=========================================="
+ echo "1. Status akun, tunnel, service & eksposur"
+ echo "2. Tambah akun Cloudflare"
+ echo "3. Hapus akun Cloudflare"
+ echo "4. Buat / rotasi tunnel akun"
+ echo "5. Sinkronkan ingress & DNS"
+ echo "6. Service: start / stop / restart / logs"
+ echo "7. DNS record manual (list / add / rm / ensure)"
+ echo "8. Diagnostik konektivitas (doctor)"
+ echo "9. Install / perbarui cloudflared"
+ echo "0. Kembali"
+ echo "=========================================="
+ read -rp "Pilih opsi [0-9]: " cf_opt
+
+ case $cf_opt in
+ 1)
+ run_cf_menu status --all
+ ;;
+ 2)
+ read -rp "Nama profil baru (contoh: cf1): " new_prof
+ if [ -n "$new_prof" ]; then
+ run_cf_menu account add "$new_prof"
+ fi
+ ;;
+ 3)
+ local del_prof
+ del_prof=$(menu_cf_pick_profile) || break
+ run_cf_menu account remove "$del_prof"
+ ;;
+ 4)
+ local tp
+ tp=$(menu_cf_pick_profile) || break
+ echo "1. Buat tunnel baru   2. Rotasi/ganti tunnel"
+ read -rp "Pilih [1-2]: " t_act
+ case "$t_act" in
+ 1) run_cf_menu tunnel create --profile "$tp" ;;
+ 2) run_cf_menu tunnel rotate --profile "$tp" ;;
+ *) echo "Pilihan tidak valid." ;;
+ esac
+ ;;
+ 5)
+ run_cf_menu sync --all
+ run_cf_menu dns ensure --all 2>/dev/null || true
+ ;;
+ 6)
+ menu_cf_service
+ ;;
+ 7)
+ menu_cf_dns
+ ;;
+ 8)
+ run_cf_menu doctor --all
+ ;;
+ 9)
+ run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare
+ ;;
+ 0|q|Q)
+ break
+ ;;
+ *)
+ echo "Pilihan tidak valid."
+ ;;
+ esac
+ done
+}
+
 menu_php_stack() {
  local TARGET_USER="${SUDO_USER:-$USER}"
  local TARGET_HOME
@@ -6863,9 +7716,13 @@ menu_php_stack() {
     echo "4. Daftar Virtual Host Aktif (dev-site list)"
     echo "5. Sinkronisasi Hosts & SSL Browser (dev-site sync)"
     echo "6. Ganti Versi PHP CLI & FPM (php-switch)"
-    echo "0 / 7. Kembali ke Menu Utama"
+    echo "7. Ekspos Virtual Host ke Internet (dev-site expose)"
+    echo "8. Hapus Eksposur Publik (dev-site unexpose)"
+    echo "9. Daftar Eksposur Cloudflare (dev-site exposures)"
+    echo "10. Kelola Cloudflare Tunnel & Akun"
+    echo "0 / 11. Kembali ke Menu Utama"
     echo "=========================================="
-    read -rp "Pilih opsi [0-7]: " p_opt
+    read -rp "Pilih opsi [0-11]: " p_opt
 
     case $p_opt in
       1) step_php_full_stack ;;
@@ -6910,16 +7767,28 @@ menu_php_stack() {
           sync_browser_ssl_policies
         fi
         ;;
-      6)
-        if [ -x "/usr/local/bin/php-switch" ]; then
-          php-switch list
-          read -rp "Masukkan versi target (contoh: 8.4, 8.3, 8.2, 8.1): " target_v
-          [ -n "$target_v" ] && sudo php-switch "$target_v"
-        else
-          echo "php-switch belum terpasang."
-        fi
-        ;;
-      0|7|q|Q) break ;;
+ 6)
+ if [ -x "/usr/local/bin/php-switch" ]; then
+ php-switch list
+ read -rp "Masukkan versi target (contoh: 8.4, 8.3, 8.2, 8.1): " target_v
+ [ -n "$target_v" ] && sudo php-switch "$target_v"
+ else
+ echo "php-switch belum terpasang."
+ fi
+ ;;
+ 7) menu_cf_expose ;;
+ 8) menu_cf_unexpose ;;
+ 9)
+ if [ -x "/usr/local/bin/dev-site" ]; then
+ dev-site exposures
+ elif [ -x "$TARGET_HOME/.local/bin/dev-site" ]; then
+ "$TARGET_HOME/.local/bin/dev-site" exposures
+ else
+ echo "dev-site belum terpasang."
+ fi
+ ;;
+ 10) menu_cloudflare ;;
+ 0|11|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
@@ -7098,17 +7967,19 @@ menu_status_updates() {
     echo "1. Cek Informasi & Status Detail Layanan"
     echo "2. Cek Ketersediaan Pembaruan Versi (Tabel)"
     echo "3. Perbarui Seluruh Paket & Toolchain (Update All)"
-    echo "4. Validasi Sintaks & Helper (Self-Check)"
-    echo "0. Kembali ke Menu Utama"
-    echo "=========================================="
-    read -rp "Pilih opsi [0-4]: " su_opt
+ echo "4. Validasi Sintaks & Helper (Self-Check)"
+ echo "5. Status Cloudflare Tunnel & Eksposur"
+ echo "0. Kembali ke Menu Utama"
+ echo "=========================================="
+ read -rp "Pilih opsi [0-5]: " su_opt
 
-    case $su_opt in
-      1) show_info ;;
-      2) check_updates ;;
-      3) run_update ;;
-      4) self_check ;;
-      0|q|Q) break ;;
+ case $su_opt in
+ 1) show_info ;;
+ 2) check_updates ;;
+ 3) run_update ;;
+ 4) self_check ;;
+ 5) run_cf_menu status --all ;;
+ 0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
@@ -7288,7 +8159,8 @@ self_check() {
  install_pg_switch_helper "$tmp_dir/pg-switch" || rc=1
  install_php_switch_helper "$tmp_dir/php-switch" || rc=1
  install_dev_site_helper "$tmp_dir/dev-site" || rc=1
- for f in "$tmp_dir/node-switch" "$tmp_dir/pg-switch" "$tmp_dir/php-switch" "$tmp_dir/dev-site"; do
+ install_cf_tunnel_helper "$tmp_dir/cf-tunnel" || rc=1
+ for f in "$tmp_dir/node-switch" "$tmp_dir/pg-switch" "$tmp_dir/php-switch" "$tmp_dir/dev-site" "$tmp_dir/cf-tunnel"; do
  if bash -n "$f"; then
  echo "[OK] syntax: $(basename "$f")"
  else
@@ -7450,10 +8322,34 @@ case "${1:-}" in
     run_single_component "Local SSL (mkcert)" step_local_ssl
     exit 0
     ;;
-  --php-stack|--web-stack)
-    run_single_component "Full PHP Web Stack" step_php_full_stack
-    exit 0
-    ;;
+ --php-stack|--web-stack)
+ run_single_component "Full PHP Web Stack" step_php_full_stack
+ exit 0
+ ;;
+ --cloudflare)
+ run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare
+ exit 0
+ ;;
+ --cf-tunnel)
+ shift
+ ensure_cf_tunnel_helper
+ cf_bin=""
+ if [ -x "/usr/local/bin/cf-tunnel" ]; then
+ cf_bin="/usr/local/bin/cf-tunnel"
+ elif [ -n "${SUDO_USER:-}" ] && [ -x "$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.local/bin/cf-tunnel" ]; then
+ cf_bin="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.local/bin/cf-tunnel"
+ elif [ -x "$HOME/.local/bin/cf-tunnel" ]; then
+ cf_bin="$HOME/.local/bin/cf-tunnel"
+ elif command -v cf-tunnel >/dev/null 2>&1; then
+ cf_bin="cf-tunnel"
+ fi
+ if [ -n "$cf_bin" ]; then
+ "$cf_bin" "$@"
+ else
+ echo "Helper cf-tunnel belum terpasang. Jalankan: sudo $0 --cloudflare"
+ fi
+ exit 0
+ ;;
   --zsh|--ohmyzsh)
     run_single_component "Oh My Zsh, Plugin & Tema" step_zsh
     exit 0
@@ -7617,11 +8513,17 @@ case "${1:-}" in
     echo "  --nginx                  Instal/perbarui Nginx (Mainline Terbaru)"
     echo "  --php                    Instal/perbarui PHP & PHP-FPM (dinamis multi-versi)"
     echo "  --php-ver <8.4|8.3|...>  Pilih versi default PHP saat instalasi"
-    echo "  --php-exts <full|min|..> Pilih preset atau daftar ekstensi PHP"
-    echo "  --dev-site <cmd> ...     Jalankan helper dev-site (create, delete, list, sync, custom)
-  --sync, --sync-hosts     Sinkronisasi entri /etc/hosts, SSL certs, & trust store semua browser"
-    echo "  --php-switch <ver>       Beralih versi PHP CLI & FPM aktif"
-    echo ""
+ echo " --php-exts <full|min|..> Pilih preset atau daftar ekstensi PHP"
+ echo " --dev-site <cmd> ... Jalankan helper dev-site (create, delete, list, expose, sync)"
+ echo " --sync, --sync-hosts Sinkronisasi entri /etc/hosts, SSL certs, & trust store semua browser"
+ echo " --php-switch <ver> Beralih versi PHP CLI & FPM aktif"
+ echo ""
+ echo "Opsi Cloudflare Tunnel & DNS:"
+ echo " --cloudflare Instal/perbarui cloudflared + helper cf-tunnel"
+ echo " --cf-tunnel <cmd> ... Jalankan helper cf-tunnel (account, tunnel, sync, dns, service, doctor)"
+ echo " Contoh: sudo $0 --cf-tunnel account add cf1"
+ echo " sudo $0 --dev-site expose myapp.test app-dev.example.com --profile cf1"
+ echo ""
     echo "Opsi Shell & Oh My Zsh:"
     echo "  --zsh, --ohmyzsh         Instal Zsh, Oh My Zsh, plugin populer & tema"
     echo "  --zsh-theme <p10k|..>    Pilih tema (powerlevel10k, agnoster, robbyrussell)"
@@ -7667,20 +8569,24 @@ while true; do
   echo -e "  ${C_CYAN}[5]${C_RESET} 💻 Workspace, ADE & Shell"
   echo -e "      ${C_DIM}└─ Orca ADE (Desktop GUI / Headless Server — $(get_orca_status_label)), Oh My Zsh & Tema${C_RESET}"
   echo ""
-  echo -e "  ${C_CYAN}[6]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
-  echo -e "      ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol${C_RESET}"
-  echo ""
-  echo -e "  ${C_YELLOW}[0]${C_RESET} 🚪 Keluar"
-  echo -e "${C_BOLD}================================================================${C_RESET}"
-  read -rp "Pilih kategori [0-6]: " opt
+ echo -e " ${C_CYAN}[6]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
+ echo -e " ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol${C_RESET}"
+ echo ""
+ echo -e " ${C_CYAN}[7]${C_RESET} ☁️  Cloudflare Tunnel & DNS"
+ echo -e " ${C_DIM}└─ Multi-akun, tunnel, ingress, DNS, service & eksposur subdomain${C_RESET}"
+ echo ""
+ echo -e " ${C_YELLOW}[0]${C_RESET} 🚪 Keluar"
+ echo -e "${C_BOLD}================================================================${C_RESET}"
+ read -rp "Pilih kategori [0-7]: " opt
 
-  case $opt in
-    1) menu_status_updates ;;
-    2) menu_multi_version ;;
-    3) menu_php_stack ;;
-    4) menu_toolchains ;;
-    5) menu_workspace_shell ;;
-    6) run_installation ;;
+ case $opt in
+ 1) menu_status_updates ;;
+ 2) menu_multi_version ;;
+ 3) menu_php_stack ;;
+ 4) menu_toolchains ;;
+ 5) menu_workspace_shell ;;
+ 6) run_installation ;;
+ 7) menu_cloudflare ;;
     0|q|Q|exit)
       echo "Keluar."
       exit 0
