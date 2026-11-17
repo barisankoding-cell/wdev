@@ -7520,41 +7520,125 @@ dev_site_menu_bin() {
 }
 
 run_cf_menu() {
- local b
+ local b rc=0
  b=$(cf_tunnel_menu_bin) || {
  echo "cf-tunnel belum terpasang. Jalankan: sudo $0 --cloudflare"
- return 1
+ return 0
  }
  if [ "$EUID" -eq 0 ]; then
- "$b" "$@"
+ "$b" "$@" || rc=$?
  else
- sudo "$b" "$@"
+ sudo "$b" "$@" || rc=$?
  fi
+ if [ "$rc" -ne 0 ]; then
+ echo "Perintah cf-tunnel gagal (exit ${rc}); menu tetap aktif." >&2
+ fi
+ return 0
 }
 
 menu_cf_pick_profile() {
  local -a profs=()
- local p
+ local p i idx
  while IFS= read -r p; do
  [ -n "$p" ] && profs+=("$p")
  done < <(wdev_profile_list)
  if [ "${#profs[@]}" -eq 0 ]; then
- echo "Belum ada profil Cloudflare. Tambah dulu lewat menu 2."
+ echo "Belum ada profil Cloudflare. Tambah dulu lewat menu Akun." >&2
  return 1
  fi
- printf 'Profil tersedia: %s\n' "${profs[*]}"
- read -rp "Nama profil: " p
+ echo "Profil tersedia:" >&2
+ for i in "${!profs[@]}"; do
+ printf ' %d. %s\n' "$((i + 1))" "${profs[$i]}" >&2
+ done
+ read -rp "Pilih nomor atau nama profil: " p
  [ -n "$p" ] || return 1
+ if [[ "$p" =~ ^[0-9]+$ ]]; then
+ idx=$((p - 1))
+ if [ "$idx" -lt 0 ] || [ "$idx" -ge "${#profs[@]}" ]; then
+ echo "Nomor profil tidak valid." >&2
+ return 1
+ fi
+ p="${profs[$idx]}"
+ fi
+ if ! printf '%s\n' "${profs[@]}" | grep -qxF "$p"; then
+ echo "Profil '$p' tidak ditemukan." >&2
+ return 1
+ fi
  printf '%s\n' "$p"
+}
+
+menu_cf_account() {
+ local p
+ while true; do
+ echo ""
+ echo "--- AKUN CLOUDFLARE ---"
+ echo "1. Daftar akun & status"
+ echo "2. Tambah akun"
+ echo "3. Hapus akun"
+ echo "0. Kembali"
+ read -rp "Pilih opsi [0-3]: " a_opt
+ case "$a_opt" in
+ 1) run_cf_menu account list ;;
+ 2)
+ read -rp "Nama profil baru (contoh: cf1): " p
+ [ -n "$p" ] && run_cf_menu account add "$p"
+ ;;
+ 3)
+ p=$(menu_cf_pick_profile) || continue
+ run_cf_menu account remove "$p"
+ ;;
+ 0|q|Q) return 0 ;;
+ *) echo "Pilihan tidak valid." ;;
+ esac
+ done
+}
+
+menu_cf_tunnel() {
+ local p
+ while true; do
+ echo ""
+ echo "--- TUNNEL CLOUDFLARE ---"
+ echo "1. Buat tunnel"
+ echo "2. Rotasi / ganti tunnel"
+ echo "3. Info tunnel & connector"
+ echo "0. Kembali"
+ read -rp "Pilih opsi [0-3]: " t_opt
+ case "$t_opt" in
+ 1|2)
+ p=$(menu_cf_pick_profile) || continue
+ if [ "$t_opt" = "1" ]; then
+ run_cf_menu tunnel create --profile "$p"
+ else
+ run_cf_menu tunnel rotate --profile "$p"
+ fi
+ ;;
+ 3)
+ p=$(menu_cf_pick_profile) || continue
+ run_cf_menu tunnel info --profile "$p"
+ ;;
+ 0|q|Q) return 0 ;;
+ *) echo "Pilihan tidak valid." ;;
+ esac
+ done
 }
 
 menu_cf_service() {
  local action target
- echo "Aksi service:"
- echo "1. start   2. stop   3. restart   4. logs   5. status"
- echo "6. install 7. enable 8. disable"
- read -rp "Pilih aksi [1-8]: " action
+ while true; do
+ echo ""
+ echo "--- SERVICE CLOUDFLARED ---"
+ echo "1. Start"
+ echo "2. Stop"
+ echo "3. Restart"
+ echo "4. Logs"
+ echo "5. Status"
+ echo "6. Install / regenerate unit"
+ echo "7. Enable"
+ echo "8. Disable"
+ echo "0. Kembali"
+ read -rp "Pilih aksi [0-8]: " action
  case "$action" in
+ 0|q|Q) return 0 ;;
  1) action="start" ;;
  2) action="stop" ;;
  3) action="restart" ;;
@@ -7563,7 +7647,7 @@ menu_cf_service() {
  6) action="install" ;;
  7) action="enable" ;;
  8) action="disable" ;;
- *) echo "Aksi tidak valid."; return 1 ;;
+ *) echo "Aksi tidak valid."; continue ;;
  esac
  read -rp "Profil (nama profil atau 'all'): " target
  if [ "$target" = "all" ]; then
@@ -7571,13 +7655,26 @@ menu_cf_service() {
  else
  [ -n "$target" ] && run_cf_menu service "$action" --profile "$target"
  fi
+ done
 }
 
 menu_cf_dns() {
  local action p host
- echo "1. List CNAME   2. Tambah host   3. Hapus host   4. Sync semua eksposur"
- read -rp "Pilih aksi [1-4]: " action
- p=$(menu_cf_pick_profile) || return 1
+ while true; do
+ echo ""
+ echo "--- DNS CLOUDFLARE ---"
+ echo "1. Daftar CNAME"
+ echo "2. Tambah / perbarui host"
+ echo "3. Hapus host"
+ echo "4. Sinkronkan semua eksposur profil"
+ echo "0. Kembali"
+ read -rp "Pilih aksi [0-4]: " action
+ case "$action" in
+ 0|q|Q) return 0 ;;
+ 1|2|3|4) ;;
+ *) echo "Aksi tidak valid."; continue ;;
+ esac
+ p=$(menu_cf_pick_profile) || continue
  case "$action" in
  1) run_cf_menu dns list --profile "$p" ;;
  2)
@@ -7589,22 +7686,43 @@ menu_cf_dns() {
  [ -n "$host" ] && run_cf_menu dns rm --profile "$p" "$host"
  ;;
  4) run_cf_menu dns ensure --profile "$p" ;;
- *) echo "Aksi tidak valid." ;;
  esac
+ done
 }
 
 menu_cf_expose() {
- local ds d host p
+ local ds d host p i
  ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
- read -rp "Domain lokal (contoh: myapp.test): " d
+ local -a sites=()
+ local conf
+ if [ -d /etc/nginx/sites-available ]; then
+ for conf in /etc/nginx/sites-available/*.conf; do
+ [ -f "$conf" ] || continue
+ [[ "$conf" == *.custom.conf ]] && continue
+ sites+=("$(basename "$conf" .conf)")
+ done
+ fi
+ if [ "${#sites[@]}" -gt 0 ]; then
+ echo "Virtual host lokal:"
+ for i in "${!sites[@]}"; do printf ' %d. %s\n' "$((i + 1))" "${sites[$i]}"; done
+ fi
+ read -rp "Domain lokal (nomor atau nama, contoh: myapp.test): " d
  [ -n "$d" ] || return 1
+ if [[ "$d" =~ ^[0-9]+$ ]]; then
+ i=$((d - 1))
+ if [ "$i" -lt 0 ] || [ "$i" -ge "${#sites[@]}" ]; then
+ echo "Nomor vhost tidak valid." >&2
+ return 1
+ fi
+ d="${sites[$i]}"
+ fi
  read -rp "Host publik (contoh: app-dev.example.com): " host
  [ -n "$host" ] || return 1
  p=$(menu_cf_pick_profile) || return 1
  if [ "$EUID" -eq 0 ]; then
- "$ds" expose "$d" "$host" --profile "$p"
+ "$ds" expose "$d" "$host" --profile "$p" || true
  else
- sudo "$ds" expose "$d" "$host" --profile "$p"
+ sudo "$ds" expose "$d" "$host" --profile "$p" || true
  fi
 }
 
@@ -7616,17 +7734,40 @@ menu_cf_unexpose() {
  read -rp "Host publik (kosongkan untuk semua eksposur domain): " host
  if [ "$EUID" -eq 0 ]; then
  if [ -n "$host" ]; then
- "$ds" unexpose "$d" "$host"
+ "$ds" unexpose "$d" "$host" || true
  else
- "$ds" unexpose "$d"
+ "$ds" unexpose "$d" || true
  fi
  else
  if [ -n "$host" ]; then
- sudo "$ds" unexpose "$d" "$host"
+ sudo "$ds" unexpose "$d" "$host" || true
  else
- sudo "$ds" unexpose "$d"
+ sudo "$ds" unexpose "$d" || true
  fi
  fi
+}
+
+menu_cf_exposures() {
+ local ds action
+ while true; do
+ echo ""
+ echo "--- EKSPOSUR PUBLIK (DEV-SITE) ---"
+ echo "1. Daftar eksposur"
+ echo "2. Ekspos virtual host"
+ echo "3. Hapus eksposur"
+ echo "0. Kembali"
+ read -rp "Pilih opsi [0-3]: " action
+ case "$action" in
+ 1)
+ ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; continue; }
+ "$ds" exposures
+ ;;
+ 2) menu_cf_expose ;;
+ 3) menu_cf_unexpose ;;
+ 0|q|Q) return 0 ;;
+ *) echo "Pilihan tidak valid." ;;
+ esac
+ done
 }
 
 menu_cloudflare() {
@@ -7636,12 +7777,12 @@ menu_cloudflare() {
  echo " CLOUDFLARE TUNNEL & DNS MANAGER "
  echo "=========================================="
  echo "1. Status akun, tunnel, service & eksposur"
- echo "2. Tambah akun Cloudflare"
- echo "3. Hapus akun Cloudflare"
- echo "4. Buat / rotasi tunnel akun"
+ echo "2. Eksposur publik (daftar / ekspos / hapus)"
+ echo "3. Akun Cloudflare (daftar / tambah / hapus)"
+ echo "4. Tunnel (buat / rotasi / info)"
  echo "5. Sinkronkan ingress & DNS"
- echo "6. Service: start / stop / restart / logs"
- echo "7. DNS record manual (list / add / rm / ensure)"
+ echo "6. Service cloudflared (start / stop / logs)"
+ echo "7. DNS record (list / tambah / hapus / sync)"
  echo "8. Diagnostik konektivitas (doctor)"
  echo "9. Install / perbarui cloudflared"
  echo "0. Kembali"
@@ -7649,53 +7790,20 @@ menu_cloudflare() {
  read -rp "Pilih opsi [0-9]: " cf_opt
 
  case $cf_opt in
- 1)
- run_cf_menu status --all
- ;;
- 2)
- read -rp "Nama profil baru (contoh: cf1): " new_prof
- if [ -n "$new_prof" ]; then
- run_cf_menu account add "$new_prof"
- fi
- ;;
- 3)
- local del_prof
- del_prof=$(menu_cf_pick_profile) || break
- run_cf_menu account remove "$del_prof"
- ;;
- 4)
- local tp
- tp=$(menu_cf_pick_profile) || break
- echo "1. Buat tunnel baru   2. Rotasi/ganti tunnel"
- read -rp "Pilih [1-2]: " t_act
- case "$t_act" in
- 1) run_cf_menu tunnel create --profile "$tp" ;;
- 2) run_cf_menu tunnel rotate --profile "$tp" ;;
- *) echo "Pilihan tidak valid." ;;
- esac
- ;;
+ 1) run_cf_menu status --all ;;
+ 2) menu_cf_exposures ;;
+ 3) menu_cf_account ;;
+ 4) menu_cf_tunnel ;;
  5)
  run_cf_menu sync --all
  run_cf_menu dns ensure --all 2>/dev/null || true
  ;;
- 6)
- menu_cf_service
- ;;
- 7)
- menu_cf_dns
- ;;
- 8)
- run_cf_menu doctor --all
- ;;
- 9)
- run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare
- ;;
- 0|q|Q)
- break
- ;;
- *)
- echo "Pilihan tidak valid."
- ;;
+ 6) menu_cf_service ;;
+ 7) menu_cf_dns ;;
+ 8) run_cf_menu doctor --all ;;
+ 9) run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare ;;
+ 0|q|Q) break ;;
+ *) echo "Pilihan tidak valid." ;;
  esac
  done
 }
@@ -7716,13 +7824,10 @@ menu_php_stack() {
     echo "4. Daftar Virtual Host Aktif (dev-site list)"
     echo "5. Sinkronisasi Hosts & SSL Browser (dev-site sync)"
     echo "6. Ganti Versi PHP CLI & FPM (php-switch)"
-    echo "7. Ekspos Virtual Host ke Internet (dev-site expose)"
-    echo "8. Hapus Eksposur Publik (dev-site unexpose)"
-    echo "9. Daftar Eksposur Cloudflare (dev-site exposures)"
-    echo "10. Kelola Cloudflare Tunnel & Akun"
-    echo "0 / 11. Kembali ke Menu Utama"
+    echo "0. Kembali ke Menu Utama"
     echo "=========================================="
-    read -rp "Pilih opsi [0-11]: " p_opt
+    echo "Eksposur publik & tunnel: menu utama [6] Cloudflare Tunnel & DNS"
+    read -rp "Pilih opsi [0-6]: " p_opt
 
     case $p_opt in
       1) step_php_full_stack ;;
@@ -7776,22 +7881,10 @@ menu_php_stack() {
  echo "php-switch belum terpasang."
  fi
  ;;
- 7) menu_cf_expose ;;
- 8) menu_cf_unexpose ;;
- 9)
- if [ -x "/usr/local/bin/dev-site" ]; then
- dev-site exposures
- elif [ -x "$TARGET_HOME/.local/bin/dev-site" ]; then
- "$TARGET_HOME/.local/bin/dev-site" exposures
- else
- echo "dev-site belum terpasang."
- fi
- ;;
- 10) menu_cloudflare ;;
- 0|11|q|Q) break ;;
-      *) echo "Pilihan tidak valid." ;;
-    esac
-  done
+ 0|q|Q) break ;;
+ *) echo "Pilihan tidak valid." ;;
+ esac
+ done
 }
 
 # --- MENU PENGELOLAAN POSTGRESQL (MULTI-VERSI) ---
@@ -7968,17 +8061,15 @@ menu_status_updates() {
     echo "2. Cek Ketersediaan Pembaruan Versi (Tabel)"
     echo "3. Perbarui Seluruh Paket & Toolchain (Update All)"
  echo "4. Validasi Sintaks & Helper (Self-Check)"
- echo "5. Status Cloudflare Tunnel & Eksposur"
  echo "0. Kembali ke Menu Utama"
  echo "=========================================="
- read -rp "Pilih opsi [0-5]: " su_opt
+ read -rp "Pilih opsi [0-4]: " su_opt
 
  case $su_opt in
  1) show_info ;;
  2) check_updates ;;
  3) run_update ;;
  4) self_check ;;
- 5) run_cf_menu status --all ;;
  0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
@@ -8569,11 +8660,11 @@ while true; do
   echo -e "  ${C_CYAN}[5]${C_RESET} 💻 Workspace, ADE & Shell"
   echo -e "      ${C_DIM}└─ Orca ADE (Desktop GUI / Headless Server — $(get_orca_status_label)), Oh My Zsh & Tema${C_RESET}"
   echo ""
- echo -e " ${C_CYAN}[6]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
- echo -e " ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol${C_RESET}"
+ echo -e " ${C_CYAN}[6]${C_RESET} ☁️  Cloudflare Tunnel & DNS"
+ echo -e " ${C_DIM}└─ Akun, tunnel, eksposur subdomain, DNS, service & diagnostik${C_RESET}"
  echo ""
- echo -e " ${C_CYAN}[7]${C_RESET} ☁️  Cloudflare Tunnel & DNS"
- echo -e " ${C_DIM}└─ Multi-akun, tunnel, ingress, DNS, service & eksposur subdomain${C_RESET}"
+ echo -e " ${C_CYAN}[7]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
+ echo -e " ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol${C_RESET}"
  echo ""
  echo -e " ${C_YELLOW}[0]${C_RESET} 🚪 Keluar"
  echo -e "${C_BOLD}================================================================${C_RESET}"
@@ -8585,8 +8676,8 @@ while true; do
  3) menu_php_stack ;;
  4) menu_toolchains ;;
  5) menu_workspace_shell ;;
- 6) run_installation ;;
- 7) menu_cloudflare ;;
+ 6) menu_cloudflare ;;
+ 7) run_installation ;;
     0|q|Q|exit)
       echo "Keluar."
       exit 0

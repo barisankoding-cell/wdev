@@ -43,11 +43,17 @@ Tanpa argumen, skrip menampilkan menu utama:
 3. Web Stack & Domain Lokal (`dev-site`)
 4. Toolchains, Compilers & SDKs
 5. Workspace, ADE & Shell
-6. Instalasi Lengkap (Full Auto Setup)
-7. Cloudflare Tunnel & DNS
+6. Cloudflare Tunnel & DNS
+7. Instalasi Lengkap (Full Auto Setup)
 
-Submenu `[3]` juga memuat eksposur publik: `7` buat eksposur, `8` hapus eksposur, `9` daftar eksposur, `10` kelola Cloudflare.
-Submenu `[1]` dan `[7]` menampilkan status akun/tunnel/connector dan diagnostik.
+Struktur submenu:
+
+| Menu | Isi |
+|---|---|
+| `[1]` | status layanan, cek update, update semua, self-check |
+| `[3]` | vhost lokal, SSL, PHP switch; eksposur publik diarahkan ke `[6]` |
+| `[6]` | status, eksposur publik, akun, tunnel, sync, service, DNS, doctor, install |
+| `[7]` | instalasi penuh 14 langkah |
 
 ### Opsi CLI
 
