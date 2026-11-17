@@ -7497,7 +7497,7 @@ menu_orca() {
 # --- SUBMENU CLOUDFLARE TUNNEL & DNS ---
 cf_tunnel_menu_bin() {
   local b
-  for b in /usr/local/bin/cf-tunnel "$HOME/.local/bin/cf-tunnel"; do
+  for b in /usr/local/bin/cf-tunnel "$HOME/.local/bin/cf-tunnel" "${WDEV_SCRIPT_DIR}/cf-tunnel.sh"; do
     if [ -x "$b" ]; then
       echo "$b"
       return 0
@@ -7548,7 +7548,12 @@ menu_cf_pick_profile() {
   for i in "${!profs[@]}"; do
     printf '  %d. %s\n' "$((i + 1))" "${profs[$i]}" >&2
   done
-  read -rp "Pilih nomor atau nama profil: " p
+  if [ "${#profs[@]}" -eq 1 ]; then
+    read -rp "Pilih nomor atau nama profil [default: 1 (${profs[0]})]: " p
+    [ -z "$p" ] && p="1"
+  else
+    read -rp "Pilih nomor atau nama profil: " p
+  fi
   [ -n "$p" ] || return 1
   if [[ "$p" =~ ^[0-9]+$ ]]; then
     idx=$((p - 1))
@@ -7571,10 +7576,11 @@ menu_cf_account() {
     print_menu_header "AKUN CLOUDFLARE"
     echo -e "  ${C_CYAN}[1]${C_RESET} Daftar Akun & Status"
     echo -e "  ${C_CYAN}[2]${C_RESET} Tambah Akun Baru"
-    echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Akun"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Login / Otorisasi Ulang Akun"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Hapus Akun"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-3]: " a_opt
+    read -rp "Pilih opsi [0-4]: " a_opt
     case "$a_opt" in
       1) run_cf_menu account list ;;
       2)
@@ -7582,6 +7588,10 @@ menu_cf_account() {
         [ -n "$p" ] && run_cf_menu account add "$p"
         ;;
       3)
+        p=$(menu_cf_pick_profile) || continue
+        run_cf_menu login --profile "$p" --force
+        ;;
+      4)
         p=$(menu_cf_pick_profile) || continue
         run_cf_menu account remove "$p"
         ;;
