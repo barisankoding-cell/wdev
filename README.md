@@ -56,7 +56,7 @@ Struktur submenu:
 | `[3]` | Vhost lokal, SSL (`mkcert`), PHP switch; eksposur publik diarahkan ke `[6]` |
 | `[4]` | Rust, Go, Java, Flutter, Android SDK, Redis, build tools, & menu modular |
 | `[5]` | Orca ADE (Desktop GUI / Headless Server), Oh My Zsh & tema prompt |
-| `[6]` | Status, eksposur publik, akun, tunnel, sync, service, DNS, doctor, install |
+| `[6]` | Status, eksposur publik, akun, tunnel, sync, service, DNS, quick tunnel, custom routes & CIDR, Access, doctor, install |
 | `[7]` | Instalasi penuh 14 langkah otomatis (dengan konfirmasi keamanan) |
 | `[8]` | Instalasi modular per komponen (18 pilihan komponen terstruktur per kategori) |
 
@@ -141,7 +141,7 @@ Dipasang ke `/usr/local/bin`; `node-switch`, `pg-switch`, `dev-site`, dan `cf-tu
 | `php-switch <ver\|list>` | Ganti versi PHP CLI & PHP-FPM aktif |
 | `dev-site create\|delete\|list\|cert\|sync\|custom` | Virtual host Nginx + SSL + entri `/etc/hosts` + deteksi framework (Laravel, WordPress, CI3/CI4, Symfony, generic, proxy) |
 | `dev-site expose\|unexpose\|exposures` | Ekspos vhost ke Cloudflare Tunnel, kelola host publik per profil |
-| `cf-tunnel account\|tunnel\|sync\|dns\|service\|status\|doctor` | Manajemen multi-akun Cloudflare: login, tunnel, ingress, DNS, systemd, diagnostik |
+| `cf-tunnel account\|tunnel\|route\|quick\|cidr\|access\|sync\|dns\|service\|status\|doctor\|raw` | Manajemen multi-akun Cloudflare: tunnel, ingress multi-protokol, quick tunnel, CIDR, Access, DNS, systemd, diagnostik |
 | `orca-switch [desktop\|headless\|autostart\|status]` | Ganti mode Orca ADE |
 
 Contoh:
@@ -219,19 +219,22 @@ orca switch headless # pindah ke server 24/7
 Satu site lokal cukup diekspos lewat satu tunnel. Setiap akun Cloudflare = satu profil; satu profil = satu proses `cloudflared` + satu unit systemd + satu set credentials.
 
 ```
-/etc/wdev/cloudflare/accounts/<profil>.conf   # zone, mode, token, tunnel id
-/etc/wdev/exposures/<domain>.conf            # public-host <TAB> profil (sumber kebenaran)
-/etc/cloudflared/<profil>/config.yml         # generated oleh cf-tunnel sync
-/etc/cloudflared/<profil>/<uuid>.json        # credentials tunnel (0600)
-/etc/cloudflared/<profil>/cert.pem           # origin cert hasil login (0600)
+/etc/wdev/cloudflare/accounts/<profil>.conf   # zone, mode, protocol, tunnel id
+/etc/wdev/cloudflare/accounts/<profil>.env    # TUNNEL_TOKEN untuk mode token (0600)
+/etc/wdev/cloudflare/routes/<profil>.conf     # custom ingress routes (HTTP/TCP/SSH/RDP/Unix)
+/etc/wdev/cloudflare/access/<profil>.conf     # aturan JWT Cloudflare Access per host
+/etc/wdev/exposures/<domain>.conf             # public-host <TAB> profil (sumber kebenaran)
+/etc/cloudflared/<profil>/config.yml          # generated oleh cf-tunnel sync
+/etc/cloudflared/<profil>/<uuid>.json         # credentials tunnel (0600)
+/etc/cloudflared/<profil>/cert.pem            # origin cert hasil login (0600)
 /etc/systemd/system/cloudflared-<profil>.service
 ```
 
 Aturan:
 
-- `accounts/*.conf` dan `exposures/*.conf` dikelola CLI, jangan diedit manual.
+- `accounts/*.conf`, `routes/*.conf`, `access/*.conf`, dan `exposures/*.conf` dikelola CLI, jangan diedit manual.
 - `config.yml`, unit systemd, dan `server_name` Nginx bersifat generated.
-- Satu host publik hanya boleh dimiliki satu site dan satu profil.
+- Satu host publik (non-path) hanya boleh dimiliki satu site/route dan satu profil.
 
 ### Instalasi
 
@@ -241,47 +244,77 @@ sudo ./setup_dev.sh --cf-tunnel account add cf1
 sudo ./setup_dev.sh --cf-tunnel account add cf2 --zone example.net
 ```
 
-`account add` melakukan login origin cert, membuat tunnel, menulis credentials, membuat config + unit `cloudflared-<profil>`, lalu mengaktifkan service. Pilihan yang tersedia: `--mode local|token`, `--zone`, `--api-token`, `--tunnel-token`, `--account-id`, `--no-login`, `--no-start`.
+`account add` melakukan login origin cert, membuat tunnel, menulis credentials, membuat config + unit `cloudflared-<profil>`, lalu mengaktifkan service. Pilihan yang tersedia: `--mode local|token`, `--protocol auto|quic|http2`, `--zone`, `--api-token`, `--tunnel-token`, `--account-id`, `--no-login`, `--no-start`. Profil yang sudah ada dapat diperbarui via `cf-tunnel account update <profil>`.
 
 - `local` (default): ingress dikelola file lokal (`config.yml`), butuh `cert.pem` dari `tunnel login`.
-- `token`: ingress dikelola dashboard Cloudflare; token disimpan di `accounts/<profil>.env` (0600) dan dipakai lewat `EnvironmentFile`.
+- `token`: tunnel dijalankan dengan `TUNNEL_TOKEN` di `accounts/<profil>.env` (0600). Ingress dapat diatur di dashboard Cloudflare atau disinkronkan via API dengan `sudo cf-tunnel sync --remote --profile <profil>` (membutuhkan `CF_API_TOKEN` dengan izin Tunnel Write).
 
-### Ekspos subdomain
+### Ekspos subdomain & Custom Routes
 
 ```bash
 sudo dev-site expose myapp.test app-dev.example.com --profile cf1
-sudo dev-site expose blog.test blog-dev.example.net --profile cf2
+sudo dev-site expose myapp.test example.com --profile cf1                  # apex domain (CNAME flattening)
+sudo dev-site expose api.test v1.dev.example.com --profile cf1 --allow-deep # butuh Total TLS / ACM
 sudo dev-site exposures
 sudo dev-site unexpose myapp.test app-dev.example.com
 ```
 
-`expose` melakukan: validasi host satu label di bawah zone profil, cek konflik host, tulis state eksposur, regenerasi `server_name`, regenerasi cert `mkcert` dengan SAN host publik, `cf-tunnel sync`, lalu membuat CNAME proxied ke `<uuid>.cfargotunnel.com`. `delete` dan `unexpose` membersihkan DNS + ingress + SAN, vhost lokal tetap aman.
+`expose` mendukung profil mode `local` maupun `token`: validasi host terhadap zone profil, cek konflik host antar site/route, tulis state eksposur, regenerasi `server_name`, regenerasi cert `mkcert` dengan SAN host publik, jalankan `cf-tunnel sync` (untuk mode `token`, menampilkan opsi `cf-tunnel sync --remote` dan langkah dashboard), lalu membuat CNAME proxied ke `<uuid>.cfargotunnel.com`. `delete` dan `unexpose` membersihkan DNS + ingress + SAN, vhost lokal tetap aman.
+
+Untuk layanan non-Nginx, multi-protokol, routing path, Quick Tunnel, Private Network (CIDR), dan Cloudflare Access:
+
+```bash
+# Quick Tunnel (tanpa akun & domain, menghasilkan URL *.trycloudflare.com)
+cf-tunnel quick 3000
+cf-tunnel quick mygo.test --bg --name goapp
+cf-tunnel quick status && cf-tunnel quick stop goapp
+
+# Custom Ingress Routes (HTTP/HTTPS/TCP/SSH/RDP/SMB/Unix + path routing)
+sudo cf-tunnel route add --profile cf1 api.example.com http://127.0.0.1:8080 --path '/api/.*'
+sudo cf-tunnel route add --profile cf1 ssh.example.com ssh://127.0.0.1:22
+sudo cf-tunnel route add --profile cf1 db.example.com tcp://127.0.0.1:5432
+sudo cf-tunnel route list --all
+
+# Private Network / WARP CIDR Routing
+sudo cf-tunnel cidr add --profile cf1 10.10.0.0/24 --comment "LAN dev"
+sudo cf-tunnel cidr list --profile cf1
+
+# Cloudflare Access (Zero Trust App + validasi JWT di tunnel & client proxy)
+sudo cf-tunnel access protect --profile cf1 app-dev.example.com --team myteam --allow-domains example.com
+cf-tunnel access ssh --hostname ssh.example.com
+
+# Passthrough langsung ke binary cloudflared dengan context profil
+sudo cf-tunnel raw --profile cf1 tunnel list
+```
 
 ### Operasional
 
 ```bash
-sudo cf-tunnel status --all           # profil, zone, service, connector, jumlah eksposur
+sudo cf-tunnel status --all           # profil, zone, service, connector, eksposur, route
 sudo cf-tunnel account list
+sudo cf-tunnel account update cf1 --protocol http2
 sudo cf-tunnel sync --all             # regenerate ingress + validasi + restart bila berubah
+sudo cf-tunnel sync --remote --profile cf2  # push ingress ke API untuk mode token
+sudo cf-tunnel tunnel info --profile cf1    # didukung untuk mode local maupun token
 sudo cf-tunnel tunnel rotate --profile cf1
 sudo cf-tunnel dns ensure --profile cf1
 sudo cf-tunnel service restart --profile cf1
-sudo cf-tunnel doctor --all           # cert, credentials, ingress, DNS, origin lokal
+sudo cf-tunnel doctor --all           # cert, credentials, ingress, DNS, origin lokal & route
 sudo cf-tunnel account remove cf2 --yes
 ```
 
-Tanpa `CF_API_TOKEN`, DNS tidak diubah otomatis; `cf-tunnel` mencetak CNAME yang harus dibuat manual. Token butuh scope `Zone:DNS:Edit` + `Zone:Read` (opsional `Zone:Zone:Read` untuk auto-isi zone/account id).
+Tanpa `CF_API_TOKEN`, DNS tidak diubah otomatis; `cf-tunnel` mencetak CNAME yang harus dibuat manual. Token butuh scope `Zone:DNS:Edit` + `Zone:Read` (opsional `Cloudflare Tunnel:Edit`, `Cloudflare One Networks:Edit`, `Access: Apps and Policies:Edit` untuk sync remote/CIDR/Access otomatis).
 
-### Batasan
+### Batasan Platform Cloudflare
 
 | Batasan | Dampak |
 |---|---|
-| Universal SSL gratis hanya `example.com` dan `*.example.com` | Host publik wajib satu label di bawah zone; `foo.dev.example.com` butuh Total TLS/ACM |
+| Universal SSL gratis hanya `example.com` dan `*.example.com` | Subdomain bertingkat (`foo.dev.example.com`) butuh flag `--allow-deep` dan Total TLS/ACM di Cloudflare agar TLS publik valid |
 | Tunnel harus di akun pemilik zone | Zone akun B tidak bisa memakai tunnel akun A; buat profil terpisah |
 | Body request Cloudflare Free/Pro ~100 MB | `client_max_body_size 128M` tidak tercapai lewat tunnel |
 | Timeout origin ~100 detik | Request panjang kena 524 |
 | Cache Cloudflare | Aset dev bisa tersaji lama; kirim `Cache-Control: no-store` atau Cache Rule bypass |
-| Mode token | Ingress diatur di dashboard, `dev-site expose` menolak profil token |
+| Quick Tunnel (`trycloudflare.com`) | Hanya untuk URL/port langsung atau vhost `proxy`; tidak mendukung override `Host` header ke vhost PHP Nginx |
 
 ## Struktur Repo
 
@@ -303,7 +336,7 @@ wdev/
 - CA `mkcert` ditambahkan ke trust store sistem dan browser; hanya untuk pengembangan lokal.
 - Kredensial Cloudflare (`accounts/*.conf`, `cert.pem`, `*.json`, `.env`) disimpan mode `0600` di bawah `/etc/wdev` dan `/etc/cloudflared`; jangan di-commit.
 - Gunakan API token Cloudflare ber-scope minimal (`Zone:DNS:Edit`, `Zone:Read`), bukan Global API Key.
-- Tunnel mengekspos vhost ke internet. Aktifkan Cloudflare Access untuk site yang bukan demo statis; `dev-site expose` tidak memasang Access otomatis.
+- Tunnel mengekspos vhost ke internet. Aktifkan Cloudflare Access (`sudo cf-tunnel access protect ...`) untuk site yang bukan demo statis; `dev-site expose` tidak memasang Access otomatis.
 - Jangan menambahkan host publik ke `/etc/hosts`; itu memotong jalur tunnel di mesin lokal.
 - Jangan commit kredensial, token, atau berkas `.env`; gunakan `.gitignore` yang disertakan.
 - Review skrip sebelum menjalankannya sebagai root.

@@ -26,5 +26,25 @@ Thumbs.db
 
 # Backup & patch gagal
 *.bak
+*.bak.*
 *.orig
 *.rej
+
+# Artefak build & cache
+node_modules/
+dist/
+build/
+coverage/
+.cache/
+*.o
+*.a
+*.so
+*.pyc
+__pycache__/
+
+# Direktori kerja lokal
+$dest_dir/
+*.local
+
+# State lokal Command Code (taste, sesi, dll)
+.commandcode/

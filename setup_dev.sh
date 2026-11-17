@@ -216,13 +216,18 @@ wdev_profile_get() {
 
 wdev_profile_zone() { wdev_profile_get "$1" CF_ZONE; }
 
+# Return: 0 valid (apex/1-label atau multi-label jika allow_deep=1), 2 multi-label butuh allow_deep, 1 di luar zone
 wdev_host_in_zone() {
- local host="$1" zone="$2" rel
+ local host="$1" zone="$2" allow_deep="${3:-0}" rel
  [ -n "$host" ] && [ -n "$zone" ] || return 1
  [ "$host" = "$zone" ] && return 0
  case "$host" in *."$zone") ;; *) return 1 ;; esac
  rel="${host%.$zone}"
- [ -n "$rel" ] && [[ "$rel" != *.* ]]
+ [ -n "$rel" ] || return 1
+ if [[ "$rel" == *.* ]]; then
+ [ "$allow_deep" = "1" ] && return 0 || return 2
+ fi
+ return 0
 }
 
 wdev_apply_server_names() {
@@ -4468,12 +4473,13 @@ exposure_profile_exists() {
 
 cmd_expose() {
  check_root
- local domain="" public_host="" profile="" keep=0 positional=0
+ local domain="" public_host="" profile="" keep=0 allow_deep=0 positional=0
  while [ $# -gt 0 ]; do
  case "$1" in
  --profile) profile=${2:-}; shift 2 ;;
  --profile=*) profile=${1#*=}; shift ;;
  --keep-cert) keep=1; shift ;;
+ --allow-deep) allow_deep=1; shift ;;
  -*) echo -e "${C_RED}Error: argumen tidak dikenal: $1${C_RESET}" >&2; exit 1 ;;
  *)
  case "$positional" in
@@ -4488,7 +4494,7 @@ cmd_expose() {
  done
  if [ -z "$domain" ] || [ -z "$public_host" ]; then
  echo -e "${C_RED}Error: Parameter tidak lengkap!${C_RESET}"
- echo "Penggunaan: sudo dev-site expose <domain> <public-host> --profile <profil>"
+ echo "Penggunaan: sudo dev-site expose <domain> <public-host> --profile <profil> [--allow-deep]"
  exit 1
  fi
  validate_domain "$domain" || exit 1
@@ -4519,28 +4525,24 @@ cmd_expose() {
  if [ "$profile_mode" = "token" ]; then
    echo -e "${C_CYAN}[i] Profil '${profile}' mode token: vhost Nginx & SSL mkcert akan dikonfigurasi.${C_RESET}"
  fi
- local zone rel
+ local zone zrc=0
  zone=$(awk -F= '$1 == "CF_ZONE" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
- if [ -z "$zone" ] || [ "$public_host" = "$zone" ]; then
- echo -e "${C_RED}Error: host '${public_host}' harus satu label di bawah zone '${zone:-?}' (profil ${profile}).${C_RESET}" >&2
+ wdev_host_in_zone "$public_host" "$zone" "$allow_deep" || zrc=$?
+ if [ "$zrc" -eq 2 ]; then
+ echo -e "${C_RED}Error: host '${public_host}' adalah subdomain bertingkat di bawah '${zone}' (profil ${profile}).${C_RESET}" >&2
+ echo "Universal SSL gratis hanya mencakup *.${zone}. Tambahkan --allow-deep jika zone memakai Total TLS / ACM." >&2
+ exit 1
+ elif [ "$zrc" -ne 0 ]; then
+ echo -e "${C_RED}Error: host '${public_host}' bukan bagian dari zone '${zone:-?}' (profil ${profile}).${C_RESET}" >&2
  exit 1
  fi
- case "$public_host" in
- *."$zone")
- rel="${public_host%.$zone}"
- if [ -z "$rel" ] || [[ "$rel" == *.* ]]; then
- echo -e "${C_RED}Error: host '${public_host}' harus satu label di bawah zone '${zone}' (profil ${profile}).${C_RESET}" >&2
- echo "Contoh valid: app-dev.${zone}" >&2
- exit 1
+ if [ "$public_host" = "$zone" ]; then
+ echo -e "${C_CYAN}[i] Apex domain '${public_host}' akan memakai CNAME flattening Cloudflare.${C_RESET}"
+ elif [ "$allow_deep" -eq 1 ] && [[ "${public_host%.$zone}" == *.* ]]; then
+ echo -e "${C_YELLOW}[i] Subdomain bertingkat '${public_host}' diizinkan (--allow-deep); pastikan Total TLS / ACM aktif di Cloudflare.${C_RESET}"
  fi
- ;;
- *)
- echo -e "${C_RED}Error: host '${public_host}' bukan bagian dari zone '${zone}' (profil ${profile}).${C_RESET}" >&2
- exit 1
- ;;
- esac
 
- # Host publik tidak boleh dipakai site/profil lain
+ # Host publik tidak boleh dipakai site/profil/route lain
  local owner_domain="" owner_profile="" f
  if [ -d "$WDEV_ETC/exposures" ]; then
  while IFS= read -r f; do
@@ -4561,6 +4563,18 @@ cmd_expose() {
  fi
  echo -e "${C_RED}Error: host '${public_host}' sudah dipakai oleh '${owner_domain}' (profil ${owner_profile}).${C_RESET}" >&2
  exit 1
+ fi
+ if [ -d "$WDEV_ETC/cloudflare/routes" ]; then
+ local rf rp rh
+ while IFS= read -r rf; do
+ [ -f "$rf" ] || continue
+ rp=$(basename "$rf" .conf)
+ rh=$(awk -F'\t' -v h="$public_host" 'NF >= 3 && $1 == h && ($2 == "-" || $2 == "") { print $1; exit }' "$rf")
+ if [ -n "$rh" ]; then
+ echo -e "${C_RED}Error: host '${public_host}' sudah dipakai custom route di profil '${rp}'. Hapus dulu dengan: sudo cf-tunnel route rm --profile ${rp} ${public_host}${C_RESET}" >&2
+ exit 1
+ fi
+ done < <(find "$WDEV_ETC/cloudflare/routes" -maxdepth 1 -type f -name '*.conf' -print 2>/dev/null | sort)
  fi
 
  # Host lokal tidak boleh berupa domain Cloudflare aktif
@@ -4602,11 +4616,19 @@ cmd_expose() {
  exit 1
  fi
 
- local cf_bin
+ local cf_bin dns_rc=0
  cf_bin=$(find_cf_tunnel_bin) || true
  if [ -n "$cf_bin" ]; then
  "$cf_bin" sync --profile "$profile" >/dev/null 2>&1 || echo -e "${C_YELLOW}[!] Sinkronisasi tunnel '${profile}' gagal; jalankan: sudo cf-tunnel sync --profile ${profile}${C_RESET}" >&2
- "$cf_bin" dns ensure --profile "$profile" >/dev/null 2>&1 || echo -e "${C_YELLOW}[!] DNS '${public_host}' belum tentu dibuat; jalankan: sudo cf-tunnel dns add --profile ${profile} ${public_host}${C_RESET}" >&2
+ "$cf_bin" dns ensure --profile "$profile" >/dev/null 2>&1 || dns_rc=$?
+ if [ "$dns_rc" -eq 4 ]; then
+ local tid_hint
+ tid_hint=$(awk -F= '$1 == "CF_TUNNEL_ID" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
+ echo -e "${C_YELLOW}[i] Profil '${profile}' tidak punya CF_API_TOKEN. Buat CNAME manual:${C_RESET}" >&2
+ echo "    ${public_host} -> ${tid_hint:-<tunnel-id>}.cfargotunnel.com (Proxied)" >&2
+ elif [ "$dns_rc" -ne 0 ]; then
+ echo -e "${C_YELLOW}[!] DNS '${public_host}' belum tentu dibuat; jalankan: sudo cf-tunnel dns add --profile ${profile} ${public_host}${C_RESET}" >&2
+ fi
  else
  echo -e "${C_YELLOW}[!] cf-tunnel belum terpasang; ingress & DNS belum disinkronkan.${C_RESET}" >&2
  fi
@@ -4615,10 +4637,16 @@ cmd_expose() {
  echo "Uji lokal : curl -kI https://${public_host} --resolve ${public_host}:443:127.0.0.1"
  echo "Uji publik : curl -sI https://${public_host} | grep -i cf-ray"
  if [ "$profile_mode" = "token" ]; then
-   echo -e "${C_YELLOW}[!] Langkah di Cloudflare Dashboard (Networks > Tunnels > ${profile} > Public Hostname):${C_RESET}"
-   echo "    Public Hostname : ${public_host}"
-   echo "    Service         : HTTPS://127.0.0.1:443"
-   echo "    TLS Settings    : No TLS Verify = Enabled"
+   local has_api
+   has_api=$(awk -F= '$1 == "CF_API_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
+   echo -e "${C_YELLOW}[!] Langkah mode token:${C_RESET}"
+   if [ -n "$has_api" ]; then
+     echo "    Opsi 1 (API)       : sudo cf-tunnel sync --remote --profile ${profile}"
+   fi
+   echo "    Opsi 2 (Dashboard) : Networks > Tunnels > ${profile} > Public Hostname"
+   echo "      Public Hostname  : ${public_host}"
+   echo "      Service          : HTTPS://127.0.0.1:443"
+   echo "      TLS Settings     : No TLS Verify = Enabled"
  fi
 }
 
@@ -4690,15 +4718,29 @@ cmd_unexpose() {
  wdev_apply_server_names "$domain" 2>/dev/null || true
  wdev_regen_cert "$domain" 2>/dev/null || true
 
- local cf_bin
+ local cf_bin dns_rm_rc
  cf_bin=$(find_cf_tunnel_bin) || true
  if [ -n "$cf_bin" ]; then
  if [ -n "$public_host" ]; then
- [ -n "$profile_of_target" ] && "$cf_bin" dns rm --profile "$profile_of_target" "$public_host" >/dev/null 2>&1 || true
+ if [ -n "$profile_of_target" ]; then
+ dns_rm_rc=0
+ "$cf_bin" dns rm --profile "$profile_of_target" "$public_host" >/dev/null 2>&1 || dns_rm_rc=$?
+ if [ "$dns_rm_rc" -eq 4 ]; then
+ echo -e "${C_YELLOW}[i] Profil '${profile_of_target}' tanpa CF_API_TOKEN; hapus CNAME '${public_host}' manual jika perlu.${C_RESET}"
+ elif [ "$dns_rm_rc" -ne 0 ]; then
+ echo -e "${C_YELLOW}[!] Record DNS '${public_host}' tidak terhapus otomatis.${C_RESET}"
+ fi
+ fi
  else
- local e
+ local e ep eh
  for e in "${all[@]}"; do
- "$cf_bin" dns rm --profile "${e#*$'\t'}" "${e%%$'\t'*}" >/dev/null 2>&1 || true
+ eh="${e%%$'\t'*}"
+ ep="${e#*$'\t'}"
+ dns_rm_rc=0
+ "$cf_bin" dns rm --profile "$ep" "$eh" >/dev/null 2>&1 || dns_rm_rc=$?
+ if [ "$dns_rm_rc" -eq 4 ]; then
+ echo -e "${C_YELLOW}[i] Profil '${ep}' tanpa CF_API_TOKEN; hapus CNAME '${eh}' manual jika perlu.${C_RESET}"
+ fi
  done
  fi
  "$cf_bin" sync --all >/dev/null 2>&1 || true
@@ -4746,7 +4788,7 @@ show_help() {
   echo " delete <domain> Hapus virtual host, SSL cert, dan entri hosts"
   echo " list, ls Tampilkan semua virtual host dev-site"
   echo " cert <domain> Buat / perbarui SSL certificate untuk domain"
-  echo " expose <domain> <public-host> --profile <p> Ekspos vhost ke Cloudflare Tunnel"
+  echo " expose <domain> <public-host> --profile <p> [--allow-deep] Ekspos vhost ke Cloudflare Tunnel"
   echo " unexpose <domain> [public-host] Hapus eksposur publik (vhost lokal tetap ada)"
   echo " exposures Tampilkan semua eksposur publik per profil"
   echo " sync, update-ssl Sinkronisasi /etc/hosts, SSL certs, & trust store browser"
@@ -5293,8 +5335,8 @@ step_cloudflare() {
  [ -n "$cf_bin" ] || { echo "Error: cloudflared gagal dipasang."; return 1; }
  cf_ver=$("$cf_bin" --version 2>/dev/null | awk '{print $3}')
 
- mkdir -p "$WDEV_ETC/cloudflare/accounts" "$WDEV_ETC/exposures" /etc/cloudflared
- chmod 700 "$WDEV_ETC/cloudflare" "$WDEV_ETC/cloudflare/accounts" /etc/cloudflared 2>/dev/null || true
+ mkdir -p "$WDEV_ETC/cloudflare/accounts" "$WDEV_ETC/cloudflare/routes" "$WDEV_ETC/cloudflare/access" "$WDEV_ETC/exposures" /etc/cloudflared
+ chmod 700 "$WDEV_ETC/cloudflare" "$WDEV_ETC/cloudflare/accounts" "$WDEV_ETC/cloudflare/routes" "$WDEV_ETC/cloudflare/access" /etc/cloudflared 2>/dev/null || true
  chmod 755 "$WDEV_ETC" "$WDEV_ETC/exposures" 2>/dev/null || true
 
  install_cf_tunnel_helper "/usr/local/bin/cf-tunnel" || return 1
@@ -7658,11 +7700,12 @@ menu_cf_account() {
     print_menu_header "AKUN CLOUDFLARE"
     echo -e "  ${C_CYAN}[1]${C_RESET} Daftar Akun & Status"
     echo -e "  ${C_CYAN}[2]${C_RESET} Tambah Akun Baru"
-    echo -e "  ${C_CYAN}[3]${C_RESET} Login / Otorisasi Ulang Akun"
-    echo -e "  ${C_CYAN}[4]${C_RESET} Hapus Akun"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Update Profil / Token / Protocol"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Login / Otorisasi Ulang Akun"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Hapus Akun"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-4]: " a_opt
+    read -rp "Pilih opsi [0-5]: " a_opt
     case "$a_opt" in
       1) run_cf_menu account list ;;
       2)
@@ -7671,9 +7714,13 @@ menu_cf_account() {
         ;;
       3)
         p=$(menu_cf_pick_profile) || continue
-        run_cf_menu login --profile "$p" --force
+        run_cf_menu account update "$p"
         ;;
       4)
+        p=$(menu_cf_pick_profile) || continue
+        run_cf_menu login --profile "$p" --force
+        ;;
+      5)
         p=$(menu_cf_pick_profile) || continue
         run_cf_menu account remove "$p"
         ;;
@@ -7810,10 +7857,20 @@ menu_cf_expose() {
   read -rp "Host publik (contoh: app-dev.example.com, kosongkan untuk batal): " host
   [ -n "$host" ] || return 1
   p=$(menu_cf_pick_profile) || return 1
+  local zone zrc=0
+  local -a extra_flags=()
+  zone=$(wdev_profile_zone "$p")
+  wdev_host_in_zone "$host" "$zone" 0 || zrc=$?
+  if [ "$zrc" -eq 2 ]; then
+    echo -e "${C_YELLOW}[!] '${host}' adalah subdomain bertingkat di bawah '${zone}'.${C_RESET}"
+    echo "    Universal SSL gratis hanya *.${zone}; host bertingkat butuh Total TLS / ACM di Cloudflare."
+    read -rp "Lanjutkan dengan --allow-deep? [y/N]: " ans_deep
+    case "$ans_deep" in y|Y|yes) extra_flags+=("--allow-deep") ;; *) return 1 ;; esac
+  fi
   if [ "$EUID" -eq 0 ]; then
-    "$ds" expose "$d" "$host" --profile "$p" || true
+    "$ds" expose "$d" "$host" --profile "$p" "${extra_flags[@]}" || true
   else
-    sudo "$ds" expose "$d" "$host" --profile "$p" || true
+    sudo "$ds" expose "$d" "$host" --profile "$p" "${extra_flags[@]}" || true
   fi
 }
 
@@ -7861,21 +7918,177 @@ menu_cf_exposures() {
   done
 }
 
+menu_cf_quick() {
+  local opt target bg_ans label
+  while true; do
+    print_menu_header "QUICK TUNNEL (TRYCLOUDFLARE.COM)"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Mulai Quick Tunnel (Foreground, Ctrl+C berhenti)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Mulai Quick Tunnel (Background)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Status & URL Quick Tunnel Aktif"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Lihat Log Quick Tunnel"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Hentikan Quick Tunnel"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-5]: " opt
+    case "$opt" in
+      1|2)
+        read -rp "Target (port mis. 3000, URL http(s)://..., atau domain proxy): " target
+        [ -n "$target" ] || continue
+        local -a q_args=("quick" "$target")
+        if [[ "$target" == https://* ]]; then
+          read -rp "Abaikan verifikasi TLS lokal (--no-tls-verify)? [y/N]: " bg_ans
+          [[ "$bg_ans" =~ ^[yY] ]] && q_args+=("--no-tls-verify")
+        fi
+        if [ "$opt" = "2" ]; then
+          read -rp "Label nama (opsional, Enter untuk otomatis): " label
+          q_args+=("--bg")
+          [ -n "$label" ] && q_args+=("--name" "$label")
+        fi
+        run_cf_menu "${q_args[@]}"
+        ;;
+      3) run_cf_menu quick status ;;
+      4)
+        read -rp "Label Quick Tunnel: " label
+        [ -n "$label" ] && run_cf_menu quick logs "$label"
+        ;;
+      5)
+        read -rp "Label Quick Tunnel (atau 'all' untuk semua): " label
+        if [ "$label" = "all" ]; then
+          run_cf_menu quick stop --all
+        elif [ -n "$label" ]; then
+          run_cf_menu quick stop "$label"
+        fi
+        ;;
+      0|q|Q) return 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
+}
+
+menu_cf_routes() {
+  local opt p host svc path_val notls_ans cidr comment
+  while true; do
+    print_menu_header "CUSTOM ROUTES & PRIVATE NETWORK (CIDR)"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Daftar Custom Ingress Routes"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Tambah Custom Route (HTTP/HTTPS/TCP/SSH/RDP/Unix)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Custom Route"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Daftar Private Network CIDR"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Tambah Private Network CIDR"
+    echo -e "  ${C_CYAN}[6]${C_RESET} Hapus Private Network CIDR"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-6]: " opt
+    case "$opt" in
+      1) run_cf_menu route list --all ;;
+      2)
+        p=$(menu_cf_pick_profile) || continue
+        read -rp "Host publik (mis. api.example.com / ssh.example.com): " host
+        read -rp "Service URL (mis. http://127.0.0.1:8080 / ssh://127.0.0.1:22 / tcp://127.0.0.1:5432): " svc
+        [ -n "$host" ] && [ -n "$svc" ] || continue
+        read -rp "Path regex (opsional, Enter untuk semua): " path_val
+        local -a r_args=("route" "add" "--profile" "$p" "$host" "$svc")
+        [ -n "$path_val" ] && r_args+=("--path" "$path_val")
+        if [[ "$svc" == https://* ]]; then
+          read -rp "No TLS Verify? [y/N]: " notls_ans
+          [[ "$notls_ans" =~ ^[yY] ]] && r_args+=("--no-tls-verify")
+        fi
+        run_cf_menu "${r_args[@]}"
+        ;;
+      3)
+        p=$(menu_cf_pick_profile) || continue
+        read -rp "Host publik route yang dihapus: " host
+        [ -n "$host" ] && run_cf_menu route rm --profile "$p" "$host"
+        ;;
+      4)
+        p=$(menu_cf_pick_profile) || continue
+        run_cf_menu cidr list --profile "$p"
+        ;;
+      5)
+        p=$(menu_cf_pick_profile) || continue
+        read -rp "CIDR (mis. 10.10.0.0/24 atau 192.168.1.0/24): " cidr
+        [ -n "$cidr" ] || continue
+        read -rp "Komentar (opsional): " comment
+        if [ -n "$comment" ]; then
+          run_cf_menu cidr add --profile "$p" "$cidr" --comment "$comment"
+        else
+          run_cf_menu cidr add --profile "$p" "$cidr"
+        fi
+        ;;
+      6)
+        p=$(menu_cf_pick_profile) || continue
+        read -rp "CIDR yang dihapus: " cidr
+        [ -n "$cidr" ] && run_cf_menu cidr rm --profile "$p" "$cidr"
+        ;;
+      0|q|Q) return 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
+}
+
+menu_cf_access() {
+  local opt p host team aud emails domains del_ans
+  while true; do
+    print_menu_header "CLOUDFLARE ACCESS (ZERO TRUST)"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Daftar Host Terproteksi Access"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Lindungi Host dengan Cloudflare Access"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Proteksi Access dari Host"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-3]: " opt
+    case "$opt" in
+      1) run_cf_menu access list --all ;;
+      2)
+        p=$(menu_cf_pick_profile) || continue
+        read -rp "Host publik (mis. app.example.com): " host
+        read -rp "Zero Trust Team Name (<team>.cloudflareaccess.com): " team
+        [ -n "$host" ] && [ -n "$team" ] || continue
+        read -rp "AUD Tag (kosongkan untuk buat/ambil otomatis via API): " aud
+        local -a a_args=("access" "protect" "--profile" "$p" "$host" "--team" "$team")
+        if [ -n "$aud" ]; then
+          a_args+=("--aud" "$aud")
+        else
+          read -rp "Izinkan email (pisahkan koma, opsional): " emails
+          read -rp "Izinkan domain email (pisahkan koma, opsional): " domains
+          [ -n "$emails" ] && a_args+=("--allow-emails" "$emails")
+          [ -n "$domains" ] && a_args+=("--allow-domains" "$domains")
+        fi
+        run_cf_menu "${a_args[@]}"
+        ;;
+      3)
+        p=$(menu_cf_pick_profile) || continue
+        read -rp "Host publik yang dibuka proteksinya: " host
+        [ -n "$host" ] || continue
+        read -rp "Hapus juga Access App di Cloudflare API? [y/N]: " del_ans
+        if [[ "$del_ans" =~ ^[yY] ]]; then
+          run_cf_menu access unprotect --profile "$p" "$host" --delete-app
+        else
+          run_cf_menu access unprotect --profile "$p" "$host"
+        fi
+        ;;
+      0|q|Q) return 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
+}
+
 menu_cloudflare() {
   while true; do
     print_menu_header "CLOUDFLARE TUNNEL & DNS MANAGER"
     echo -e "  ${C_CYAN}[1]${C_RESET} 📊 Status Akun, Tunnel, Service & Eksposur"
-    echo -e "  ${C_CYAN}[2]${C_RESET} 🌐 Eksposur Publik (Daftar / Ekspos / Hapus)"
-    echo -e "  ${C_CYAN}[3]${C_RESET} 👤 Akun Cloudflare (Daftar / Tambah / Hapus)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} 🌐 Eksposur Publik Vhost (dev-site)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} 👤 Akun Cloudflare (Daftar / Tambah / Update / Hapus)"
     echo -e "  ${C_CYAN}[4]${C_RESET} 🚇 Tunnel (Buat / Rotasi / Info)"
     echo -e "  ${C_CYAN}[5]${C_RESET} 🔄 Sinkronkan Ingress & DNS Record"
     echo -e "  ${C_CYAN}[6]${C_RESET} ⚙️  Service Cloudflared (Start / Stop / Logs)"
     echo -e "  ${C_CYAN}[7]${C_RESET} 📡 DNS Record (List / Tambah / Hapus / Sync)"
-    echo -e "  ${C_CYAN}[8]${C_RESET} 🩺 Diagnostik Konektivitas (Doctor)"
-    echo -e "  ${C_CYAN}[9]${C_RESET} 📥 Install / Perbarui cloudflared"
+    echo -e "  ${C_CYAN}[8]${C_RESET} ⚡ Quick Tunnel (trycloudflare.com Tanpa Akun)"
+    echo -e "  ${C_CYAN}[9]${C_RESET} 🛣️  Custom Routes (HTTP/TCP/SSH/RDP) & CIDR"
+    echo -e "  ${C_CYAN}[10]${C_RESET} 🛡️ Cloudflare Access (Proteksi Zero Trust)"
+    echo -e "  ${C_CYAN}[11]${C_RESET} 🩺 Diagnostik Konektivitas (Doctor)"
+    echo -e "  ${C_CYAN}[12]${C_RESET} 📥 Install / Perbarui cloudflared"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read -rp "Pilih opsi [0-9]: " cf_opt
+    read -rp "Pilih opsi [0-12]: " cf_opt
 
     case $cf_opt in
       1) run_cf_menu status --all ;;
@@ -7883,13 +8096,21 @@ menu_cloudflare() {
       3) menu_cf_account ;;
       4) menu_cf_tunnel ;;
       5)
-        run_cf_menu sync --all
+        read -rp "Push juga konfigurasi remote mode token via API (--remote)? [y/N]: " sync_rem
+        if [[ "$sync_rem" =~ ^[yY] ]]; then
+          run_cf_menu sync --all --remote
+        else
+          run_cf_menu sync --all
+        fi
         run_cf_menu dns ensure --all 2>/dev/null || true
         ;;
       6) menu_cf_service ;;
       7) menu_cf_dns ;;
-      8) run_cf_menu doctor --all ;;
-      9) run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare ;;
+      8) menu_cf_quick ;;
+      9) menu_cf_routes ;;
+      10) menu_cf_access ;;
+      11) run_cf_menu doctor --all ;;
+      12) run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare ;;
       0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
