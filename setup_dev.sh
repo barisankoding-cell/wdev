@@ -187,15 +187,29 @@ wdev_host_owner() {
 wdev_profile_list() {
  local d
  d=$(wdev_accounts_dir)
+ if [ "$EUID" -ne 0 ] && [ ! -r "$d" ]; then
+   sudo find "$d" -maxdepth 1 -type f -name '*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort
+   return
+ fi
  [ -d "$d" ] || return 0
  find "$d" -maxdepth 1 -type f -name '*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort
 }
 
-wdev_profile_exists() { [ -f "$(wdev_accounts_dir)/$1.conf" ]; }
+wdev_profile_exists() {
+ local f="$(wdev_accounts_dir)/$1.conf"
+ if [ -f "$f" ]; then
+   return 0
+ fi
+ [ "$EUID" -ne 0 ] && sudo test -f "$f" 2>/dev/null
+}
 
 wdev_profile_get() {
  local f
  f="$(wdev_accounts_dir)/$1.conf"
+ if [ "$EUID" -ne 0 ] && [ ! -r "$f" ]; then
+   sudo awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$f" 2>/dev/null
+   return
+ fi
  [ -f "$f" ] || return 0
  awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$f"
 }
@@ -4502,10 +4516,8 @@ cmd_expose() {
  }
  local profile_mode
  profile_mode=$(awk -F= '$1 == "CF_MODE" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
- if [ "$profile_mode" != "local" ]; then
- echo -e "${C_RED}Error: profil '${profile}' memakai mode '${profile_mode}' (remotely-managed).${C_RESET}" >&2
- echo "Ingress mode token diatur di dashboard Cloudflare. Gunakan profil mode local untuk expose otomatis." >&2
- exit 1
+ if [ "$profile_mode" = "token" ]; then
+   echo -e "${C_CYAN}[i] Profil '${profile}' mode token: vhost Nginx & SSL mkcert akan dikonfigurasi.${C_RESET}"
  fi
  local zone rel
  zone=$(awk -F= '$1 == "CF_ZONE" { sub(/^[^=]*=/, ""); print; exit }' "$WDEV_ETC/cloudflare/accounts/${profile}.conf")
@@ -4602,6 +4614,12 @@ cmd_expose() {
  echo -e "${C_GREEN}[✓] ${public_host} -> https://${domain} (profil ${profile})${C_RESET}"
  echo "Uji lokal : curl -kI https://${public_host} --resolve ${public_host}:443:127.0.0.1"
  echo "Uji publik : curl -sI https://${public_host} | grep -i cf-ray"
+ if [ "$profile_mode" = "token" ]; then
+   echo -e "${C_YELLOW}[!] Langkah di Cloudflare Dashboard (Networks > Tunnels > ${profile} > Public Hostname):${C_RESET}"
+   echo "    Public Hostname : ${public_host}"
+   echo "    Service         : HTTPS://127.0.0.1:443"
+   echo "    TLS Settings    : No TLS Verify = Enabled"
+ fi
 }
 
 cmd_unexpose() {
