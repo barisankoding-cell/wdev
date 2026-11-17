@@ -3761,29 +3761,56 @@ cmd_create() {
   local php_ver="${3:-}"
   local explicit_type="${4:-auto}"
 
- if [ -z "$domain" ] || [ -z "$input_path" ]; then
- echo -e "${C_RED}Error: Parameter tidak lengkap!${C_RESET}"
- echo "Penggunaan: sudo dev-site create <domain> <docroot_or_project_path> [php_version] [type]"
- echo "Tipe didukung: auto (default), laravel, wordpress, ci4, ci3, symfony, generic"
- echo "Contoh: sudo dev-site create myapp.test /var/www/myapp 8.4"
- exit 1
- fi
- validate_domain "$domain" || exit 1
- case "$explicit_type" in
- auto|laravel|wordpress|ci4|ci3|symfony|generic) ;;
- *)
- echo -e "${C_RED}Error: tipe '$explicit_type' tidak didukung.${C_RESET}"
- exit 1
- ;;
- esac
+  if [ -z "$domain" ] || [ -z "$input_path" ]; then
+    echo -e "${C_RED}Error: Parameter tidak lengkap!${C_RESET}"
+    echo "Penggunaan: sudo dev-site create <domain> <docroot_or_port> [php_ver_or_port] [type]"
+    echo "Tipe didukung: auto (default), laravel, wordpress, ci4, ci3, symfony, generic, proxy"
+    echo "Contoh PHP  : sudo dev-site create myapp.test /var/www/myapp 8.4"
+    echo "Contoh Proxy: sudo dev-site create mygo.test 3221 proxy"
+    exit 1
+  fi
+  validate_domain "$domain" || exit 1
 
-  # Normalisasi input_path
-  if [ ! -d "$input_path" ]; then
-    echo -e "${C_YELLOW}Direktori belum ada. Membuat direktori: $input_path${C_RESET}"
-    mkdir -p "$input_path"
-    local TARGET_USER="${SUDO_USER:-$USER}"
-    if [ -n "$TARGET_USER" ] && id "$TARGET_USER" >/dev/null 2>&1; then
-      chown -R "$TARGET_USER:$TARGET_USER" "$input_path" 2>/dev/null || true
+  local proxy_target=""
+  # Deteksi mode reverse proxy (Go, Node.js, Python, Rust, Docker, dll.)
+  if [ "$explicit_type" = "proxy" ] || [[ "$explicit_type" == proxy:* ]] || [[ "$input_path" =~ ^[0-9]+$ ]] || [[ "$input_path" =~ ^https?:// ]]; then
+    explicit_type="proxy"
+    if [[ "$4" == proxy:* ]]; then
+      proxy_target="http://127.0.0.1:${4#proxy:}"
+    elif [[ "$php_ver" =~ ^[0-9]+$ ]]; then
+      proxy_target="http://127.0.0.1:$php_ver"
+    elif [[ "$input_path" =~ ^[0-9]+$ ]]; then
+      proxy_target="http://127.0.0.1:$input_path"
+    elif [[ "$input_path" =~ ^https?:// ]]; then
+      proxy_target="$input_path"
+    else
+      proxy_target="http://127.0.0.1:3000"
+    fi
+  fi
+
+  case "$explicit_type" in
+    auto|laravel|wordpress|ci4|ci3|symfony|generic|proxy) ;;
+    *)
+      echo -e "${C_RED}Error: tipe '$explicit_type' tidak didukung.${C_RESET}"
+      echo "Tipe didukung: auto (default), laravel, wordpress, ci4, ci3, symfony, generic, proxy"
+      exit 1
+      ;;
+  esac
+
+  if [ "$explicit_type" = "proxy" ]; then
+    if [ ! -d "$input_path" ]; then
+      input_path="/var/www/${domain}"
+      mkdir -p "$input_path" 2>/dev/null || true
+    fi
+  else
+    # Normalisasi input_path
+    if [ ! -d "$input_path" ]; then
+      echo -e "${C_YELLOW}Direktori belum ada. Membuat direktori: $input_path${C_RESET}"
+      mkdir -p "$input_path"
+      local TARGET_USER="${SUDO_USER:-$USER}"
+      if [ -n "$TARGET_USER" ] && id "$TARGET_USER" >/dev/null 2>&1; then
+        chown -R "$TARGET_USER:$TARGET_USER" "$input_path" 2>/dev/null || true
+      fi
     fi
   fi
   input_path=$(cd "$input_path" && pwd)
@@ -3794,7 +3821,9 @@ cmd_create() {
   local parent_dir
   parent_dir=$(dirname "$input_path")
 
-  if [ "$site_type" = "auto" ] || [ -z "$site_type" ]; then
+  if [ "$site_type" = "proxy" ]; then
+    : # Tetap mode proxy
+  elif [ "$site_type" = "auto" ] || [ -z "$site_type" ]; then
     if [ -f "$project_root/artisan" ] || [ -f "$parent_dir/artisan" ]; then
       site_type="laravel"
       if [ -d "$project_root/public" ]; then
@@ -3835,8 +3864,12 @@ cmd_create() {
   fi
 
   echo -e "${C_CYAN}Tipe Aplikasi     : ${C_BOLD}${site_type^^}${C_RESET}"
-  echo -e "${C_CYAN}Project Root      : ${project_root}${C_RESET}"
-  echo -e "${C_CYAN}Document Root     : ${docroot}${C_RESET}"
+  if [ "$site_type" = "proxy" ]; then
+    echo -e "${C_CYAN}Proxy Target      : ${C_BOLD}${proxy_target}${C_RESET}"
+  else
+    echo -e "${C_CYAN}Project Root      : ${project_root}${C_RESET}"
+    echo -e "${C_CYAN}Document Root     : ${docroot}${C_RESET}"
+  fi
 
  mkdir -p "$docroot"
  chmod u+rwX,go+rX "$docroot" 2>/dev/null || true
@@ -3877,8 +3910,8 @@ cmd_create() {
     fi
   fi
 
-  # Starter index.php jika docroot kosong
-  if [ -z "$(ls -A "$docroot" 2>/dev/null)" ]; then
+  # Starter index.php jika docroot kosong (hanya untuk PHP/HTML, bukan proxy)
+  if [ "$site_type" != "proxy" ] && [ -z "$(ls -A "$docroot" 2>/dev/null)" ]; then
     cat <<EOF_INDEX > "$docroot/index.php"
 <?php
 echo "<h1>Selamat Datang di {$domain}!</h1>";
@@ -3909,9 +3942,13 @@ EOF_INDEX
   chmod 600 "$key_file"
   command -v chcon >/dev/null 2>&1 && chcon -t cert_t "$cert_file" "$key_file" 2>/dev/null || true
 
-  local fpm_sock
-  fpm_sock=$(get_socket "$php_ver")
-  echo -e "${C_CYAN}Menggunakan PHP-FPM Socket: ${fpm_sock}${C_RESET}"
+  local fpm_sock="none"
+  if [ "$site_type" != "proxy" ]; then
+    fpm_sock=$(get_socket "$php_ver")
+    echo -e "${C_CYAN}Menggunakan PHP-FPM Socket: ${fpm_sock}${C_RESET}"
+  else
+    echo -e "${C_CYAN}Menggunakan Reverse Proxy: ${C_BOLD}${proxy_target}${C_RESET}"
+  fi
 
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
@@ -4116,6 +4153,26 @@ EOF_CI
 EOF_SYMFONY
       ;;
 
+    proxy)
+      cat <<EOF_PROXY >> "$conf_avail"
+
+    # --- REVERSE PROXY (Go, Node.js, Python, Rust, Docker, dll.) ---
+    location / {
+        proxy_pass ${proxy_target};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+EOF_PROXY
+      ;;
+
     *)
       cat <<EOF_GENERIC >> "$conf_avail"
 
@@ -4260,11 +4317,16 @@ cmd_list() {
       local stype="GENERIC"
       stype=$(grep -E '^[[:space:]]*#[[:space:]]*Site Type:' "$conf" | head -n1 | awk '{print $NF}' || echo "GENERIC")
       local d_root
-      d_root=$(grep -E '^[[:space:]]*root[[:space:]]+' "$conf" | head -n1 | awk '{print $2}' | tr -d ';' || echo "-")
+      if grep -q "proxy_pass" "$conf"; then
+        d_root=$(grep -E '^[[:space:]]*proxy_pass[[:space:]]+' "$conf" | head -n1 | awk '{print $2}' | tr -d ';' || echo "-")
+      else
+        d_root=$(grep -E '^[[:space:]]*root[[:space:]]+' "$conf" | head -n1 | awk '{print $2}' | tr -d ';' || echo "-")
+      fi
       local f_sock
       f_sock=$(grep -E 'fastcgi_pass unix:' "$conf" | head -n1 | sed -E 's/.*fastcgi_pass unix:([^;]+);.*/\1/' || echo "-")
       local short_sock
       short_sock=$(basename "$f_sock" 2>/dev/null || echo "$f_sock")
+      [ "$stype" = "proxy" ] && short_sock="-"
       local public_hosts
       public_hosts=$(wdev_public_hosts "$dname" | paste -sd, - 2>/dev/null || true)
       [ -n "$public_hosts" ] || public_hosts="-"
@@ -4681,6 +4743,7 @@ show_help() {
   echo "  ci3              CodeIgniter 3 (dukungan PATH_INFO, proteksi application & system)"
   echo "  symfony          Symfony (docroot ke /public, index.php?\$is_args\$args)"
   echo "  generic          Universal PHP (try_files, proteksi .env/.git, FastCGI PATH_INFO)"
+  echo "  proxy            Reverse proxy ke port lokal (Go, Node.js, Python, Rust, Docker)"
   echo ""
   echo "Dukungan Pengganti .htaccess:"
   echo "  1. Anda dapat membuat file '.nginx.conf' atau 'nginx.conf' langsung di folder proyek Anda."
@@ -4690,7 +4753,8 @@ show_help() {
   echo "Contoh:"
   echo "  sudo dev-site create my-laravel.test /var/www/my-laravel"
   echo "  sudo dev-site create my-blog.test /var/www/my-blog 8.4 wordpress"
-  echo "  sudo dev-site create shop.local /var/www/shop 8.3"
+  echo "  sudo dev-site create my-go.test 3221 proxy"
+  echo "  sudo dev-site create my-node.test 3000 proxy"
   echo "  sudo dev-site list"
 }
 
@@ -7970,17 +8034,21 @@ menu_php_stack() {
     case $p_opt in
       1) step_php_full_stack ;;
       2)
-        read -rp "Masukkan nama domain (contoh: myapp.test): " in_dom
-        read -rp "Masukkan document root (contoh: /var/www/myapp atau /home/$USER/Apps/myapp): " in_root
-        read -rp "Masukkan versi PHP (opsional, contoh: 8.4 / 8.3, kosongkan untuk default): " in_ver
+        read -rp "Masukkan nama domain (contoh: myapp.test atau mygo.test): " in_dom
+        read -rp "Masukkan document root ATAU port proxy (contoh: /var/www/myapp atau 3221): " in_root
+        read -rp "Masukkan versi PHP atau ketik 'proxy' (contoh: 8.4, 8.3, atau proxy): " in_ver
         if [ -n "$in_dom" ] && [ -n "$in_root" ]; then
           if [ -x "/usr/local/bin/dev-site" ]; then
-            sudo dev-site create "$in_dom" "$in_root" "$in_ver"
+            if [ "$in_ver" = "proxy" ] || [[ "$in_root" =~ ^[0-9]+$ ]]; then
+              sudo dev-site create "$in_dom" "$in_root" 8.4 proxy
+            else
+              sudo dev-site create "$in_dom" "$in_root" "$in_ver"
+            fi
           else
             echo "dev-site belum terpasang. Jalankan instalasi Full Web Stack terlebih dahulu."
           fi
         else
-          echo "Domain dan Document Root tidak boleh kosong."
+          echo "Domain dan Document Root / Port tidak boleh kosong."
         fi
         ;;
       3)

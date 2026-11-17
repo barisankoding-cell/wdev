@@ -139,7 +139,7 @@ Dipasang ke `/usr/local/bin`; `node-switch`, `pg-switch`, `dev-site`, dan `cf-tu
 | `node-switch [list\|<ver>\|install\|remove]` | Kelola versi Node.js |
 | `pg-switch [list\|<ver>\|switch\|backup\|restore]` | Kelola cluster PostgreSQL dan migrasi data |
 | `php-switch <ver\|list>` | Ganti versi PHP CLI & PHP-FPM aktif |
-| `dev-site create\|delete\|list\|cert\|sync\|custom` | Virtual host Nginx + SSL + entri `/etc/hosts` + deteksi framework (Laravel, WordPress, CI3/CI4, Symfony, generic) |
+| `dev-site create\|delete\|list\|cert\|sync\|custom` | Virtual host Nginx + SSL + entri `/etc/hosts` + deteksi framework (Laravel, WordPress, CI3/CI4, Symfony, generic, proxy) |
 | `dev-site expose\|unexpose\|exposures` | Ekspos vhost ke Cloudflare Tunnel, kelola host publik per profil |
 | `cf-tunnel account\|tunnel\|sync\|dns\|service\|status\|doctor` | Manajemen multi-akun Cloudflare: login, tunnel, ingress, DNS, systemd, diagnostik |
 | `orca-switch [desktop\|headless\|autostart\|status]` | Ganti mode Orca ADE |
@@ -150,12 +150,14 @@ Contoh:
 node-switch 20
 sudo php-switch 8.3
 sudo dev-site create myapp.test /var/www/myapp 8.4 laravel
+sudo dev-site create mygo.test 3221 proxy
 sudo dev-site list
 sudo dev-site delete myapp.test
 
 sudo ./setup_dev.sh --cloudflare
 sudo cf-tunnel account add cf1
 sudo dev-site expose myapp.test myapp.example.com --profile cf1
+sudo dev-site expose mygo.test api.example.com --profile cf1
 sudo cf-tunnel status --all
 ```
 
