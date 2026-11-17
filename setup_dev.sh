@@ -7303,6 +7303,18 @@ PYEOF
   echo "[✓] Default Git Commit Generator ($CHOSEN_AGENT) berhasil diperbarui dan tersimpan permanen!"
 }
 
+# --- HELPER FORMATTING MENU ---
+print_menu_header() {
+  local title="$1"
+  local width=64
+  local pad=$(( (width - ${#title}) / 2 ))
+  [ "$pad" -lt 0 ] && pad=0
+  echo ""
+  echo -e "${C_BOLD}================================================================${C_RESET}"
+  printf "${C_BOLD}%*s%s%*s${C_RESET}\n" "$pad" "" "$title" "$pad" ""
+  echo -e "${C_BOLD}================================================================${C_RESET}"
+}
+
 # --- SUBMENU ORCA ADE (DESKTOP GUI <-> HEADLESS SERVER) ---
 menu_orca() {
   local TARGET_USER="${SUDO_USER:-$USER}"
@@ -7310,26 +7322,23 @@ menu_orca() {
   TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
   [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
   detect_desktop_environment || true
+
   while true; do
     if ! is_orca_installed; then
-      echo ""
-      echo "=========================================="
-      echo "            INSTALASI ORCA ADE            "
-      echo "=========================================="
-      echo "Status Instalasi  : Belum Terpasang"
+      print_menu_header "INSTALASI ORCA ADE"
+      echo -e "  ${C_BOLD}Status Instalasi  :${C_RESET} ${C_RED}Belum Terpasang${C_RESET}"
       if [ "$HAS_DE" -eq 1 ]; then
-        echo "Lingkungan Sistem : Desktop Terdeteksi ($DETECTED_DE)"
+        echo -e "  ${C_BOLD}Lingkungan Sistem :${C_RESET} Desktop Terdeteksi ($DETECTED_DE)"
       else
-        echo "Lingkungan Sistem : Headless (Tanpa Desktop)"
+        echo -e "  ${C_BOLD}Lingkungan Sistem :${C_RESET} Headless (Tanpa Desktop)"
       fi
-      echo "------------------------------------------"
-      echo "Pilih mode instalasi Orca ADE (single-instance):"
-      echo "1. Instal Orca ADE - Desktop GUI (Aplikasi Visual, Menu & Ikon)"
-      echo "2. Instal Orca ADE - Headless Server (Background Service 24/7 + Pairing QR)"
-      echo "3. Instal Otomatis (Sesuai Deteksi Lingkungan Sistem)"
-      echo "4. Cek Status Lengkap"
-      echo "0. Kembali"
-      echo "=========================================="
+      echo -e "  --------------------------------------------------------------"
+      echo -e "  ${C_CYAN}[1]${C_RESET} Instal Orca ADE - Desktop GUI (Aplikasi Visual & Menu)"
+      echo -e "  ${C_CYAN}[2]${C_RESET} Instal Orca ADE - Headless Server (Background Service 24/7 + QR)"
+      echo -e "  ${C_CYAN}[3]${C_RESET} Instal Otomatis (Sesuai Deteksi Lingkungan Sistem)"
+      echo -e "  ${C_CYAN}[4]${C_RESET} Cek Status Lengkap"
+      echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+      echo -e "${C_BOLD}================================================================${C_RESET}"
       read -rp "Pilih opsi [0-4]: " orca_opt
 
       case $orca_opt in
@@ -7346,45 +7355,36 @@ menu_orca() {
     local cur_mode
     cur_mode="$(get_orca_configured_mode)"
 
-    echo ""
-    echo "=========================================="
     if [ "$cur_mode" = "desktop" ]; then
-      echo "     MANAJEMEN ORCA ADE (DESKTOP GUI)     "
-    else
-      echo "   MANAJEMEN ORCA ADE (HEADLESS SERVER)   "
-    fi
-    echo "=========================================="
-    if [ "$HAS_DE" -eq 1 ]; then
-      echo "Lingkungan Sistem : Desktop Terdeteksi ($DETECTED_DE)"
-    else
-      echo "Lingkungan Sistem : Headless (Tanpa Desktop)"
-    fi
-    echo "Mode Aktif        : $([ "$cur_mode" = "desktop" ] && echo 'DESKTOP GUI' || echo 'HEADLESS SERVER (24/7 di Boot)')"
-
-    if [ "$cur_mode" = "desktop" ]; then
+      print_menu_header "MANAJEMEN ORCA ADE (DESKTOP GUI)"
+      if [ "$HAS_DE" -eq 1 ]; then
+        echo -e "  ${C_BOLD}Lingkungan Sistem :${C_RESET} Desktop Terdeteksi ($DETECTED_DE)"
+      else
+        echo -e "  ${C_BOLD}Lingkungan Sistem :${C_RESET} Headless (Tanpa Desktop)"
+      fi
+      echo -e "  ${C_BOLD}Mode Aktif        :${C_RESET} ${C_GREEN}DESKTOP GUI${C_RESET}"
       if is_orca_desktop_running; then
         local gpid
         gpid=$(pgrep -f "/orca-ide/orca-ide" 2>/dev/null | head -n1 || echo "-")
-        echo "Status GUI        : Running (Active) [PID: $gpid]"
+        echo -e "  ${C_BOLD}Status GUI        :${C_RESET} ${C_GREEN}Running (Active) [PID: $gpid]${C_RESET}"
       else
-        echo "Status GUI        : Inactive (Belum dibuka)"
+        echo -e "  ${C_BOLD}Status GUI        :${C_RESET} ${C_YELLOW}Inactive (Belum dibuka)${C_RESET}"
       fi
       local autostart_info="Nonaktif"
       [ -f "$TARGET_HOME/.config/autostart/orca-ide.desktop" ] && autostart_info="Aktif"
-      echo "Desktop Autostart : $autostart_info"
-      echo "------------------------------------------"
-      echo "1. Buka Orca IDE Desktop (GUI)"
-      echo "2. Ganti Mode ke Headless Server (Non-GUI / 24/7 di Boot)"
-      echo "3. Toggle Autostart Desktop [Saat ini: $autostart_info]"
-      echo "4. Konfigurasi Default Git Commit Generator (AI)"
-      echo "5. Tutup Orca IDE Desktop (Stop)"
-      echo "6. Instal / Update Orca ADE (Desktop GUI)"
-      echo "7. Instal / Pindah ke Orca ADE (Headless Server)"
-      echo "8. Cek Status Lengkap"
-      echo "9. Uninstall Orca ADE"
-      echo "0 / 10. Kembali ke Menu Utama"
-      echo "=========================================="
-      read -rp "Pilih opsi [0-10]: " orca_opt
+      echo -e "  ${C_BOLD}Desktop Autostart :${C_RESET} $autostart_info"
+      echo -e "  --------------------------------------------------------------"
+      echo -e "  ${C_CYAN}[1]${C_RESET} Buka Orca IDE Desktop (GUI)"
+      echo -e "  ${C_CYAN}[2]${C_RESET} Ganti Mode ke Headless Server (Non-GUI / 24/7 di Boot)"
+      echo -e "  ${C_CYAN}[3]${C_RESET} Toggle Autostart Desktop [Saat ini: $autostart_info]"
+      echo -e "  ${C_CYAN}[4]${C_RESET} Konfigurasi Default Git Commit Generator (AI)"
+      echo -e "  ${C_CYAN}[5]${C_RESET} Tutup Orca IDE Desktop (Stop)"
+      echo -e "  ${C_CYAN}[6]${C_RESET} Instal Ulang / Update Orca ADE (Desktop GUI)"
+      echo -e "  ${C_CYAN}[7]${C_RESET} Cek Status Lengkap"
+      echo -e "  ${C_CYAN}[8]${C_RESET} Uninstall Orca ADE"
+      echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+      echo -e "${C_BOLD}================================================================${C_RESET}"
+      read -rp "Pilih opsi [0-8]: " orca_opt
 
       case $orca_opt in
         1) launch_orca_desktop ;;
@@ -7411,43 +7411,45 @@ menu_orca() {
           ;;
         6) setup_orca --desktop ;;
         7)
-          stop_orca_service
-          setup_orca --headless
-          ;;
-        8)
           if [ -x "$TARGET_HOME/.local/bin/orca-switch" ]; then
             "$TARGET_HOME/.local/bin/orca-switch" status
           else
             show_info
           fi
           ;;
-        9) uninstall_orca ;;
-        0|10|q|Q) break ;;
+        8) uninstall_orca ;;
+        0|q|Q) break ;;
         *) echo "Pilihan tidak valid." ;;
       esac
     else
       # Mode Headless Server
-      if is_orca_headless_running; then
-        echo "Status Server     : Running (Active - orca.service)"
+      print_menu_header "MANAJEMEN ORCA ADE (HEADLESS SERVER)"
+      if [ "$HAS_DE" -eq 1 ]; then
+        echo -e "  ${C_BOLD}Lingkungan Sistem :${C_RESET} Desktop Terdeteksi ($DETECTED_DE)"
       else
-        echo "Status Server     : Inactive / Belum berjalan"
+        echo -e "  ${C_BOLD}Lingkungan Sistem :${C_RESET} Headless (Tanpa Desktop)"
+      fi
+      echo -e "  ${C_BOLD}Mode Aktif        :${C_RESET} ${C_GREEN}HEADLESS SERVER (24/7 di Boot)${C_RESET}"
+      if is_orca_headless_running; then
+        echo -e "  ${C_BOLD}Status Server     :${C_RESET} ${C_GREEN}Running (Active - orca.service)${C_RESET}"
+      else
+        echo -e "  ${C_BOLD}Status Server     :${C_RESET} ${C_YELLOW}Inactive / Belum berjalan${C_RESET}"
       fi
       local linger_info="Tidak"
       loginctl show-user "${SUDO_USER:-$USER}" 2>/dev/null | grep -q "Linger=yes" && linger_info="Ya (Autostart di Boot)"
-      echo "Systemd Lingering : $linger_info"
-      echo "------------------------------------------"
-      echo "1. Tampilkan QR Code & Info Pairing (orca pair)"
-      echo "2. Ganti Mode ke Desktop GUI (Antarmuka Visual)"
-      echo "3. Konfigurasi Default Git Commit Generator (AI)"
-      echo "4. Start / Restart Layanan Orca Server"
-      echo "5. Stop Layanan Orca Server"
-      echo "6. Instal / Update Orca ADE (Headless Server)"
-      echo "7. Instal / Pindah ke Orca ADE (Desktop GUI)"
-      echo "8. Cek Status Lengkap"
-      echo "9. Uninstall Orca ADE"
-      echo "0 / 10. Kembali ke Menu Utama"
-      echo "=========================================="
-      read -rp "Pilih opsi [0-10]: " orca_opt
+      echo -e "  ${C_BOLD}Systemd Lingering :${C_RESET} $linger_info"
+      echo -e "  --------------------------------------------------------------"
+      echo -e "  ${C_CYAN}[1]${C_RESET} Tampilkan QR Code & Info Pairing (orca pair)"
+      echo -e "  ${C_CYAN}[2]${C_RESET} Ganti Mode ke Desktop GUI (Antarmuka Visual)"
+      echo -e "  ${C_CYAN}[3]${C_RESET} Start / Restart Layanan Orca Server"
+      echo -e "  ${C_CYAN}[4]${C_RESET} Stop Layanan Orca Server"
+      echo -e "  ${C_CYAN}[5]${C_RESET} Konfigurasi Default Git Commit Generator (AI)"
+      echo -e "  ${C_CYAN}[6]${C_RESET} Instal Ulang / Update Orca ADE (Headless Server)"
+      echo -e "  ${C_CYAN}[7]${C_RESET} Cek Status Lengkap"
+      echo -e "  ${C_CYAN}[8]${C_RESET} Uninstall Orca ADE"
+      echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+      echo -e "${C_BOLD}================================================================${C_RESET}"
+      read -rp "Pilih opsi [0-8]: " orca_opt
 
       case $orca_opt in
         1) show_orca_pair ;;
@@ -7462,8 +7464,7 @@ menu_orca() {
             setup_orca --desktop
           fi
           ;;
-        3) configure_orca_commit_ai ;;
-        4)
+        3)
           if is_orca_running; then
             echo "Merestart layanan Orca Server..."
             restart_orca_service
@@ -7472,361 +7473,488 @@ menu_orca() {
             start_orca_service
           fi
           ;;
-        5)
+        4)
           echo "Menghentikan layanan Orca Server..."
           stop_orca_service
           ;;
+        5) configure_orca_commit_ai ;;
         6) setup_orca --headless ;;
         7)
-          stop_orca_service
-          setup_orca --desktop
-          ;;
-        8)
           if [ -x "$TARGET_HOME/.local/bin/orca-switch" ]; then
             "$TARGET_HOME/.local/bin/orca-switch" status
           else
             show_info
           fi
           ;;
-        9) uninstall_orca ;;
-        0|10|q|Q) break ;;
+        8) uninstall_orca ;;
+        0|q|Q) break ;;
         *) echo "Pilihan tidak valid." ;;
       esac
     fi
   done
 }
 
-# --- SUBMENU PHP WEB STACK & LOCAL SSL ---
+# --- SUBMENU CLOUDFLARE TUNNEL & DNS ---
 cf_tunnel_menu_bin() {
- local b
- for b in /usr/local/bin/cf-tunnel "$HOME/.local/bin/cf-tunnel"; do
- if [ -x "$b" ]; then
- echo "$b"
- return 0
- fi
- done
- command -v cf-tunnel 2>/dev/null || return 1
+  local b
+  for b in /usr/local/bin/cf-tunnel "$HOME/.local/bin/cf-tunnel"; do
+    if [ -x "$b" ]; then
+      echo "$b"
+      return 0
+    fi
+  done
+  command -v cf-tunnel 2>/dev/null || return 1
 }
 
 dev_site_menu_bin() {
- local b
- for b in /usr/local/bin/dev-site "$HOME/.local/bin/dev-site"; do
- if [ -x "$b" ]; then
- echo "$b"
- return 0
- fi
- done
- command -v dev-site 2>/dev/null || return 1
+  local b
+  for b in /usr/local/bin/dev-site "$HOME/.local/bin/dev-site"; do
+    if [ -x "$b" ]; then
+      echo "$b"
+      return 0
+    fi
+  done
+  command -v dev-site 2>/dev/null || return 1
 }
 
 run_cf_menu() {
- local b rc=0
- b=$(cf_tunnel_menu_bin) || {
- echo "cf-tunnel belum terpasang. Jalankan: sudo $0 --cloudflare"
- return 0
- }
- if [ "$EUID" -eq 0 ]; then
- "$b" "$@" || rc=$?
- else
- sudo "$b" "$@" || rc=$?
- fi
- if [ "$rc" -ne 0 ]; then
- echo "Perintah cf-tunnel gagal (exit ${rc}); menu tetap aktif." >&2
- fi
- return 0
+  local b rc=0
+  b=$(cf_tunnel_menu_bin) || {
+    echo "cf-tunnel belum terpasang. Jalankan: sudo $0 --cloudflare"
+    return 0
+  }
+  if [ "$EUID" -eq 0 ]; then
+    "$b" "$@" || rc=$?
+  else
+    sudo "$b" "$@" || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "Perintah cf-tunnel gagal (exit ${rc}); menu tetap aktif." >&2
+  fi
+  return 0
 }
 
 menu_cf_pick_profile() {
- local -a profs=()
- local p i idx
- while IFS= read -r p; do
- [ -n "$p" ] && profs+=("$p")
- done < <(wdev_profile_list)
- if [ "${#profs[@]}" -eq 0 ]; then
- echo "Belum ada profil Cloudflare. Tambah dulu lewat menu Akun." >&2
- return 1
- fi
- echo "Profil tersedia:" >&2
- for i in "${!profs[@]}"; do
- printf ' %d. %s\n' "$((i + 1))" "${profs[$i]}" >&2
- done
- read -rp "Pilih nomor atau nama profil: " p
- [ -n "$p" ] || return 1
- if [[ "$p" =~ ^[0-9]+$ ]]; then
- idx=$((p - 1))
- if [ "$idx" -lt 0 ] || [ "$idx" -ge "${#profs[@]}" ]; then
- echo "Nomor profil tidak valid." >&2
- return 1
- fi
- p="${profs[$idx]}"
- fi
- if ! printf '%s\n' "${profs[@]}" | grep -qxF "$p"; then
- echo "Profil '$p' tidak ditemukan." >&2
- return 1
- fi
- printf '%s\n' "$p"
+  local -a profs=()
+  local p i idx
+  while IFS= read -r p; do
+    [ -n "$p" ] && profs+=("$p")
+  done < <(wdev_profile_list)
+  if [ "${#profs[@]}" -eq 0 ]; then
+    echo "Belum ada profil Cloudflare. Tambah dulu lewat menu Akun." >&2
+    return 1
+  fi
+  echo "Profil tersedia:" >&2
+  for i in "${!profs[@]}"; do
+    printf '  %d. %s\n' "$((i + 1))" "${profs[$i]}" >&2
+  done
+  read -rp "Pilih nomor atau nama profil: " p
+  [ -n "$p" ] || return 1
+  if [[ "$p" =~ ^[0-9]+$ ]]; then
+    idx=$((p - 1))
+    if [ "$idx" -lt 0 ] || [ "$idx" -ge "${#profs[@]}" ]; then
+      echo "Nomor profil tidak valid." >&2
+      return 1
+    fi
+    p="${profs[$idx]}"
+  fi
+  if ! printf '%s\n' "${profs[@]}" | grep -qxF "$p"; then
+    echo "Profil '$p' tidak ditemukan." >&2
+    return 1
+  fi
+  printf '%s\n' "$p"
 }
 
 menu_cf_account() {
- local p
- while true; do
- echo ""
- echo "--- AKUN CLOUDFLARE ---"
- echo "1. Daftar akun & status"
- echo "2. Tambah akun"
- echo "3. Hapus akun"
- echo "0. Kembali"
- read -rp "Pilih opsi [0-3]: " a_opt
- case "$a_opt" in
- 1) run_cf_menu account list ;;
- 2)
- read -rp "Nama profil baru (contoh: cf1): " p
- [ -n "$p" ] && run_cf_menu account add "$p"
- ;;
- 3)
- p=$(menu_cf_pick_profile) || continue
- run_cf_menu account remove "$p"
- ;;
- 0|q|Q) return 0 ;;
- *) echo "Pilihan tidak valid." ;;
- esac
- done
+  local p
+  while true; do
+    print_menu_header "AKUN CLOUDFLARE"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Daftar Akun & Status"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Tambah Akun Baru"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Akun"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-3]: " a_opt
+    case "$a_opt" in
+      1) run_cf_menu account list ;;
+      2)
+        read -rp "Nama profil baru (contoh: cf1): " p
+        [ -n "$p" ] && run_cf_menu account add "$p"
+        ;;
+      3)
+        p=$(menu_cf_pick_profile) || continue
+        run_cf_menu account remove "$p"
+        ;;
+      0|q|Q) return 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
 }
 
 menu_cf_tunnel() {
- local p
- while true; do
- echo ""
- echo "--- TUNNEL CLOUDFLARE ---"
- echo "1. Buat tunnel"
- echo "2. Rotasi / ganti tunnel"
- echo "3. Info tunnel & connector"
- echo "0. Kembali"
- read -rp "Pilih opsi [0-3]: " t_opt
- case "$t_opt" in
- 1|2)
- p=$(menu_cf_pick_profile) || continue
- if [ "$t_opt" = "1" ]; then
- run_cf_menu tunnel create --profile "$p"
- else
- run_cf_menu tunnel rotate --profile "$p"
- fi
- ;;
- 3)
- p=$(menu_cf_pick_profile) || continue
- run_cf_menu tunnel info --profile "$p"
- ;;
- 0|q|Q) return 0 ;;
- *) echo "Pilihan tidak valid." ;;
- esac
- done
+  local p
+  while true; do
+    print_menu_header "TUNNEL CLOUDFLARE"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Buat Tunnel Baru"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Rotasi / Ganti Tunnel"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Info Tunnel & Konektor"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-3]: " t_opt
+    case "$t_opt" in
+      1|2)
+        p=$(menu_cf_pick_profile) || continue
+        if [ "$t_opt" = "1" ]; then
+          run_cf_menu tunnel create --profile "$p"
+        else
+          run_cf_menu tunnel rotate --profile "$p"
+        fi
+        ;;
+      3)
+        p=$(menu_cf_pick_profile) || continue
+        run_cf_menu tunnel info --profile "$p"
+        ;;
+      0|q|Q) return 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
 }
 
 menu_cf_service() {
- local action target
- while true; do
- echo ""
- echo "--- SERVICE CLOUDFLARED ---"
- echo "1. Start"
- echo "2. Stop"
- echo "3. Restart"
- echo "4. Logs"
- echo "5. Status"
- echo "6. Install / regenerate unit"
- echo "7. Enable"
- echo "8. Disable"
- echo "0. Kembali"
- read -rp "Pilih aksi [0-8]: " action
- case "$action" in
- 0|q|Q) return 0 ;;
- 1) action="start" ;;
- 2) action="stop" ;;
- 3) action="restart" ;;
- 4) action="logs" ;;
- 5) action="status" ;;
- 6) action="install" ;;
- 7) action="enable" ;;
- 8) action="disable" ;;
- *) echo "Aksi tidak valid."; continue ;;
- esac
- read -rp "Profil (nama profil atau 'all'): " target
- if [ "$target" = "all" ]; then
- run_cf_menu service "$action" --all
- else
- [ -n "$target" ] && run_cf_menu service "$action" --profile "$target"
- fi
- done
+  local action target
+  while true; do
+    print_menu_header "SERVICE CLOUDFLARED"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Start"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Stop"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Restart"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Logs (Journalctl)"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Status"
+    echo -e "  ${C_CYAN}[6]${C_RESET} Install / Regenerate Unit Systemd"
+    echo -e "  ${C_CYAN}[7]${C_RESET} Enable (Autostart di Boot)"
+    echo -e "  ${C_CYAN}[8]${C_RESET} Disable (Nonaktifkan Autostart)"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih aksi [0-8]: " action
+    case "$action" in
+      0|q|Q) return 0 ;;
+      1) action="start" ;;
+      2) action="stop" ;;
+      3) action="restart" ;;
+      4) action="logs" ;;
+      5) action="status" ;;
+      6) action="install" ;;
+      7) action="enable" ;;
+      8) action="disable" ;;
+      *) echo "Aksi tidak valid."; continue ;;
+    esac
+    read -rp "Profil (nama profil atau 'all', kosongkan untuk batal): " target
+    [ -z "$target" ] && continue
+    if [ "$target" = "all" ]; then
+      run_cf_menu service "$action" --all
+    else
+      run_cf_menu service "$action" --profile "$target"
+    fi
+  done
 }
 
 menu_cf_dns() {
- local action p host
- while true; do
- echo ""
- echo "--- DNS CLOUDFLARE ---"
- echo "1. Daftar CNAME"
- echo "2. Tambah / perbarui host"
- echo "3. Hapus host"
- echo "4. Sinkronkan semua eksposur profil"
- echo "0. Kembali"
- read -rp "Pilih aksi [0-4]: " action
- case "$action" in
- 0|q|Q) return 0 ;;
- 1|2|3|4) ;;
- *) echo "Aksi tidak valid."; continue ;;
- esac
- p=$(menu_cf_pick_profile) || continue
- case "$action" in
- 1) run_cf_menu dns list --profile "$p" ;;
- 2)
- read -rp "Host publik (contoh: app-dev.example.com): " host
- [ -n "$host" ] && run_cf_menu dns add --profile "$p" "$host"
- ;;
- 3)
- read -rp "Host publik yang dihapus: " host
- [ -n "$host" ] && run_cf_menu dns rm --profile "$p" "$host"
- ;;
- 4) run_cf_menu dns ensure --profile "$p" ;;
- esac
- done
+  local action p host
+  while true; do
+    print_menu_header "DNS CLOUDFLARE"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Daftar CNAME Record"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Tambah / Perbarui Host Publik"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Host Publik"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Sinkronkan Semua Eksposur Profil"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih aksi [0-4]: " action
+    case "$action" in
+      0|q|Q) return 0 ;;
+      1|2|3|4) ;;
+      *) echo "Aksi tidak valid."; continue ;;
+    esac
+    p=$(menu_cf_pick_profile) || continue
+    case "$action" in
+      1) run_cf_menu dns list --profile "$p" ;;
+      2)
+        read -rp "Host publik (contoh: app-dev.example.com, kosongkan untuk batal): " host
+        [ -n "$host" ] && run_cf_menu dns add --profile "$p" "$host"
+        ;;
+      3)
+        read -rp "Host publik yang dihapus (kosongkan untuk batal): " host
+        [ -n "$host" ] && run_cf_menu dns rm --profile "$p" "$host"
+        ;;
+      4) run_cf_menu dns ensure --profile "$p" ;;
+    esac
+  done
 }
 
 menu_cf_expose() {
- local ds d host p i
- ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
- local -a sites=()
- local conf
- if [ -d /etc/nginx/sites-available ]; then
- for conf in /etc/nginx/sites-available/*.conf; do
- [ -f "$conf" ] || continue
- [[ "$conf" == *.custom.conf ]] && continue
- sites+=("$(basename "$conf" .conf)")
- done
- fi
- if [ "${#sites[@]}" -gt 0 ]; then
- echo "Virtual host lokal:"
- for i in "${!sites[@]}"; do printf ' %d. %s\n' "$((i + 1))" "${sites[$i]}"; done
- fi
- read -rp "Domain lokal (nomor atau nama, contoh: myapp.test): " d
- [ -n "$d" ] || return 1
- if [[ "$d" =~ ^[0-9]+$ ]]; then
- i=$((d - 1))
- if [ "$i" -lt 0 ] || [ "$i" -ge "${#sites[@]}" ]; then
- echo "Nomor vhost tidak valid." >&2
- return 1
- fi
- d="${sites[$i]}"
- fi
- read -rp "Host publik (contoh: app-dev.example.com): " host
- [ -n "$host" ] || return 1
- p=$(menu_cf_pick_profile) || return 1
- if [ "$EUID" -eq 0 ]; then
- "$ds" expose "$d" "$host" --profile "$p" || true
- else
- sudo "$ds" expose "$d" "$host" --profile "$p" || true
- fi
+  local ds d host p i
+  ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
+  local -a sites=()
+  local conf
+  if [ -d /etc/nginx/sites-available ]; then
+    for conf in /etc/nginx/sites-available/*.conf; do
+      [ -f "$conf" ] || continue
+      [[ "$conf" == *.custom.conf ]] && continue
+      sites+=("$(basename "$conf" .conf)")
+    done
+  fi
+  if [ "${#sites[@]}" -gt 0 ]; then
+    echo "Virtual host lokal tersedia:"
+    for i in "${!sites[@]}"; do printf '  %d. %s\n' "$((i + 1))" "${sites[$i]}"; done
+  fi
+  read -rp "Domain lokal (nomor atau nama, contoh: myapp.test, kosongkan untuk batal): " d
+  [ -n "$d" ] || return 1
+  if [[ "$d" =~ ^[0-9]+$ ]]; then
+    i=$((d - 1))
+    if [ "$i" -lt 0 ] || [ "$i" -ge "${#sites[@]}" ]; then
+      echo "Nomor vhost tidak valid." >&2
+      return 1
+    fi
+    d="${sites[$i]}"
+  fi
+  read -rp "Host publik (contoh: app-dev.example.com, kosongkan untuk batal): " host
+  [ -n "$host" ] || return 1
+  p=$(menu_cf_pick_profile) || return 1
+  if [ "$EUID" -eq 0 ]; then
+    "$ds" expose "$d" "$host" --profile "$p" || true
+  else
+    sudo "$ds" expose "$d" "$host" --profile "$p" || true
+  fi
 }
 
 menu_cf_unexpose() {
- local ds d host
- ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
- read -rp "Domain lokal (contoh: myapp.test): " d
- [ -n "$d" ] || return 1
- read -rp "Host publik (kosongkan untuk semua eksposur domain): " host
- if [ "$EUID" -eq 0 ]; then
- if [ -n "$host" ]; then
- "$ds" unexpose "$d" "$host" || true
- else
- "$ds" unexpose "$d" || true
- fi
- else
- if [ -n "$host" ]; then
- sudo "$ds" unexpose "$d" "$host" || true
- else
- sudo "$ds" unexpose "$d" || true
- fi
- fi
+  local ds d host
+  ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; return 1; }
+  read -rp "Domain lokal (contoh: myapp.test, kosongkan untuk batal): " d
+  [ -n "$d" ] || return 1
+  read -rp "Host publik (kosongkan untuk semua eksposur domain): " host
+  if [ "$EUID" -eq 0 ]; then
+    if [ -n "$host" ]; then
+      "$ds" unexpose "$d" "$host" || true
+    else
+      "$ds" unexpose "$d" || true
+    fi
+  else
+    if [ -n "$host" ]; then
+      sudo "$ds" unexpose "$d" "$host" || true
+    else
+      sudo "$ds" unexpose "$d" || true
+    fi
+  fi
 }
 
 menu_cf_exposures() {
- local ds action
- while true; do
- echo ""
- echo "--- EKSPOSUR PUBLIK (DEV-SITE) ---"
- echo "1. Daftar eksposur"
- echo "2. Ekspos virtual host"
- echo "3. Hapus eksposur"
- echo "0. Kembali"
- read -rp "Pilih opsi [0-3]: " action
- case "$action" in
- 1)
- ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; continue; }
- "$ds" exposures
- ;;
- 2) menu_cf_expose ;;
- 3) menu_cf_unexpose ;;
- 0|q|Q) return 0 ;;
- *) echo "Pilihan tidak valid." ;;
- esac
- done
+  local ds action
+  while true; do
+    print_menu_header "EKSPOSUR PUBLIK (DEV-SITE)"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Daftar Eksposur Aktif"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Ekspos Virtual Host ke Internet"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Hapus Eksposur Publik"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-3]: " action
+    case "$action" in
+      1)
+        ds=$(dev_site_menu_bin) || { echo "dev-site belum terpasang."; continue; }
+        "$ds" exposures
+        ;;
+      2) menu_cf_expose ;;
+      3) menu_cf_unexpose ;;
+      0|q|Q) return 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
 }
 
 menu_cloudflare() {
- while true; do
- echo ""
- echo "=========================================="
- echo " CLOUDFLARE TUNNEL & DNS MANAGER "
- echo "=========================================="
- echo "1. Status akun, tunnel, service & eksposur"
- echo "2. Eksposur publik (daftar / ekspos / hapus)"
- echo "3. Akun Cloudflare (daftar / tambah / hapus)"
- echo "4. Tunnel (buat / rotasi / info)"
- echo "5. Sinkronkan ingress & DNS"
- echo "6. Service cloudflared (start / stop / logs)"
- echo "7. DNS record (list / tambah / hapus / sync)"
- echo "8. Diagnostik konektivitas (doctor)"
- echo "9. Install / perbarui cloudflared"
- echo "0. Kembali"
- echo "=========================================="
- read -rp "Pilih opsi [0-9]: " cf_opt
+  while true; do
+    print_menu_header "CLOUDFLARE TUNNEL & DNS MANAGER"
+    echo -e "  ${C_CYAN}[1]${C_RESET} 📊 Status Akun, Tunnel, Service & Eksposur"
+    echo -e "  ${C_CYAN}[2]${C_RESET} 🌐 Eksposur Publik (Daftar / Ekspos / Hapus)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} 👤 Akun Cloudflare (Daftar / Tambah / Hapus)"
+    echo -e "  ${C_CYAN}[4]${C_RESET} 🚇 Tunnel (Buat / Rotasi / Info)"
+    echo -e "  ${C_CYAN}[5]${C_RESET} 🔄 Sinkronkan Ingress & DNS Record"
+    echo -e "  ${C_CYAN}[6]${C_RESET} ⚙️  Service Cloudflared (Start / Stop / Logs)"
+    echo -e "  ${C_CYAN}[7]${C_RESET} 📡 DNS Record (List / Tambah / Hapus / Sync)"
+    echo -e "  ${C_CYAN}[8]${C_RESET} 🩺 Diagnostik Konektivitas (Doctor)"
+    echo -e "  ${C_CYAN}[9]${C_RESET} 📥 Install / Perbarui cloudflared"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-9]: " cf_opt
 
- case $cf_opt in
- 1) run_cf_menu status --all ;;
- 2) menu_cf_exposures ;;
- 3) menu_cf_account ;;
- 4) menu_cf_tunnel ;;
- 5)
- run_cf_menu sync --all
- run_cf_menu dns ensure --all 2>/dev/null || true
- ;;
- 6) menu_cf_service ;;
- 7) menu_cf_dns ;;
- 8) run_cf_menu doctor --all ;;
- 9) run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare ;;
- 0|q|Q) break ;;
- *) echo "Pilihan tidak valid." ;;
- esac
- done
+    case $cf_opt in
+      1) run_cf_menu status --all ;;
+      2) menu_cf_exposures ;;
+      3) menu_cf_account ;;
+      4) menu_cf_tunnel ;;
+      5)
+        run_cf_menu sync --all
+        run_cf_menu dns ensure --all 2>/dev/null || true
+        ;;
+      6) menu_cf_service ;;
+      7) menu_cf_dns ;;
+      8) run_cf_menu doctor --all ;;
+      9) run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare ;;
+      0|q|Q) break ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
 }
 
-menu_php_stack() {
- local TARGET_USER="${SUDO_USER:-$USER}"
- local TARGET_HOME
- TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
- [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
+# --- SUBMENU MULTI-VERSI PHP (CLI & FPM) ---
+menu_php_switch() {
   while true; do
-    echo ""
-    echo "=========================================="
-    echo "    MANAJEMEN PHP WEB STACK & LOCAL SSL   "
-    echo "=========================================="
-    echo "1. Instal Full Web Stack (Nginx + PHP + Composer + SSL)"
-    echo "2. Buat Virtual Host Baru (dev-site create)"
-    echo "3. Hapus Virtual Host (dev-site delete)"
-    echo "4. Daftar Virtual Host Aktif (dev-site list)"
-    echo "5. Sinkronisasi Hosts & SSL Browser (dev-site sync)"
-    echo "6. Ganti Versi PHP CLI & FPM (php-switch)"
-    echo "0. Kembali ke Menu Utama"
-    echo "=========================================="
-    echo "Eksposur publik & tunnel: menu utama [6] Cloudflare Tunnel & DNS"
+    local cur_php="Belum terpasang"
+    if command -v php >/dev/null 2>&1; then
+      cur_php=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null || php -v 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1 || echo "Terpasang")
+    fi
+
+    print_menu_header "PENGELOLA MULTI-VERSI PHP (CLI & FPM)"
+    echo -e "  ${C_BOLD}PHP CLI Aktif  :${C_RESET} ${C_GREEN}${cur_php}${C_RESET}"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Cek Status & Versi PHP Terpasang (php-switch list)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Beralih ke PHP 8.4"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Beralih ke PHP 8.3"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Beralih ke PHP 8.2"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Beralih ke PHP 8.1"
+    echo -e "  ${C_CYAN}[6]${C_RESET} Beralih ke Versi Tertentu (Input Manual)"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-6]: " p_opt
+
+    case $p_opt in
+      1)
+        if [ -x "/usr/local/bin/php-switch" ]; then
+          php-switch list
+        else
+          echo "php-switch belum terpasang. Jalankan setup PHP terlebih dahulu."
+        fi
+        ;;
+      2|3|4|5)
+        local target_v="8.4"
+        [ "$p_opt" = "3" ] && target_v="8.3"
+        [ "$p_opt" = "4" ] && target_v="8.2"
+        [ "$p_opt" = "5" ] && target_v="8.1"
+        if [ -x "/usr/local/bin/php-switch" ]; then
+          if [ "$EUID" -eq 0 ]; then
+            php-switch "$target_v"
+          else
+            sudo php-switch "$target_v"
+          fi
+        else
+          echo "php-switch belum terpasang."
+        fi
+        ;;
+      6)
+        if [ -x "/usr/local/bin/php-switch" ]; then
+          php-switch list
+          read -rp "Masukkan versi target (contoh: 8.4, 8.3, 8.2, 8.1, kosongkan untuk batal): " target_v
+          if [ -n "$target_v" ]; then
+            if [ "$EUID" -eq 0 ]; then
+              php-switch "$target_v"
+            else
+              sudo php-switch "$target_v"
+            fi
+          fi
+        else
+          echo "php-switch belum terpasang."
+        fi
+        ;;
+      0|q|Q) break ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
+}
+
+# --- SUBMENU MULTI-VERSI JAVA OPENJDK ---
+menu_java() {
+  while true; do
+    local cur_jv="Belum terpasang"
+    if command -v java >/dev/null 2>&1; then
+      cur_jv=$(java -version 2>&1 | head -n1)
+    fi
+
+    print_menu_header "PENGELOLA MULTI-VERSI OPENJDK (JAVA)"
+    echo -e "  ${C_BOLD}Java Aktif     :${C_RESET} ${C_GREEN}${cur_jv}${C_RESET}"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Cek Status & Lokasi Java Aktif"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Beralih ke OpenJDK 21 LTS (Rekomendasi Default)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Beralih ke OpenJDK 17 LTS (Kompatibilitas Luas)"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Beralih ke OpenJDK 25 / Versi Terbaru"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Beralih Interaktif via alternatives"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-5]: " j_opt
+
+    case $j_opt in
+      1)
+        if command -v java >/dev/null 2>&1; then
+          echo ""
+          java -version
+          echo "Lokasi: $(command -v java)"
+          echo "Target binary: $(readlink -f "$(command -v java)" 2>/dev/null || true)"
+        else
+          echo "Java belum terpasang."
+        fi
+        ;;
+      2)
+        JAVA_VER_OPTION="21"
+        run_single_component "OpenJDK (Java 21 LTS)" step_java
+        ;;
+      3)
+        JAVA_VER_OPTION="17"
+        run_single_component "OpenJDK (Java 17 LTS)" step_java
+        ;;
+      4)
+        JAVA_VER_OPTION="25"
+        run_single_component "OpenJDK (Java 25)" step_java
+        ;;
+      5)
+        if command -v update-alternatives >/dev/null 2>&1; then
+          if [ "$EUID" -eq 0 ]; then
+            update-alternatives --config java || true
+          else
+            sudo update-alternatives --config java || true
+          fi
+        elif command -v alternatives >/dev/null 2>&1; then
+          if [ "$EUID" -eq 0 ]; then
+            alternatives --config java || true
+          else
+            sudo alternatives --config java || true
+          fi
+        else
+          JAVA_VER_OPTION=""
+          prompt_java_options
+          run_single_component "OpenJDK (Java $JAVA_VER_OPTION)" step_java
+        fi
+        ;;
+      0|q|Q) break ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
+}
+
+# --- SUBMENU PHP WEB STACK & LOCAL SSL ---
+menu_php_stack() {
+  local TARGET_USER="${SUDO_USER:-$USER}"
+  local TARGET_HOME
+  TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
+  [ -z "$TARGET_HOME" ] && TARGET_HOME="$HOME"
+
+  while true; do
+    print_menu_header "WEB STACK & DOMAIN LOKAL (DEV-SITE)"
+    echo -e "  ${C_CYAN}[1]${C_RESET} 🚀 Instal Full Web Stack (Nginx + PHP + Composer + SSL)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} ➕ Buat Virtual Host Baru (dev-site create)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} ➖ Hapus Virtual Host (dev-site delete)"
+    echo -e "  ${C_CYAN}[4]${C_RESET} 📋 Daftar Virtual Host Aktif (dev-site list)"
+    echo -e "  ${C_CYAN}[5]${C_RESET} 🔄 Sinkronisasi Hosts & SSL Browser (dev-site sync)"
+    echo -e "  ${C_CYAN}[6]${C_RESET} 🐘 Kelola Versi PHP CLI & FPM (php-switch)"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    echo -e "  ${C_CYAN}ℹ️  Eksposur publik:${C_RESET} ${C_DIM}Gunakan menu [6] Cloudflare Tunnel & DNS${C_RESET}"
     read -rp "Pilih opsi [0-6]: " p_opt
 
     case $p_opt in
@@ -7839,7 +7967,7 @@ menu_php_stack() {
           if [ -x "/usr/local/bin/dev-site" ]; then
             sudo dev-site create "$in_dom" "$in_root" "$in_ver"
           else
-            echo "dev-site belum terpasang. Jalankan instalasi Full Web Stack atau Local SSL terlebih dahulu."
+            echo "dev-site belum terpasang. Jalankan instalasi Full Web Stack terlebih dahulu."
           fi
         else
           echo "Domain dan Document Root tidak boleh kosong."
@@ -7872,19 +8000,11 @@ menu_php_stack() {
           sync_browser_ssl_policies
         fi
         ;;
- 6)
- if [ -x "/usr/local/bin/php-switch" ]; then
- php-switch list
- read -rp "Masukkan versi target (contoh: 8.4, 8.3, 8.2, 8.1): " target_v
- [ -n "$target_v" ] && sudo php-switch "$target_v"
- else
- echo "php-switch belum terpasang."
- fi
- ;;
- 0|q|Q) break ;;
- *) echo "Pilihan tidak valid." ;;
- esac
- done
+      6) menu_php_switch ;;
+      0|q|Q) break ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
 }
 
 # --- MENU PENGELOLAAN POSTGRESQL (MULTI-VERSI) ---
@@ -7906,7 +8026,7 @@ menu_postgres() {
   fi
 
   run_pg_cmd() {
- ensure_pg_switch_helper 
+    ensure_pg_switch_helper 
     if [ ! -x "/usr/local/bin/pg-switch" ] && [ -f "$pg_bin" ]; then
       if [ "$EUID" -eq 0 ]; then
         cp -f "$pg_bin" /usr/local/bin/pg-switch 2>/dev/null && chmod 755 /usr/local/bin/pg-switch 2>/dev/null || true
@@ -7925,20 +8045,24 @@ menu_postgres() {
   }
 
   while true; do
-    echo ""
-    echo "=========================================="
-    echo "       PENGELOLA MULTI-VERSI POSTGRESQL   "
-    echo "=========================================="
-    echo "1. Cek Status, Versi & Cluster PostgreSQL"
-    echo "2. Beralih ke PostgreSQL 18 (Rilis Terbaru)"
-    echo "3. Beralih ke PostgreSQL 17"
-    echo "4. Beralih ke PostgreSQL 16"
-    echo "5. Beralih Versi & Migrasikan Seluruh Data"
-    echo "6. Buat Snapshot Cadangan Database (Backup)"
-    echo "7. Pulihkan Database dari Snapshot Cadangan"
-    echo "0 / 8. Kembali ke Menu Utama"
-    echo "=========================================="
-    read -rp "Pilih opsi [0-8]: " pg_opt
+    local cur_pg="Belum terpasang"
+    if command -v psql >/dev/null 2>&1; then
+      cur_pg=$(psql --version 2>/dev/null | head -n1 || echo "Terpasang")
+    fi
+
+    print_menu_header "PENGELOLA MULTI-VERSI POSTGRESQL"
+    echo -e "  ${C_BOLD}PostgreSQL Aktif :${C_RESET} ${C_GREEN}${cur_pg}${C_RESET}"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Cek Status, Versi & Cluster PostgreSQL (pg-switch list)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Beralih ke PostgreSQL 18 (Rilis Terbaru)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Beralih ke PostgreSQL 17"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Beralih ke PostgreSQL 16"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Beralih Versi & Migrasikan Seluruh Data (--migrate)"
+    echo -e "  ${C_CYAN}[6]${C_RESET} Buat Snapshot Cadangan Database (Backup)"
+    echo -e "  ${C_CYAN}[7]${C_RESET} Pulihkan Database dari Snapshot Cadangan"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-7]: " pg_opt
 
     case $pg_opt in
       1)
@@ -7948,15 +8072,9 @@ menu_postgres() {
           echo "pg-switch belum terpasang."
         fi
         ;;
-      2)
-        run_pg_cmd switch 18
-        ;;
-      3)
-        run_pg_cmd switch 17
-        ;;
-      4)
-        run_pg_cmd switch 16
-        ;;
+      2) run_pg_cmd switch 18 ;;
+      3) run_pg_cmd switch 17 ;;
+      4) run_pg_cmd switch 16 ;;
       5)
         read -rp "Pilih versi target [16/17/18]: " target_v
         if [ "$target_v" = "16" ] || [ "$target_v" = "17" ] || [ "$target_v" = "18" ]; then
@@ -7965,9 +8083,7 @@ menu_postgres() {
           echo "Versi target tidak valid."
         fi
         ;;
-      6)
-        run_pg_cmd backup
-        ;;
+      6) run_pg_cmd backup ;;
       7)
         if [ -n "$pg_bin" ]; then
           "$pg_bin" list
@@ -7977,7 +8093,7 @@ menu_postgres() {
           echo "pg-switch belum terpasang."
         fi
         ;;
-      0|8|q|Q) break ;;
+      0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
@@ -8008,19 +8124,23 @@ menu_nodejs() {
   }
 
   while true; do
-    echo ""
-    echo "=========================================="
-    echo "        PENGELOLA MULTI-VERSI NODE.JS     "
-    echo "=========================================="
-    echo "1. Cek Status & Versi Node.js Terpasang"
-    echo "2. Beralih ke Node.js 22 LTS (Active LTS)"
-    echo "3. Beralih ke Node.js 20 LTS (Maintenance LTS)"
-    echo "4. Beralih ke Node.js 24 (Current / Fitur Terbaru)"
-    echo "5. Pasang / Beralih ke Versi Kustom Lainnya"
-    echo "6. Hapus Versi Node.js Tertentu"
-    echo "0 / 7. Kembali ke Menu Utama"
-    echo "=========================================="
-    read -rp "Pilih opsi [0-7]: " n_opt
+    local cur_node="Belum terpasang"
+    if command -v node >/dev/null 2>&1; then
+      cur_node=$(node -v 2>/dev/null || echo "Terpasang")
+    fi
+
+    print_menu_header "PENGELOLA MULTI-VERSI NODE.JS"
+    echo -e "  ${C_BOLD}Node.js Aktif  :${C_RESET} ${C_GREEN}${cur_node}${C_RESET}"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Cek Status & Versi Node.js Terpasang (node-switch list)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Beralih ke Node.js 22 LTS (Active LTS)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Beralih ke Node.js 20 LTS (Maintenance LTS)"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Beralih ke Node.js 24 (Current / Fitur Terbaru)"
+    echo -e "  ${C_CYAN}[5]${C_RESET} Pasang / Beralih ke Versi Kustom Lainnya"
+    echo -e "  ${C_CYAN}[6]${C_RESET} Hapus Versi Node.js Tertentu"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-6]: " n_opt
 
     case $n_opt in
       1)
@@ -8044,7 +8164,7 @@ menu_nodejs() {
           [ -n "$del_v" ] && run_node_cmd remove "$del_v"
         fi
         ;;
-      7|0|q|Q) break ;;
+      0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
@@ -8053,24 +8173,25 @@ menu_nodejs() {
 # --- SUBMENU STATUS & PEMBARUAN SISTEM ---
 menu_status_updates() {
   while true; do
-    echo ""
-    echo "=========================================="
-    echo "       STATUS & PEMBARUAN SISTEM          "
-    echo "=========================================="
-    echo "1. Cek Informasi & Status Detail Layanan"
-    echo "2. Cek Ketersediaan Pembaruan Versi (Tabel)"
-    echo "3. Perbarui Seluruh Paket & Toolchain (Update All)"
- echo "4. Validasi Sintaks & Helper (Self-Check)"
- echo "0. Kembali ke Menu Utama"
- echo "=========================================="
- read -rp "Pilih opsi [0-4]: " su_opt
+    print_menu_header "STATUS & PEMBARUAN SISTEM"
+    echo -e "  ${C_CYAN}[1]${C_RESET} Cek Informasi & Status Detail Layanan"
+    echo -e "      ${C_DIM}└─ Port, service systemd, URL akses LAN & Cloudflare${C_RESET}"
+    echo -e "  ${C_CYAN}[2]${C_RESET} Cek Ketersediaan Pembaruan Versi"
+    echo -e "      ${C_DIM}└─ Tabel perbandingan versi terpasang vs rilis upstream${C_RESET}"
+    echo -e "  ${C_CYAN}[3]${C_RESET} Perbarui Seluruh Paket & Toolchain (Update All)"
+    echo -e "      ${C_DIM}└─ Update paket distro, runtime, SDK, dan helper wdev${C_RESET}"
+    echo -e "  ${C_CYAN}[4]${C_RESET} Validasi Sintaks & Helper (Self-Check)"
+    echo -e "      ${C_DIM}└─ Tes bash -n dan shellcheck seluruh generator helper${C_RESET}"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read -rp "Pilih opsi [0-4]: " su_opt
 
- case $su_opt in
- 1) show_info ;;
- 2) check_updates ;;
- 3) run_update ;;
- 4) self_check ;;
- 0|q|Q) break ;;
+    case $su_opt in
+      1) show_info ;;
+      2) check_updates ;;
+      3) run_update ;;
+      4) self_check ;;
+      0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
@@ -8079,35 +8200,20 @@ menu_status_updates() {
 # --- SUBMENU PENGELOLA MULTI-VERSI RUNTIME ---
 menu_multi_version() {
   while true; do
-    echo ""
-    echo "=========================================="
-    echo "    PENGELOLA MULTI-VERSI RUNTIME         "
-    echo "=========================================="
-    echo "1. Kelola Versi Node.js (node-switch 20 / 22 / 24)"
-    echo "2. Kelola Versi PHP CLI & FPM (php-switch 8.1 - 8.4)"
-    echo "3. Kelola Versi PostgreSQL (pg-switch 16 / 17 / 18)"
-    echo "4. Ganti Versi Default Java OpenJDK (17 / 21 / 25)"
-    echo "0. Kembali ke Menu Utama"
-    echo "=========================================="
+    print_menu_header "PENGELOLA MULTI-VERSI RUNTIME"
+    echo -e "  ${C_CYAN}[1]${C_RESET} 🟢 Kelola Versi Node.js (node-switch 20 / 22 / 24)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} 🐘 Kelola Versi PHP CLI & FPM (php-switch 8.1 - 8.4)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} 🐘 Kelola Versi PostgreSQL (pg-switch 16 / 17 / 18)"
+    echo -e "  ${C_CYAN}[4]${C_RESET} ☕ Kelola Versi Java OpenJDK (17 / 21 / 25)"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
     read -rp "Pilih opsi [0-4]: " mv_opt
 
     case $mv_opt in
       1) menu_nodejs ;;
-      2)
-        if [ -x "/usr/local/bin/php-switch" ]; then
-          php-switch list
-          read -rp "Masukkan versi target (contoh: 8.4, 8.3, 8.2, 8.1, kosongkan untuk batal): " target_v
-          [ -n "$target_v" ] && sudo php-switch "$target_v"
-        else
-          echo "php-switch belum terpasang. Jalankan setup PHP terlebih dahulu."
-        fi
-        ;;
+      2) menu_php_switch ;;
       3) menu_postgres ;;
-      4)
-        JAVA_VER_OPTION=""
-        prompt_java_options
-        run_single_component "OpenJDK (Java $JAVA_VER_OPTION)" step_java
-        ;;
+      4) menu_java ;;
       0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
@@ -8117,20 +8223,17 @@ menu_multi_version() {
 # --- SUBMENU TOOLCHAINS, COMPILERS & SDKS ---
 menu_toolchains() {
   while true; do
-    echo ""
-    echo "=========================================="
-    echo "       TOOLCHAINS, COMPILERS & SDKS       "
-    echo "=========================================="
-    echo "1. Rust, Mold Linker & Sccache"
-    echo "2. Golang (Versi Terbaru)"
-    echo "3. OpenJDK (Java JDK Multi-versi)"
-    echo "4. Flutter SDK (Stable)"
-    echo "5. Android SDK & Command Line Tools"
-    echo "6. Redis / Valkey Cache Server"
-    echo "7. Dependensi Dasar Sistem (Build Tools & Libs)"
-    echo "8. Buka Menu Modular Komponen Lengkap (18 Item)"
-    echo "0. Kembali ke Menu Utama"
-    echo "=========================================="
+    print_menu_header "TOOLCHAINS, COMPILERS & SDKS"
+    echo -e "  ${C_CYAN}[1]${C_RESET} 🦀 Rust, Mold Linker & Sccache"
+    echo -e "  ${C_CYAN}[2]${C_RESET} 🐹 Golang (Versi Terbaru)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} ☕ OpenJDK (Java JDK Multi-versi)"
+    echo -e "  ${C_CYAN}[4]${C_RESET} 🎯 Flutter SDK (Channel Stable)"
+    echo -e "  ${C_CYAN}[5]${C_RESET} 🤖 Android SDK & Command Line Tools"
+    echo -e "  ${C_CYAN}[6]${C_RESET} ⚡ Redis / Valkey Cache Server"
+    echo -e "  ${C_CYAN}[7]${C_RESET} 📦 Dependensi Dasar Sistem (Build Tools & Libs)"
+    echo -e "  ${C_CYAN}[8]${C_RESET} 📋 Buka Menu Modular Komponen Lengkap (18 Item)"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
     read -rp "Pilih opsi [0-8]: " tc_opt
 
     case $tc_opt in
@@ -8153,61 +8256,84 @@ menu_workspace_shell() {
   while true; do
     local orca_status
     orca_status="$(get_orca_status_label)"
-    echo ""
-    echo "=========================================="
-    echo "         WORKSPACE, ADE & SHELL           "
-    echo "=========================================="
-    echo "Status Orca ADE: $orca_status"
-    echo "------------------------------------------"
-    echo "1. Instal Orca ADE - Desktop GUI (Aplikasi Visual & Menu)"
-    echo "2. Instal Orca ADE - Headless Server (Background Service 24/7 + Pairing QR)"
-    echo "3. Kelola Orca ADE (Menu Manajemen, Switch Mode, Pairing, Autostart & AI)"
-    echo "4. Uninstall Orca ADE (Hapus Aplikasi, Service & Shortcut)"
-    echo "5. Oh My Zsh (Plugin & Tema Populer)"
-    echo "0. Kembali ke Menu Utama"
-    echo "=========================================="
+    print_menu_header "WORKSPACE, ADE & SHELL"
+    echo -e "  ${C_BOLD}Status Orca ADE:${C_RESET} ${C_GREEN}${orca_status}${C_RESET}"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[1]${C_RESET} 🐬 Kelola Orca ADE (Desktop GUI / Headless Server)"
+    echo -e "      ${C_DIM}└─ Switch mode, autostart, QR pairing, commit AI & service${C_RESET}"
+    echo -e "  ${C_CYAN}[2]${C_RESET} 🚀 Setup / Install Orca ADE Baru"
+    echo -e "      ${C_DIM}└─ Pasang mode Desktop GUI atau Headless Server${C_RESET}"
+    echo -e "  ${C_CYAN}[3]${C_RESET} 🐚 Oh My Zsh & Terminal Shell"
+    echo -e "      ${C_DIM}└─ Instal / perbarui Zsh, plugin populer & konfigurasi${C_RESET}"
+    echo -e "  ${C_CYAN}[4]${C_RESET} 🎨 Ganti Tema Oh My Zsh"
+    echo -e "      ${C_DIM}└─ Beralih tema Powerlevel10k, Agnoster, atau Robbyrussell${C_RESET}"
+    echo -e "  ${C_CYAN}[5]${C_RESET} 🗑️  Uninstall Orca ADE"
+    echo -e "      ${C_DIM}└─ Hapus aplikasi Orca, service background & shortcut${C_RESET}"
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
     read -rp "Pilih opsi [0-5]: " ws_opt
 
     case $ws_opt in
-      1) setup_orca --desktop ;;
-      2) setup_orca --headless ;;
-      3) menu_orca ;;
-      4) uninstall_orca ;;
-      5) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
+      1) menu_orca ;;
+      2)
+        if ! is_orca_installed; then
+          menu_orca
+        else
+          echo ""
+          echo "Orca ADE sudah terpasang ($orca_status)."
+          read -rp "Pilih target instal ulang: [1] Desktop GUI, [2] Headless Server, [0] Batal: " r_opt
+          case "$r_opt" in
+            1) setup_orca --desktop ;;
+            2) setup_orca --headless ;;
+            *) ;;
+          esac
+        fi
+        ;;
+      3) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
+      4)
+        ZSH_THEME_OPTION=""
+        prompt_zsh_theme
+        run_single_component "Oh My Zsh ($ZSH_THEME_OPTION)" step_zsh
+        ;;
+      5) uninstall_orca ;;
       0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
 }
 
-# --- MENU INSTALASI MODULAR ---
+# --- MENU INSTALASI MODULAR (PER KOMPONEN) ---
 menu_custom_install() {
   while true; do
     local orca_status
     orca_status="$(get_orca_status_label)"
-    echo ""
-    echo "=========================================="
-    echo "       INSTALASI PER KOMPONEN             "
-    echo "=========================================="
-    echo "1. Dependensi Dasar Sistem"
-    echo "2. Node.js (Multi-versi via node-switch)"
-    echo "3. Rust, Mold & Sccache"
-    echo "4. Golang (Versi Terbaru)"
-    echo "5. OpenJDK (Java JDK Multi-versi)"
-    echo "6. Android SDK & Command Line Tools"
-    echo "7. Flutter SDK (Stable)"
-    echo "8. PostgreSQL & Konfigurasi"
-    echo "9. Redis / Valkey Server & Konfigurasi"
-    echo "10. Nginx (Versi Mainline Terbaru)"
-    echo "11. PHP (Multi-versi Dinamis & Ekstensi)"
-    echo "12. Composer (Package Manager PHP)"
-    echo "13. Local SSL (mkcert) & Helper dev-site"
-    echo "14. Full PHP Web Stack (Nginx + PHP + Composer + SSL)"
-    echo "15. Oh My Zsh (Plugin & Tema Populer)"
-    echo "16. Orca ADE - Desktop GUI (Aplikasi Desktop & Menu) [$orca_status]"
-    echo "17. Orca ADE - Headless Server (Service 24/7 + Pairing QR) [$orca_status]"
-    echo "0 / 18. Kembali ke Menu Utama"
-    echo "=========================================="
+    print_menu_header "INSTALASI KOMPONEN MODULAR"
+    echo -e "  ${C_DIM}Pilih komponen yang ingin diinstal atau diperbarui:${C_RESET}"
+    echo -e "  ${C_BOLD}Core & Build Tools:${C_RESET}"
+    echo -e "    ${C_CYAN}[1]${C_RESET}  Dependensi Dasar Sistem (Build Tools, curl, git, lib)"
+    echo -e "    ${C_CYAN}[2]${C_RESET}  Node.js (Multi-versi via node-switch)"
+    echo -e "    ${C_CYAN}[3]${C_RESET}  Rust, Mold Linker & Sccache"
+    echo -e "    ${C_CYAN}[4]${C_RESET}  Golang (Versi Terbaru)"
+    echo -e "    ${C_CYAN}[5]${C_RESET}  OpenJDK Java (JDK Multi-versi)"
+    echo -e "  ${C_BOLD}Mobile & SDKs:${C_RESET}"
+    echo -e "    ${C_CYAN}[6]${C_RESET}  Android SDK & Command Line Tools"
+    echo -e "    ${C_CYAN}[7]${C_RESET}  Flutter SDK (Channel Stable)"
+    echo -e "  ${C_BOLD}Database & Cache:${C_RESET}"
+    echo -e "    ${C_CYAN}[8]${C_RESET}  PostgreSQL Server & Konfigurasi (Multi-versi)"
+    echo -e "    ${C_CYAN}[9]${C_RESET}  Redis / Valkey Cache Server"
+    echo -e "  ${C_BOLD}Web Stack & Networking:${C_RESET}"
+    echo -e "    ${C_CYAN}[10]${C_RESET} Nginx Web Server (Mainline Terbaru)"
+    echo -e "    ${C_CYAN}[11]${C_RESET} PHP & PHP-FPM (Multi-versi & Ekstensi)"
+    echo -e "    ${C_CYAN}[12]${C_RESET} Composer (PHP Package Manager)"
+    echo -e "    ${C_CYAN}[13]${C_RESET} Local SSL (mkcert) & Helper dev-site"
+    echo -e "    ${C_CYAN}[14]${C_RESET} Full PHP Web Stack (Nginx + PHP + Composer + SSL)"
+    echo -e "    ${C_CYAN}[15]${C_RESET} Cloudflare Tunnel & DNS (cloudflared & cf-tunnel)"
+    echo -e "  ${C_BOLD}Workspace, IDE & Shell:${C_RESET}"
+    echo -e "    ${C_CYAN}[16]${C_RESET} Oh My Zsh (Plugin & Tema Populer)"
+    echo -e "    ${C_CYAN}[17]${C_RESET} Orca ADE - Desktop GUI (Aplikasi Desktop) [$orca_status]"
+    echo -e "    ${C_CYAN}[18]${C_RESET} Orca ADE - Headless Server (Service 24/7) [$orca_status]"
+    echo -e "  ${C_YELLOW}[0]${C_RESET}  Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
     read -rp "Pilih komponen [0-18]: " c_opt
 
     case $c_opt in
@@ -8225,10 +8351,11 @@ menu_custom_install() {
       12) run_single_component "Composer" step_composer ;;
       13) run_single_component "Local SSL (mkcert)" step_local_ssl ;;
       14) run_single_component "Full PHP Web Stack" step_php_full_stack ;;
-      15) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
-      16) setup_orca --desktop ;;
-      17) setup_orca --headless ;;
-      0|18|q|Q) break ;;
+      15) run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare ;;
+      16) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
+      17) setup_orca --desktop ;;
+      18) setup_orca --headless ;;
+      0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
   done
@@ -8236,44 +8363,44 @@ menu_custom_install() {
 
 # --- SELF-CHECK (syntax & lint helper yang di-generate) ---
 self_check() {
- local tmp_dir rc=0 f
- tmp_dir=$(mktemp -d)
- echo "============================================================"
- echo " SELF-CHECK: setup_dev.sh + helper generated"
- echo "============================================================"
- if bash -n "$0"; then
- echo "[OK] syntax: setup_dev.sh"
- else
- rc=1
- fi
- install_node_switch_helper "$tmp_dir/node-switch" || rc=1
- install_pg_switch_helper "$tmp_dir/pg-switch" || rc=1
- install_php_switch_helper "$tmp_dir/php-switch" || rc=1
- install_dev_site_helper "$tmp_dir/dev-site" || rc=1
- install_cf_tunnel_helper "$tmp_dir/cf-tunnel" || rc=1
- for f in "$tmp_dir/node-switch" "$tmp_dir/pg-switch" "$tmp_dir/php-switch" "$tmp_dir/dev-site" "$tmp_dir/cf-tunnel"; do
- if bash -n "$f"; then
- echo "[OK] syntax: $(basename "$f")"
- else
- rc=1
- fi
- if command -v shellcheck >/dev/null 2>&1; then
- if shellcheck -S error "$f"; then
- echo "[OK] shellcheck: $(basename "$f")"
- else
- rc=1
- fi
- else
- echo "[SKIP] shellcheck tidak terpasang untuk $(basename "$f")"
- fi
- done
- rm -rf "$tmp_dir"
- if [ "$rc" -eq 0 ]; then
- echo "Self-check selesai: semua helper valid."
- else
- echo "Self-check menemukan masalah."
- fi
- return "$rc"
+  local tmp_dir rc=0 f
+  tmp_dir=$(mktemp -d)
+  echo "============================================================"
+  echo " SELF-CHECK: setup_dev.sh + helper generated"
+  echo "============================================================"
+  if bash -n "$0"; then
+    echo "[OK] syntax: setup_dev.sh"
+  else
+    rc=1
+  fi
+  install_node_switch_helper "$tmp_dir/node-switch" || rc=1
+  install_pg_switch_helper "$tmp_dir/pg-switch" || rc=1
+  install_php_switch_helper "$tmp_dir/php-switch" || rc=1
+  install_dev_site_helper "$tmp_dir/dev-site" || rc=1
+  install_cf_tunnel_helper "$tmp_dir/cf-tunnel" || rc=1
+  for f in "$tmp_dir/node-switch" "$tmp_dir/pg-switch" "$tmp_dir/php-switch" "$tmp_dir/dev-site" "$tmp_dir/cf-tunnel"; do
+    if bash -n "$f"; then
+      echo "[OK] syntax: $(basename "$f")"
+    else
+      rc=1
+    fi
+    if command -v shellcheck >/dev/null 2>&1; then
+      if shellcheck -S error "$f"; then
+        echo "[OK] shellcheck: $(basename "$f")"
+      else
+        rc=1
+      fi
+    else
+      echo "[SKIP] shellcheck tidak terpasang untuk $(basename "$f")"
+    fi
+  done
+  rm -rf "$tmp_dir"
+  if [ "$rc" -eq 0 ]; then
+    echo "Self-check selesai: semua helper valid."
+  else
+    echo "Self-check menemukan masalah."
+  fi
+  return "$rc"
 }
 
 
@@ -8641,15 +8768,12 @@ esac
 
 # --- MENU UTAMA ---
 while true; do
-  echo ""
-  echo -e "${C_BOLD}================================================================${C_RESET}"
-  echo -e "${C_BOLD}                    DEV ENVIRONMENT MANAGER                     ${C_RESET}"
-  echo -e "${C_BOLD}================================================================${C_RESET}"
+  print_menu_header "DEV ENVIRONMENT MANAGER"
   echo -e "  ${C_CYAN}[1]${C_RESET} 📊 Status & Pembaruan Sistem"
-  echo -e "      ${C_DIM}└─ Cek status layanan, cek update versi, perbarui sistem${C_RESET}"
+  echo -e "      ${C_DIM}└─ Cek status layanan, cek update versi, perbarui sistem, self-check${C_RESET}"
   echo ""
   echo -e "  ${C_CYAN}[2]${C_RESET} 🔄 Pengelola Multi-Versi Runtime (Switchers)"
-  echo -e "      ${C_DIM}└─ Beralih versi Node.js, PHP CLI/FPM, PostgreSQL & Java${C_RESET}"
+  echo -e "      ${C_DIM}└─ Beralih versi Node.js, PHP CLI/FPM, PostgreSQL & Java OpenJDK${C_RESET}"
   echo ""
   echo -e "  ${C_CYAN}[3]${C_RESET} 🌐 Web Stack & Domain Lokal (dev-site)"
   echo -e "      ${C_DIM}└─ Kelola Virtual Host, Nginx, PHP-FPM, Local SSL (mkcert)${C_RESET}"
@@ -8658,26 +8782,38 @@ while true; do
   echo -e "      ${C_DIM}└─ Rust & Sccache, Golang, Java, Flutter & Android SDK, Redis${C_RESET}"
   echo ""
   echo -e "  ${C_CYAN}[5]${C_RESET} 💻 Workspace, ADE & Shell"
-  echo -e "      ${C_DIM}└─ Orca ADE (Desktop GUI / Headless Server — $(get_orca_status_label)), Oh My Zsh & Tema${C_RESET}"
+  echo -e "      ${C_DIM}└─ Orca ADE ($(get_orca_status_label)), Oh My Zsh & Tema${C_RESET}"
   echo ""
- echo -e " ${C_CYAN}[6]${C_RESET} ☁️  Cloudflare Tunnel & DNS"
- echo -e " ${C_DIM}└─ Akun, tunnel, eksposur subdomain, DNS, service & diagnostik${C_RESET}"
- echo ""
- echo -e " ${C_CYAN}[7]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
- echo -e " ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol${C_RESET}"
- echo ""
- echo -e " ${C_YELLOW}[0]${C_RESET} 🚪 Keluar"
- echo -e "${C_BOLD}================================================================${C_RESET}"
- read -rp "Pilih kategori [0-7]: " opt
+  echo -e "  ${C_CYAN}[6]${C_RESET} ☁️  Cloudflare Tunnel & DNS"
+  echo -e "      ${C_DIM}└─ Akun, tunnel, eksposur subdomain, DNS, service & diagnostik${C_RESET}"
+  echo ""
+  echo -e "  ${C_CYAN}[7]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
+  echo -e "      ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol (14 langkah)${C_RESET}"
+  echo ""
+  echo -e "  ${C_CYAN}[8]${C_RESET} 📦 Instalasi Komponen Modular (18 Item)"
+  echo -e "      ${C_DIM}└─ Instal atau perbarui komponen tertentu sesuai kebutuhan${C_RESET}"
+  echo ""
+  echo -e "  ${C_YELLOW}[0]${C_RESET} 🚪 Keluar"
+  echo -e "${C_BOLD}================================================================${C_RESET}"
+  read -rp "Pilih kategori [0-8]: " opt
 
- case $opt in
- 1) menu_status_updates ;;
- 2) menu_multi_version ;;
- 3) menu_php_stack ;;
- 4) menu_toolchains ;;
- 5) menu_workspace_shell ;;
- 6) menu_cloudflare ;;
- 7) run_installation ;;
+  case $opt in
+    1) menu_status_updates ;;
+    2) menu_multi_version ;;
+    3) menu_php_stack ;;
+    4) menu_toolchains ;;
+    5) menu_workspace_shell ;;
+    6) menu_cloudflare ;;
+    7)
+      echo ""
+      read -rp "Jalankan instalasi otomatis 14 langkah sekarang? [y/N]: " confirm_install
+      if [[ "$confirm_install" =~ ^[yY]([eE][sS])?$ ]]; then
+        run_installation
+      else
+        echo "Instalasi lengkap dibatalkan."
+      fi
+      ;;
+    8) menu_custom_install ;;
     0|q|Q|exit)
       echo "Keluar."
       exit 0

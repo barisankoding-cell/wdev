@@ -45,15 +45,20 @@ Tanpa argumen, skrip menampilkan menu utama:
 5. Workspace, ADE & Shell
 6. Cloudflare Tunnel & DNS
 7. Instalasi Lengkap (Full Auto Setup)
+8. Instalasi Komponen Modular (18 Item)
 
 Struktur submenu:
 
 | Menu | Isi |
 |---|---|
-| `[1]` | status layanan, cek update, update semua, self-check |
-| `[3]` | vhost lokal, SSL, PHP switch; eksposur publik diarahkan ke `[6]` |
-| `[6]` | status, eksposur publik, akun, tunnel, sync, service, DNS, doctor, install |
-| `[7]` | instalasi penuh 14 langkah |
+| `[1]` | Status layanan, cek update versi, perbarui semua, self-check |
+| `[2]` | Multi-versi Node.js (`node-switch`), PHP (`php-switch`), PostgreSQL (`pg-switch`), & Java OpenJDK |
+| `[3]` | Vhost lokal, SSL (`mkcert`), PHP switch; eksposur publik diarahkan ke `[6]` |
+| `[4]` | Rust, Go, Java, Flutter, Android SDK, Redis, build tools, & menu modular |
+| `[5]` | Orca ADE (Desktop GUI / Headless Server), Oh My Zsh & tema prompt |
+| `[6]` | Status, eksposur publik, akun, tunnel, sync, service, DNS, doctor, install |
+| `[7]` | Instalasi penuh 14 langkah otomatis (dengan konfirmasi keamanan) |
+| `[8]` | Instalasi modular per komponen (18 pilihan komponen terstruktur per kategori) |
 
 ### Opsi CLI
 
