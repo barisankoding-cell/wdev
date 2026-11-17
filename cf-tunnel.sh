@@ -160,7 +160,21 @@ service_state() {
 }
 
 connector_count() {
-  local p=$1 cert name out count
+  local p=$1 unit port ready
+  unit=$(profile_unit "$p")
+  if [ "$(service_state "$p")" = "active" ]; then
+    port=$(systemctl show -p ExecStart --value "$unit" 2>/dev/null | grep -oP '(?<=--metrics 127\.0\.0\.1:)\d+' || true)
+    if [ -n "$port" ]; then
+      ready=$(curl -s --max-time 1 "http://127.0.0.1:${port}/ready" 2>/dev/null || true)
+      local rc_count
+      rc_count=$(printf '%s' "$ready" | jq -r '.readyConnections // empty' 2>/dev/null || true)
+      if [ -n "$rc_count" ] && [ "$rc_count" -ge 0 ] 2>/dev/null; then
+        printf '%s\n' "$rc_count"
+        return 0
+      fi
+    fi
+  fi
+  local cert name out count
   cert=$(profile_cert "$p")
   name=$(profile_tunnel_name "$p")
   [ -f "$cert" ] || { printf '%s\n' "-"; return 0; }
@@ -172,7 +186,7 @@ connector_count() {
     return 0
   fi
   out=$(timeout 8 "$CF_BIN" --origincert "$cert" tunnel info "$name" 2>/dev/null || true)
-  count=$(printf '%s\n' "$out" | grep -cE '^[0-9a-f]{8}-[0-9a-f]{4}-' || true)
+  count=$(printf '%s' "$out" | grep -cE '^[0-9a-f]{8}-[0-9a-f]{4}-' || true)
   printf '%s\n' "${count:-0}"
 }
 
@@ -231,6 +245,19 @@ ensure_account_id() {
     printf '%s\n' "$aid"
     return 0
   fi
+  if [ "$(profile_mode "$p")" = "token" ]; then
+    local envf tkn
+    envf=$(profile_env_file "$p")
+    if [ -f "$envf" ]; then
+      tkn=$(sed -n 's/^TUNNEL_TOKEN=//p' "$envf" | tr -d '\r\n"')
+      aid=$(printf '%s' "$tkn" | base64 -d 2>/dev/null | jq -r '.a // empty' 2>/dev/null || true)
+      if [ -n "$aid" ]; then
+        profile_set "$p" CF_ACCOUNT_ID "$aid"
+        printf '%s\n' "$aid"
+        return 0
+      fi
+    fi
+  fi
   zone=$(profile_zone "$p")
   resp=$(api_request GET "/zones?name=${zone}") || return 1
   aid=$(printf '%s' "$resp" | jq -r '.result[0].account.id // empty' 2>/dev/null)
@@ -246,6 +273,21 @@ ensure_tunnel_id() {
   if [ -n "$tid" ]; then
     printf '%s\n' "$tid"
     return 0
+  fi
+  if [ "$(profile_mode "$p")" = "token" ]; then
+    local envf tkn
+    envf=$(profile_env_file "$p")
+    if [ -f "$envf" ]; then
+      tkn=$(sed -n 's/^TUNNEL_TOKEN=//p' "$envf" | tr -d '\r\n"')
+      tid=$(printf '%s' "$tkn" | base64 -d 2>/dev/null | jq -r '.t // empty' 2>/dev/null || true)
+      aid=$(printf '%s' "$tkn" | base64 -d 2>/dev/null | jq -r '.a // empty' 2>/dev/null || true)
+      if [ -n "$tid" ]; then
+        profile_set "$p" CF_TUNNEL_ID "$tid"
+        [ -z "$(profile_get "$p" CF_ACCOUNT_ID)" ] && [ -n "$aid" ] && profile_set "$p" CF_ACCOUNT_ID "$aid"
+        printf '%s\n' "$tid"
+        return 0
+      fi
+    fi
   fi
   name=$(profile_tunnel_name "$p")
   aid=$(ensure_account_id "$p") || return 1
@@ -353,14 +395,33 @@ dns_ensure_profile() {
   return "$rc"
 }
 
+allocate_metrics_port() {
+  local p=$1 idx base port cur_pid holder
+  idx=$(profile_list | awk -v p="$p" '$0 == p { print NR }')
+  base=$((20260 + ${idx:-1}))
+  cur_pid=$(systemctl show -p MainPID --value "$(profile_unit "$p")" 2>/dev/null || true)
+  port=$base
+  while :; do
+    holder=$(ss -tulpn 2>/dev/null | grep -E ":${port}\b" || true)
+    if [ -z "$holder" ]; then
+      echo "$port"
+      return 0
+    fi
+    if [ -n "$cur_pid" ] && [ "$cur_pid" != "0" ] && echo "$holder" | grep -q "pid=${cur_pid},"; then
+      echo "$port"
+      return 0
+    fi
+    port=$((port + 1))
+  done
+}
+
 write_unit() {
-  local p=$1 bin dir unit tmp mode port idx
+  local p=$1 bin dir unit tmp mode port
   bin=$(cloudflared_bin) || return 1
   dir=$(profile_state_dir "$p")
   unit="$SYSTEMD_DIR/$(profile_unit "$p")"
   mode=$(profile_mode "$p")
-  idx=$(profile_list | awk -v p="$p" '$0 == p { print NR }')
-  port=$((20240 + ${idx:-1}))
+  port=$(allocate_metrics_port "$p")
   tmp=$(mktemp) || return 1
   {
     printf '[Unit]\n'
@@ -637,6 +698,17 @@ local p="" zone="" mode="local" name="" api_token="" tunnel_token="" account_id=
     [ -n "$tunnel_token" ] || die "Mode token membutuhkan --tunnel-token."
   fi
 
+  if [ -n "$tunnel_token" ]; then
+    tunnel_token=$(printf '%s' "$tunnel_token" | awk '{print $NF}' | tr -d '\r\n"')
+  fi
+
+  local parsed_tid="" parsed_aid=""
+  if [ "$mode" = "token" ] && [ -n "$tunnel_token" ]; then
+    parsed_tid=$(printf '%s' "$tunnel_token" | base64 -d 2>/dev/null | jq -r '.t // empty' 2>/dev/null || true)
+    parsed_aid=$(printf '%s' "$tunnel_token" | base64 -d 2>/dev/null | jq -r '.a // empty' 2>/dev/null || true)
+    [ -z "$account_id" ] && [ -n "$parsed_aid" ] && account_id="$parsed_aid"
+  fi
+
   mkdir -p "$CF_ACCOUNTS"
   chmod 700 "$CF_ETC" "$CF_ACCOUNTS" 2>/dev/null || true
   (
@@ -647,13 +719,14 @@ local p="" zone="" mode="local" name="" api_token="" tunnel_token="" account_id=
       printf 'CF_MODE=%s\n' "$mode"
       printf 'CF_ACCOUNT_ID=%s\n' "$account_id"
       printf 'CF_TUNNEL_NAME=%s\n' "$name"
-      printf 'CF_TUNNEL_ID=\n'
+      printf 'CF_TUNNEL_ID=%s\n' "${parsed_tid:-}"
       printf 'CF_ZONE_ID=\n'
       printf 'CF_API_TOKEN=%s\n' "$api_token"
     } > "$(account_file "$p")"
   )
   chmod 600 "$(account_file "$p")"
   ok "Profil '${p}' dibuat (zone: ${zone}, mode: ${mode})."
+  [ -n "$parsed_tid" ] && ok "Tunnel ID terdeteksi: ${parsed_tid}"
 
   if [ -n "$api_token" ]; then
     ensure_zone_id "$p" >/dev/null && ok "Zone ID ter-cache." \
@@ -914,7 +987,7 @@ cmd_status() {
     state=$(service_state "$p")
     conn="-"
     name=$(profile_tunnel_name "$p")
-    if [ "$mode" = "local" ] && [ "$state" = "active" ]; then
+    if [ "$state" = "active" ]; then
       conn=$(connector_count "$p")
     fi
     exp=$(exposure_count "$p")
@@ -1007,8 +1080,8 @@ cmd_doctor() {
       if [ "$state" = "active" ]; then
         ok "service aktif: $unit"
         conn=$(connector_count "$t")
-        if [ "$mode" = "local" ] && [ "${conn:-0}" != "-" ] && [ "${conn:-0}" -gt 0 ] 2>/dev/null; then
-          ok "connector: $conn"
+        if [ "${conn:-0}" != "-" ] && [ "${conn:-0}" -gt 0 ] 2>/dev/null; then
+          ok "connector aktif: $conn"
         else
           warn "connector belum terlihat (mode: $mode)"
         fi
