@@ -10,6 +10,8 @@ Dirancang untuk Fedora/RHEL (dnf/yum) dan Debian/Ubuntu (apt). `pacman` dan `zyp
 |---|---|
 | `setup_dev.sh` | Manajer dev environment: menu interaktif + CLI, instalasi/update per komponen, helper multi-versi |
 | `cf-tunnel.sh` | Helper manajemen Cloudflare Tunnel multi-akun (dipasang sebagai `cf-tunnel` oleh `setup_dev.sh`) |
+| `pdns-mgr.sh` | Helper manajemen PowerDNS Authoritative & VPS Edge Gateway via Netbird (dipasang sebagai `pdns-mgr`) |
+| `vps-edge-setup.sh` | Installer mandiri 1-klik untuk VPS Edge Gateway (PowerDNS + SQLite3 + Nginx + Netbird Agent) |
 | `setup_orca_headless.sh` | Installer Orca ADE (Desktop GUI atau Headless Server), satu mode aktif per mesin |
 
 ## Persyaratan
@@ -44,8 +46,9 @@ Tanpa argumen, skrip menampilkan menu utama:
 4. Toolchains, Compilers & SDKs
 5. Workspace, ADE & Shell
 6. Cloudflare Tunnel & DNS
-7. Instalasi Lengkap (Full Auto Setup)
-8. Instalasi Komponen Modular (18 Item)
+7. PowerDNS & VPS Edge Gateway (Netbird)
+8. Instalasi Lengkap (Full Auto Setup)
+9. Instalasi Komponen Modular (19 Item)
 
 Struktur submenu:
 
@@ -53,12 +56,13 @@ Struktur submenu:
 |---|---|
 | `[1]` | Status layanan, cek update versi, perbarui semua, self-check |
 | `[2]` | Multi-versi Node.js (`node-switch`), PHP (`php-switch`), PostgreSQL (`pg-switch`), & Java OpenJDK |
-| `[3]` | Vhost lokal, SSL (`mkcert`), PHP switch; eksposur publik diarahkan ke `[6]` |
+| `[3]` | Vhost lokal, SSL (`mkcert`), PHP switch; eksposur publik diarahkan ke `[6]` atau `[7]` |
 | `[4]` | Rust, Go, Java, Flutter, Android SDK, Redis, build tools, & menu modular |
 | `[5]` | Orca ADE (Desktop GUI / Headless Server), Oh My Zsh & tema prompt |
 | `[6]` | Status, eksposur publik, akun, tunnel, sync, service, DNS, quick tunnel, custom routes & CIDR, Access, doctor, install |
-| `[7]` | Instalasi penuh 14 langkah otomatis (dengan konfirmasi keamanan) |
-| `[8]` | Instalasi modular per komponen (18 pilihan komponen terstruktur per kategori) |
+| `[7]` | Status VPS Edge, auto-deploy SSH Netbird, kelola zone domain, record DNS (A/CNAME/TXT/MX), ekspos port aplikasi (Node/Go/PHP) |
+| `[8]` | Instalasi penuh 14 langkah otomatis (dengan konfirmasi keamanan) |
+| `[9]` | Instalasi modular per komponen (19 pilihan komponen terstruktur per kategori) |
 
 ### Opsi CLI
 
@@ -71,6 +75,7 @@ Struktur submenu:
 | `--self-check` | Validasi sintaks `setup_dev.sh` dan semua helper yang di-generate |
 | `--cloudflare` | Install/perbarui `cloudflared` + helper `cf-tunnel` (tanpa membuat akun) |
 | `--cf-tunnel <cmd>` | Teruskan ke helper `cf-tunnel` (profile-aware) |
+| `--pdns <cmd>` | Teruskan ke helper `pdns-mgr` (status, deploy-vps, zone, record, expose) |
 | `-h`, `--help` | Bantuan lengkap |
 
 Opsi per komponen: `--base`, `--node`, `--rust`, `--go`, `--java`, `--android`, `--flutter`/`-fl`, `--postgres`/`--pg`, `--redis`, `--nginx`, `--php`, `--composer`, `--php-stack`/`--web-stack`, `--ssl`/`--mkcert`, `--zsh`/`--ohmyzsh`, `--sync`/`--sync-hosts`.
@@ -142,6 +147,7 @@ Dipasang ke `/usr/local/bin`; `node-switch`, `pg-switch`, `dev-site`, dan `cf-tu
 | `dev-site create\|delete\|list\|cert\|sync\|custom` | Virtual host Nginx + SSL + entri `/etc/hosts` + deteksi framework (Laravel, WordPress, CI3/CI4, Symfony, generic, proxy) |
 | `dev-site expose\|unexpose\|exposures` | Ekspos vhost ke Cloudflare Tunnel, kelola host publik per profil |
 | `cf-tunnel account\|tunnel\|route\|quick\|cidr\|access\|sync\|dns\|service\|status\|doctor\|raw` | Manajemen multi-akun Cloudflare: tunnel, ingress multi-protokol, quick tunnel, CIDR, Access, DNS, systemd, diagnostik |
+| `pdns-mgr deploy-vps\|connect\|status\|zone\|record\|expose\|expose-site\|unexpose\|list-exposures` | Manajemen PowerDNS & VPS Edge Gateway via Netbird: authoritative DNS mandiri, SSL otomatis, dan auto-cleanup DNS saat unexpose |
 | `orca-switch [desktop\|headless\|autostart\|status]` | Ganti mode Orca ADE |
 
 Contoh:
@@ -159,6 +165,13 @@ sudo cf-tunnel account add cf1
 sudo dev-site expose myapp.test myapp.example.com --profile cf1
 sudo dev-site expose mygo.test api.example.com --profile cf1
 sudo cf-tunnel status --all
+
+# Manajemen PowerDNS & VPS Edge Gateway (Netbird)
+sudo pdns-mgr status
+sudo pdns-mgr zone add domainanda.com
+sudo pdns-mgr expose api.domainanda.com 8080 --ssl
+sudo pdns-mgr expose-site myapp.test myapp.domainanda.com --ssl
+sudo pdns-mgr unexpose myapp.domainanda.com   # otomatis hapus proxy VPS, record DNS subdomain, & alias lokal
 ```
 
 ### Variabel Environment

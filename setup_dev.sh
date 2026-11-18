@@ -3731,6 +3731,46 @@ ensure_cf_tunnel_helper() {
  fi
 }
 
+install_pdns_mgr_helper() {
+  local target_dest="${1:-/usr/local/bin/pdns-mgr}"
+  local src="${WDEV_SCRIPT_DIR}/pdns-mgr.sh"
+  local tmp_dest="${target_dest}.tmp.$$"
+  if [ ! -f "$src" ]; then
+    echo "Error: pdns-mgr.sh tidak ditemukan di ${WDEV_SCRIPT_DIR}." >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$target_dest")" 2>/dev/null || true
+  if [ ! -w "$(dirname "$target_dest")" ] && [ -e "$target_dest" ] && [ ! -w "$target_dest" ]; then
+    return 0
+  fi
+  cp -f "$src" "$tmp_dest" 2>/dev/null || return 1
+  chmod 755 "$tmp_dest"
+  mv -f "$tmp_dest" "$target_dest"
+}
+
+ensure_pdns_mgr_helper() {
+  local u_user="${SUDO_USER:-$USER}"
+  local u_home u_dir
+  u_home=$(getent passwd "$u_user" 2>/dev/null | cut -d: -f6)
+  [ -z "$u_home" ] && u_home="$HOME"
+  u_dir="$u_home/.local/bin"
+  mkdir -p "$u_dir" 2>/dev/null || true
+  install_pdns_mgr_helper "$u_dir/pdns-mgr" || true
+  if [ "$EUID" -eq 0 ]; then
+    install_pdns_mgr_helper "/usr/local/bin/pdns-mgr" || true
+  fi
+}
+
+find_pdns_mgr_bin() {
+  for b in /usr/local/bin/pdns-mgr "$HOME/.local/bin/pdns-mgr"; do
+    if [ -x "$b" ]; then
+      echo "$b"
+      return 0
+    fi
+  done
+  command -v pdns-mgr 2>/dev/null || echo "pdns-mgr"
+}
+
 install_dev_site_helper() {
   local target_dest="${1:-/usr/local/bin/dev-site}"
  local tmp_dest="${target_dest}.tmp.$$"
@@ -8167,6 +8207,354 @@ menu_cloudflare() {
   done
 }
 
+# --- SUBMENU POWERDNS & VPS EDGE GATEWAY ---
+menu_powerdns() {
+  ensure_pdns_mgr_helper
+  local pdns_bin
+  pdns_bin=$(find_pdns_mgr_bin)
+
+  # Helper memilih domain dari zone aktif PowerDNS
+  select_pdns_zone_menu() {
+    local prompt_msg="${1:-Pilih nomor domain}"
+    local -n _out_dom="$2"
+    _out_dom=""
+
+    local -a zones=()
+    local z_list
+    z_list=$("$pdns_bin" zone names 2>/dev/null || true)
+    while IFS= read -r line; do
+      [ -n "$line" ] && zones+=("$line")
+    done <<< "$z_list"
+
+    if [ "${#zones[@]}" -eq 0 ]; then
+      echo -e "${C_YELLOW}[i] Belum ada zone domain yang terdaftar di VPS.${C_RESET}"
+      echo -e "Silakan tambahkan domain terlebih dahulu lewat menu [5] (pdns-mgr zone add)."
+      return 1
+    fi
+
+    echo ""
+    echo -e "${C_BOLD}Daftar Domain Aktif di PowerDNS:${C_RESET}"
+    for i in "${!zones[@]}"; do
+      echo -e "  ${C_CYAN}[$((i + 1))]${C_RESET} ${zones[$i]}"
+    done
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Batal / Kembali"
+    echo ""
+
+    local sel
+    if [ "${#zones[@]}" -eq 1 ]; then
+      read_menu_input sel "${prompt_msg} [default: 1 (${zones[0]})]: " || return 1
+      sel="${sel:-1}"
+    else
+      read_menu_input sel "${prompt_msg} [1-${#zones[@]}]: " || return 1
+    fi
+
+    [ "$sel" = "0" ] && return 1
+    [ -z "$sel" ] && return 1
+
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then
+      local idx=$((sel - 1))
+      if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#zones[@]}" ]; then
+        _out_dom="${zones[$idx]}"
+        return 0
+      fi
+    else
+      for z in "${zones[@]}"; do
+        if [ "$sel" = "$z" ] || [ "${sel%.}" = "$z" ]; then
+          _out_dom="$z"
+          return 0
+        fi
+      done
+    fi
+
+    echo -e "${C_RED}Pilihan nomor domain tidak valid.${C_RESET}"
+    return 1
+  }
+
+  # Helper memilih aplikasi yang diekspos di VPS
+  select_pdns_proxy_menu() {
+    local prompt_msg="${1:-Pilih nomor aplikasi}"
+    local -n _out_proxy="$2"
+    _out_proxy=""
+
+    local -a proxies=()
+    local p_list
+    p_list=$("$pdns_bin" proxy-names 2>/dev/null || true)
+    while IFS= read -r line; do
+      [ -n "$line" ] && proxies+=("$line")
+    done <<< "$p_list"
+
+    if [ "${#proxies[@]}" -eq 0 ]; then
+      echo -e "${C_YELLOW}[i] Belum ada aplikasi/domain yang sedang diekspos ke VPS.${C_RESET}"
+      return 1
+    fi
+
+    echo ""
+    echo -e "${C_BOLD}Daftar Aplikasi yang Diekspos di VPS:${C_RESET}"
+    for i in "${!proxies[@]}"; do
+      echo -e "  ${C_CYAN}[$((i + 1))]${C_RESET} ${proxies[$i]}"
+    done
+    echo -e "  ${C_YELLOW}[0]${C_RESET} Batal / Kembali"
+    echo ""
+
+    local sel
+    if [ "${#proxies[@]}" -eq 1 ]; then
+      read_menu_input sel "${prompt_msg} [default: 1 (${proxies[0]})]: " || return 1
+      sel="${sel:-1}"
+    else
+      read_menu_input sel "${prompt_msg} [1-${#proxies[@]}]: " || return 1
+    fi
+
+    [ "$sel" = "0" ] && return 1
+    [ -z "$sel" ] && return 1
+
+    if [[ "$sel" =~ ^[0-9]+$ ]]; then
+      local idx=$((sel - 1))
+      if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#proxies[@]}" ]; then
+        _out_proxy="${proxies[$idx]}"
+        return 0
+      fi
+    else
+      for p in "${proxies[@]}"; do
+        if [ "$sel" = "$p" ]; then
+          _out_proxy="$p"
+          return 0
+        fi
+      done
+    fi
+
+    echo -e "${C_RED}Pilihan nomor tidak valid.${C_RESET}"
+    return 1
+  }
+
+  while true; do
+    print_menu_header "POWERDNS & VPS EDGE GATEWAY (NETBIRD)"
+    echo -e "  ${C_CYAN}[1]${C_RESET} 📊 Status Koneksi & Layanan VPS Edge (pdns-mgr status)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} 🚀 Deploy & Pasang Otomatis ke VPS via SSH Netbird (deploy-vps)"
+    echo -e "  ${C_CYAN}[3]${C_RESET} 🔗 Hubungkan Manual ke VPS Edge (pdns-mgr connect)"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[4]${C_RESET} 📋 Daftar Zone Domain Aktif (pdns-mgr zone list)"
+    echo -e "  ${C_CYAN}[5]${C_RESET} ➕ Tambah Zone Domain Baru (pdns-mgr zone add)"
+    echo -e "  ${C_CYAN}[6]${C_RESET} ➖ Hapus Zone Domain (pdns-mgr zone rm)"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[7]${C_RESET} 📡 Daftar Record DNS suatu Domain (pdns-mgr record list)"
+    echo -e "  ${C_CYAN}[8]${C_RESET} ✏️  Tambah / Ubah Record DNS (A / CNAME / TXT / MX)"
+    echo -e "  ${C_CYAN}[9]${C_RESET} 🗑️  Hapus Record DNS (pdns-mgr record rm)"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[10]${C_RESET} 🚀 Ekspos Project ke Internet (PHP/Laravel atau Port Node/Go)"
+    echo -e "  ${C_CYAN}[11]${C_RESET} 📋 Daftar Aplikasi yang Diekspos di VPS (list-exposures)"
+    echo -e "  ${C_CYAN}[12]${C_RESET} 🛑 Hapus Ekspos Aplikasi dari VPS (unexpose)"
+    echo -e "  ${C_YELLOW}[0]${C_RESET}  Kembali ke Menu Utama"
+    echo -e "${C_BOLD}================================================================${C_RESET}"
+    read_menu_input p_opt "Pilih opsi [0-12]: " || break
+
+    case $p_opt in
+      1)
+        "$pdns_bin" status || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      2)
+        "$pdns_bin" deploy-vps || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      3)
+        read_menu_input in_vps "Masukkan Netbird IP VPS (contoh: 100.64.0.1): " || continue
+        read_menu_input in_pub "Masukkan IP Publik VPS (contoh: 103.150.20.50): " || continue
+        read_menu_input in_key "Masukkan Secret API Key PowerDNS: " || continue
+        "$pdns_bin" connect --vps-ip "$in_vps" --public-ip "$in_pub" --api-key "$in_key" || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      4)
+        "$pdns_bin" zone list || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      5)
+        read_menu_input in_dom "Masukkan nama domain (contoh: domainanda.com): " || continue
+        [ -n "$in_dom" ] || continue
+        "$pdns_bin" zone add "$in_dom" || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      6)
+        local in_dom=""
+        select_pdns_zone_menu "Pilih nomor domain yang akan dihapus" in_dom || {
+          echo ""
+          read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+          continue
+        }
+        read_menu_input in_conf "Yakin ingin menghapus zone '$in_dom'? [y/N]: " || continue
+        if [[ "$in_conf" =~ ^[yY] ]]; then
+          "$pdns_bin" zone rm "$in_dom" || true
+        fi
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      7)
+        local in_dom=""
+        select_pdns_zone_menu "Pilih nomor urutan domain untuk melihat record" in_dom || {
+          echo ""
+          read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+          continue
+        }
+        echo ""
+        "$pdns_bin" record list "$in_dom" || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      8)
+        local in_dom=""
+        select_pdns_zone_menu "Pilih nomor domain tujuan record" in_dom || {
+          echo ""
+          read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+          continue
+        }
+        echo -e "Domain terpilih: ${C_BOLD}${in_dom}${C_RESET}"
+        read_menu_input in_name "Masukkan host/subdomain (@ untuk apex, api, mail, dll): " || continue
+        read_menu_input in_type "Tipe record (A, CNAME, TXT, MX) [default: A]: " || in_type="A"
+        in_type="${in_type:-A}"
+        read_menu_input in_val "Nilai record (ketik 'auto' untuk IP Publik VPS): " || in_val="auto"
+        in_val="${in_val:-auto}"
+        "$pdns_bin" record add "$in_dom" "$in_name" "$in_type" "$in_val" || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      9)
+        local in_dom=""
+        select_pdns_zone_menu "Pilih nomor domain" in_dom || {
+          echo ""
+          read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+          continue
+        }
+        echo ""
+        "$pdns_bin" record list "$in_dom" || true
+        echo ""
+        read_menu_input in_name "Masukkan host/subdomain yang akan dihapus: " || continue
+        read_menu_input in_type "Tipe record (A, CNAME, TXT, MX) [default: A]: " || in_type="A"
+        in_type="${in_type:-A}"
+        "$pdns_bin" record rm "$in_dom" "$in_name" "$in_type" || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      10)
+        echo ""
+        echo -e "${C_BOLD}--- WIZARD EKSPOS PROJECT KE INTERNET (VPS EDGE) ---${C_RESET}"
+        echo -e "  ${C_CYAN}[1]${C_RESET} 🐘 Web PHP / Laravel / WordPress (Virtual Host Nginx Lokal)"
+        echo -e "  ${C_CYAN}[2]${C_RESET} ⚡ Project Berbasis Port (Node.js, Go, Python, Docker, dsb.)"
+        echo -e "  ${C_YELLOW}[0]${C_RESET} Batal"
+        read_menu_input proj_type "Pilih tipe project [1/2, default: 1]: " || continue
+        proj_type="${proj_type:-1}"
+
+        if [ "$proj_type" = "1" ]; then
+          # Mode PHP / Laravel / Vhost
+          echo ""
+          local devsite_bin
+          devsite_bin=$(command -v dev-site 2>/dev/null || echo "/usr/local/bin/dev-site")
+          if [ -x "$devsite_bin" ]; then
+            echo -e "${C_CYAN}Daftar Virtual Host Lokal:${C_RESET}"
+            "$devsite_bin" list 2>/dev/null || true
+            echo ""
+          fi
+          read_menu_input in_local "Masukkan domain lokal (contoh: appsone.test): " || continue
+          [ -n "$in_local" ] || continue
+
+          # Cek jika vhost lokal belum ada
+          if [ ! -f "/etc/nginx/sites-available/${in_local}.conf" ] && [ ! -f "/etc/nginx/sites-available/${in_local}" ]; then
+            echo -e "${C_YELLOW}Vhost lokal '${in_local}' belum terdaftar. Menyiapkan vhost lokal:${C_RESET}"
+            local def_folder="/var/www/${in_local%.test}"
+            read_menu_input in_root "Document root folder [$def_folder]: " || in_root="$def_folder"
+            in_root="${in_root:-$def_folder}"
+            read_menu_input in_php "Versi PHP [8.4, 8.3, 8.2, 8.1, default: 8.4]: " || in_php="8.4"
+            in_php="${in_php:-8.4}"
+            "$devsite_bin" create "$in_local" "$in_root" "$in_php" auto || {
+              echo "Gagal membuat vhost lokal."
+              continue
+            }
+          fi
+
+          # Pemilihan domain publik di VPS
+          local in_pub=""
+          local base_dom=""
+          if select_pdns_zone_menu "Pilih domain utama untuk aplikasi" base_dom 2>/dev/null && [ -n "$base_dom" ]; then
+            echo -e "Domain utama: ${C_BOLD}${base_dom}${C_RESET}"
+            read_menu_input in_sub "Masukkan subdomain (contoh: apps, api, dev, atau @ untuk root domain): " || in_sub=""
+            if [ -z "$in_sub" ] || [ "$in_sub" = "@" ]; then
+              in_pub="$base_dom"
+            else
+              in_pub="${in_sub}.${base_dom}"
+            fi
+            echo -e "Domain publik: ${C_GREEN}${in_pub}${C_RESET}"
+          else
+            read_menu_input in_pub "Masukkan domain publik di VPS (contoh: apps.domainanda.com): " || continue
+          fi
+          [ -n "$in_pub" ] || continue
+
+          read_menu_input in_ssl "Aktifkan SSL Let's Encrypt (HTTPS)? [Y/n]: " || in_ssl="y"
+          in_ssl="${in_ssl:-y}"
+          local ssl_flag=""
+          [[ "$in_ssl" =~ ^[yY] ]] && ssl_flag="--ssl"
+
+          "$pdns_bin" expose-site "$in_local" "$in_pub" $ssl_flag || true
+
+        elif [ "$proj_type" = "2" ]; then
+          # Mode Port (Node / Go / Python)
+          echo ""
+          local in_pub=""
+          local base_dom=""
+          if select_pdns_zone_menu "Pilih domain utama untuk aplikasi" base_dom 2>/dev/null && [ -n "$base_dom" ]; then
+            echo -e "Domain utama: ${C_BOLD}${base_dom}${C_RESET}"
+            read_menu_input in_sub "Masukkan subdomain (contoh: api, ws, dev, atau @ untuk root domain): " || in_sub=""
+            if [ -z "$in_sub" ] || [ "$in_sub" = "@" ]; then
+              in_pub="$base_dom"
+            else
+              in_pub="${in_sub}.${base_dom}"
+            fi
+            echo -e "Domain publik: ${C_GREEN}${in_pub}${C_RESET}"
+          else
+            read_menu_input in_pub "Masukkan domain publik di VPS (contoh: api.domainanda.com): " || continue
+          fi
+          [ -n "$in_pub" ] || continue
+
+          read_menu_input in_port "Masukkan port lokal aplikasi Anda (contoh: 3000, 8080): " || continue
+          [ -n "$in_port" ] || continue
+
+          read_menu_input in_ssl "Aktifkan SSL Let's Encrypt (HTTPS)? [Y/n]: " || in_ssl="y"
+          in_ssl="${in_ssl:-y}"
+          local ssl_flag=""
+          [[ "$in_ssl" =~ ^[yY] ]] && ssl_flag="--ssl"
+
+          "$pdns_bin" expose "$in_pub" "$in_port" $ssl_flag || true
+        fi
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      11)
+        "$pdns_bin" list-exposures || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      12)
+        local in_dom=""
+        select_pdns_proxy_menu "Pilih nomor aplikasi yang ingin di-unexpose" in_dom || {
+          echo ""
+          read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+          continue
+        }
+        read_menu_input in_conf "Yakin ingin menghapus ekspos proxy '$in_dom' dari VPS? [y/N]: " || continue
+        if [[ "$in_conf" =~ ^[yY] ]]; then
+          "$pdns_bin" unexpose "$in_dom" || true
+        fi
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      0|q|Q) break ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
+}
+
 # --- SUBMENU MULTI-VERSI PHP (CLI & FPM) ---
 menu_php_switch() {
   while true; do
@@ -8315,10 +8703,11 @@ menu_php_stack() {
     echo -e "  ${C_CYAN}[4]${C_RESET} 📋 Daftar Virtual Host Aktif (dev-site list)"
     echo -e "  ${C_CYAN}[5]${C_RESET} 🔄 Sinkronisasi Hosts & SSL Browser (dev-site sync)"
     echo -e "  ${C_CYAN}[6]${C_RESET} 🐘 Kelola Versi PHP CLI & FPM (php-switch)"
+    echo -e "  ${C_CYAN}[7]${C_RESET} 🌐 Ekspos Vhost Lokal ke Internet (PowerDNS & VPS Edge)"
     echo -e "  ${C_YELLOW}[0]${C_RESET} Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    echo -e "  ${C_CYAN}ℹ️  Eksposur publik:${C_RESET} ${C_DIM}Gunakan menu [6] Cloudflare Tunnel & DNS${C_RESET}"
-    read_menu_input p_opt "Pilih opsi [0-6]: " || break
+    echo -e "  ${C_CYAN}ℹ️  Eksposur publik:${C_RESET} ${C_DIM}Gunakan menu [6] Cloudflare atau [7] PowerDNS VPS Edge${C_RESET}"
+    read_menu_input p_opt "Pilih opsi [0-7]: " || break
 
     case $p_opt in
       1) step_php_full_stack ;;
@@ -8368,6 +8757,7 @@ menu_php_stack() {
         fi
         ;;
       6) menu_php_switch ;;
+      7) menu_powerdns ;;
       0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
@@ -8695,13 +9085,14 @@ menu_custom_install() {
     echo -e "    ${C_CYAN}[13]${C_RESET} Local SSL (mkcert) & Helper dev-site"
     echo -e "    ${C_CYAN}[14]${C_RESET} Full PHP Web Stack (Nginx + PHP + Composer + SSL)"
     echo -e "    ${C_CYAN}[15]${C_RESET} Cloudflare Tunnel & DNS (cloudflared & cf-tunnel)"
+    echo -e "    ${C_CYAN}[16]${C_RESET} PowerDNS & VPS Edge Gateway (pdns-mgr & Netbird)"
     echo -e "  ${C_BOLD}Workspace, IDE & Shell:${C_RESET}"
-    echo -e "    ${C_CYAN}[16]${C_RESET} Oh My Zsh (Plugin & Tema Populer)"
-    echo -e "    ${C_CYAN}[17]${C_RESET} Orca ADE - Desktop GUI (Aplikasi Desktop) [$orca_status]"
-    echo -e "    ${C_CYAN}[18]${C_RESET} Orca ADE - Headless Server (Service 24/7) [$orca_status]"
+    echo -e "    ${C_CYAN}[17]${C_RESET} Oh My Zsh (Plugin & Tema Populer)"
+    echo -e "    ${C_CYAN}[18]${C_RESET} Orca ADE - Desktop GUI (Aplikasi Desktop) [$orca_status]"
+    echo -e "    ${C_CYAN}[19]${C_RESET} Orca ADE - Headless Server (Service 24/7) [$orca_status]"
     echo -e "  ${C_YELLOW}[0]${C_RESET}  Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read_menu_input c_opt "Pilih komponen [0-18]: " || break
+    read_menu_input c_opt "Pilih komponen [0-19]: " || break
 
     case $c_opt in
       1) run_single_component "Dependensi Dasar" step_base_deps ;;
@@ -8719,9 +9110,10 @@ menu_custom_install() {
       13) run_single_component "Local SSL (mkcert)" step_local_ssl ;;
       14) run_single_component "Full PHP Web Stack" step_php_full_stack ;;
       15) run_single_component "Cloudflare Tunnel (cloudflared)" step_cloudflare ;;
-      16) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
-      17) setup_orca --desktop ;;
-      18) setup_orca --headless ;;
+      16) menu_powerdns ;;
+      17) run_single_component "Oh My Zsh, Plugin & Tema" step_zsh ;;
+      18) setup_orca --desktop ;;
+      19) setup_orca --headless ;;
       0|q|Q) break ;;
       *) echo "Pilihan tidak valid." ;;
     esac
@@ -8745,7 +9137,8 @@ self_check() {
   install_php_switch_helper "$tmp_dir/php-switch" || rc=1
   install_dev_site_helper "$tmp_dir/dev-site" || rc=1
   install_cf_tunnel_helper "$tmp_dir/cf-tunnel" || rc=1
-  for f in "$tmp_dir/node-switch" "$tmp_dir/pg-switch" "$tmp_dir/php-switch" "$tmp_dir/dev-site" "$tmp_dir/cf-tunnel"; do
+  install_pdns_mgr_helper "$tmp_dir/pdns-mgr" || rc=1
+  for f in "$tmp_dir/node-switch" "$tmp_dir/pg-switch" "$tmp_dir/php-switch" "$tmp_dir/dev-site" "$tmp_dir/cf-tunnel" "$tmp_dir/pdns-mgr"; do
     if bash -n "$f"; then
       echo "[OK] syntax: $(basename "$f")"
     else
@@ -8935,6 +9328,13 @@ case "${1:-}" in
  fi
  exit 0
  ;;
+ --pdns|--pdns-mgr)
+ shift
+ ensure_pdns_mgr_helper
+ pdns_bin=$(find_pdns_mgr_bin)
+ "$pdns_bin" "$@"
+ exit 0
+ ;;
   --zsh|--ohmyzsh)
     run_single_component "Oh My Zsh, Plugin & Tema" step_zsh
     exit 0
@@ -9109,6 +9509,11 @@ case "${1:-}" in
  echo " Contoh: sudo $0 --cf-tunnel account add cf1"
  echo " sudo $0 --dev-site expose myapp.test app-dev.example.com --profile cf1"
  echo ""
+ echo "Opsi PowerDNS & VPS Edge Gateway (Netbird):"
+ echo " --pdns <cmd> ... Jalankan helper pdns-mgr (status, deploy-vps, zone, record, expose)"
+ echo " Contoh: sudo $0 --pdns status"
+ echo " sudo $0 --pdns expose api.domainanda.com 8080"
+ echo ""
     echo "Opsi Shell & Oh My Zsh:"
     echo "  --zsh, --ohmyzsh         Instal Zsh, Oh My Zsh, plugin populer & tema"
     echo "  --zsh-theme <p10k|..>    Pilih tema (powerlevel10k, agnoster, robbyrussell)"
@@ -9154,15 +9559,18 @@ while true; do
   echo -e "  ${C_CYAN}[6]${C_RESET} ☁️  Cloudflare Tunnel & DNS"
   echo -e "      ${C_DIM}└─ Akun, tunnel, eksposur subdomain, DNS, service & diagnostik${C_RESET}"
   echo ""
-  echo -e "  ${C_CYAN}[7]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
+  echo -e "  ${C_CYAN}[7]${C_RESET} 🌐 PowerDNS & VPS Edge Gateway (Netbird)"
+  echo -e "      ${C_DIM}└─ Authoritative DNS mandiri, domain publik & eksposur port aplikasi${C_RESET}"
+  echo ""
+  echo -e "  ${C_CYAN}[8]${C_RESET} 🚀 Instalasi Lengkap (Full Auto Setup)"
   echo -e "      ${C_DIM}└─ Instal seluruh stack developer secara otomatis dari nol (14 langkah)${C_RESET}"
   echo ""
-  echo -e "  ${C_CYAN}[8]${C_RESET} 📦 Instalasi Komponen Modular (18 Item)"
+  echo -e "  ${C_CYAN}[9]${C_RESET} 📦 Instalasi Komponen Modular (19 Item)"
   echo -e "      ${C_DIM}└─ Instal atau perbarui komponen tertentu sesuai kebutuhan${C_RESET}"
   echo ""
   echo -e "  ${C_YELLOW}[0]${C_RESET} 🚪 Keluar"
   echo -e "${C_BOLD}================================================================${C_RESET}"
-  read_menu_input opt "Pilih kategori [0-8]: " || exit 0
+  read_menu_input opt "Pilih kategori [0-9]: " || exit 0
 
   case $opt in
     1) menu_status_updates ;;
@@ -9171,7 +9579,8 @@ while true; do
     4) menu_toolchains ;;
     5) menu_workspace_shell ;;
     6) menu_cloudflare ;;
-    7)
+    7) menu_powerdns ;;
+    8)
       echo ""
       read_menu_input confirm_install "Jalankan instalasi otomatis 14 langkah sekarang? [y/N]: " || confirm_install="n"
       if [[ "$confirm_install" =~ ^[yY]([eE][sS])?$ ]]; then
@@ -9180,7 +9589,7 @@ while true; do
         echo "Instalasi lengkap dibatalkan."
       fi
       ;;
-    8) menu_custom_install ;;
+    9) menu_custom_install ;;
     0|q|Q|exit)
       echo "Keluar."
       exit 0
