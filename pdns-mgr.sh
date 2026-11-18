@@ -1086,6 +1086,7 @@ MAIL_ADMIN_CRED_FILE="${MAIL_ADMIN_CRED_FILE:-$WDEV_ETC/mail-admin.cred}"
 MAIL_RELAY_CRED_FILE="${MAIL_RELAY_CRED_FILE:-$WDEV_ETC/mail-relay.cred}"
 MAIL_RELAY_DOMAINS_CRED_FILE="${MAIL_RELAY_DOMAINS_CRED_FILE:-$WDEV_ETC/mail-relay-domains.cred}"
 RESEND_API_BASE="${RESEND_API_BASE:-https://api.resend.com}"
+BREVO_API_BASE="${BREVO_API_BASE:-https://api.brevo.com/v3}"
 
 stalwart_cli_path() {
   local p
@@ -1759,6 +1760,19 @@ resend_api() {
   return $rc
 }
 
+brevo_api() {
+  local method="$1" path="$2" data="${3:-}" hdr rc
+  hdr=$(mktemp)
+  chmod 600 "$hdr"
+  printf 'api-key: %s\nContent-Type: application/json\n' "$BREVO_API_KEY" > "$hdr"
+  local -a args=(-sS -X "$method" "${BREVO_API_BASE}${path}" -H "@$hdr")
+  [ -n "$data" ] && args+=(-d "$data")
+  curl "${args[@]}"
+  rc=$?
+  rm -f "$hdr"
+  return $rc
+}
+
 # Tulis record DNS dari Resend ke zone PowerDNS secara batch.
 pdns_apply_resend_records() {
   local domain="$1" records_json="$2"
@@ -1851,6 +1865,134 @@ resend_domain_setup() {
   say "Status verifikasi Resend: ${status} (asynchronous; cek dashboard Resend)."
 }
 
+# Tulis record DNS Brevo ke PowerDNS. TXT di apex (brevo-code + SPF) digabung,
+# dan DMARC lama tidak ditimpa.
+pdns_apply_brevo_records() {
+  local domain="$1" records_json="$2"
+  local zone zone_fqdn zone_json
+  zone=$(find_matching_zone "$domain")
+  zone_fqdn="${zone%.}."
+  if ! cmd_zone_names 2>/dev/null | grep -qx "$zone"; then
+    die "Zone '${zone}' belum ada di PowerDNS. Tambahkan zone dulu (menu 5 / pdns-mgr zone add)."
+  fi
+  zone_json=$(pdns_api GET "/api/v1/servers/localhost/zones/${zone_fqdn}")
+  if printf '%s' "$zone_json" | jq -e '.error' >/dev/null 2>&1; then
+    die "Gagal membaca zone ${zone}: $(printf '%s' "$zone_json" | jq -r '.error // .')"
+  fi
+
+  say "Record DNS dari Brevo untuk ${domain}:"
+  printf '%s' "$records_json" | jq -r '.[] | "  • \(.record // "-") [\(.type)] \(.name) -> \(.value)"' 2>/dev/null | cut -c1-160 || true
+
+  local count i rec type raw_name name content existing ttl records_payload payload res err_msg
+  local skipped_dmarc=false
+  count=$(printf '%s' "$records_json" | jq 'length' 2>/dev/null || echo 0)
+  if [ "$count" -gt 0 ]; then
+    for i in $(seq 0 $((count - 1))); do
+      rec=$(printf '%s' "$records_json" | jq -c ".[$i]")
+      type=$(printf '%s' "$rec" | jq -r '.type // ""' | tr '[:lower:]' '[:upper:]')
+      raw_name=$(printf '%s' "$rec" | jq -r '.name // ""')
+      content=$(printf '%s' "$rec" | jq -r '.value // ""')
+      [ -n "$type" ] && [ -n "$content" ] || continue
+
+      raw_name="${raw_name%.}"
+      if [ -z "$raw_name" ] || [ "$raw_name" = "@" ] || [ "$raw_name" = "$domain" ]; then
+        name="${domain}."
+      elif [[ "$raw_name" == *".${domain}" ]]; then
+        name="${raw_name}."
+      else
+        name="${raw_name}.${domain}."
+      fi
+
+      if [ "$type" = "TXT" ]; then
+        if [[ "$content" != \"* ]] || [[ "$content" != *\" ]]; then
+          content="\"$content\""
+        fi
+      fi
+
+      existing=$(printf '%s' "$zone_json" | jq -c --arg n "$name" --arg t "$type" \
+        '.rrsets[]? | select(.name==$n and .type==$t)' 2>/dev/null | head -n 1)
+
+      if [ "$type" = "TXT" ] && [ "$name" = "_dmarc.${domain}." ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+        warn "DMARC yang sudah ada untuk ${domain} dipertahankan; DMARC dari Brevo dilewati."
+        skipped_dmarc=true
+        continue
+      fi
+
+      if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+        ttl=$(printf '%s' "$existing" | jq -r '.ttl // 300')
+        records_payload=$(printf '%s' "$existing" | jq -c --arg c "$content" \
+          '[.records[] | .content] + [$c] | unique | map({content: ., disabled: false})')
+      else
+        ttl=300
+        records_payload=$(jq -nc --arg c "$content" '[{content: $c, disabled: false}]')
+      fi
+
+      payload=$(jq -nc --arg n "$name" --arg t "$type" --argjson ttl "$ttl" --argjson recs "$records_payload" \
+        '{rrsets: [{name: $n, type: $t, ttl: $ttl, changetype: "REPLACE", records: $recs}]}')
+      res=$(pdns_api PATCH "/api/v1/servers/localhost/zones/${zone_fqdn}" "$payload")
+      if [ -n "$res" ]; then
+        err_msg=$(printf '%s' "$res" | jq -r '.error // .' 2>/dev/null || printf '%s' "$res")
+        die "Gagal menulis record DNS Brevo (${name} ${type}): ${err_msg}"
+      fi
+    done
+  fi
+
+  ok "Record DNS Brevo berhasil diterapkan ke zone ${zone}."
+  [ "$skipped_dmarc" = true ] && warn "DMARC lama dipertahankan; pastikan kebijakannya sesuai."
+}
+
+# Daftarkan/ambil domain Brevo, tulis DNS, lalu minta autentikasi.
+brevo_domain_setup() {
+  local domain="$1" list found domain_json records msg auth verified authenticated
+  list=$(brevo_api GET "/senders/domains")
+  found=$(printf '%s' "$list" | jq -r --arg d "$domain" '.domains[]? | select(.domain_name==$d) | .domain_name' 2>/dev/null | head -n 1)
+
+  if [ -z "$found" ]; then
+    say "Mendaftarkan domain '${domain}' di Brevo..."
+    domain_json=$(brevo_api POST "/senders/domains" "$(jq -nc --arg d "$domain" '{name:$d}')")
+    if ! printf '%s' "$domain_json" | jq -e '.dns_records' >/dev/null 2>&1; then
+      domain_json=$(brevo_api GET "/senders/domains/${domain}")
+    fi
+  else
+    domain_json=$(brevo_api GET "/senders/domains/${domain}")
+  fi
+
+  records=$(printf '%s' "$domain_json" | jq -c '
+    (.dns_records // {}) as $r
+    | (if ($r | type) == "array" then $r
+       else ($r | to_entries | map(
+         .key as $k | .value |
+         {record: (if $k=="dkim_record" then "DKIM"
+                   elif $k=="brevo_code" then "BrevoCode"
+                   elif $k=="dmarc_record" then "DMARC"
+                   else $k end),
+          type: .type,
+          name: (.host_name // ""),
+          value: .value,
+          status: (.status // false)}
+       )) end)
+    | map(select(.value != null and .value != ""))
+  ' 2>/dev/null || true)
+
+  if [ -z "$records" ] || [ "$(printf '%s' "$records" | jq 'length' 2>/dev/null || echo 0)" -eq 0 ]; then
+    msg=$(printf '%s' "$domain_json" | jq -r '.message // .' 2>/dev/null || printf '%s' "$domain_json")
+    die "Brevo tidak mengembalikan record DNS untuk ${domain}: ${msg}"
+  fi
+
+  say "Domain Brevo : ${domain}"
+  pdns_apply_brevo_records "$domain" "$records"
+
+  say "Meminta autentikasi domain di Brevo..."
+  auth=$(brevo_api PUT "/senders/domains/${domain}/authenticate" "")
+  msg=$(printf '%s' "$auth" | jq -r '.message // empty' 2>/dev/null || true)
+  [ -n "$msg" ] && say "Brevo: ${msg}"
+
+  domain_json=$(brevo_api GET "/senders/domains/${domain}")
+  verified=$(printf '%s' "$domain_json" | jq -r '.verified // false')
+  authenticated=$(printf '%s' "$domain_json" | jq -r '.authenticated // false')
+  say "Status Brevo: verified=${verified}, authenticated=${authenticated} (asynchronous)."
+}
+
 cmd_mail_setup() {
   need_root
   need_cmd curl
@@ -1910,6 +2052,15 @@ cmd_mail_setup() {
 
   say "  -> A record: mail.${clean_dom} -> VPS Public IP"
   cmd_record_add "$zone_cand" "mail.${clean_dom}" "A" auto "300" >/dev/null
+
+  say "  -> A record: mx.${clean_dom} -> VPS Public IP (hostname gateway)"
+  cmd_record_add "$zone_cand" "mx.${clean_dom}" "A" auto "300" >/dev/null
+
+  say "  -> TXT SPF: mail.${clean_dom} -> \"v=spf1 a ip4:100.64.0.0/10 -all\""
+  cmd_record_add "$zone_cand" "mail.${clean_dom}" "TXT" "\"v=spf1 a ip4:100.64.0.0/10 -all\"" "300" >/dev/null
+
+  say "  -> TXT SPF: mx.${clean_dom} -> \"v=spf1 a ip4:100.64.0.0/10 -all\""
+  cmd_record_add "$zone_cand" "mx.${clean_dom}" "TXT" "\"v=spf1 a ip4:100.64.0.0/10 -all\"" "300" >/dev/null
 
   say "  -> A record: webmail.${clean_dom} -> VPS Public IP"
   cmd_record_add "$zone_cand" "webmail.${clean_dom}" "A" auto "300" >/dev/null
@@ -2170,6 +2321,78 @@ cmd_mail_relay_resend() {
   fi
   say "Pastikan status domain di dashboard Resend menjadi 'verified'."
   say "Jika belum verified, email keluar akan ditolak sampai DNS terpropagasi."
+}
+
+cmd_mail_relay_brevo() {
+  need_root
+  need_cmd jq
+
+  local domain="" use_stdin=false dns_only=false api_key="" smtp_user="" smtp_key=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stdin) use_stdin=true; shift ;;
+      --dns-only) dns_only=true; shift ;;
+      --domain) domain="${2:-}"; shift 2 ;;
+      -*) shift ;;
+      *)
+        if [ -z "$domain" ]; then
+          domain="$1"
+        else
+          warn "Argumen diabaikan: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [ -z "$domain" ]; then
+    die "Domain wajib diisi. Jalankan: sudo pdns-mgr mail relay-brevo <domain>"
+  fi
+  if ! [[ "$domain" =~ ^[A-Za-z0-9._-]+\.[A-Za-z]{2,}$ ]]; then
+    die "Domain tidak valid: ${domain}"
+  fi
+
+  if [ "$use_stdin" = true ]; then
+    IFS= read -r api_key || true
+    IFS= read -r smtp_user || true
+    IFS= read -r smtp_key || true
+  else
+    api_key="${BREVO_API_KEY:-}"
+    smtp_user="${BREVO_SMTP_USER:-}"
+    smtp_key="${BREVO_SMTP_KEY:-}"
+    if [ -z "$api_key" ] && [ -t 0 ]; then
+      printf 'API Key Brevo (input tersembunyi): '
+      read -r -s api_key || true
+      printf '\n'
+    fi
+    if [ -z "$smtp_user" ] && [ -t 0 ]; then
+      printf 'SMTP Login Brevo (contoh: 12345@smtp-brevo.com): '
+      read -r smtp_user || true
+    fi
+    if [ -z "$smtp_key" ] && [ -t 0 ]; then
+      printf 'SMTP Key Brevo (input tersembunyi): '
+      read -r -s smtp_key || true
+      printf '\n'
+    fi
+  fi
+
+  [ -n "$api_key" ] || die "API key Brevo kosong."
+  [ -n "$smtp_user" ] || die "SMTP login Brevo kosong."
+  [ -n "$smtp_key" ] || die "SMTP key Brevo kosong."
+
+  need_cmd curl
+  load_config
+  local BREVO_API_KEY="$api_key"
+  brevo_domain_setup "$domain"
+  if [ "$dns_only" = true ]; then
+    ok "Record DNS Brevo untuk '${domain}' selesai. Relay tidak diubah (--dns-only)."
+    return 0
+  fi
+
+  apply_stalwart_domain_relay "$domain" "brevo" "smtp-relay.brevo.com" 587 false "$smtp_user" "$smtp_key"
+  say ""
+  say "Relay per-domain Brevo aktif untuk ${domain} (smtp-relay.brevo.com:587)."
+  say "Pastikan status domain di dashboard Brevo menjadi authenticated."
 }
 
 cmd_mail_relay_disable() {
@@ -2661,6 +2884,7 @@ cmd_help() {
   say "  mail setup <domain> [opsi...]                          Setup DNS + Stalwart & SnappyMail lokal + VPS relay"
   say "  mail set-relay <global|domain> <host> [port] [usr] [pwd] Relay SMTP global atau per-domain (Brevo, Mailgun, SES, dll)"
   say "  mail relay-resend <domain> [--stdin]                   Resend per-domain + record DNS otomatis"
+  say "  mail relay-brevo <domain> [--stdin]                    Brevo per-domain + record DNS otomatis"
   say "  mail relay-disable [domain]                            Nonaktifkan relay global atau per-domain"
   say "  mail add-account <email> <password>                    Tambah/ubah akun email klien di storage lokal"
   say "  mail accounts [domain]                                 Daftar akun email per domain di Stalwart lokal"
@@ -2716,6 +2940,7 @@ case "${1:-help}" in
       setup) cmd_mail_setup "$@" ;;
       set-relay|relay) cmd_mail_set_relay "$@" ;;
       relay-resend|resend) cmd_mail_relay_resend "$@" ;;
+      relay-brevo|brevo) cmd_mail_relay_brevo "$@" ;;
       relay-disable|relay-off) cmd_mail_relay_disable "$@" ;;
       add-account|account|user) cmd_mail_add_account "$@" ;;
       accounts|list-accounts|users) cmd_mail_accounts "$@" ;;
@@ -2725,7 +2950,7 @@ case "${1:-help}" in
       queue|mailq) cmd_mail_queue "$@" ;;
       flush-queue|flush) cmd_mail_flush_queue "$@" ;;
       status|info) cmd_mail_status "$@" ;;
-      *) die "Subperintah mail tidak dikenal: $sub. Pilihan: setup, set-relay, relay-resend, relay-disable, add-account, accounts, open-ports, admin, admin-reset, queue, flush-queue, status" ;;
+      *) die "Subperintah mail tidak dikenal: $sub. Pilihan: setup, set-relay, relay-resend, relay-brevo, relay-disable, add-account, accounts, open-ports, admin, admin-reset, queue, flush-queue, status" ;;
     esac
     ;;
   -h|--help|help) cmd_help ;;

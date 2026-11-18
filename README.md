@@ -182,8 +182,12 @@ sudo pdns-mgr mail setup domainanda.com --ssl --relay-host smtp-relay.brevo.com 
 sudo pdns-mgr mail relay-resend domain-a.com
 printf '%s\n' "$RESEND_API_KEY" | sudo pdns-mgr mail relay-resend domain-b.com --stdin
 
+# Brevo per-domain: API key (DNS) + SMTP login + SMTP key (relay)
+sudo pdns-mgr mail relay-brevo domain-c.com
+printf '%s\n%s\n%s\n' "$BREVO_API_KEY" "$BREVO_SMTP_USER" "$BREVO_SMTP_KEY" | sudo pdns-mgr mail relay-brevo domain-d.com --stdin
+
 # Custom per-domain: tiap domain bisa memakai relay/akun/provider berbeda
-sudo pdns-mgr mail set-relay domain-b.com smtp-relay.brevo.com 587 brevo_user rahasia
+sudo pdns-mgr mail set-relay domain-b.com smtp.mailgun.org 587 user pass
 
 # Custom global (fallback untuk domain tanpa relay per-domain)
 sudo pdns-mgr mail set-relay global smtp-relay.brevo.com 587 brevo_user rahasia
@@ -221,7 +225,11 @@ sudo pdns-mgr mail open-ports
 
 > `deploy-vps` otomatis membuka port web, DNS, SSH, dan mail di UFW maupun firewalld. Jika penyedia VPS punya firewall/security group terpisah, port yang sama juga perlu dibuka di panel penyedia.
 >
-> Relay SMTP outbound diterapkan ke Stalwart (`MtaRoute` Relay + `MtaOutboundStrategy`). **Resend selalu per-domain**: pilih domain, masukkan API key, lalu skrip otomatis menambahkan record **DKIM, MX, SPF, dan CNAME** dari Resend ke zone PowerDNS domain tersebut, meminta verifikasi, dan membuat route relay khusus domain itu. Custom provider (Brevo/Mailgun/SES) bisa global atau per-domain. Global relay hanya fallback untuk domain yang tidak punya relay per-domain.
+> Relay SMTP outbound diterapkan ke Stalwart (`MtaRoute` Relay + `MtaOutboundStrategy`). **Resend dan Brevo selalu per-domain**: pilih domain, masukkan kredensial, lalu skrip otomatis menambahkan record DNS dari provider ke zone PowerDNS domain tersebut, meminta verifikasi/autentikasi, dan membuat route relay khusus domain itu.
+>
+> - Resend: cukup API key; DNS DKIM/MX/SPF/CNAME otomatis.
+> - Brevo: API key untuk DNS + SMTP login/SMTP key untuk relay. Record TXT Brevo di apex digabung dengan SPF yang ada, dan DMARC lama tidak ditimpa.
+> - Custom provider (Mailgun/SES/dll) bisa global atau per-domain. Global relay hanya fallback untuk domain tanpa relay per-domain.
 
 > Panel admin Stalwart ada di `https://mailadmin.<domain>/admin/` (root domain akan redirect ke `/account`, yaitu portal user). Saat `mail setup` pertama kali dijalankan, Stalwart di-bootstrap otomatis (tanpa wizard) dan kredensial admin disimpan di `/etc/wdev/mail-admin.cred` (mode 0600). Gunakan `pdns-mgr mail admin` untuk melihatnya.
 >

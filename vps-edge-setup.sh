@@ -133,6 +133,7 @@ case "$OS_ID" in
 
     apt-get install -y --no-install-recommends \
       curl jq sqlite3 nginx certbot python3-certbot-nginx python3 pdns-server pdns-backend-sqlite3 ufw \
+      rsyslog \
       libnginx-mod-stream postfix || {
         warn "Memperbaiki konfigurasi paket Nginx untuk mode IPv4-only..."
         if [ -f /etc/nginx/sites-available/default ]; then
@@ -144,7 +145,7 @@ case "$OS_ID" in
     ;;
   fedora|rhel|centos|almalinux|rocky)
     dnf install -y \
-      curl jq sqlite nginx certbot python3-certbot-nginx python3 pdns pdns-backend-sqlite3 firewalld
+      curl jq sqlite nginx certbot python3-certbot-nginx python3 pdns pdns-backend-sqlite3 firewalld rsyslog
     dnf install -y nginx-mod-stream 2>/dev/null || true
     ;;
 esac
@@ -155,6 +156,7 @@ if [ "$HAS_IPV6" -eq 0 ] && [ -f /etc/nginx/sites-available/default ]; then
   systemctl restart nginx 2>/dev/null || true
 fi
 ok "Paket perangkat lunak berhasil dipasang."
+systemctl enable --now rsyslog 2>/dev/null || true
 
 # 4. Tangani Konflik Port 53 (systemd-resolved, bind9, dnsmasq, dll.)
 say "${C_BOLD}>>> [4/7] Memastikan Port 53 Bebas untuk PowerDNS...${C_RESET}"
@@ -413,7 +415,7 @@ def has_ipv6():
     except OSError:
         return False
 
-def ensure_postfix_installed():
+def ensure_postfix_installed(mail_host=""):
     # Stalwart lama di VPS tidak dipakai (mailbox ada di mesin lokal) dan
     # berebut port 25 dengan Postfix.
     subprocess.run(["systemctl", "disable", "--now", "stalwart"], check=False)
@@ -424,8 +426,20 @@ def ensure_postfix_installed():
         if not os.path.exists(f):
             open(f, "a").close()
             subprocess.run(["postmap", f], check=False)
+    # Jangan biarkan domain yang di-relay dianggap sebagai domain lokal VPS.
+    # Gunakan hostname gateway yang berbeda dari Stalwart lokal (mail.<domain>)
+    # agar Postfix tidak mendeteksi loop "greeted me with my own hostname".
+    base_domain = mail_host[5:] if mail_host.startswith("mail.") else mail_host
+    myhost = f"mx.{base_domain}" if base_domain else "mail.wdev.local"
+    subprocess.run(["postconf", "-e", f"myhostname={myhost}"], check=False)
+    subprocess.run(["postconf", "-e", f"smtp_helo_name={myhost}"], check=False)
+    subprocess.run(["postconf", "-e", "mydestination=localhost.localdomain, localhost"], check=False)
     subprocess.run(["postconf", "-e", "relay_domains = hash:/etc/postfix/relay_domains"], check=False)
     subprocess.run(["postconf", "-e", "transport_maps = hash:/etc/postfix/transport"], check=False)
+    # Relay ke Stalwart lokal tidak memakai SASL; gunakan TLS oportunistik tanpa verifikasi.
+    subprocess.run(["postconf", "-e", "smtp_sasl_auth_enable=no"], check=False)
+    subprocess.run(["postconf", "-e", "smtp_tls_security_level=may"], check=False)
+    subprocess.run(["postconf", "-e", "smtp_tls_verify_cert=no"], check=False)
     subprocess.run(["postconf", "-e", "mynetworks = 127.0.0.0/8 [::1]/128 100.64.0.0/10"], check=False)
     subprocess.run(["postconf", "-e", "inet_interfaces = all"], check=False)
     subprocess.run(["postconf", "-e", "maximal_queue_lifetime = 5d"], check=False)
@@ -877,7 +891,7 @@ server {{
 
             # 1. Konfigurasi Postfix Inbound Store-and-Forward Relay jika target_ip (Lokal) disediakan
             if target_ip and target_ip != "127.0.0.1":
-                ensure_postfix_installed()
+                ensure_postfix_installed(mail_host)
                 relay_doms_file = "/etc/postfix/relay_domains"
                 transport_file = "/etc/postfix/transport"
 
@@ -1153,6 +1167,35 @@ if [ -d /var/www/snappymail ]; then
   rm -rf /var/www/snappymail
 fi
 rm -f /tmp/snappymail.zip
+
+# 6.2 Pastikan domain mail yang di-relay tidak dianggap domain lokal VPS.
+say "${C_BOLD}>>> [6.2/7] Menyelaraskan Postfix (domain relay bukan domain lokal)...${C_RESET}"
+if command -v postconf >/dev/null 2>&1; then
+  MAIL_DOMAIN_FIRST=""
+  if [ -f /etc/wdev-edge/mail_domains.json ] && command -v jq >/dev/null 2>&1; then
+    MAIL_DOMAIN_FIRST=$(jq -r '.[0] // empty' /etc/wdev-edge/mail_domains.json 2>/dev/null || true)
+  fi
+  if [ -n "$MAIL_DOMAIN_FIRST" ]; then
+    postconf -e "myhostname=mx.${MAIL_DOMAIN_FIRST}" 2>/dev/null || true
+    postconf -e "smtp_helo_name=mx.${MAIL_DOMAIN_FIRST}" 2>/dev/null || true
+  fi
+  postconf -e "mydestination=localhost.localdomain, localhost" 2>/dev/null || true
+  postconf -e "relay_domains = hash:/etc/postfix/relay_domains" 2>/dev/null || true
+  postconf -e "transport_maps = hash:/etc/postfix/transport" 2>/dev/null || true
+  postconf -e "smtp_sasl_auth_enable=no" 2>/dev/null || true
+  postconf -e "smtp_tls_security_level=may" 2>/dev/null || true
+  postconf -e "smtp_tls_verify_cert=no" 2>/dev/null || true
+  systemctl reload postfix 2>/dev/null || true
+  ok "Postfix: myhostname/mydestination diselaraskan (domain mail tidak dianggap lokal)."
+  if [ -n "$MAIL_DOMAIN_FIRST" ]; then
+    TRANSPORT_TARGET=$(postmap -q "$MAIL_DOMAIN_FIRST" hash:/etc/postfix/transport 2>/dev/null || true)
+    if [ -n "$TRANSPORT_TARGET" ]; then
+      say "  Transport ${MAIL_DOMAIN_FIRST} -> ${TRANSPORT_TARGET}"
+    else
+      warn "Transport map untuk ${MAIL_DOMAIN_FIRST} belum ada; jalankan: sudo pdns-mgr mail setup ${MAIL_DOMAIN_FIRST}"
+    fi
+  fi
+fi
 
 # 7. Konfigurasi Firewall (UFW / firewalld)
 say "${C_BOLD}>>> [7/7] Mengonfigurasi Firewall (port web, DNS, SSH, dan mail)...${C_RESET}"

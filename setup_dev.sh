@@ -8372,7 +8372,7 @@ menu_powerdns() {
     echo -e "  ${C_CYAN}[12]${C_RESET} 🛑 Hapus Ekspos Aplikasi dari VPS (unexpose)"
     echo -e "  --------------------------------------------------------------"
     echo -e "  ${C_CYAN}[13]${C_RESET} ✉️  Setup Mail Server & Webmail (Standarisasi Template 1-Klik)"
-    echo -e "  ${C_CYAN}[14]${C_RESET} 🔑 SMTP Relay Outbound (Resend per-domain / Brevo / Custom)"
+    echo -e "  ${C_CYAN}[14]${C_RESET} 🔑 SMTP Relay Outbound (Resend/Brevo per-domain / Custom)"
     echo -e "  ${C_CYAN}[15]${C_RESET} 👤 Tambah Akun Email Klien (user@domain.com)"
     echo -e "  ${C_CYAN}[16]${C_RESET} 📊 Status Layanan Mail Server & Webmail VPS"
     echo -e "  ${C_CYAN}[17]${C_RESET} 🛡️  Lihat / Reset Kredensial Admin Stalwart (/admin/)"
@@ -8639,12 +8639,13 @@ menu_powerdns() {
         echo ""
         echo -e "${C_BOLD}=== SMTP RELAY OUTBOUND ===${C_RESET}"
         echo -e "  [1] Resend per-domain (API key + DNS otomatis ke PowerDNS)"
-        echo -e "  [2] Custom global (Brevo, Mailgun, SES, dll)"
-        echo -e "  [3] Custom per-domain (pilih domain + host/user/pass)"
-        echo -e "  [4] Hapus relay per-domain"
-        echo -e "  [5] Nonaktifkan relay global (kembali direct/mx)"
+        echo -e "  [2] Brevo per-domain (API key + SMTP key + DNS otomatis)"
+        echo -e "  [3] Custom global (Mailgun, SES, dll)"
+        echo -e "  [4] Custom per-domain (pilih domain + host/user/pass)"
+        echo -e "  [5] Hapus relay per-domain"
+        echo -e "  [6] Nonaktifkan relay global (kembali direct/mx)"
         echo -e "  [0] Batal"
-        read_menu_input r_opt "Pilih opsi [0-5]: " || r_opt="0"
+        read_menu_input r_opt "Pilih opsi [0-6]: " || r_opt="0"
         case "$r_opt" in
           1)
             local resend_dom=""
@@ -8660,7 +8661,26 @@ menu_powerdns() {
             printf '%s\n' "$resend_key" | "$pdns_bin" mail relay-resend "$resend_dom" --stdin || true
             ;;
           2)
-            read_menu_input r_host "Host SMTP Relay (contoh: smtp-relay.brevo.com): " || continue
+            local brevo_dom=""
+            if ! select_pdns_zone_menu "Pilih domain untuk Brevo" brevo_dom 2>/dev/null || [ -z "$brevo_dom" ]; then
+              read_menu_input brevo_dom "Masukkan domain (contoh: domainanda.com): " || brevo_dom=""
+            fi
+            [ -n "$brevo_dom" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+
+            local brevo_api_key="" brevo_smtp_user="" brevo_smtp_key=""
+            read_menu_secret brevo_api_key "Masukkan API Key Brevo (input tersembunyi): " || brevo_api_key=""
+            [ -n "$brevo_api_key" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+
+            read_menu_input brevo_smtp_user "SMTP Login Brevo (contoh: 12345@smtp-brevo.com): " || brevo_smtp_user=""
+            [ -n "$brevo_smtp_user" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+
+            read_menu_secret brevo_smtp_key "Masukkan SMTP Key Brevo (input tersembunyi): " || brevo_smtp_key=""
+            [ -n "$brevo_smtp_key" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+
+            printf '%s\n%s\n%s\n' "$brevo_api_key" "$brevo_smtp_user" "$brevo_smtp_key" | "$pdns_bin" mail relay-brevo "$brevo_dom" --stdin || true
+            ;;
+          3)
+            read_menu_input r_host "Host SMTP Relay (contoh: smtp.mailgun.org): " || continue
             [ -n "$r_host" ] || continue
             read_menu_input r_port "Port SMTP Relay [default: 587]: " || r_port="587"
             r_port="${r_port:-587}"
@@ -8668,13 +8688,13 @@ menu_powerdns() {
             read_menu_secret r_pass "Password / Secret Key SMTP Relay (input tersembunyi): " || r_pass=""
             "$pdns_bin" mail set-relay global "$r_host" "$r_port" "$r_user" "$r_pass" || true
             ;;
-          3)
+          4)
             local per_dom=""
             if ! select_pdns_zone_menu "Pilih domain untuk relay per-domain" per_dom 2>/dev/null || [ -z "$per_dom" ]; then
               read_menu_input per_dom "Masukkan domain (contoh: domainanda.com): " || per_dom=""
             fi
             [ -n "$per_dom" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
-            read_menu_input r_host "Host SMTP Relay (contoh: smtp.resend.com): " || continue
+            read_menu_input r_host "Host SMTP Relay (contoh: smtp.mailgun.org): " || continue
             [ -n "$r_host" ] || continue
             read_menu_input r_port "Port SMTP Relay [default: 587]: " || r_port="587"
             r_port="${r_port:-587}"
@@ -8682,7 +8702,7 @@ menu_powerdns() {
             read_menu_secret r_pass "Password / Secret Key SMTP Relay (input tersembunyi): " || r_pass=""
             "$pdns_bin" mail set-relay "$per_dom" "$r_host" "$r_port" "$r_user" "$r_pass" || true
             ;;
-          4)
+          5)
             local del_dom=""
             if ! select_pdns_zone_menu "Pilih domain yang relay per-domain-nya dihapus" del_dom 2>/dev/null || [ -z "$del_dom" ]; then
               read_menu_input del_dom "Masukkan domain (contoh: domainanda.com): " || del_dom=""
@@ -8690,7 +8710,7 @@ menu_powerdns() {
             [ -n "$del_dom" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
             "$pdns_bin" mail relay-disable "$del_dom" || true
             ;;
-          5)
+          6)
             "$pdns_bin" mail relay-disable || true
             ;;
           0|"") ;;
