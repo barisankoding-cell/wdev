@@ -1185,6 +1185,14 @@ if command -v postconf >/dev/null 2>&1; then
   postconf -e "smtp_sasl_auth_enable=no" 2>/dev/null || true
   postconf -e "smtp_tls_security_level=may" 2>/dev/null || true
   postconf -e "smtp_tls_verify_cert=no" 2>/dev/null || true
+  if [ -n "$MAIL_DOMAIN_FIRST" ]; then
+    CERT_DIR="/etc/letsencrypt/live/mail.${MAIL_DOMAIN_FIRST}"
+    if [ -f "$CERT_DIR/fullchain.pem" ] && [ -f "$CERT_DIR/privkey.pem" ]; then
+      postconf -e "smtpd_tls_cert_file=$CERT_DIR/fullchain.pem" 2>/dev/null || true
+      postconf -e "smtpd_tls_key_file=$CERT_DIR/privkey.pem" 2>/dev/null || true
+      postconf -e "smtpd_tls_security_level=may" 2>/dev/null || true
+    fi
+  fi
   systemctl reload postfix 2>/dev/null || true
   ok "Postfix: myhostname/mydestination diselaraskan (domain mail tidak dianggap lokal)."
   if [ -n "$MAIL_DOMAIN_FIRST" ]; then
