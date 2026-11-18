@@ -128,8 +128,12 @@ case "$OS_ID" in
     fi
     dpkg --configure -a 2>/dev/null || true
 
+    echo "postfix postfix/mailname string mail.wdev.local" | debconf-set-selections 2>/dev/null || true
+    echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections 2>/dev/null || true
+
     apt-get install -y --no-install-recommends \
-      curl jq sqlite3 nginx certbot python3-certbot-nginx python3 pdns-server pdns-backend-sqlite3 ufw || {
+      curl jq sqlite3 nginx certbot python3-certbot-nginx python3 pdns-server pdns-backend-sqlite3 ufw \
+      libnginx-mod-stream postfix || {
         warn "Memperbaiki konfigurasi paket Nginx untuk mode IPv4-only..."
         if [ -f /etc/nginx/sites-available/default ]; then
           sed -i 's/listen \[::\]:80/#listen [::]:80/' /etc/nginx/sites-available/default
@@ -141,6 +145,7 @@ case "$OS_ID" in
   fedora|rhel|centos|almalinux|rocky)
     dnf install -y \
       curl jq sqlite nginx certbot python3-certbot-nginx python3 pdns pdns-backend-sqlite3 firewalld
+    dnf install -y nginx-mod-stream 2>/dev/null || true
     ;;
 esac
 
@@ -350,11 +355,23 @@ ok "PowerDNS berhasil diaktifkan dan berjalan pada Port 53 (DNS) & Port $PDNS_AP
 # 6. Pasang wdev Edge Agent (Layanan Manajemen Proxy Otomatis)
 say "${C_BOLD}>>> [6/7] Memasang wdev Edge Reverse-Proxy Agent...${C_RESET}"
 
-mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-# Pastikan nginx.conf memuat sites-enabled
+mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/streams-enabled
+# Pastikan nginx.conf memuat sites-enabled (HTTP) dan streams-enabled (TCP mail proxy)
 if ! grep -q "sites-enabled" /etc/nginx/nginx.conf 2>/dev/null; then
   sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
 fi
+if ! grep -q "streams-enabled" /etc/nginx/nginx.conf 2>/dev/null; then
+  printf '\n# Managed by wdev-edge: TCP stream proxy untuk port mail\ninclude /etc/nginx/streams-enabled/*.conf;\n' >> /etc/nginx/nginx.conf
+fi
+
+# Pastikan nginx reload setelah certbot memperpanjang sertifikat, termasuk
+# sertifikat yang dipakai oleh stream proxy IMAPS/SMTPS/POP3S.
+mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+cat <<'EOF' > /etc/letsencrypt/renewal-hooks/deploy/wdev-reload-nginx.sh
+#!/bin/sh
+systemctl reload nginx >/dev/null 2>&1 || true
+EOF
+chmod 755 /etc/letsencrypt/renewal-hooks/deploy/wdev-reload-nginx.sh
 
 # Buat daemon Python Edge Agent (Zero-dependency, hanya stdlib)
 cat <<'AGENT_EOF' > /usr/local/bin/wdev-edge-agent
@@ -362,6 +379,7 @@ cat <<'AGENT_EOF' > /usr/local/bin/wdev-edge-agent
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -370,6 +388,12 @@ CONFIG_FILE = "/etc/wdev-edge/edge.conf"
 API_KEY_FILE = "/etc/wdev-edge/api_key.secret"
 NGINX_AVAILABLE = "/etc/nginx/sites-available"
 NGINX_ENABLED = "/etc/nginx/sites-enabled"
+NGINX_STREAMS_DIR = "/etc/nginx/streams-enabled"
+NGINX_CONF = "/etc/nginx/nginx.conf"
+MAIL_STREAM_CONF = os.path.join(NGINX_STREAMS_DIR, "wdev_mail.conf")
+MAIL_TARGET_FILE = "/etc/wdev-edge/mail_target.json"
+MAIL_DOMAINS_FILE = "/etc/wdev-edge/mail_domains.json"
+MAIL_RELAYS_FILE = "/etc/wdev-edge/mail_relays.json"
 
 def get_api_key():
     if os.path.exists(API_KEY_FILE):
@@ -388,6 +412,273 @@ def has_ipv6():
         return True
     except OSError:
         return False
+
+def ensure_postfix_installed():
+    # Stalwart lama di VPS tidak dipakai (mailbox ada di mesin lokal) dan
+    # berebut port 25 dengan Postfix.
+    subprocess.run(["systemctl", "disable", "--now", "stalwart"], check=False)
+    if not os.path.exists("/usr/sbin/postfix"):
+        subprocess.run(["sh", "-c", "echo 'postfix postfix/mailname string mail.wdev.local' | debconf-set-selections && echo 'postfix postfix/main_mailer_type string \"Internet Site\"' | debconf-set-selections && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postfix 2>/dev/null || true"], check=False)
+    os.makedirs("/etc/postfix", exist_ok=True)
+    for f in ["/etc/postfix/relay_domains", "/etc/postfix/transport"]:
+        if not os.path.exists(f):
+            open(f, "a").close()
+            subprocess.run(["postmap", f], check=False)
+    subprocess.run(["postconf", "-e", "relay_domains = hash:/etc/postfix/relay_domains"], check=False)
+    subprocess.run(["postconf", "-e", "transport_maps = hash:/etc/postfix/transport"], check=False)
+    subprocess.run(["postconf", "-e", "mynetworks = 127.0.0.0/8 [::1]/128 100.64.0.0/10"], check=False)
+    subprocess.run(["postconf", "-e", "inet_interfaces = all"], check=False)
+    subprocess.run(["postconf", "-e", "maximal_queue_lifetime = 5d"], check=False)
+    subprocess.run(["postconf", "-e", "bounce_queue_lifetime = 5d"], check=False)
+    subprocess.run(["systemctl", "enable", "postfix"], check=False)
+    subprocess.run(["systemctl", "restart", "postfix"], check=False)
+
+def mail_tcp_ports():
+    return [25, 465, 587, 993, 143, 995, 110]
+
+def is_listening(port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+def mail_listener_status():
+    return {str(p): is_listening(p) for p in mail_tcp_ports()}
+
+def get_firewall_status():
+    parts = []
+    ufw = shutil.which("ufw")
+    if ufw:
+        st = subprocess.run([ufw, "status"], capture_output=True, text=True)
+        parts.append("ufw=" + ("active" if "Status: active" in st.stdout else "inactive"))
+    fw = shutil.which("firewall-cmd")
+    if fw:
+        st = subprocess.run([fw, "--state"], capture_output=True, text=True)
+        parts.append("firewalld=" + (st.stdout.strip() or "unknown"))
+    return "; ".join(parts) if parts else "none"
+
+def ensure_mail_firewall():
+    results = []
+    ports = mail_tcp_ports()
+    ufw = shutil.which("ufw")
+    if ufw:
+        status = subprocess.run([ufw, "status"], capture_output=True, text=True)
+        if "Status: active" in status.stdout:
+            for spec in ["22/tcp", "80/tcp", "443/tcp", "53/tcp", "53/udp"]:
+                subprocess.run([ufw, "allow", spec], check=False)
+            for port in ports:
+                subprocess.run([ufw, "allow", f"{port}/tcp"], check=False)
+            subprocess.run([ufw, "reload"], check=False)
+            results.append("ufw aktif: port web, DNS, SSH, mail diizinkan")
+        else:
+            results.append("ufw terpasang tetapi tidak aktif")
+    fw = shutil.which("firewall-cmd")
+    if fw:
+        state = subprocess.run([fw, "--state"], capture_output=True, text=True).stdout.strip()
+        if state == "running":
+            for spec in ["22/tcp", "80/tcp", "443/tcp", "53/tcp", "53/udp"]:
+                subprocess.run([fw, "--permanent", "--add-port", spec], check=False)
+            for port in ports:
+                subprocess.run([fw, "--permanent", "--add-port", f"{port}/tcp"], check=False)
+            subprocess.run([fw, "--reload"], check=False)
+            results.append("firewalld aktif: port web, DNS, SSH, mail diizinkan")
+        else:
+            results.append("firewalld tidak berjalan")
+    if not results:
+        results.append("tidak ada firewall host yang terdeteksi")
+    return "; ".join(results)
+
+def ensure_nginx_stream_support():
+    os.makedirs(NGINX_STREAMS_DIR, exist_ok=True)
+    try:
+        with open(NGINX_CONF, "r") as f:
+            conf = f.read()
+        if "streams-enabled" not in conf:
+            with open(NGINX_CONF, "a") as f:
+                f.write("\n# Managed by wdev-edge-agent\ninclude /etc/nginx/streams-enabled/*.conf;\n")
+    except Exception:
+        pass
+
+    has_stream = False
+    ver = subprocess.run(["nginx", "-V"], capture_output=True, text=True)
+    if "with-stream" in (ver.stderr + ver.stdout):
+        has_stream = True
+    if not has_stream and os.path.isdir("/etc/nginx/modules-enabled"):
+        has_stream = any("stream" in name for name in os.listdir("/etc/nginx/modules-enabled"))
+    if not has_stream:
+        if os.path.exists("/usr/bin/apt-get"):
+            subprocess.run(["apt-get", "install", "-y", "libnginx-mod-stream"],
+                           capture_output=True, text=True, check=False)
+            return True
+        elif os.path.exists("/usr/bin/dnf"):
+            subprocess.run(["dnf", "install", "-y", "nginx-mod-stream"],
+                           capture_output=True, text=True, check=False)
+            return True
+    return False
+
+def find_letsencrypt_cert(hostname):
+    base = "/etc/letsencrypt/live"
+    if not hostname or not os.path.isdir(base):
+        return None
+    target = hostname.lower()
+    for name in os.listdir(base):
+        cert = os.path.join(base, name, "fullchain.pem")
+        key = os.path.join(base, name, "privkey.pem")
+        if not (os.path.exists(cert) and os.path.exists(key)):
+            continue
+        res = subprocess.run(["openssl", "x509", "-in", cert, "-noout", "-text"],
+                             capture_output=True, text=True)
+        names = [n.lower() for n in re.findall(r"DNS:([^,\s]+)", res.stdout, re.IGNORECASE)]
+        if target in names:
+            return cert, key
+        for n in names:
+            if n.startswith("*.") and target.endswith(n[1:]):
+                return cert, key
+    return None
+
+def build_mail_stream_conf(target_ip, cert_info=None):
+    def server_block(port, timeout):
+        if cert_info:
+            cert, key = cert_info
+            return f"""    server {{
+        listen {port} ssl;
+        ssl_certificate {cert};
+        ssl_certificate_key {key};
+        ssl_protocols TLSv1.2 TLSv1.3;
+        proxy_pass {target_ip}:{port};
+        proxy_ssl on;
+        proxy_ssl_verify off;
+        proxy_connect_timeout 10s;
+        proxy_timeout {timeout};
+    }}"""
+        return f"""    server {{
+        listen {port};
+        proxy_pass {target_ip}:{port};
+        proxy_connect_timeout 10s;
+        proxy_timeout {timeout};
+    }}"""
+
+    servers = "\n".join([
+        server_block(993, "24h"),
+        server_block(465, "5m"),
+        server_block(995, "24h"),
+    ])
+    mode = "TLS Let's Encrypt" if cert_info else "TCP passthrough"
+    header = f"# Managed by wdev-edge-agent: {mode} port mail -> Stalwart lokal ({target_ip})\n"
+    return header + "stream {\n" + servers + "\n}\n"
+
+def apply_mail_stream_conf(conf_text, module_installed):
+    with open(MAIL_STREAM_CONF, "w") as f:
+        f.write(conf_text)
+
+    test = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+    if test.returncode != 0:
+        try:
+            os.remove(MAIL_STREAM_CONF)
+        except OSError:
+            pass
+        detail = (test.stderr or test.stdout).strip().splitlines()
+        return "failed: " + (detail[-1] if detail else "nginx -t failed")
+
+    reload_action = "restart" if module_installed else "reload"
+    reload_res = subprocess.run(["systemctl", reload_action, "nginx"], capture_output=True, text=True)
+    if reload_res.returncode != 0:
+        try:
+            os.remove(MAIL_STREAM_CONF)
+        except OSError:
+            pass
+        return "failed: " + (reload_res.stderr.strip()[:200] or f"nginx {reload_action} failed")
+    return None
+
+def write_mail_stream(target_ip, mail_host=""):
+    if not target_ip:
+        return "skipped"
+    module_installed = ensure_nginx_stream_support()
+    os.makedirs(NGINX_STREAMS_DIR, exist_ok=True)
+
+    cert_info = find_letsencrypt_cert(mail_host)
+    if cert_info:
+        err = apply_mail_stream_conf(build_mail_stream_conf(target_ip, cert_info), module_installed)
+        if err is None:
+            os.makedirs(os.path.dirname(MAIL_TARGET_FILE), exist_ok=True)
+            with open(MAIL_TARGET_FILE, "w") as f:
+                json.dump({"target_ip": target_ip, "mail_host": mail_host, "mode": "tls"}, f)
+            return "active-tls"
+
+    err = apply_mail_stream_conf(build_mail_stream_conf(target_ip, None), module_installed)
+    if err is None:
+        os.makedirs(os.path.dirname(MAIL_TARGET_FILE), exist_ok=True)
+        with open(MAIL_TARGET_FILE, "w") as f:
+            json.dump({"target_ip": target_ip, "mail_host": mail_host, "mode": "passthrough"}, f)
+        return "active-passthrough"
+    return err
+
+def restore_mail_stream():
+    if not os.path.exists(MAIL_TARGET_FILE):
+        return
+    try:
+        with open(MAIL_TARGET_FILE, "r") as f:
+            data = json.load(f)
+        target_ip = data.get("target_ip", "")
+        mail_host = data.get("mail_host", "")
+        if target_ip:
+            write_mail_stream(target_ip, mail_host)
+    except Exception:
+        pass
+
+def configure_postfix_tls(mail_host):
+    cert_info = find_letsencrypt_cert(mail_host)
+    if not cert_info:
+        return False
+    cert, key = cert_info
+    settings = {
+        "smtpd_tls_cert_file": cert,
+        "smtpd_tls_key_file": key,
+        "smtpd_tls_security_level": "may",
+        "smtp_tls_security_level": "may",
+    }
+    for key_name, value in settings.items():
+        subprocess.run(["postconf", "-e", f"{key_name}={value}"], check=False)
+    subprocess.run(["systemctl", "reload", "postfix"], check=False)
+    return True
+
+def postfix_starttls_status():
+    try:
+        level = subprocess.run(["postconf", "-h", "smtpd_tls_security_level"],
+                               capture_output=True, text=True).stdout.strip()
+        cert = subprocess.run(["postconf", "-h", "smtpd_tls_cert_file"],
+                              capture_output=True, text=True).stdout.strip()
+        return level in ("may", "encrypt") and bool(cert) and os.path.exists(cert)
+    except Exception:
+        return False
+
+def load_mail_domains():
+    if os.path.exists(MAIL_DOMAINS_FILE):
+        try:
+            with open(MAIL_DOMAINS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_mail_domains(domains):
+    os.makedirs(os.path.dirname(MAIL_DOMAINS_FILE), exist_ok=True)
+    with open(MAIL_DOMAINS_FILE, "w") as f:
+        json.dump(domains, f, indent=2)
+
+def load_mail_relays():
+    if os.path.exists(MAIL_RELAYS_FILE):
+        try:
+            with open(MAIL_RELAYS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_mail_relays(relays):
+    os.makedirs(os.path.dirname(MAIL_RELAYS_FILE), exist_ok=True)
+    with open(MAIL_RELAYS_FILE, "w") as f:
+        json.dump(relays, f, indent=2)
 
 class EdgeHandler(BaseHTTPRequestHandler):
     def send_json(self, status, data):
@@ -424,6 +715,44 @@ class EdgeHandler(BaseHTTPRequestHandler):
                         enabled = os.path.exists(os.path.join(NGINX_ENABLED, f))
                         proxies.append({"domain": domain, "enabled": enabled, "config_file": f})
             self.send_json(200, {"proxies": proxies})
+        elif self.path == "/api/v1/mail/status":
+            pf_active = subprocess.run(["systemctl", "is-active", "postfix"], capture_output=True, text=True).stdout.strip() == "active"
+            st_active = subprocess.run(["systemctl", "is-active", "stalwart"], capture_output=True, text=True).stdout.strip() == "active"
+            q_res = subprocess.run(["mailq"], capture_output=True, text=True)
+            q_empty = "Mail queue is empty" in q_res.stdout
+            mail_tls = False
+            if os.path.exists(MAIL_STREAM_CONF):
+                try:
+                    with open(MAIL_STREAM_CONF, "r") as f:
+                        mail_tls = "ssl_certificate" in f.read()
+                except Exception:
+                    pass
+            listeners = mail_listener_status()
+            proxy_listening = all(listeners.get(str(p)) for p in (993, 465, 995))
+            self.send_json(200, {
+                "postfix_active": pf_active,
+                "stalwart_active": st_active,
+                "mail_ports_proxy": os.path.exists(MAIL_STREAM_CONF),
+                "mail_ports_tls": mail_tls,
+                "mail_ports_listening": proxy_listening,
+                "smtp_starttls": postfix_starttls_status(),
+                "firewall": get_firewall_status(),
+                "listeners": listeners,
+                "queue_empty": q_empty,
+                "queue_summary": q_res.stdout.strip().splitlines()[-1] if q_res.stdout.strip() else "Empty",
+                "domains": load_mail_domains(),
+                "relays": load_mail_relays()
+            })
+        elif self.path == "/api/v1/mail/queue":
+            q_res = subprocess.run(["mailq"], capture_output=True, text=True)
+            q_lines = q_res.stdout.strip().splitlines()
+            count = 0
+            if "Mail queue is empty" not in q_res.stdout and q_lines:
+                count = len([l for l in q_lines if l and not l.startswith("-") and not l.startswith(" ")])
+            self.send_json(200, {
+                "queue_count": count,
+                "output": q_res.stdout.strip()
+            })
         else:
             self.send_json(404, {"error": "Endpoint not found"})
 
@@ -513,6 +842,241 @@ server {{
                 "target": f"http://{target_ip}:{target_port}",
                 "ssl": ssl_status
             })
+
+        elif self.path == "/api/v1/mail/setup-domain":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len)
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except Exception:
+                self.send_json(400, {"error": "Invalid JSON body"})
+                return
+
+            domain = data.get("domain", "").strip().lower()
+            if not is_valid_domain(domain):
+                self.send_json(400, {"error": f"Invalid domain: {domain}"})
+                return
+
+            target_ip = data.get("target_ip", "").strip()
+            use_ssl = bool(data.get("ssl", True))
+            relay_conf = data.get("relay")
+
+            if not target_ip or target_ip == "127.0.0.1":
+                self.send_json(400, {
+                    "error": "target_ip mesin lokal (NetBird) wajib diisi. "
+                             "VPS hanya gateway; mailbox dan webmail dilayani mesin lokal."
+                })
+                return
+
+            fw_status = ensure_mail_firewall()
+
+            admin_sub = f"mailadmin.{domain}"
+            webmail_sub = f"webmail.{domain}"
+            mail_host = f"mail.{domain}"
+            listen_v6 = "    listen [::]:80;\n" if has_ipv6() else ""
+
+            # 1. Konfigurasi Postfix Inbound Store-and-Forward Relay jika target_ip (Lokal) disediakan
+            if target_ip and target_ip != "127.0.0.1":
+                ensure_postfix_installed()
+                relay_doms_file = "/etc/postfix/relay_domains"
+                transport_file = "/etc/postfix/transport"
+
+                lines = []
+                if os.path.exists(relay_doms_file):
+                    with open(relay_doms_file, "r") as rf:
+                        lines = [l.strip() for l in rf if l.strip()]
+                dom_entry = f"{domain} OK"
+                if dom_entry not in lines and domain not in lines:
+                    lines.append(dom_entry)
+                    with open(relay_doms_file, "w") as rf:
+                        rf.write("\n".join(lines) + "\n")
+                    subprocess.run(["postmap", relay_doms_file], check=False)
+
+                t_lines = []
+                if os.path.exists(transport_file):
+                    with open(transport_file, "r") as tf:
+                        t_lines = [l.strip() for l in tf if l.strip()]
+                route_entry = f"{domain} smtp:[{target_ip}]:25"
+                t_lines = [l for l in t_lines if not l.startswith(f"{domain} ")]
+                t_lines.append(route_entry)
+                with open(transport_file, "w") as tf:
+                    tf.write("\n".join(t_lines) + "\n")
+                subprocess.run(["postmap", transport_file], check=False)
+                subprocess.run(["systemctl", "reload", "postfix"], check=False)
+
+            # 2. Nginx config for mailadmin.<domain> (Stalwart Admin Web UI)
+            admin_target = f"http://{target_ip}:8080" if target_ip else "http://127.0.0.1:8080"
+            admin_conf = os.path.join(NGINX_AVAILABLE, f"wdev_{admin_sub}.conf")
+            admin_link = os.path.join(NGINX_ENABLED, f"wdev_{admin_sub}.conf")
+            admin_block = f"""# Managed by wdev-edge-agent (Mail Admin)
+server {{
+    listen 80;
+{listen_v6}    server_name {admin_sub};
+
+    location / {{
+        proxy_pass {admin_target};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }}
+}}
+"""
+            with open(admin_conf, "w") as f: f.write(admin_block)
+            if not os.path.exists(admin_link):
+                try: os.symlink(admin_conf, admin_link)
+                except OSError: pass
+
+            # 3. Nginx config for webmail.<domain>
+            webmail_conf = os.path.join(NGINX_AVAILABLE, f"wdev_{webmail_sub}.conf")
+            webmail_link = os.path.join(NGINX_ENABLED, f"wdev_{webmail_sub}.conf")
+            webmail_block = f"""# Managed by wdev-edge-agent (Webmail Client via Netbird)
+server {{
+    listen 80;
+{listen_v6}    server_name {webmail_sub};
+    client_max_body_size 50M;
+
+    location / {{
+        proxy_pass http://{target_ip}:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+}}
+"""
+            with open(webmail_conf, "w") as f: f.write(webmail_block)
+            if not os.path.exists(webmail_link):
+                try: os.symlink(webmail_conf, webmail_link)
+                except OSError: pass
+
+            # Dummy Nginx config for mail.<domain>
+            mail_conf = os.path.join(NGINX_AVAILABLE, f"wdev_{mail_host}.conf")
+            mail_link = os.path.join(NGINX_ENABLED, f"wdev_{mail_host}.conf")
+            mail_block = f"""# Managed by wdev-edge-agent (Mail Host verification)
+server {{
+    listen 80;
+{listen_v6}    server_name {mail_host};
+    location / {{
+        return 200 "mail server host ok";
+    }}
+}}
+"""
+            with open(mail_conf, "w") as f: f.write(mail_block)
+            if not os.path.exists(mail_link):
+                try: os.symlink(mail_conf, mail_link)
+                except OSError: pass
+
+            subprocess.run(["nginx", "-t"], check=False)
+            subprocess.run(["systemctl", "reload", "nginx"], check=False)
+
+            ssl_status = "none"
+            if use_ssl:
+                cert_res = subprocess.run([
+                    "certbot", "--nginx", "-d", admin_sub, "-d", webmail_sub, "-d", mail_host,
+                    "--non-interactive", "--agree-tos", "--register-unsafely-without-email", "--redirect"
+                ], capture_output=True, text=True)
+                if cert_res.returncode == 0:
+                    ssl_status = "active"
+                else:
+                    ssl_status = f"partial: {cert_res.stderr[:100]}"
+
+            # Proxy TCP port mail setelah sertifikat tersedia agar IMAPS/SMTPS/POP3S
+            # memakai sertifikat Let's Encrypt yang valid di sisi VPS.
+            smtp_starttls = configure_postfix_tls(mail_host)
+            mail_ports_status = "not-configured"
+            if target_ip and target_ip != "127.0.0.1":
+                stream_tls_host = mail_host if use_ssl else ""
+                mail_ports_status = write_mail_stream(target_ip, stream_tls_host)
+
+            domains = load_mail_domains()
+            if domain not in domains:
+                domains.append(domain)
+                save_mail_domains(domains)
+
+            if relay_conf and relay_conf.get("host"):
+                relays = load_mail_relays()
+                target_scope = relay_conf.get("domain", "global")
+                relays[target_scope] = {
+                    "host": relay_conf.get("host"),
+                    "port": int(relay_conf.get("port", 587)),
+                    "user": relay_conf.get("user", ""),
+                    "pass": relay_conf.get("pass", "")
+                }
+                save_mail_relays(relays)
+
+            listeners = mail_listener_status()
+            self.send_json(200, {
+                "success": True,
+                "domain": domain,
+                "admin_url": f"https://{admin_sub}/admin/" if ssl_status == "active" else f"http://{admin_sub}/admin/",
+                "webmail_url": f"https://{webmail_sub}" if ssl_status == "active" else f"http://{webmail_sub}",
+                "mail_host": mail_host,
+                "mail_ports_proxy": mail_ports_status,
+                "mail_ports_listening": all(listeners.get(str(p)) for p in (993, 465, 995)),
+                "smtp_starttls": smtp_starttls,
+                "firewall": fw_status,
+                "listeners": listeners,
+                "ssl": ssl_status
+            })
+
+        elif self.path == "/api/v1/mail/open-ports":
+            fw_status = ensure_mail_firewall()
+            self.send_json(200, {
+                "success": True,
+                "firewall": fw_status,
+                "listeners": mail_listener_status()
+            })
+
+        elif self.path == "/api/v1/mail/set-relay":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len)
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except Exception:
+                self.send_json(400, {"error": "Invalid JSON body"})
+                return
+
+            target_scope = data.get("domain", "global").strip().lower()
+            host = data.get("host", "").strip()
+            port = int(data.get("port", 587))
+            user = data.get("user", "").strip()
+            pwd = data.get("pass", "").strip()
+
+            if not host:
+                self.send_json(400, {"error": "Relay host is required"})
+                return
+
+            relays = load_mail_relays()
+            relays[target_scope] = {
+                "host": host,
+                "port": port,
+                "user": user,
+                "pass": pwd
+            }
+            save_mail_relays(relays)
+
+            self.send_json(200, {
+                "success": True,
+                "message": f"SMTP Relay configured for '{target_scope}' ({host}:{port})"
+            })
+
+        elif self.path == "/api/v1/mail/account":
+            # Akun email berada di Stalwart pada mesin lokal (bukan di VPS).
+            self.send_json(501, {
+                "error": "Akun email dikelola di Stalwart pada mesin lokal. "
+                         "Gunakan: sudo pdns-mgr mail add-account <email> <password>"
+            })
+            return
+        elif self.path == "/api/v1/mail/flush-queue":
+            subprocess.run(["postfix", "flush"], check=False)
+            self.send_json(200, {
+                "success": True,
+                "message": "Mail queue flush triggered successfully."
+            })
         else:
             self.send_json(404, {"error": "Endpoint not found"})
 
@@ -544,6 +1108,7 @@ server {{
             self.send_json(404, {"error": "Invalid DELETE path"})
 
 def main():
+    restore_mail_stream()
     server = HTTPServer(("0.0.0.0", 8082), EdgeHandler)
     print("wdev-edge-agent listening on 0.0.0.0:8082")
     server.serve_forever()
@@ -576,19 +1141,56 @@ systemctl enable wdev-edge-agent
 systemctl restart wdev-edge-agent
 ok "wdev-edge-agent aktif pada Port $AGENT_PORT."
 
-# 7. Konfigurasi Firewall (UFW)
-say "${C_BOLD}>>> [7/7] Mengonfigurasi Firewall...${C_RESET}"
+# 6.1 VPS hanya gateway (Postfix + Nginx). Mailbox & webmail dilayani
+# Stalwart/SnappyMail di mesin lokal, jadi tidak ada yang perlu diunduh di VPS.
+say "${C_BOLD}>>> [6.1/7] Membersihkan komponen mail yang tidak dipakai di VPS...${C_RESET}"
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files stalwart.service >/dev/null 2>&1; then
+  say "Menonaktifkan Stalwart lama di VPS (port 25 dialihkan ke Postfix gateway)..."
+  systemctl disable --now stalwart 2>/dev/null || true
+fi
+if [ -d /var/www/snappymail ]; then
+  say "Menghapus SnappyMail di VPS (webmail dilayani dari mesin lokal)..."
+  rm -rf /var/www/snappymail
+fi
+rm -f /tmp/snappymail.zip
+
+# 7. Konfigurasi Firewall (UFW / firewalld)
+say "${C_BOLD}>>> [7/7] Mengonfigurasi Firewall (port web, DNS, SSH, dan mail)...${C_RESET}"
+FIREWALL_CONFIGURED=false
 if command -v ufw >/dev/null 2>&1; then
   ufw allow 22/tcp comment "SSH" 2>/dev/null || true
   ufw allow 53/tcp comment "PowerDNS" 2>/dev/null || true
   ufw allow 53/udp comment "PowerDNS" 2>/dev/null || true
   ufw allow 80/tcp comment "HTTP Nginx" 2>/dev/null || true
   ufw allow 443/tcp comment "HTTPS Nginx" 2>/dev/null || true
+  # Port Mail Server (Inbound SMTP, SMTPS, Submission, IMAPS, IMAP, POP3)
+  ufw allow 25/tcp comment "SMTP Inbound" 2>/dev/null || true
+  ufw allow 465/tcp comment "SMTPS SSL" 2>/dev/null || true
+  ufw allow 587/tcp comment "SMTP Submission" 2>/dev/null || true
+  ufw allow 993/tcp comment "IMAPS SSL" 2>/dev/null || true
+  ufw allow 143/tcp comment "IMAP STARTTLS" 2>/dev/null || true
+  ufw allow 995/tcp comment "POP3S SSL" 2>/dev/null || true
+  ufw allow 110/tcp comment "POP3 STARTTLS" 2>/dev/null || true
   # Port API hanya dibuka untuk subnet Netbird CGNAT (100.64.0.0/10)
   ufw allow from 100.64.0.0/10 to any port "$PDNS_API_PORT" proto tcp comment "PowerDNS API (Netbird)" 2>/dev/null || true
   ufw allow from 100.64.0.0/10 to any port "$AGENT_PORT" proto tcp comment "wdev Agent (Netbird)" 2>/dev/null || true
   ufw --force enable 2>/dev/null || true
-  ok "Firewall UFW dikonfigurasi dengan aman."
+  ufw reload 2>/dev/null || true
+  ok "Firewall UFW: port 22,53,80,443,25,465,587,993,143,995,110 dibuka."
+  FIREWALL_CONFIGURED=true
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  for p in 22/tcp 53/tcp 53/udp 80/tcp 443/tcp 25/tcp 465/tcp 587/tcp 993/tcp 143/tcp 995/tcp 110/tcp; do
+    firewall-cmd --permanent --add-port="$p" >/dev/null 2>&1 || true
+  done
+  firewall-cmd --permanent --add-rich-rule="rule family=\"ipv4\" source address=\"100.64.0.0/10\" port port=\"${PDNS_API_PORT}\" protocol=\"tcp\" accept" >/dev/null 2>&1 || true
+  firewall-cmd --permanent --add-rich-rule="rule family=\"ipv4\" source address=\"100.64.0.0/10\" port port=\"${AGENT_PORT}\" protocol=\"tcp\" accept" >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+  ok "Firewall firewalld: port web, DNS, SSH, dan mail dibuka."
+  FIREWALL_CONFIGURED=true
+fi
+if [ "$FIREWALL_CONFIGURED" = false ]; then
+  warn "UFW/firewalld tidak aktif. Pastikan port 25,465,587,993,143,995,110 dibuka di firewall penyedia VPS."
 fi
 
 # Simpan metadata konfigurasi VPS

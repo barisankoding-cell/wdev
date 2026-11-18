@@ -147,7 +147,7 @@ Dipasang ke `/usr/local/bin`; `node-switch`, `pg-switch`, `dev-site`, dan `cf-tu
 | `dev-site create\|delete\|list\|cert\|sync\|custom` | Virtual host Nginx + SSL + entri `/etc/hosts` + deteksi framework (Laravel, WordPress, CI3/CI4, Symfony, generic, proxy) |
 | `dev-site expose\|unexpose\|exposures` | Ekspos vhost ke Cloudflare Tunnel, kelola host publik per profil |
 | `cf-tunnel account\|tunnel\|route\|quick\|cidr\|access\|sync\|dns\|service\|status\|doctor\|raw` | Manajemen multi-akun Cloudflare: tunnel, ingress multi-protokol, quick tunnel, CIDR, Access, DNS, systemd, diagnostik |
-| `pdns-mgr deploy-vps\|connect\|status\|zone\|record\|expose\|expose-site\|unexpose\|list-exposures` | Manajemen PowerDNS & VPS Edge Gateway via Netbird: authoritative DNS mandiri, SSL otomatis, dan auto-cleanup DNS saat unexpose |
+| `pdns-mgr deploy-vps\|connect\|status\|zone\|record\|expose\|expose-site\|unexpose\|list-exposures\|mail` | Manajemen PowerDNS & VPS Edge Gateway via Netbird: authoritative DNS mandiri, SSL otomatis, auto-cleanup DNS, serta Mail Server & Webmail template (Stalwart + SnappyMail) |
 | `orca-switch [desktop\|headless\|autostart\|status]` | Ganti mode Orca ADE |
 
 Contoh:
@@ -172,7 +172,64 @@ sudo pdns-mgr zone add domainanda.com
 sudo pdns-mgr expose api.domainanda.com 8080 --ssl
 sudo pdns-mgr expose-site myapp.test myapp.domainanda.com --ssl
 sudo pdns-mgr unexpose myapp.domainanda.com   # otomatis hapus proxy VPS, record DNS subdomain, & alias lokal
+
+# Standarisasi Mail Server & Webmail (Hybrid Local Storage 380GB+ & VPS MX Queue)
+# 1. Setup 1-klik template: DNS + Stalwart & SnappyMail Lokal + VPS Postfix Store-and-Forward + SSL
+sudo pdns-mgr mail setup domainanda.com --ssl --relay-host smtp-relay.brevo.com --relay-port 587 --relay-user "apikey" --relay-pass "rahasia"
+
+# 2. Pengaturan SMTP Relay Outbound (jika port 25 diblokir)
+# Resend per-domain (default): API key + DNS DKIM/MX/SPF/CNAME otomatis
+sudo pdns-mgr mail relay-resend domain-a.com
+printf '%s\n' "$RESEND_API_KEY" | sudo pdns-mgr mail relay-resend domain-b.com --stdin
+
+# Custom per-domain: tiap domain bisa memakai relay/akun/provider berbeda
+sudo pdns-mgr mail set-relay domain-b.com smtp-relay.brevo.com 587 brevo_user rahasia
+
+# Custom global (fallback untuk domain tanpa relay per-domain)
+sudo pdns-mgr mail set-relay global smtp-relay.brevo.com 587 brevo_user rahasia
+
+# Hapus relay per-domain / nonaktifkan relay global
+sudo pdns-mgr mail relay-disable domain-a.com
+sudo pdns-mgr mail relay-disable
+
+# Hanya tulis record DNS Resend tanpa mengubah relay:
+printf '%s\n' "$RESEND_API_KEY" | sudo pdns-mgr mail relay-resend domainanda.com --stdin --dns-only
+
+# 3. Tambah Akun Email Klien di Harddisk Lokal (user@domain.com)
+sudo pdns-mgr mail add-account info@domainanda.com "PasswordKuat123!"
+# Password minimal 8 karakter dan harus lolos kebijakan strength Stalwart.
+# Menu interaktif akan meminta ulang otomatis jika password terlalu lemah.
+
+# 3b. Lihat daftar akun email per domain (semua domain / filter satu domain)
+sudo pdns-mgr mail accounts
+sudo pdns-mgr mail accounts domainanda.com
+
+# 4. Cek Antrean Email di VPS Gateway (misal saat PC lokal mati listrik) & Kirim Segera
+sudo pdns-mgr mail queue
+sudo pdns-mgr mail flush-queue
+
+# 5. Cek Status Layanan Mail Server Lokal, Disk Space, & VPS Gateway
+sudo pdns-mgr mail status
+
+# 6. Lihat kredensial admin Stalwart / reset password admin (recovery mode)
+sudo pdns-mgr mail admin
+sudo pdns-mgr mail admin-reset domainanda.com
+
+# 7. Buka/verifikasi port mail di firewall VPS (25/465/587/993/143/995/110)
+sudo pdns-mgr mail open-ports
 ```
+
+> `deploy-vps` otomatis membuka port web, DNS, SSH, dan mail di UFW maupun firewalld. Jika penyedia VPS punya firewall/security group terpisah, port yang sama juga perlu dibuka di panel penyedia.
+>
+> Relay SMTP outbound diterapkan ke Stalwart (`MtaRoute` Relay + `MtaOutboundStrategy`). **Resend selalu per-domain**: pilih domain, masukkan API key, lalu skrip otomatis menambahkan record **DKIM, MX, SPF, dan CNAME** dari Resend ke zone PowerDNS domain tersebut, meminta verifikasi, dan membuat route relay khusus domain itu. Custom provider (Brevo/Mailgun/SES) bisa global atau per-domain. Global relay hanya fallback untuk domain yang tidak punya relay per-domain.
+
+> Panel admin Stalwart ada di `https://mailadmin.<domain>/admin/` (root domain akan redirect ke `/account`, yaitu portal user). Saat `mail setup` pertama kali dijalankan, Stalwart di-bootstrap otomatis (tanpa wizard) dan kredensial admin disimpan di `/etc/wdev/mail-admin.cred` (mode 0600). Gunakan `pdns-mgr mail admin` untuk melihatnya.
+>
+> Webmail klien ada di `https://webmail.<domain>` — login memakai **alamat email lengkap** dan password akun yang dibuat lewat menu 15 / `pdns-mgr mail add-account`. SnappyMail lokal otomatis dikonfigurasi ke **IMAPS 127.0.0.1:993** dan **SMTPS 127.0.0.1:465**, jadi tidak perlu mengisi server manual.
+>
+> VPS juga dikonfigurasi sebagai TCP proxy (`nginx stream`) untuk port **993 (IMAPS)**, **465 (SMTPS)**, dan **995 (POP3S)** menuju Stalwart di mesin lokal, sehingga klien cukup memakai `mail.<domain>`. Bila sertifikat Let's Encrypt untuk `mail.<domain>` tersedia di VPS, proxy memakai **TLS termination** sehingga klien melihat sertifikat valid; jika belum, otomatis fallback ke passthrough. Statusnya terlihat di `pdns-mgr mail status`.
+>
+> VPS **tidak** memasang Stalwart maupun SnappyMail. Keduanya hanya berjalan di mesin lokal; `webmail.<domain>` diproxy oleh nginx VPS ke SnappyMail lokal.
 
 ### Variabel Environment
 

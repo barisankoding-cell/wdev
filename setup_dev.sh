@@ -481,6 +481,33 @@ read_menu_input() {
   return 0
 }
 
+read_menu_secret() {
+  local __var=$1
+  local __prompt=$2
+  local __out="/dev/stdout"
+  if [ ! -t 1 ] && [ -t 0 ] && [ -w /dev/tty ]; then
+    __out="/dev/tty"
+  fi
+  printf '%s' "$__prompt" > "$__out"
+  local __val=""
+  if [ -t 0 ]; then
+    if ! IFS= read -r -s __val; then
+      printf '\n' > "$__out" 2>/dev/null || true
+      printf -v "$__var" '%s' ""
+      return 1
+    fi
+    printf '\n' > "$__out" 2>/dev/null || true
+  else
+    if ! IFS= read -r __val; then
+      printf '\n' > "$__out" 2>/dev/null || true
+      printf -v "$__var" '%s' ""
+      return 1
+    fi
+  fi
+  printf -v "$__var" '%s' "$__val"
+  return 0
+}
+
 draw_progress() {
   local step=$1
   local total=$2
@@ -8329,7 +8356,7 @@ menu_powerdns() {
   while true; do
     print_menu_header "POWERDNS & VPS EDGE GATEWAY (NETBIRD)"
     echo -e "  ${C_CYAN}[1]${C_RESET} 📊 Status Koneksi & Layanan VPS Edge (pdns-mgr status)"
-    echo -e "  ${C_CYAN}[2]${C_RESET} 🚀 Deploy & Pasang Otomatis ke VPS via SSH Netbird (deploy-vps)"
+    echo -e "  ${C_CYAN}[2]${C_RESET} 🚀 Deploy / Update ke VPS via SSH Netbird (deploy-vps / update-vps)"
     echo -e "  ${C_CYAN}[3]${C_RESET} 🔗 Hubungkan Manual ke VPS Edge (pdns-mgr connect)"
     echo -e "  --------------------------------------------------------------"
     echo -e "  ${C_CYAN}[4]${C_RESET} 📋 Daftar Zone Domain Aktif (pdns-mgr zone list)"
@@ -8343,9 +8370,16 @@ menu_powerdns() {
     echo -e "  ${C_CYAN}[10]${C_RESET} 🚀 Ekspos Project ke Internet (PHP/Laravel atau Port Node/Go)"
     echo -e "  ${C_CYAN}[11]${C_RESET} 📋 Daftar Aplikasi yang Diekspos di VPS (list-exposures)"
     echo -e "  ${C_CYAN}[12]${C_RESET} 🛑 Hapus Ekspos Aplikasi dari VPS (unexpose)"
+    echo -e "  --------------------------------------------------------------"
+    echo -e "  ${C_CYAN}[13]${C_RESET} ✉️  Setup Mail Server & Webmail (Standarisasi Template 1-Klik)"
+    echo -e "  ${C_CYAN}[14]${C_RESET} 🔑 SMTP Relay Outbound (Resend per-domain / Brevo / Custom)"
+    echo -e "  ${C_CYAN}[15]${C_RESET} 👤 Tambah Akun Email Klien (user@domain.com)"
+    echo -e "  ${C_CYAN}[16]${C_RESET} 📊 Status Layanan Mail Server & Webmail VPS"
+    echo -e "  ${C_CYAN}[17]${C_RESET} 🛡️  Lihat / Reset Kredensial Admin Stalwart (/admin/)"
+    echo -e "  ${C_CYAN}[18]${C_RESET} 📧 Daftar Akun Email per Domain (Stalwart lokal)"
     echo -e "  ${C_YELLOW}[0]${C_RESET}  Kembali ke Menu Utama"
     echo -e "${C_BOLD}================================================================${C_RESET}"
-    read_menu_input p_opt "Pilih opsi [0-12]: " || break
+    read_menu_input p_opt "Pilih opsi [0-18]: " || break
 
     case $p_opt in
       1)
@@ -8546,6 +8580,199 @@ menu_powerdns() {
         if [[ "$in_conf" =~ ^[yY] ]]; then
           "$pdns_bin" unexpose "$in_dom" || true
         fi
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      13)
+        echo ""
+        echo -e "${C_BOLD}=== STANDARISASI MAIL SERVER (HYBRID LOCAL STORAGE + VPS QUEUE) ===${C_RESET}"
+        echo -e "Arsitektur ini otomatis mengonfigurasi:"
+        echo -e "  • ${C_CYAN}Storage Mailbox Lokal${C_RESET} : /mnt/.../mail-data (Data 100% di harddisk lokal Anda)"
+        echo -e "  • ${C_CYAN}webmail.<domain>${C_RESET}      : Web Client SnappyMail (Login Klien via Web)"
+        echo -e "  • ${C_CYAN}mailadmin.<domain>${C_RESET}    : Panel Web Stalwart Admin (https://mailadmin.<domain>/admin/)"
+        echo -e "  • ${C_CYAN}Akun Admin${C_RESET}           : Dibuat otomatis; kredensial disimpan di /etc/wdev/mail-admin.cred"
+        echo -e "  • ${C_CYAN}VPS MX Queue Gateway${C_RESET} : Port 25 publik + Store-and-Forward queue (aman saat mati listrik)"
+        echo -e "  • DNS Records          : MX 10, SPF TXT, DMARC TXT, dan A Records"
+        echo ""
+
+        local m_dom=""
+        if ! select_pdns_zone_menu "Pilih domain untuk Mail Server" m_dom 2>/dev/null || [ -z "$m_dom" ]; then
+          read_menu_input m_dom "Masukkan nama domain (contoh: domainanda.com): " || continue
+        fi
+        [ -n "$m_dom" ] || continue
+
+        read_menu_input in_ssl "Aktifkan SSL Let's Encrypt (HTTPS & TLS)? [Y/n]: " || in_ssl="y"
+        in_ssl="${in_ssl:-y}"
+        local ssl_flag="--ssl"
+        [[ ! "$in_ssl" =~ ^[yY] ]] && ssl_flag="--no-ssl"
+
+        echo ""
+        echo -e "${C_YELLOW}Catatan Port 25 Outbound:${C_RESET}"
+        echo -e "Sebagian besar penyedia VPS memblokir port 25 outbound untuk mencegah spam."
+        echo -e "Email inbound (masuk) tetap normal tanpa batas. Untuk kirim email ke Gmail/Yahoo,"
+        echo -e "disarankan menggunakan SMTP Relay (Brevo, Resend, Amazon SES, Mailgun, dll)."
+        echo ""
+        read_menu_input use_relay "Konfigurasi SMTP Relay outbound sekarang? [y/N]: " || use_relay="n"
+        local relay_flags=()
+        if [[ "$use_relay" =~ ^[yY] ]]; then
+          read_menu_input r_host "Host SMTP Relay (contoh: smtp-relay.brevo.com): " || continue
+          [ -n "$r_host" ] || continue
+          read_menu_input r_port "Port SMTP Relay [default: 587]: " || r_port="587"
+          r_port="${r_port:-587}"
+          read_menu_input r_user "Username / Login / API Key SMTP Relay: " || r_user=""
+          read_menu_secret r_pass "Password / Secret Key SMTP Relay (input tersembunyi): " || r_pass=""
+
+          echo ""
+          echo -e "Relay akan diterapkan secara global untuk semua domain."
+
+          relay_flags+=(--relay-host "$r_host" --relay-port "$r_port")
+          [ -n "$r_user" ] && relay_flags+=(--relay-user "$r_user")
+          [ -n "$r_pass" ] && relay_flags+=(--relay-pass "$r_pass")
+        fi
+
+        echo ""
+        "$pdns_bin" mail setup "$m_dom" $ssl_flag "${relay_flags[@]}" || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      14)
+        echo ""
+        echo -e "${C_BOLD}=== SMTP RELAY OUTBOUND ===${C_RESET}"
+        echo -e "  [1] Resend per-domain (API key + DNS otomatis ke PowerDNS)"
+        echo -e "  [2] Custom global (Brevo, Mailgun, SES, dll)"
+        echo -e "  [3] Custom per-domain (pilih domain + host/user/pass)"
+        echo -e "  [4] Hapus relay per-domain"
+        echo -e "  [5] Nonaktifkan relay global (kembali direct/mx)"
+        echo -e "  [0] Batal"
+        read_menu_input r_opt "Pilih opsi [0-5]: " || r_opt="0"
+        case "$r_opt" in
+          1)
+            local resend_dom=""
+            if ! select_pdns_zone_menu "Pilih domain untuk Resend" resend_dom 2>/dev/null || [ -z "$resend_dom" ]; then
+              read_menu_input resend_dom "Masukkan domain (contoh: domainanda.com): " || resend_dom=""
+            fi
+            [ -n "$resend_dom" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+
+            local resend_key=""
+            read_menu_secret resend_key "Masukkan API Key Resend (input tersembunyi): " || resend_key=""
+            [ -n "$resend_key" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+
+            printf '%s\n' "$resend_key" | "$pdns_bin" mail relay-resend "$resend_dom" --stdin || true
+            ;;
+          2)
+            read_menu_input r_host "Host SMTP Relay (contoh: smtp-relay.brevo.com): " || continue
+            [ -n "$r_host" ] || continue
+            read_menu_input r_port "Port SMTP Relay [default: 587]: " || r_port="587"
+            r_port="${r_port:-587}"
+            read_menu_input r_user "Username / Login SMTP Relay: " || r_user=""
+            read_menu_secret r_pass "Password / Secret Key SMTP Relay (input tersembunyi): " || r_pass=""
+            "$pdns_bin" mail set-relay global "$r_host" "$r_port" "$r_user" "$r_pass" || true
+            ;;
+          3)
+            local per_dom=""
+            if ! select_pdns_zone_menu "Pilih domain untuk relay per-domain" per_dom 2>/dev/null || [ -z "$per_dom" ]; then
+              read_menu_input per_dom "Masukkan domain (contoh: domainanda.com): " || per_dom=""
+            fi
+            [ -n "$per_dom" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+            read_menu_input r_host "Host SMTP Relay (contoh: smtp.resend.com): " || continue
+            [ -n "$r_host" ] || continue
+            read_menu_input r_port "Port SMTP Relay [default: 587]: " || r_port="587"
+            r_port="${r_port:-587}"
+            read_menu_input r_user "Username / Login SMTP Relay: " || r_user=""
+            read_menu_secret r_pass "Password / Secret Key SMTP Relay (input tersembunyi): " || r_pass=""
+            "$pdns_bin" mail set-relay "$per_dom" "$r_host" "$r_port" "$r_user" "$r_pass" || true
+            ;;
+          4)
+            local del_dom=""
+            if ! select_pdns_zone_menu "Pilih domain yang relay per-domain-nya dihapus" del_dom 2>/dev/null || [ -z "$del_dom" ]; then
+              read_menu_input del_dom "Masukkan domain (contoh: domainanda.com): " || del_dom=""
+            fi
+            [ -n "$del_dom" ] || { echo -e "${C_YELLOW}Dibatalkan.${C_RESET}"; continue; }
+            "$pdns_bin" mail relay-disable "$del_dom" || true
+            ;;
+          5)
+            "$pdns_bin" mail relay-disable || true
+            ;;
+          0|"") ;;
+          *) echo "Pilihan tidak valid." ;;
+        esac
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      15)
+        echo ""
+        echo -e "${C_BOLD}=== TAMBAH AKUN EMAIL KLIEN (user@domain.com) ===${C_RESET}"
+        local acc_dom=""
+        if ! select_pdns_zone_menu "Pilih domain untuk akun email baru" acc_dom 2>/dev/null || [ -z "$acc_dom" ]; then
+          read_menu_input acc_dom "Masukkan domain (contoh: domainanda.com): " || continue
+        fi
+        [ -n "$acc_dom" ] || continue
+
+        read_menu_input in_uname "Masukkan username email (contoh: info, admin, budi): " || continue
+        [ -n "$in_uname" ] || continue
+        in_uname="${in_uname%@*}"
+        local full_email="${in_uname}@${acc_dom}"
+
+        local in_pass="" acc_out="" acc_rc=0
+        while true; do
+          read_menu_secret in_pass "Masukkan password untuk '${full_email}' [min. 8 karakter, kosongkan untuk batal]: " || in_pass=""
+          if [ -z "$in_pass" ]; then
+            echo -e "${C_YELLOW}Tambah akun dibatalkan.${C_RESET}"
+            break
+          fi
+          if [ "${#in_pass}" -lt 8 ]; then
+            echo -e "${C_RED}Password minimal 8 karakter. Silakan coba lagi.${C_RESET}"
+            continue
+          fi
+          echo ""
+          acc_rc=0
+          acc_out=$("$pdns_bin" mail add-account "$full_email" "$in_pass" 2>&1) || acc_rc=$?
+          printf '%s\n' "$acc_out"
+          if [ "$acc_rc" -eq 0 ]; then
+            break
+          fi
+          if [ "$acc_rc" -eq 2 ]; then
+            echo -e "${C_YELLOW}Password terlalu lemah. Masukkan password lain (hindari password umum; gabungkan beberapa kata/angka/simbol).${C_RESET}"
+            echo ""
+            continue
+          fi
+          echo -e "${C_YELLOW}Gagal menambah akun. Kembali ke menu.${C_RESET}"
+          break
+        done
+
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      16)
+        echo ""
+        "$pdns_bin" mail status || true
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      17)
+        echo ""
+        echo -e "${C_BOLD}=== KREDENSIAL ADMIN STALWART (PANEL /admin/) ===${C_RESET}"
+        read_menu_input a_opt "Pilih [1] Lihat kredensial, [2] Reset password admin [1/2, default: 1]: " || a_opt="1"
+        a_opt="${a_opt:-1}"
+        if [ "$a_opt" = "2" ]; then
+          local a_dom=""
+          if ! select_pdns_zone_menu "Pilih domain untuk reset admin" a_dom 2>/dev/null || [ -z "$a_dom" ]; then
+            read_menu_input a_dom "Masukkan domain (contoh: domainanda.com): " || continue
+          fi
+          [ -n "$a_dom" ] || continue
+          "$pdns_bin" mail admin-reset "$a_dom" || true
+        else
+          "$pdns_bin" mail admin || true
+        fi
+        echo ""
+        read -r -p "Tekan [Enter] untuk kembali ke menu..." _
+        ;;
+      18)
+        echo ""
+        local acc_dom=""
+        read_menu_input acc_dom "Filter domain (kosongkan untuk semua domain): " || acc_dom=""
+        acc_dom="${acc_dom:-}"
+        "$pdns_bin" mail accounts ${acc_dom:+"$acc_dom"} || true
         echo ""
         read -r -p "Tekan [Enter] untuk kembali ke menu..." _
         ;;
