@@ -401,16 +401,33 @@ func fetchCoreLatestVersions(ctx context.Context) map[string]string {
 			}
 		} else if dnfBin, err := exec.LookPath("dnf"); err == nil {
 			queryDnf := func(pkgs ...string) string {
+				best := ""
 				for _, p := range pkgs {
-					out, qErr := exec.CommandContext(ctx, dnfBin, "-q", "repoquery", "--latest-limit=1", "--qf", "%{version}", p).CombinedOutput()
+					var out []byte
+					var qErr error
+					for _, extraArgs := range [][]string{{"-q", "-C", "repoquery"}, {"-q", "repoquery"}} {
+						args := append(extraArgs, "--latest-limit=1", "--qf", "%{version}\n", p)
+						cmd := exec.CommandContext(ctx, dnfBin, args...)
+						cmd.Stdin = strings.NewReader("n\n")
+						out, qErr = cmd.CombinedOutput()
+						if qErr == nil && strings.TrimSpace(string(out)) != "" {
+							break
+						}
+					}
 					if qErr != nil {
 						continue
 					}
 					for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 						l = strings.TrimSpace(l)
-						if l != "" && !strings.HasPrefix(l, "Last metadata") && !strings.Contains(l, " ") {
-							return l
+						if l == "" || strings.Contains(l, " ") || !strings.ContainsAny(l, "0123456789") || strings.Contains(l, ":") {
+							continue
 						}
+						if best == "" || compareVersions(best, l) < 0 {
+							best = l
+						}
+					}
+					if best != "" {
+						return best
 					}
 				}
 				return "-"
@@ -745,27 +762,28 @@ func getNginxVersion() string {
 }
 
 func getPHPFPMVersion(activeVer string) string {
+	candidates := [][]string{}
 	if activeVer != "" {
-		out := runCmdVersion("php-fpm"+activeVer, "-v")
-		if out == "" {
-			out = runCmdVersion("/usr/sbin/php-fpm"+activeVer, "-v")
-		}
-		if out == "" {
-			out = runCmdVersion("php"+activeVer+"-fpm", "-v")
-		}
-		if out == "" {
-			out = runCmdVersion("/usr/sbin/php"+activeVer+"-fpm", "-v")
-		}
-		if out != "" {
+		candidates = append(candidates,
+			[]string{"php-fpm" + activeVer, "-v"},
+			[]string{"/usr/sbin/php-fpm" + activeVer, "-v"},
+			[]string{"php" + activeVer + "-fpm", "-v"},
+			[]string{"/usr/sbin/php" + activeVer + "-fpm", "-v"},
+		)
+	}
+	candidates = append(candidates,
+		[]string{"php-fpm", "-v"},
+		[]string{"/usr/sbin/php-fpm", "-v"},
+	)
+	for _, c := range candidates {
+		if out := runCmdVersion(c[0], c[1:]...); out != "" {
 			parts := strings.Fields(out)
-			if len(parts) >= 2 {
+			if len(parts) >= 2 && strings.Contains(parts[1], ".") {
 				return "v" + parts[1]
 			}
 		}
-		return "v" + activeVer
 	}
-	out := runCmdVersion("php", "-r", "echo PHP_VERSION;")
-	if out != "" {
+	if out := runCmdVersion("php", "-r", "echo PHP_VERSION;"); out != "" {
 		ver := strings.TrimSpace(out)
 		if ver != "" {
 			if !strings.HasPrefix(ver, "v") {
@@ -773,6 +791,9 @@ func getPHPFPMVersion(activeVer string) string {
 			}
 			return ver
 		}
+	}
+	if activeVer != "" {
+		return "v" + activeVer
 	}
 	return ""
 }

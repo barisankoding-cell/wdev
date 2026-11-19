@@ -621,15 +621,32 @@ func dnfRepoQueryLatest(ctx context.Context, pkgNames ...string) string {
 		if pkg == "" {
 			continue
 		}
-		out, err := exec.CommandContext(ctx, dnfBin, "-q", "repoquery", "--latest-limit=1", "--qf", "%{version}", pkg).CombinedOutput()
-		if err != nil {
+		var out []byte
+		var qErr error
+		for _, extraArgs := range [][]string{{"-q", "-C", "repoquery"}, {"-q", "repoquery"}} {
+			args := append(extraArgs, "--latest-limit=1", "--qf", "%{version}\n", pkg)
+			cmd := exec.CommandContext(ctx, dnfBin, args...)
+			cmd.Stdin = strings.NewReader("n\n")
+			out, qErr = cmd.CombinedOutput()
+			if qErr == nil && strings.TrimSpace(string(out)) != "" {
+				break
+			}
+		}
+		if qErr != nil {
 			continue
 		}
+		best := ""
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "Last metadata") && !strings.Contains(line, " ") {
-				return line
+			if line == "" || strings.Contains(line, " ") || !strings.ContainsAny(line, "0123456789") || strings.Contains(line, ":") {
+				continue
 			}
+			if best == "" || compareVersions(best, line) < 0 {
+				best = line
+			}
+		}
+		if best != "" {
+			return best
 		}
 	}
 	return "-"

@@ -167,25 +167,41 @@ sudo ./setup_dev.sh --postgres --pg-ver 17
 sudo ./setup_dev.sh --sync        # sinkronkan /etc/hosts, SSL, trust store
 ```
 
-### Komponen yang Dipasang
+### Komponen yang Dipasang & Sumber Resmi
 
-| Komponen | Detail |
+`wdev` memprioritaskan instalasi dari **rilis binary/tarball resmi upstream** serta **repositori resmi vendor** (untuk service daemon) pada keluarga Debian/Ubuntu (`apt-get`) maupun Fedora/RHEL (`dnf`/`yum`), sekaligus menyatukan environment di `/etc/profile.d/wdev.sh` dan membersihkan duplikasi paket distro yang bentrok:
+
+| Komponen | Sumber & Jalur Kanonik |
 |---|---|
-| Dependensi dasar | Build tools, clang, cmake, ninja, Xvfb, jq, GTK dev, dll. |
-| Node.js | Multi-versi (`20`/`22`/`24`) di `/usr/local/lib/nodejs`, switch via `node-switch` |
-| Rust | Toolchain + `mold` linker + `sccache`, `CARGO_HOME=/usr/local/cargo` |
-| Golang | Rilis stabil terbaru di `/usr/local/go` |
-| OpenJDK | Multi-versi `17`/`21`/`25` |
-| Android SDK | Command line tools di `/usr/local/android-sdk` |
-| Flutter | Stable channel di `/usr/local/flutter` |
-| PostgreSQL | Multi-versi `16`/`17`/`18`, migrasi data via `pg-switch` |
-| Redis/Valkey | Server cache lokal |
-| Nginx | Mainline terbaru |
-| PHP | Multi-versi `8.1`–`8.4` + PHP-FPM, preset ekstensi |
-| Composer | Versi stabil terbaru |
-| Local SSL | `mkcert` + CA lokal di `/etc/ssl/local-certs` |
-| Zsh | Oh My Zsh, plugin populer, dan tema |
-| Orca ADE | Integrasi pemasangan/pairing; memanggil `setup_orca_headless.sh` |
+| Dependensi dasar | `apt-get` / `dnf` (`gcc`, `clang`, `cmake`, `make`, `git`, `jq`, `curl`, dll.) |
+| Node.js | Tarball resmi `nodejs.org/dist/` di `/usr/local/lib/nodejs` (`current` + `/usr/local/bin`), switch via `wdev switch node` / Web UI |
+| Rust & Mold | `rustup` resmi di `/usr/local/cargo` & `/usr/local/rustup` + linker `mold` rilis GitHub `rui314/mold` di `/usr/local/mold` |
+| Golang | Tarball resmi `go.dev/dl/` di `/usr/local/go` |
+| OpenJDK Java | Tarball resmi **Eclipse Adoptium (Temurin)** di `/usr/lib/jvm/java-<ver>-temurin` + `update-alternatives` / `alternatives` |
+| Android SDK | Command line tools resmi Google di `/usr/local/android-sdk` |
+| Flutter | Repository resmi `flutter/flutter` (channel `stable`) di `/usr/local/flutter` |
+| PostgreSQL | Repo resmi **PGDG** (`apt.postgresql.org` / `download.postgresql.org`) + fallback repo sistem; multi-versi via `wdev switch pg` / Web UI |
+| Redis / Valkey | Repo resmi **`packages.redis.io`** (atau `valkey` pada Fedora) |
+| Nginx | Repo resmi **`nginx.org/packages/mainline`** (fallback otomatis ke repo sistem bila versi distro belum tersedia) + `/etc/nginx/sites-enabled/*` |
+| PHP & PHP-FPM | Repo resmi **Ondřej PPA** (Ubuntu), **Sury** (Debian), dan **Remi** (Fedora/RHEL) untuk `8.1`–`8.4` |
+| Composer | Installer resmi `getcomposer.org` (`self-update` saat dijalankan ulang) di `/usr/local/bin/composer` |
+| Local SSL | Rilis GitHub resmi `FiloSottile/mkcert` di `/usr/local/bin/mkcert` + CA lokal di `/etc/ssl/local-certs` |
+| Cloudflared | Rilis GitHub resmi `cloudflare/cloudflared` di `/usr/local/bin/cloudflared` |
+| Zsh | Paket `zsh` + Oh My Zsh, `zsh-autosuggestions`, `zsh-syntax-highlighting`, dan `powerlevel10k` (auto `git pull` saat update) |
+| Orca ADE | Rilis GitHub resmi `stablyai/orca`: `orca-server-linux-*.tar.gz` (Headless `/usr/local/lib/orca-server`) & `orca-linux*.AppImage` (Desktop `/usr/local/lib/orca-ide`) dengan deteksi pembaruan versi di Web UI |
+
+> **Auto Setup Idempoten (`wdev install all` / tombol Full Auto Setup):** Ketika dijalankan ulang, setiap langkah memeriksa versi/instalasi yang sudah ada terlebih dahulu—melewati unduhan bila sudah pada versi terbaru, memperbarui bila ada rilis lebih baru, serta menjaga `initdb`, layanan `systemd`, dan `/etc/profile.d/wdev.sh` tetap sinkron.
+
+### Perintah CLI `wdev`
+
+```bash
+wdev status                          # Status sistem, layanan inti & runtime aktif
+wdev install <komponen>              # all, update, check-updates, self-check, base, node, rust, go, java, android, flutter, postgres, redis, nginx, php, composer, ssl, php-stack, cloudflare, zsh, orca-desktop, orca-headless
+wdev switch <list|node|php|pg|java>  # Pengelola versi runtime aktif
+wdev site <list|create|delete>       # Virtual host Nginx + SSL + /etc/hosts
+wdev cf <status|expose|unexpose>     # Cloudflare Tunnel multi-akun
+wdev pdns <status|zone|record|...>   # PowerDNS Authoritative & VPS Edge Gateway
+```
 
 ### Helper CLI
 
@@ -456,6 +472,10 @@ wdev/
 ├── internal/
 │   ├── config/
 │   ├── installer/
+│   │   ├── installer.go
+│   │   ├── official_repos.go
+│   │   ├── service.go
+│   │   └── toolchains.go
 │   ├── mail/
 │   ├── monitor/
 │   ├── pdns/

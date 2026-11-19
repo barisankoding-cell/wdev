@@ -12,6 +12,7 @@
 *.pem
 *.key
 *.crt
+*.cred
 
 # Editor & OS
 .vscode/
