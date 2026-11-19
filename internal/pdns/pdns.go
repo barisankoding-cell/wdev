@@ -629,9 +629,23 @@ func configureLocalVhost(confPath, pubDom string) error {
 	}
 	text := string(data)
 
-	// Check if pubDom already present in server_name
-	reWord := regexp.MustCompile(`server_name[^;]*\b` + regexp.QuoteMeta(pubDom) + `\b`)
-	if !reWord.MatchString(text) {
+	// Check if pubDom already present as an exact whitespace-delimited token in server_name
+	reServerName := regexp.MustCompile(`(?m)server_name\s+([^;]+);`)
+	matches := reServerName.FindAllStringSubmatch(text, -1)
+	alreadyPresent := false
+	for _, m := range matches {
+		for _, name := range strings.Fields(m[1]) {
+			if strings.EqualFold(name, pubDom) {
+				alreadyPresent = true
+				break
+			}
+		}
+		if alreadyPresent {
+			break
+		}
+	}
+
+	if !alreadyPresent {
 		// Remove standalone port 80 redirect block if any
 		reStandalone := regexp.MustCompile(`(?s)server\s*\{[^{}]*listen\s+80[^{}]*return\s+301\s+https://\$host\$request_uri;\s*\}\s*`)
 		text = reStandalone.ReplaceAllString(text, "")
@@ -642,9 +656,18 @@ func configureLocalVhost(confPath, pubDom string) error {
 			text = reServer.ReplaceAllString(text, "${1}    listen 80;\n    listen [::]:80;\n")
 		}
 
-		// Add alias to server_name
-		reServerName := regexp.MustCompile(`(?m)(server_name\s+[^;]+);`)
-		text = reServerName.ReplaceAllString(text, "${1} "+pubDom+";")
+		// Add alias to the first server_name directive
+		added := false
+		text = reServerName.ReplaceAllStringFunc(text, func(match string) string {
+			if !added {
+				added = true
+				idx := strings.LastIndex(match, ";")
+				if idx != -1 {
+					return match[:idx] + " " + pubDom + ";"
+				}
+			}
+			return match
+		})
 
 		// Add conditional https redirect & fe_https variable if not already present
 		if !strings.Contains(text, "$redirect_to_https") {
@@ -743,6 +766,8 @@ func removeLocalVhostAlias(pubDom string) {
 		return
 	}
 
+	reServerName := regexp.MustCompile(`(?m)server_name\s+([^;]+);`)
+
 	for _, file := range matches {
 		if strings.HasSuffix(file, ".bak") || strings.HasSuffix(file, "~") {
 			continue
@@ -752,15 +777,31 @@ func removeLocalVhostAlias(pubDom string) {
 			continue
 		}
 		text := string(data)
-		reWord := regexp.MustCompile(`\b` + regexp.QuoteMeta(pubDom) + `\b`)
-		if reWord.MatchString(text) {
-			newText := reWord.ReplaceAllString(text, "")
-			reClean := regexp.MustCompile(`server_name\s+([^;]+);`)
-			newText = reClean.ReplaceAllStringFunc(newText, func(match string) string {
-				fields := strings.Fields(match)
-				return strings.Join(fields, " ")
-			})
 
+		modified := false
+		newText := reServerName.ReplaceAllStringFunc(text, func(match string) string {
+			sub := reServerName.FindStringSubmatch(match)
+			if len(sub) < 2 {
+				return match
+			}
+			fields := strings.Fields(sub[1])
+			var kept []string
+			hasRemoved := false
+			for _, f := range fields {
+				if strings.EqualFold(f, pubDom) {
+					hasRemoved = true
+					modified = true
+				} else {
+					kept = append(kept, f)
+				}
+			}
+			if hasRemoved {
+				return "server_name " + strings.Join(kept, " ") + ";"
+			}
+			return match
+		})
+
+		if modified {
 			_ = writeFileWithSudo(file, []byte(newText))
 		}
 	}
