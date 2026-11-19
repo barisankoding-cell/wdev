@@ -63,17 +63,12 @@ func toolCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// findTool mencari executable pada PATH serta direktori instalasi standar wdev.
+// findTool mencari executable dengan memprioritaskan direktori instalasi resmi wdev sebelum PATH sistem.
 func findTool(names ...string) string {
 	for _, name := range names {
-		if p, err := exec.LookPath(name); err == nil {
-			return p
-		}
-		// Periksa lokasi instalasi standar
-		candidates := []string{
+		// 1. Prioritaskan lokasi instalasi resmi wdev (/usr/local/...)
+		canonical := []string{
 			filepath.Join("/usr/local/bin", name),
-			filepath.Join("/usr/bin", name),
-			filepath.Join("/bin", name),
 			filepath.Join("/usr/local/go/bin", name),
 			filepath.Join("/usr/local/cargo/bin", name),
 			filepath.Join("/usr/local/flutter/bin", name),
@@ -81,13 +76,29 @@ func findTool(names ...string) string {
 			filepath.Join("/usr/local/android-sdk/platform-tools", name),
 			filepath.Join("/usr/local/lib/nodejs/current/bin", name),
 		}
-		if home, err := os.UserHomeDir(); err == nil {
-			candidates = append(candidates,
+		for _, p := range canonical {
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p
+			}
+		}
+
+		// 2. Fallback ke PATH dan lokasi sistem standar
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+		systemDirs := []string{
+			filepath.Join("/usr/bin", name),
+			filepath.Join("/usr/sbin", name),
+			filepath.Join("/sbin", name),
+			filepath.Join("/bin", name),
+		}
+		if _, home := ResolveTargetUserAndHome(); home != "" {
+			systemDirs = append(systemDirs,
 				filepath.Join(home, ".cargo/bin", name),
 				filepath.Join(home, ".local/bin", name),
 			)
 		}
-		for _, p := range candidates {
+		for _, p := range systemDirs {
 			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 				return p
 			}
@@ -345,16 +356,40 @@ func (inst *Installer) fetchLatestVersions(ctx context.Context) map[string]strin
 		}
 	}()
 
-	// 5. OpenJDK Java & Redis via apt-cache (Debian)
+	// 5. OpenJDK Java (Eclipse Adoptium API) & Redis (APT/DNF)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		javaMajor := "21"
+		if javaBin := findTool("java"); javaBin != "" {
+			if out, err := toolCmd(ctx, javaBin, "-version").CombinedOutput(); err == nil {
+				line := strings.Split(string(out), "\n")[0]
+				if start := strings.Index(line, "\""); start != -1 {
+					if end := strings.LastIndex(line, "\""); end > start {
+						if m := strings.Split(line[start+1:end], ".")[0]; m != "" {
+							javaMajor = m
+						}
+					}
+				}
+			}
+		}
+		if _, verStr, err := fetchAdoptiumLatest(ctx, javaMajor); err == nil && verStr != "" {
+			setLatest("java", verStr)
+		}
+	}()
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		if inst.isDebian {
-			cands := getAptCandidates(ctx, "openjdk-21-jdk", "redis-server")
-			if cand, ok := cands["openjdk-21-jdk"]; ok && cand != "-" {
-				setLatest("java", cand)
+			cands := getAptCandidates(ctx, "redis", "redis-server")
+			if cand, ok := cands["redis"]; ok && cand != "-" {
+				setLatest("redis", cand)
+			} else if cand, ok := cands["redis-server"]; ok && cand != "-" {
+				setLatest("redis", cand)
 			}
-			if cand, ok := cands["redis-server"]; ok && cand != "-" {
+		} else if inst.pkgMgr == "dnf" || inst.pkgMgr == "yum" {
+			if cand := dnfRepoQueryLatest(ctx, "redis"); cand != "-" {
 				setLatest("redis", cand)
 			}
 		}

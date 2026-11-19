@@ -374,27 +374,52 @@ func fetchCoreLatestVersions(ctx context.Context) map[string]string {
 		mu.Unlock()
 	}
 
-	// 1. APT candidates
+	// 1. APT / DNF candidates
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		pgMajor := GetActivePostgresMajor()
 		pgPkg := fmt.Sprintf("postgresql-%s", pgMajor)
-		cands := getAptCandidates(ctx, "nginx", "php8.4", pgPkg, "redis-server", "netbird")
-		if c, ok := cands["nginx"]; ok && c != "-" {
-			setVal("nginx", c)
-		}
-		if c, ok := cands["php8.4"]; ok && c != "-" {
-			setVal("php-fpm", c)
-		}
-		if c, ok := cands[pgPkg]; ok && c != "-" {
-			setVal("postgresql", c)
-		}
-		if c, ok := cands["redis-server"]; ok && c != "-" {
-			setVal("redis", c)
-		}
-		if c, ok := cands["netbird"]; ok && c != "-" {
-			setVal("netbird", c)
+		if _, err := exec.LookPath("apt-cache"); err == nil {
+			cands := getAptCandidates(ctx, "nginx", "php8.4", pgPkg, "redis", "redis-server", "netbird")
+			if c, ok := cands["nginx"]; ok && c != "-" {
+				setVal("nginx", c)
+			}
+			if c, ok := cands["php8.4"]; ok && c != "-" {
+				setVal("php-fpm", c)
+			}
+			if c, ok := cands[pgPkg]; ok && c != "-" {
+				setVal("postgresql", c)
+			}
+			if c, ok := cands["redis"]; ok && c != "-" {
+				setVal("redis", c)
+			} else if c, ok := cands["redis-server"]; ok && c != "-" {
+				setVal("redis", c)
+			}
+			if c, ok := cands["netbird"]; ok && c != "-" {
+				setVal("netbird", c)
+			}
+		} else if dnfBin, err := exec.LookPath("dnf"); err == nil {
+			queryDnf := func(pkgs ...string) string {
+				for _, p := range pkgs {
+					out, qErr := exec.CommandContext(ctx, dnfBin, "-q", "repoquery", "--latest-limit=1", "--qf", "%{version}", p).CombinedOutput()
+					if qErr != nil {
+						continue
+					}
+					for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+						l = strings.TrimSpace(l)
+						if l != "" && !strings.HasPrefix(l, "Last metadata") && !strings.Contains(l, " ") {
+							return l
+						}
+					}
+				}
+				return "-"
+			}
+			setVal("nginx", queryDnf("nginx"))
+			setVal("php-fpm", queryDnf("php"))
+			setVal("postgresql", queryDnf(fmt.Sprintf("postgresql%s-server", pgMajor), "postgresql-server"))
+			setVal("redis", queryDnf("redis"))
+			setVal("netbird", queryDnf("netbird"))
 		}
 	}()
 
@@ -485,7 +510,7 @@ func getServiceStatuses() []ServiceStatus {
 		InstallComponent: "nginx",
 	})
 
-	// 2. PHP-FPM (check multiple versions)
+	// 2. PHP-FPM (check multiple versions + Fedora/RHEL php-fpm.service)
 	phpActive := false
 	phpVerActive := ""
 	for _, v := range []string{"8.4", "8.3", "8.2", "8.1"} {
@@ -495,12 +520,18 @@ func getServiceStatuses() []ServiceStatus {
 			break
 		}
 	}
+	if !phpActive && isSystemdServiceActive("php-fpm") {
+		phpActive = true
+		if out := runCmdVersion("php", "-r", "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;"); out != "" {
+			phpVerActive = strings.TrimSpace(out)
+		}
+	}
 	phpDisplayName := "PHP-FPM"
 	if phpVerActive != "" {
 		phpDisplayName = fmt.Sprintf("PHP-FPM (%s)", phpVerActive)
 	}
 	phpVer := getPHPFPMVersion(phpVerActive)
-	phpInstalled := phpVer != "" || fileExists("/usr/sbin/php-fpm8.4") || fileExists("/usr/bin/php")
+	phpInstalled := phpVer != "" || fileExists("/usr/sbin/php-fpm8.4") || fileExists("/usr/sbin/php-fpm") || fileExists("/usr/bin/php")
 	phpLatest := cachedLatest["php-fpm"]
 	if phpLatest == "" && phpVer != "" {
 		phpLatest = cleanVersion(phpVer)
@@ -520,9 +551,13 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 3. PostgreSQL
-	pgActive := isSystemdServiceActive("postgresql")
+	pgActive := isSystemdServiceActive("postgresql") ||
+		isSystemdServiceActive("postgresql-16") ||
+		isSystemdServiceActive("postgresql-17") ||
+		isSystemdServiceActive("postgresql-18")
 	pgVer := getPostgresVersion()
-	pgInstalled := pgVer != "" || fileExists("/usr/bin/psql") || dirExists("/usr/lib/postgresql")
+	pgInstalled := pgVer != "" || fileExists("/usr/bin/psql") || dirExists("/usr/lib/postgresql") ||
+		dirExists("/usr/pgsql-16") || dirExists("/usr/pgsql-17") || dirExists("/usr/pgsql-18")
 	pgLatest := cachedLatest["postgresql"]
 	if pgLatest == "" && pgVer != "" {
 		pgLatest = cleanVersion(pgVer)
@@ -542,9 +577,9 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 4. Redis / Valkey
-	redisActive := isSystemdServiceActive("redis-server") || isSystemdServiceActive("valkey-server") || isSystemdServiceActive("redis")
+	redisActive := isSystemdServiceActive("redis-server") || isSystemdServiceActive("valkey-server") || isSystemdServiceActive("valkey") || isSystemdServiceActive("redis")
 	redisVer := getRedisVersion()
-	redisInstalled := redisVer != "" || fileExists("/usr/bin/redis-server") || fileExists("/usr/bin/valkey-server")
+	redisInstalled := redisVer != "" || fileExists("/usr/bin/redis-server") || fileExists("/usr/bin/valkey-server") || fileExists("/usr/bin/valkey-cli")
 	redisLatest := cachedLatest["redis"]
 	if redisLatest == "" && redisVer != "" {
 		redisLatest = cleanVersion(redisVer)
@@ -765,6 +800,10 @@ func getPostgresVersion() string {
 	major := GetActivePostgresMajor()
 	bin := fmt.Sprintf("/usr/lib/postgresql/%s/bin/postgres", major)
 	out := runCmdVersion(bin, "--version")
+	if out == "" {
+		bin = fmt.Sprintf("/usr/pgsql-%s/bin/postgres", major)
+		out = runCmdVersion(bin, "--version")
+	}
 	if out == "" {
 		bin = fmt.Sprintf("/usr/lib/postgresql/%s/bin/psql", major)
 		out = runCmdVersion(bin, "--version")
@@ -1089,7 +1128,11 @@ func ControlService(serviceName, action string) error {
 	actualService := serviceName
 	switch serviceName {
 	case "php-fpm":
-		// Find active or latest php
+		if _, err := os.Stat("/usr/lib/systemd/system/php-fpm.service"); err == nil {
+			actualService = "php-fpm"
+			break
+		}
+		// Find active or latest php on Debian/Ubuntu
 		for _, v := range []string{"8.4", "8.3", "8.2", "8.1"} {
 			if _, err := os.Stat(filepath.Join("/etc/systemd/system/multi-user.target.wants", "php"+v+"-fpm.service")); err == nil {
 				actualService = "php" + v + "-fpm"
@@ -1100,11 +1143,23 @@ func ControlService(serviceName, action string) error {
 				break
 			}
 		}
+	case "postgresql":
+		actualService = "postgresql"
+		for _, v := range []string{"18", "17", "16"} {
+			if _, err := os.Stat("/usr/lib/systemd/system/postgresql-" + v + ".service"); err == nil {
+				actualService = "postgresql-" + v
+				break
+			}
+		}
 	case "redis":
-		if _, err := os.Stat("/lib/systemd/system/valkey-server.service"); err == nil {
+		if _, err := os.Stat("/usr/lib/systemd/system/valkey.service"); err == nil {
+			actualService = "valkey"
+		} else if _, err := os.Stat("/lib/systemd/system/valkey-server.service"); err == nil {
 			actualService = "valkey-server"
-		} else {
+		} else if _, err := os.Stat("/lib/systemd/system/redis-server.service"); err == nil {
 			actualService = "redis-server"
+		} else {
+			actualService = "redis"
 		}
 	}
 

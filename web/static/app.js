@@ -19,6 +19,42 @@ document.addEventListener('DOMContentLoaded', () => {
 // ==========================================
 let currentModalResolve = null;
 let currentModalMode = 'alert'; // 'alert' | 'confirm' | 'prompt'
+let currentModalIsPassword = false;
+let isPrivilegedActionPending = false;
+
+function resolveActiveModal(confirmed) {
+  const dialog = document.getElementById('modal-alert-dialog');
+  const promptInput = document.getElementById('modal-alert-prompt-input');
+  if (dialog && dialog.open) {
+    dialog.close();
+  }
+  const resolver = currentModalResolve;
+  const mode = currentModalMode;
+  const isPass = currentModalIsPassword;
+  currentModalResolve = null;
+  currentModalIsPassword = false;
+
+  if (!resolver) return;
+  if (mode === 'prompt') {
+    if (!confirmed) {
+      resolver(null);
+    } else {
+      const raw = promptInput ? promptInput.value : '';
+      resolver(isPass ? raw : raw.trim());
+    }
+  } else if (mode === 'confirm') {
+    resolver(Boolean(confirmed));
+  } else {
+    resolver(true);
+  }
+}
+
+function resetPendingModalIfOpen() {
+  const dialog = document.getElementById('modal-alert-dialog');
+  if (currentModalResolve || (dialog && dialog.open)) {
+    resolveActiveModal(false);
+  }
+}
 
 const MODAL_ICONS = {
   info: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
@@ -36,83 +72,44 @@ function initModalDialog() {
   const confirmBtn = document.getElementById('modal-alert-confirm-btn');
   const promptInput = document.getElementById('modal-alert-prompt-input');
 
-  confirmBtn.addEventListener('click', () => {
-    dialog.close();
-    if (currentModalResolve) {
-      if (currentModalMode === 'prompt') {
-        currentModalResolve(promptInput.value.trim());
-      } else if (currentModalMode === 'confirm') {
-        currentModalResolve(true);
-      } else {
-        currentModalResolve(true);
-      }
-      currentModalResolve = null;
-    }
+  confirmBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resolveActiveModal(true);
   });
 
-  cancelBtn.addEventListener('click', () => {
-    dialog.close();
-    if (currentModalResolve) {
-      if (currentModalMode === 'prompt') {
-        currentModalResolve(null);
-      } else {
-        currentModalResolve(false);
-      }
-      currentModalResolve = null;
-    }
+  cancelBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resolveActiveModal(false);
   });
 
   // Handle native Cancel / Escape
   dialog.addEventListener('cancel', (e) => {
     e.preventDefault();
-    dialog.close();
-    if (currentModalResolve) {
-      if (currentModalMode === 'prompt') {
-        currentModalResolve(null);
-      } else if (currentModalMode === 'confirm') {
-        currentModalResolve(false);
-      } else {
-        currentModalResolve(true);
-      }
-      currentModalResolve = null;
-    }
+    resolveActiveModal(false);
   });
 
-  // Light dismiss: clicking outside the dialog card closes it
+  // Light dismiss: hanya tutup bila klik tepat pada backdrop <dialog> (bukan synthetic click dari tombol)
   dialog.addEventListener('click', (e) => {
-    const card = dialog.querySelector('.system-dialog-card');
-    if (!card) return;
-    const r = card.getBoundingClientRect();
-    const clickedOutside = (
-      e.clientX < r.left || e.clientX > r.right ||
-      e.clientY < r.top || e.clientY > r.bottom
-    );
-    if (clickedOutside) {
-      dialog.close();
-      if (currentModalResolve) {
-        if (currentModalMode === 'prompt') {
-          currentModalResolve(null);
-        } else if (currentModalMode === 'confirm') {
-          currentModalResolve(false);
-        } else {
-          currentModalResolve(true);
-        }
-        currentModalResolve = null;
-      }
+    if (e.target === dialog) {
+      resolveActiveModal(false);
     }
   });
 
-  // Allow Enter key in prompt input
+  // Allow Enter key in prompt input tanpa memicu click bubbling atau submit berulang
   promptInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-      confirmBtn.click();
+      e.preventDefault();
+      e.stopPropagation();
+      resolveActiveModal(true);
     }
   });
 }
 
 function modalAlert(message, type = 'info', title = '') {
+  resetPendingModalIfOpen();
   return new Promise((resolve) => {
     currentModalMode = 'alert';
+    currentModalIsPassword = false;
     currentModalResolve = resolve;
 
     const dialog = document.getElementById('modal-alert-dialog');
@@ -144,8 +141,10 @@ function modalAlert(message, type = 'info', title = '') {
 }
 
 function modalConfirm(message, options = {}) {
+  resetPendingModalIfOpen();
   return new Promise((resolve) => {
     currentModalMode = 'confirm';
+    currentModalIsPassword = false;
     currentModalResolve = resolve;
 
     const {
@@ -183,10 +182,8 @@ function modalConfirm(message, options = {}) {
 }
 
 function modalPrompt(message, options = {}) {
+  resetPendingModalIfOpen();
   return new Promise((resolve) => {
-    currentModalMode = 'prompt';
-    currentModalResolve = resolve;
-
     const {
       title = 'Input Data',
       placeholder = '',
@@ -195,6 +192,10 @@ function modalPrompt(message, options = {}) {
       cancelText = 'Batal',
       isPassword = false
     } = (typeof options === 'string') ? { title: options } : options;
+
+    currentModalMode = 'prompt';
+    currentModalIsPassword = Boolean(isPassword);
+    currentModalResolve = resolve;
 
     const dialog = document.getElementById('modal-alert-dialog');
     const titleEl = document.getElementById('modal-alert-title');
@@ -704,12 +705,13 @@ function renderToolchains(items) {
 // ==========================================
 let cachedWorkspaceData = null;
 
-async function loadWorkspace() {
+async function loadWorkspace(forceRefresh = false) {
   const container = document.getElementById('workspace-container');
   if (!container) return;
 
   try {
-    const res = await fetch('/api/workspace/status');
+    const url = forceRefresh ? '/api/workspace/status?refresh=1' : '/api/workspace/status';
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
     const data = await res.json();
     cachedWorkspaceData = data;
@@ -734,7 +736,7 @@ function renderWorkspace(data) {
 
   // Card 1: Orca ADE
   const orcaCard = document.createElement('div');
-  orcaCard.className = 'service-card toolchain-card';
+  orcaCard.className = `service-card toolchain-card ${orca.has_update ? 'has-update' : ''}`;
 
   const orcaActive = orca.active;
   const orcaInstalled = orca.installed;
@@ -749,11 +751,20 @@ function renderWorkspace(data) {
   } else {
     orcaStatusBadge = `<span class="status-pill unknown">Belum Terpasang</span>`;
   }
+  if (orca.has_update) {
+    orcaStatusBadge += ` <span class="status-pill warning">★ Update Tersedia</span>`;
+  }
 
   let orcaActions = '';
   if (orcaInstalled) {
     orcaActions += `
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px;">
+        ${orca.has_update ? `
+          <button type="button" class="btn btn-sm btn-warning" onclick="triggerInstall('${isHeadless ? 'orca-headless' : 'orca-desktop'}')" title="Perbarui Orca ADE ke v${escapeHtml(orca.latest_version)}" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            <span>Perbarui ke v${escapeHtml(orca.latest_version)}</span>
+          </button>
+        ` : ''}
         ${orca.web_client_url ? `
           <a href="${escapeHtml(orca.web_client_url)}" target="_blank" class="btn btn-sm btn-primary" style="display:inline-flex;align-items:center;gap:6px;">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -821,6 +832,12 @@ function renderWorkspace(data) {
         <div class="toolchain-version-row">
           <span class="label">Versi Terpasang:</span>
           <span class="val">${orca.version ? 'v' + escapeHtml(orca.version) : (orcaInstalled ? 'Terpasang' : '<span style="color:var(--text-dim);">Belum Terpasang</span>')}</span>
+        </div>
+        <div class="toolchain-version-row divider">
+          <span class="label">Rilis Resmi Terbaru:</span>
+          <span class="val">${orca.has_update
+            ? `<span style="color:var(--warning);font-weight:700;">v${escapeHtml(orca.latest_version)} <span style="font-size:10.5px;padding:1px 5px;background:rgba(245,158,11,0.15);border-radius:4px;">Pembaruan</span></span>`
+            : (orca.latest_version ? 'v' + escapeHtml(orca.latest_version) : '-')}</span>
         </div>
         <div class="toolchain-version-row divider">
           <span class="label">Mode Operasi:</span>
@@ -1154,7 +1171,75 @@ async function loadSwitchers() {
   }
 }
 
-async function switchRuntime(type, ver, sudoPass = null) {
+async function executePrivilegedAction({
+  confirmTitle,
+  confirmMessage,
+  confirmText = 'Lanjutkan',
+  sudoMessage,
+  url,
+  payload,
+  errorTitle,
+  errorPrefix = 'Gagal',
+  taskTitle
+}) {
+  if (isPrivilegedActionPending) return;
+  isPrivilegedActionPending = true;
+
+  try {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+
+    const confirmed = await modalConfirm(confirmMessage, {
+      title: confirmTitle,
+      confirmText,
+      type: 'primary'
+    });
+    if (!confirmed) return;
+
+    const bodyPayload = { ...payload };
+    let promptMsg = sudoMessage;
+
+    while (true) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload)
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (data.status === 'sudo_required' || res.status === 401) {
+        if (res.status === 401) {
+          promptMsg = 'Password sudo tidak valid. Silakan masukkan kembali password sudo Anda:';
+        }
+        const pass = await modalPrompt(promptMsg, {
+          title: 'Akses Sudo Diperlukan',
+          placeholder: 'Masukkan password sudo...',
+          confirmText: 'Lanjutkan',
+          cancelText: 'Batal',
+          isPassword: true
+        });
+        if (!pass) return;
+        bodyPayload.sudo_pass = pass;
+        continue;
+      }
+
+      if (!res.ok) {
+        await modalAlert(`${errorPrefix}: ${data.error || 'Terjadi kesalahan'}`, 'error', errorTitle);
+        return;
+      }
+
+      openTerminalModal(taskTitle);
+      return;
+    }
+  } catch (err) {
+    await modalAlert('Error koneksi: ' + err, 'error', errorTitle);
+  } finally {
+    isPrivilegedActionPending = false;
+  }
+}
+
+async function switchRuntime(type, ver) {
   const labelMap = {
     'node': 'Node.js',
     'php': 'PHP',
@@ -1163,52 +1248,17 @@ async function switchRuntime(type, ver, sudoPass = null) {
   };
   const label = labelMap[type] || type.toUpperCase();
 
-  if (!sudoPass) {
-    const confirmed = await modalConfirm(`Beralih versi runtime ${label} ke versi ${ver}?`, {
-      title: 'Konfirmasi Pengalihan Runtime',
-      confirmText: 'Beralih Sekarang',
-      type: 'primary'
-    });
-    if (!confirmed) return;
-  }
-
-  try {
-    const payload = { version: ver };
-    if (sudoPass) payload.sudo_pass = sudoPass;
-
-    const res = await fetch(`/api/switchers/${type}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-
-    if (data.status === 'sudo_required') {
-      const pass = await modalPrompt(
-        `Pengalihan runtime ${label} memerlukan hak akses administrator (sudo) sistem.\nSilakan masukkan password sudo Anda:`,
-        {
-          title: 'Akses Sudo Diperlukan',
-          placeholder: 'Masukkan password sudo...',
-          confirmText: 'Lanjutkan',
-          cancelText: 'Batal',
-          isPassword: true
-        }
-      );
-      if (pass) {
-        await switchRuntime(type, ver, pass);
-      }
-      return;
-    }
-
-    if (!res.ok) {
-      await modalAlert(`Gagal beralih runtime: ${data.error || 'Terjadi kesalahan'}`, 'error', 'Ganti Runtime');
-    } else {
-      // Buka live terminal modal agar pengguna melihat prosesnya secara real-time
-      openTerminalModal(`Switch ${label} -> ${ver}`);
-    }
-  } catch (err) {
-    await modalAlert('Error koneksi: ' + err, 'error', 'Ganti Runtime');
-  }
+  await executePrivilegedAction({
+    confirmTitle: 'Konfirmasi Pengalihan Runtime',
+    confirmMessage: `Beralih versi runtime ${label} ke versi ${ver}?`,
+    confirmText: 'Beralih Sekarang',
+    sudoMessage: `Pengalihan runtime ${label} memerlukan hak akses administrator (sudo) sistem.\nSilakan masukkan password sudo Anda:`,
+    url: `/api/switchers/${type}`,
+    payload: { version: ver },
+    errorTitle: 'Ganti Runtime',
+    errorPrefix: 'Gagal beralih runtime',
+    taskTitle: `Switch ${label} -> ${ver}`
+  });
 }
 
 // Cloudflare
@@ -2183,6 +2233,7 @@ function appendTerminalLog(data) {
     setTimeout(loadStatus, 1000);
     setTimeout(loadSwitchers, 1100);
     setTimeout(loadToolchains, 1200);
+    setTimeout(loadWorkspace, 1300);
 
   } else {
     // Regular log message
@@ -2220,58 +2271,34 @@ const COMPONENT_TITLES = {
   'cloudflare': 'Cloudflare Tunnel (cloudflared)',
   'pdns': 'PowerDNS & Netbird Edge Gateway',
   'zsh': 'Oh My Zsh Shell',
+  'zsh-p10k': 'Oh My Zsh (Tema Powerlevel10k)',
+  'zsh-agnoster': 'Oh My Zsh (Tema Agnoster)',
+  'zsh-robbyrussell': 'Oh My Zsh (Tema Robbyrussell)',
+  'orca': 'Orca ADE Desktop GUI',
   'orca-desktop': 'Orca ADE Desktop GUI',
-  'orca-headless': 'Orca ADE Headless Server'
+  'orca-headless': 'Orca ADE Headless Server',
+  'orca-switch-desktop': 'Alih Mode Orca ADE ke Desktop GUI',
+  'orca-switch-headless': 'Alih Mode Orca ADE ke Headless Server',
+  'orca-uninstall': 'Uninstall Orca ADE',
+  'orca-pair': 'Info Pairing Orca ADE',
+  'orca-ai': 'Konfigurasi Orca Commit AI',
+  'sync-hosts': 'Sinkronisasi Hosts & SSL Lokal',
+  'cf-doctor': 'Diagnostik Cloudflare Tunnel'
 };
 
-async function triggerInstall(component, sudoPass = null) {
+async function triggerInstall(component) {
   const friendlyName = COMPONENT_TITLES[component] || component;
-  if (!sudoPass) {
-    const confirmed = await modalConfirm(`Jalankan operasi instalasi / pembaruan untuk: ${friendlyName}?`, {
-      title: 'Konfirmasi Instalasi / Pembaruan',
-      confirmText: 'Lanjutkan',
-      type: 'primary'
-    });
-    if (!confirmed) return;
-  }
-
-  try {
-    const payload = { component: component };
-    if (sudoPass) payload.sudo_pass = sudoPass;
-
-    const res = await fetch('/api/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-
-    if (data.status === 'sudo_required') {
-      const pass = await modalPrompt(
-        'Operasi pemeliharaan/instalasi ini memerlukan hak akses administrator (sudo) sistem.\nSilakan masukkan password sudo Anda:',
-        {
-          title: 'Akses Sudo Diperlukan',
-          placeholder: 'Masukkan password sudo...',
-          confirmText: 'Lanjutkan',
-          cancelText: 'Batal',
-          isPassword: true
-        }
-      );
-      if (pass) {
-        await triggerInstall(component, pass);
-      }
-      return;
-    }
-
-    if (!res.ok) {
-      await modalAlert(`Gagal: ${data.error}`, 'error', 'Instalasi');
-    } else {
-      // Immediately open live terminal modal
-      openTerminalModal(component);
-    }
-  } catch (err) {
-    await modalAlert('Error: ' + err, 'error', 'Instalasi');
-  }
+  await executePrivilegedAction({
+    confirmTitle: 'Konfirmasi Instalasi / Pembaruan',
+    confirmMessage: `Jalankan operasi instalasi / pembaruan untuk: ${friendlyName}?`,
+    confirmText: 'Lanjutkan',
+    sudoMessage: 'Operasi pemeliharaan/instalasi ini memerlukan hak akses administrator (sudo) sistem.\nSilakan masukkan password sudo Anda:',
+    url: '/api/install',
+    payload: { component },
+    errorTitle: 'Instalasi',
+    errorPrefix: 'Gagal',
+    taskTitle: component
+  });
 }
 
 // ==========================================

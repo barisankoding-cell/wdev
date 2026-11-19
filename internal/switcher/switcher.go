@@ -254,24 +254,6 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 
 func (m *Manager) SwitchPG(ver string) error {
 	cleanVer := strings.TrimSpace(ver)
-	pgSwitch := "/usr/local/bin/pg-switch"
-	if _, err := os.Stat(pgSwitch); os.IsNotExist(err) {
-		pgSwitch = "/home/dietpi/.local/bin/pg-switch"
-	}
-	if _, err := os.Stat(pgSwitch); err == nil {
-		var cmd *exec.Cmd
-		if os.Geteuid() == 0 {
-			cmd = exec.Command(pgSwitch, cleanVer)
-		} else {
-			cmd = exec.Command("sudo", pgSwitch, cleanVer)
-		}
-		if out, err := cmd.CombinedOutput(); err == nil {
-			return nil
-		} else {
-			_ = out
-		}
-	}
-
 	clusterConf := fmt.Sprintf("/etc/postgresql/%s/main/postgresql.conf", cleanVer)
 	if _, err := os.Stat(clusterConf); os.IsNotExist(err) {
 		return fmt.Errorf("cluster postgresql %s belum dibuat di %s", cleanVer, clusterConf)

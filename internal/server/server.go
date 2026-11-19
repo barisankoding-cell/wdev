@@ -410,25 +410,16 @@ func (s *Server) executeSwitchPG(ctx context.Context, cb func(string), ver strin
 	cb(fmt.Sprintf("=== PENGALIHAN RUNTIME POSTGRESQL KE VERSI %s ===", ver))
 	cleanVer := strings.TrimSpace(ver)
 
-	pgSwitchBin := "/usr/local/bin/pg-switch"
-	if _, err := os.Stat(pgSwitchBin); os.IsNotExist(err) {
-		pgSwitchBin = "/home/dietpi/.local/bin/pg-switch"
-	}
-
-	if _, err := os.Stat(pgSwitchBin); err == nil {
-		cb(fmt.Sprintf("[INFO] Menjalankan helper pg-switch %s...", cleanVer))
-		if err := s.installer.RunCmd(ctx, cb, pgSwitchBin, cleanVer); err == nil {
-			cb(fmt.Sprintf("✓ [SELESAI] Pengalihan ke PostgreSQL %s berhasil via pg-switch.", cleanVer))
-			return nil
-		}
-		cb("[WARN] pg-switch menghasilkan error, menjalankan mekanisme fallback...")
-	}
-
 	binDir := fmt.Sprintf("/usr/lib/postgresql/%s/bin", cleanVer)
 	if _, err := os.Stat(binDir); os.IsNotExist(err) {
-		cb(fmt.Sprintf("[INFO] PostgreSQL %s belum terpasang. Memasang paket postgresql-%s...", cleanVer, cleanVer))
-		if err := s.installer.InstallPostgres(ctx, cb, cleanVer); err != nil {
-			return err
+		rhelBinDir := fmt.Sprintf("/usr/pgsql-%s/bin", cleanVer)
+		if _, rErr := os.Stat(rhelBinDir); rErr == nil {
+			binDir = rhelBinDir
+		} else {
+			cb(fmt.Sprintf("[INFO] PostgreSQL %s belum terpasang. Memasang paket postgresql-%s...", cleanVer, cleanVer))
+			if err := s.installer.InstallPostgres(ctx, cb, cleanVer); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1002,27 +993,25 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		taskName = "Alih Mode Orca ADE (Desktop GUI)"
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("==> Mengalihkan Orca ADE ke Mode Desktop GUI...")
-			cmd := exec.CommandContext(ctx, "/home/dietpi/.local/bin/orca-switch", "desktop")
-			out, err := cmd.CombinedOutput()
-			for _, line := range strings.Split(string(out), "\n") {
-				if line != "" {
-					cb(line)
-				}
-			}
-			return err
+			_, userHome := installer.ResolveTargetUserAndHome()
+			modeFile := filepath.Join(userHome, ".config", "orca", ".mode")
+			_ = os.MkdirAll(filepath.Dir(modeFile), 0755)
+			_ = os.WriteFile(modeFile, []byte("desktop\n"), 0644)
+			_ = s.installer.RunCmd(ctx, cb, "systemctl", "disable", "--now", "orca.service")
+			cb("✓ Mode Orca ADE diatur ke Desktop GUI.")
+			return nil
 		}
 	case "orca-switch-headless":
 		taskName = "Alih Mode Orca ADE (Headless Server)"
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("==> Mengalihkan Orca ADE ke Mode Headless Server...")
-			cmd := exec.CommandContext(ctx, "/home/dietpi/.local/bin/orca-switch", "headless")
-			out, err := cmd.CombinedOutput()
-			for _, line := range strings.Split(string(out), "\n") {
-				if line != "" {
-					cb(line)
-				}
-			}
-			return err
+			_, userHome := installer.ResolveTargetUserAndHome()
+			modeFile := filepath.Join(userHome, ".config", "orca", ".mode")
+			_ = os.MkdirAll(filepath.Dir(modeFile), 0755)
+			_ = os.WriteFile(modeFile, []byte("headless\n"), 0644)
+			_ = s.installer.RunCmd(ctx, cb, "systemctl", "enable", "--now", "orca.service")
+			cb("✓ Mode Orca ADE diatur ke Headless Server.")
+			return nil
 		}
 	case "orca-uninstall":
 		taskName = "Uninstall Orca ADE"
@@ -1033,12 +1022,16 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		taskName = "Orca ADE Pairing Info"
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("=== INFO PAIRING ORCA ADE ===")
-			cmd := exec.CommandContext(ctx, "orca", "pair")
-			if _, err := exec.LookPath("orca"); err != nil {
-				if _, err := os.Stat("/home/dietpi/.local/bin/orca"); err == nil {
-					cmd = exec.CommandContext(ctx, "/home/dietpi/.local/bin/orca", "pair")
+			orcaCmd := "/usr/local/bin/orca"
+			if _, err := os.Stat(orcaCmd); err != nil {
+				if p, err := exec.LookPath("orca"); err == nil {
+					orcaCmd = p
+				} else {
+					_, userHome := installer.ResolveTargetUserAndHome()
+					orcaCmd = filepath.Join(userHome, ".local", "bin", "orca")
 				}
 			}
+			cmd := exec.CommandContext(ctx, orcaCmd, "pair")
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				cb(fmt.Sprintf("Catatan: %s", string(out)))
@@ -1054,7 +1047,8 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		taskName = "Konfigurasi Orca Commit AI"
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("==> Mengonfigurasi default AI commit message generator Orca...")
-			cfgDir := "/home/dietpi/.config/orca"
+			_, userHome := installer.ResolveTargetUserAndHome()
+			cfgDir := filepath.Join(userHome, ".config", "orca")
 			_ = os.MkdirAll(cfgDir, 0755)
 			cb("✓ Konfigurasi Git Commit AI Orca siap.")
 			return nil
@@ -1312,16 +1306,18 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type OrcaInfo struct {
-		Installed    bool   `json:"installed"`
-		Active       bool   `json:"active"`
-		StatusText   string `json:"status_text"`
-		Mode         string `json:"mode"`
-		Version      string `json:"version"`
-		Port         int    `json:"port,omitempty"`
-		PID          int    `json:"pid,omitempty"`
-		WebClientURL string `json:"web_client_url,omitempty"`
-		PairingURL   string `json:"pairing_url,omitempty"`
-		Endpoint     string `json:"endpoint,omitempty"`
+		Installed     bool   `json:"installed"`
+		Active        bool   `json:"active"`
+		StatusText    string `json:"status_text"`
+		Mode          string `json:"mode"`
+		Version       string `json:"version"`
+		LatestVersion string `json:"latest_version,omitempty"`
+		HasUpdate     bool   `json:"has_update"`
+		Port          int    `json:"port,omitempty"`
+		PID           int    `json:"pid,omitempty"`
+		WebClientURL  string `json:"web_client_url,omitempty"`
+		PairingURL    string `json:"pairing_url,omitempty"`
+		Endpoint      string `json:"endpoint,omitempty"`
 	}
 
 	type ShellInfo struct {
@@ -1339,13 +1335,20 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 
 	var data WorkspaceData
 
-	// 1. Orca info
-	orcaBin := "/home/dietpi/.local/bin/orca"
+	targetUser, userHome := installer.ResolveTargetUserAndHome()
+	orcaConfigDir := filepath.Join(userHome, ".config", "orca")
+
+	// 1. Orca info (prioritaskan biner kanonik /usr/local/bin/orca)
+	orcaBin := "/usr/local/bin/orca"
 	if _, err := os.Stat(orcaBin); err == nil {
 		data.Orca.Installed = true
-	} else if _, err := exec.LookPath("orca"); err == nil {
+	} else if p, err := exec.LookPath("orca"); err == nil {
+		orcaBin = p
 		data.Orca.Installed = true
-	} else if _, err := os.Stat("/home/dietpi/.config/orca"); err == nil {
+	} else if _, err := os.Stat(filepath.Join(userHome, ".local", "bin", "orca")); err == nil {
+		orcaBin = filepath.Join(userHome, ".local", "bin", "orca")
+		data.Orca.Installed = true
+	} else if _, err := os.Stat(orcaConfigDir); err == nil {
 		data.Orca.Installed = true
 	}
 
@@ -1355,7 +1358,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		data.Orca.Active = true
 	}
 
-	modeFile := "/home/dietpi/.config/orca/.mode"
+	modeFile := filepath.Join(orcaConfigDir, ".mode")
 	if mBytes, err := os.ReadFile(modeFile); err == nil {
 		data.Orca.Mode = strings.TrimSpace(string(mBytes))
 	}
@@ -1377,13 +1380,25 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vCmd := exec.Command(orcaBin, "--version")
-	vCmd.Env = append(os.Environ(), "HOME=/home/dietpi", "USER=dietpi")
+	vCmd.Env = append(os.Environ(), "HOME="+userHome, "USER="+targetUser)
 	if out, err := vCmd.Output(); err == nil {
-		data.Orca.Version = strings.TrimSpace(string(out))
+		ver := strings.TrimSpace(string(out))
+		if fields := strings.Fields(ver); len(fields) > 0 {
+			ver = fields[len(fields)-1]
+		}
+		data.Orca.Version = strings.TrimPrefix(ver, "v")
+	}
+
+	forceRefresh := r.URL.Query().Get("refresh") == "1"
+	if latestOrca := installer.GetOrcaLatestVersion(r.Context(), forceRefresh); latestOrca != "" {
+		data.Orca.LatestVersion = latestOrca
+		if data.Orca.Installed && data.Orca.Version != "" {
+			data.Orca.HasUpdate = installer.HasNewerVersion(data.Orca.Version, latestOrca)
+		}
 	}
 
 	if data.Orca.Active {
-		rtFile := "/home/dietpi/.config/orca/orca-runtime.json"
+		rtFile := filepath.Join(orcaConfigDir, "orca-runtime.json")
 		if rtBytes, err := os.ReadFile(rtFile); err == nil {
 			var rt struct {
 				PID        int `json:"pid"`
@@ -1412,12 +1427,15 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 			data.Orca.Port = 6768
 		}
 
-		pairBin := "/home/dietpi/.local/bin/orca-pair"
+		pairBin := "/usr/local/bin/orca-pair"
+		if _, err := os.Stat(pairBin); err != nil {
+			pairBin = filepath.Join(userHome, ".local", "bin", "orca-pair")
+		}
 		if _, err := os.Stat(pairBin); err == nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
 			pCmd := exec.CommandContext(ctx, pairBin, "--json")
-			pCmd.Env = append(os.Environ(), "HOME=/home/dietpi", "USER=dietpi")
+			pCmd.Env = append(os.Environ(), "HOME="+userHome, "USER="+targetUser)
 			if pOut, err := pCmd.Output(); err == nil {
 				var pInfo struct {
 					PairingUrl   string `json:"pairingUrl"`
@@ -1437,11 +1455,11 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	} else if _, err := os.Stat("/usr/bin/zsh"); err == nil {
 		data.Shell.ZshInstalled = true
 	}
-	if fi, err := os.Stat("/home/dietpi/.oh-my-zsh"); err == nil && fi.IsDir() {
+	if fi, err := os.Stat(filepath.Join(userHome, ".oh-my-zsh")); err == nil && fi.IsDir() {
 		data.Shell.OhMyZsh = true
 	}
 
-	if out, err := exec.Command("getent", "passwd", "dietpi").Output(); err == nil {
+	if out, err := exec.Command("getent", "passwd", targetUser).Output(); err == nil {
 		parts := strings.Split(strings.TrimSpace(string(out)), ":")
 		if len(parts) >= 7 {
 			data.Shell.CurrentShell = parts[6]
@@ -1451,7 +1469,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		data.Shell.CurrentShell = os.Getenv("SHELL")
 	}
 
-	zshrcFile := "/home/dietpi/.zshrc"
+	zshrcFile := filepath.Join(userHome, ".zshrc")
 	if zBytes, err := os.ReadFile(zshrcFile); err == nil {
 		lines := strings.Split(string(zBytes), "\n")
 		for _, line := range lines {
