@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
 	"wdev/internal/installer"
+	"wdev/internal/mail"
 	"wdev/internal/monitor"
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
@@ -30,6 +32,7 @@ type Server struct {
 	switcherMgr *switcher.Manager
 	cfMgr       *cloudflare.Manager
 	pdnsMgr     *pdns.Manager
+	mailMgr     *mail.Manager
 	mux         *http.ServeMux
 }
 
@@ -42,6 +45,7 @@ func New(
 	swMgr *switcher.Manager,
 	cfMgr *cloudflare.Manager,
 	pdnsMgr *pdns.Manager,
+	mailMgr *mail.Manager,
 ) *Server {
 	srv := &Server{
 		cfg:         cfg,
@@ -52,6 +56,7 @@ func New(
 		switcherMgr: swMgr,
 		cfMgr:       cfMgr,
 		pdnsMgr:     pdnsMgr,
+		mailMgr:     mailMgr,
 		mux:         http.NewServeMux(),
 	}
 	srv.routes()
@@ -75,8 +80,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/pdns/exposures", s.handlePDNSExposures)
 	s.mux.HandleFunc("/api/pdns/expose", s.handlePDNSExpose)
 	s.mux.HandleFunc("/api/pdns/unexpose", s.handlePDNSUnexpose)
+	s.mux.HandleFunc("/api/pdns/deploy", s.handlePDNSDeploy)
+	s.mux.HandleFunc("/api/pdns/connect", s.handlePDNSConnect)
+	s.mux.HandleFunc("/api/mail/status", s.handleMailStatus)
+	s.mux.HandleFunc("/api/mail/accounts", s.handleMailAccounts)
+	s.mux.HandleFunc("/api/mail/account", s.handleMailAccountAdd)
+	s.mux.HandleFunc("/api/mail/relay", s.handleMailRelaySet)
+	s.mux.HandleFunc("/api/mail/admin-reset", s.handleMailAdminReset)
+	s.mux.HandleFunc("/api/mail/setup", s.handleMailSetup)
 	s.mux.HandleFunc("/api/sudo/status", s.handleSudoStatus)
 	s.mux.HandleFunc("/api/sudo/verify", s.handleSudoVerify)
+	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
 	s.mux.HandleFunc("/api/install", s.handleInstall)
 	s.mux.HandleFunc("/api/tasks/events", s.handleSSEEvents)
 
@@ -103,6 +117,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // Handlers
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true" {
+		monitor.RefreshLatestVersions(true)
+	}
 	stats, err := monitor.Collect()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -192,33 +209,335 @@ func (s *Server) handleSwitchersAction(w http.ResponseWriter, r *http.Request) {
 	}
 	typeStr := strings.TrimPrefix(r.URL.Path, "/api/switchers/")
 	var payload struct {
-		Version string `json:"version"`
+		Version  string `json:"version"`
+		SudoPass string `json:"sudo_pass"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
 
-	var err error
+	cleanVer := strings.TrimSpace(payload.Version)
+	if cleanVer == "" {
+		writeError(w, http.StatusBadRequest, "Parameter version diperlukan")
+		return
+	}
+
+	if payload.SudoPass != "" {
+		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
+			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+			return
+		}
+	}
+
+	if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "sudo_required",
+			"message": "Operasi pengalihan runtime memerlukan hak akses administrator (sudo).",
+		})
+		return
+	}
+
+	var taskName string
+	var fn func(ctx context.Context, cb func(string)) error
+
 	switch typeStr {
 	case "node":
-		err = s.switcherMgr.SwitchNode(payload.Version)
+		taskName = fmt.Sprintf("Switch Runtime Node.js ke %s", cleanVer)
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.executeSwitchNode(ctx, cb, cleanVer)
+		}
 	case "php":
-		err = s.switcherMgr.SwitchPHP(payload.Version)
+		taskName = fmt.Sprintf("Switch Runtime PHP ke %s", cleanVer)
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.executeSwitchPHP(ctx, cb, cleanVer)
+		}
 	case "pg":
-		err = s.switcherMgr.SwitchPG(payload.Version)
+		taskName = fmt.Sprintf("Switch Runtime PostgreSQL ke %s", cleanVer)
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.executeSwitchPG(ctx, cb, cleanVer)
+		}
 	case "java":
-		err = s.switcherMgr.SwitchJava(payload.Version)
+		taskName = fmt.Sprintf("Switch Runtime Java ke %s", cleanVer)
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.executeSwitchJava(ctx, cb, cleanVer)
+		}
 	default:
 		writeError(w, http.StatusBadRequest, "Tipe runtime tidak valid")
 		return
 	}
 
+	taskID, err := s.runner.StartNativeTask(taskName, fn)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "switched"})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "started",
+		"task_id": taskID,
+		"type":    typeStr,
+		"version": cleanVer,
+	})
+}
+
+func (s *Server) executeSwitchNode(ctx context.Context, cb func(string), ver string) error {
+	cb(fmt.Sprintf("=== PENGALIHAN RUNTIME NODE.JS KE VERSI %s ===", ver))
+	cleanVer := strings.TrimPrefix(strings.TrimSpace(ver), "v")
+
+	nodeBase := "/usr/local/lib/nodejs"
+	entries, _ := os.ReadDir(nodeBase)
+
+	var targetDir string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "node-v"+cleanVer) ||
+			strings.Contains(name, "node-v"+cleanVer+".") ||
+			strings.Contains(name, "node-v"+cleanVer+"-") {
+			targetDir = filepath.Join(nodeBase, name)
+			break
+		}
+	}
+
+	if targetDir == "" {
+		for _, e := range entries {
+			if e.Name() == "v"+cleanVer || e.Name() == cleanVer {
+				if resolved, err := filepath.EvalSymlinks(filepath.Join(nodeBase, e.Name())); err == nil {
+					targetDir = resolved
+					break
+				}
+			}
+		}
+	}
+
+	if targetDir == "" {
+		cb(fmt.Sprintf("[INFO] Node.js v%s belum terpasang di %s. Mengunduh dan memasang otomatis...", cleanVer, nodeBase))
+		if err := s.installer.InstallNode(ctx, cb, cleanVer); err != nil {
+			return fmt.Errorf("gagal memasang Node.js v%s: %w", cleanVer, err)
+		}
+		entries, _ = os.ReadDir(nodeBase)
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasPrefix(name, "node-v"+cleanVer) {
+				targetDir = filepath.Join(nodeBase, name)
+				break
+			}
+		}
+	}
+
+	if targetDir == "" {
+		return fmt.Errorf("direktori instalasi Node.js v%s tidak ditemukan di %s", cleanVer, nodeBase)
+	}
+
+	cb(fmt.Sprintf("[1/3] Mengarahkan direktori aktif: %s", targetDir))
+	_ = s.installer.RunCmd(ctx, cb, "ln", "-sfn", targetDir, filepath.Join(nodeBase, "current"))
+
+	cb("[2/3] Memperbarui tautan simbolik binary (node, npm, npx, corepack)...")
+	bins := []string{"node", "npm", "npx", "corepack"}
+	for _, b := range bins {
+		src := filepath.Join(targetDir, "bin", b)
+		dst := filepath.Join("/usr/local/bin", b)
+		if _, err := os.Stat(src); err == nil {
+			_ = s.installer.RunCmd(ctx, cb, "rm", "-f", dst)
+			_ = s.installer.RunCmd(ctx, cb, "ln", "-sf", src, dst)
+		}
+	}
+
+	cb("[3/3] Memverifikasi versi aktif...")
+	out, err := exec.CommandContext(ctx, "node", "-v").CombinedOutput()
+	activeNode := strings.TrimSpace(string(out))
+	if err == nil {
+		cb(fmt.Sprintf("✓ Node.js aktif: %s", activeNode))
+	} else {
+		cb(fmt.Sprintf("⚠️ Verifikasi node -v: %s (%v)", activeNode, err))
+	}
+
+	if npmOut, err := exec.CommandContext(ctx, "npm", "-v").CombinedOutput(); err == nil {
+		cb(fmt.Sprintf("✓ NPM aktif: v%s", strings.TrimSpace(string(npmOut))))
+	}
+
+	cb(fmt.Sprintf("✓ [SELESAI] Pengalihan ke Node.js %s berhasil.", activeNode))
+	return nil
+}
+
+func (s *Server) executeSwitchPHP(ctx context.Context, cb func(string), ver string) error {
+	cb(fmt.Sprintf("=== PENGALIHAN RUNTIME PHP KE VERSI %s ===", ver))
+	cleanVer := strings.TrimSpace(ver)
+
+	bin := fmt.Sprintf("/usr/bin/php%s", cleanVer)
+	if _, err := os.Stat(bin); err != nil {
+		cb(fmt.Sprintf("[INFO] PHP %s belum terpasang di sistem. Memasang paket PHP %s & FPM...", cleanVer, cleanVer))
+		if err := s.installer.InstallPHP(ctx, cb, cleanVer); err != nil {
+			return fmt.Errorf("gagal memasang PHP %s: %w", cleanVer, err)
+		}
+	}
+
+	if _, err := os.Stat(bin); err != nil {
+		return fmt.Errorf("biner %s tidak ditemukan setelah instalasi", bin)
+	}
+
+	cb(fmt.Sprintf("[1/3] Menyetel update-alternatives untuk PHP CLI ke %s...", bin))
+	if err := s.installer.RunCmd(ctx, cb, "update-alternatives", "--set", "php", bin); err != nil {
+		cb(fmt.Sprintf("[WARN] update-alternatives php: %v", err))
+	}
+
+	for _, tool := range []string{"phar", "phpize", "php-config"} {
+		toolBin := fmt.Sprintf("/usr/bin/%s%s", tool, cleanVer)
+		if _, err := os.Stat(toolBin); err == nil {
+			_ = s.installer.RunCmd(ctx, cb, "update-alternatives", "--set", tool, toolBin)
+		}
+	}
+
+	cb(fmt.Sprintf("[2/3] Memulai layanan PHP-FPM php%s-fpm...", cleanVer))
+	fpmService := fmt.Sprintf("php%s-fpm", cleanVer)
+	_ = s.installer.RunCmd(ctx, cb, "systemctl", "enable", "--now", fpmService)
+	_ = s.installer.RunCmd(ctx, cb, "systemctl", "restart", fpmService)
+
+	cb("[3/3] Memverifikasi versi aktif...")
+	out, err := exec.CommandContext(ctx, "php", "-v").CombinedOutput()
+	if err == nil {
+		firstLine := strings.Split(string(out), "\n")[0]
+		cb(fmt.Sprintf("✓ PHP CLI aktif: %s", firstLine))
+	}
+
+	cb(fmt.Sprintf("✓ [SELESAI] Pengalihan ke PHP %s berhasil.", cleanVer))
+	return nil
+}
+
+func (s *Server) executeSwitchPG(ctx context.Context, cb func(string), ver string) error {
+	cb(fmt.Sprintf("=== PENGALIHAN RUNTIME POSTGRESQL KE VERSI %s ===", ver))
+	cleanVer := strings.TrimSpace(ver)
+
+	pgSwitchBin := "/usr/local/bin/pg-switch"
+	if _, err := os.Stat(pgSwitchBin); os.IsNotExist(err) {
+		pgSwitchBin = "/home/dietpi/.local/bin/pg-switch"
+	}
+
+	if _, err := os.Stat(pgSwitchBin); err == nil {
+		cb(fmt.Sprintf("[INFO] Menjalankan helper pg-switch %s...", cleanVer))
+		if err := s.installer.RunCmd(ctx, cb, pgSwitchBin, cleanVer); err == nil {
+			cb(fmt.Sprintf("✓ [SELESAI] Pengalihan ke PostgreSQL %s berhasil via pg-switch.", cleanVer))
+			return nil
+		}
+		cb("[WARN] pg-switch menghasilkan error, menjalankan mekanisme fallback...")
+	}
+
+	binDir := fmt.Sprintf("/usr/lib/postgresql/%s/bin", cleanVer)
+	if _, err := os.Stat(binDir); os.IsNotExist(err) {
+		cb(fmt.Sprintf("[INFO] PostgreSQL %s belum terpasang. Memasang paket postgresql-%s...", cleanVer, cleanVer))
+		if err := s.installer.InstallPostgres(ctx, cb, cleanVer); err != nil {
+			return err
+		}
+	}
+
+	clusterConf := fmt.Sprintf("/etc/postgresql/%s/main/postgresql.conf", cleanVer)
+	if _, err := os.Stat(clusterConf); os.IsNotExist(err) {
+		cb(fmt.Sprintf("[1/3] Membuat cluster data baru untuk PostgreSQL %s...", cleanVer))
+		_ = s.installer.RunCmd(ctx, cb, "pg_createcluster", cleanVer, "main")
+	}
+
+	cb("[2/3] Mengonfigurasi port 5432 untuk cluster target...")
+	content, err := os.ReadFile(clusterConf)
+	if err == nil {
+		lines := strings.Split(string(content), "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "port =") {
+				lines[i] = "port = 5432"
+				break
+			}
+		}
+		_ = os.WriteFile(clusterConf, []byte(strings.Join(lines, "\n")), 0644)
+	}
+
+	if entries, err := os.ReadDir("/etc/postgresql"); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && e.Name() != cleanVer {
+				otherConf := fmt.Sprintf("/etc/postgresql/%s/main/postgresql.conf", e.Name())
+				if oContent, err := os.ReadFile(otherConf); err == nil {
+					oLines := strings.Split(string(oContent), "\n")
+					for i, line := range oLines {
+						if strings.HasPrefix(strings.TrimSpace(line), "port =") && strings.Contains(line, "5432") {
+							oLines[i] = "port = 5433"
+							break
+						}
+					}
+					_ = os.WriteFile(otherConf, []byte(strings.Join(oLines, "\n")), 0644)
+				}
+				_ = s.installer.RunCmd(ctx, cb, "systemctl", "stop", fmt.Sprintf("postgresql@%s-main", e.Name()))
+			}
+		}
+	}
+
+	cb(fmt.Sprintf("[3/3] Memulai layanan cluster postgresql@%s-main...", cleanVer))
+	_ = s.installer.RunCmd(ctx, cb, "systemctl", "restart", fmt.Sprintf("postgresql@%s-main", cleanVer))
+	_ = s.installer.RunCmd(ctx, cb, "systemctl", "restart", "postgresql")
+
+	cb(fmt.Sprintf("✓ [SELESAI] PostgreSQL %s aktif pada port 5432.", cleanVer))
+	return nil
+}
+
+func (s *Server) executeSwitchJava(ctx context.Context, cb func(string), ver string) error {
+	cb(fmt.Sprintf("=== PENGALIHAN RUNTIME JAVA OPENJDK KE VERSI %s ===", ver))
+	cleanVer := strings.TrimSpace(ver)
+
+	jvmDir := "/usr/lib/jvm"
+	entries, _ := os.ReadDir(jvmDir)
+
+	var targetBin string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.Contains(name, cleanVer) && !strings.HasPrefix(name, ".") {
+			bin := filepath.Join(jvmDir, name, "bin", "java")
+			if _, err := os.Stat(bin); err == nil {
+				targetBin = bin
+				break
+			}
+		}
+	}
+
+	if targetBin == "" {
+		cb(fmt.Sprintf("[INFO] Java OpenJDK %s belum terpasang. Memasang paket openjdk-%s-jdk...", cleanVer, cleanVer))
+		if err := s.installer.InstallJava(ctx, cb, cleanVer); err != nil {
+			return fmt.Errorf("gagal memasang OpenJDK %s: %w", cleanVer, err)
+		}
+		entries, _ = os.ReadDir(jvmDir)
+		for _, e := range entries {
+			name := e.Name()
+			if strings.Contains(name, cleanVer) && !strings.HasPrefix(name, ".") {
+				bin := filepath.Join(jvmDir, name, "bin", "java")
+				if _, err := os.Stat(bin); err == nil {
+					targetBin = bin
+					break
+				}
+			}
+		}
+	}
+
+	if targetBin == "" {
+		return fmt.Errorf("biner java untuk versi %s tidak ditemukan di %s", cleanVer, jvmDir)
+	}
+
+	if resolved, err := filepath.EvalSymlinks(targetBin); err == nil {
+		targetBin = resolved
+	}
+
+	cb(fmt.Sprintf("[1/2] Mengalihkan update-alternatives java ke: %s", targetBin))
+	_ = s.installer.RunCmd(ctx, cb, "update-alternatives", "--set", "java", targetBin)
+
+	javacBin := filepath.Join(filepath.Dir(targetBin), "javac")
+	if _, err := os.Stat(javacBin); err == nil {
+		_ = s.installer.RunCmd(ctx, cb, "update-alternatives", "--set", "javac", javacBin)
+	}
+
+	cb("[2/2] Memverifikasi versi java aktif...")
+	out, err := exec.CommandContext(ctx, "java", "-version").CombinedOutput()
+	if err == nil {
+		firstLine := strings.Split(string(out), "\n")[0]
+		cb(fmt.Sprintf("✓ Java aktif: %s", firstLine))
+	}
+
+	cb(fmt.Sprintf("✓ [SELESAI] Pengalihan ke Java %s berhasil.", cleanVer))
+	return nil
 }
 
 func (s *Server) handleCFStatus(w http.ResponseWriter, r *http.Request) {
@@ -410,6 +729,55 @@ func (s *Server) handlePDNSUnexpose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unexposed"})
 }
 
+func (s *Server) handlePDNSDeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload pdns.DeployOptions
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if payload.VPSHost == "" {
+		writeError(w, http.StatusBadRequest, "Host / IP VPS wajib diisi")
+		return
+	}
+
+	taskName := fmt.Sprintf("Deploy VPS Edge (%s)", payload.VPSHost)
+	taskID, err := s.runner.StartNativeTask(taskName, func(ctx context.Context, cb func(string)) error {
+		return s.pdnsMgr.DeployVPS(ctx, cb, payload)
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "started",
+		"task_id": taskID,
+	})
+}
+
+func (s *Server) handlePDNSConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload pdns.ConnectOptions
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if err := s.pdnsMgr.Connect(payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "connected",
+	})
+}
+
 func (s *Server) handleSudoStatus(w http.ResponseWriter, r *http.Request) {
 	reqPassword, _ := s.installer.CheckSudoRequired()
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -436,6 +804,20 @@ func (s *Server) handleSudoVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "message": "Password sudo berhasil diverifikasi"})
+}
+
+func (s *Server) handleToolchains(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	refresh := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
+	items, err := s.installer.GetToolchainStatuses(r.Context(), refresh)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
@@ -539,7 +921,11 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	case "postgres":
 		taskName = "PostgreSQL Server"
 		fn = func(ctx context.Context, cb func(string)) error {
-			return s.installer.InstallPostgres(ctx, cb, "16")
+			ver := monitor.GetActivePostgresMajor()
+			if ver == "" {
+				ver = "16"
+			}
+			return s.installer.InstallPostgres(ctx, cb, ver)
 		}
 	case "redis":
 		taskName = "Redis Cache Server"
@@ -751,4 +1137,142 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *Server) handleMailStatus(w http.ResponseWriter, r *http.Request) {
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	st, err := s.mailMgr.GetStatus()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleMailAccounts(w http.ResponseWriter, r *http.Request) {
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	domain := r.URL.Query().Get("domain")
+	accounts, err := s.mailMgr.GetDomainAccounts(domain)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, accounts)
+}
+
+func (s *Server) handleMailAccountAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if err := s.mailMgr.AddAccount(payload.Email, payload.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "created",
+		"message": "Akun email " + payload.Email + " berhasil ditambahkan",
+	})
+}
+
+func (s *Server) handleMailRelaySet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload mail.SetRelayOptions
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if err := s.mailMgr.SetRelay(payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "updated",
+		"message": "Konfigurasi relay domain " + payload.Domain + " berhasil disimpan",
+	})
+}
+
+func (s *Server) handleMailAdminReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if err := s.mailMgr.ResetAdmin(payload.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "reset",
+		"message": "Password admin domain " + payload.Domain + " berhasil direset",
+	})
+}
+
+func (s *Server) handleMailSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload mail.SetupMailOptions
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(payload.Domain) == "" {
+		writeError(w, http.StatusBadRequest, "Domain wajib diisi")
+		return
+	}
+
+	taskName := fmt.Sprintf("Setup Mail Server & Domain (%s)", payload.Domain)
+	taskID, err := s.runner.StartNativeTask(taskName, func(ctx context.Context, cb func(string)) error {
+		return s.mailMgr.SetupMail(ctx, cb, payload)
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "started",
+		"task_id": taskID,
+	})
 }

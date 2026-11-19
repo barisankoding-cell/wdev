@@ -169,7 +169,11 @@ func (t *TUI) renderServices() {
 		if s.Port != "" {
 			portStr = fmt.Sprintf("(%s)", s.Port)
 		}
-		fmt.Printf("  %-32s %-22s %s\n", s.DisplayName, portStr, badge)
+		nameWithVer := s.DisplayName
+		if s.Version != "" {
+			nameWithVer = fmt.Sprintf("%s [%s]", s.DisplayName, s.Version)
+		}
+		fmt.Printf("  %-34s %-20s %s\n", nameWithVer, portStr, badge)
 	}
 	fmt.Printf("%s------------------------------------------------------------------------%s\n", Dim, Reset)
 }

@@ -3,6 +3,7 @@ package pdns
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,23 @@ import (
 type Manager struct {
 	cfg   *config.Config
 	store *store.Store
+}
+
+type ConnectOptions struct {
+	VPSNetbirdIP string `json:"vps_netbird_ip"`
+	VPSPublicIP  string `json:"vps_public_ip"`
+	APIKey       string `json:"api_key"`
+	PDNSPort     string `json:"pdns_port"`
+	AgentPort    string `json:"agent_port"`
+}
+
+type DeployOptions struct {
+	VPSHost    string `json:"host"`
+	SSHPort    int    `json:"port"`
+	SSHUser    string `json:"user"`
+	AuthMethod string `json:"auth_method"` // "password" or "key"
+	Password   string `json:"password"`
+	KeyPath    string `json:"key_path"`
 }
 
 type EdgeConfig struct {
@@ -81,6 +99,9 @@ func New(cfg *config.Config, s *store.Store) *Manager {
 func (m *Manager) LoadConfig() EdgeConfig {
 	confFile := filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")
 	data, err := os.ReadFile(confFile)
+	if err != nil && m.cfg.WdevEtc != "/etc/wdev" {
+		data, err = os.ReadFile("/etc/wdev/edge-dns.conf")
+	}
 	if err != nil {
 		return EdgeConfig{
 			Configured:     false,
@@ -529,7 +550,7 @@ func (m *Manager) ListExposures() ([]ProxyExposure, error) {
 			p.LocalSite = matchedSite
 			p.Target = fmt.Sprintf("VHost Lokal (%s - %s)", matchedSite, strings.ToUpper(matchedFw))
 		} else if strings.HasPrefix(p.Domain, "mailadmin.") {
-			p.Target = "Stalwart Mail Admin UI (:8080)"
+			p.Target = "Stalwart Mail Admin UI (:80 / :8080)"
 		} else if strings.HasPrefix(p.Domain, "webmail.") {
 			p.Target = "SnappyMail Client (:80)"
 		} else if strings.HasPrefix(p.Domain, "mail.") {
@@ -908,4 +929,260 @@ func reloadNginx() error {
 		cmd = exec.Command("systemctl", "reload", "nginx")
 	}
 	return cmd.Run()
+}
+
+func (m *Manager) SaveConfig(vpsNetbirdIP, vpsPublicIP, apiKey, pdnsPort, agentPort string) error {
+	if pdnsPort == "" {
+		pdnsPort = "8081"
+	}
+	if agentPort == "" {
+		agentPort = "8082"
+	}
+	content := fmt.Sprintf(`# wdev Edge & PowerDNS Configuration
+VPS_NETBIRD_IP="%s"
+VPS_PUBLIC_IP="%s"
+API_KEY="%s"
+PDNS_PORT="%s"
+AGENT_PORT="%s"
+`, vpsNetbirdIP, vpsPublicIP, apiKey, pdnsPort, agentPort)
+
+	targets := []string{m.cfg.WdevEtc}
+	if m.cfg.WdevEtc != "/etc/wdev" {
+		targets = append(targets, "/etc/wdev")
+	}
+
+	var writeErr error
+	for _, dir := range targets {
+		if os.Geteuid() != 0 {
+			_ = exec.Command("sudo", "-n", "mkdir", "-p", dir).Run()
+		} else {
+			_ = os.MkdirAll(dir, 0755)
+		}
+		confFile := filepath.Join(dir, "edge-dns.conf")
+		if err := writeFileWithSudo(confFile, []byte(content)); err != nil {
+			writeErr = err
+		}
+	}
+	return writeErr
+}
+
+func (m *Manager) Connect(opts ConnectOptions) error {
+	opts.VPSNetbirdIP = strings.TrimSpace(opts.VPSNetbirdIP)
+	opts.APIKey = strings.TrimSpace(opts.APIKey)
+	if opts.VPSNetbirdIP == "" || opts.APIKey == "" {
+		return fmt.Errorf("IP NetBird VPS dan API Key wajib diisi")
+	}
+	if opts.PDNSPort == "" {
+		opts.PDNSPort = "8081"
+	}
+	if opts.AgentPort == "" {
+		opts.AgentPort = "8082"
+	}
+
+	client := http.Client{Timeout: 5 * time.Second}
+	url := fmt.Sprintf("http://%s:%s/api/v1/servers/localhost", opts.VPSNetbirdIP, opts.PDNSPort)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-API-Key", opts.APIKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("tidak dapat menghubungi PowerDNS di %s:%s: %w", opts.VPSNetbirdIP, opts.PDNSPort, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("PowerDNS API Key salah atau ditolak (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("PowerDNS API merespons status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return m.SaveConfig(opts.VPSNetbirdIP, opts.VPSPublicIP, opts.APIKey, opts.PDNSPort, opts.AgentPort)
+}
+
+// AgentPost performs an authenticated POST request to the VPS Edge Agent.
+func (m *Manager) AgentPost(path string, payload any) ([]byte, error) {
+	conf := m.LoadConfig()
+	if conf.VPSNetbirdIP == "" {
+		return nil, fmt.Errorf("VPS Edge Gateway belum terhubung (IP NetBird VPS kosong)")
+	}
+	agentPort := conf.AgentPort
+	if agentPort == "" {
+		agentPort = "3100"
+	}
+
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	client := http.Client{Timeout: 60 * time.Second}
+	url := fmt.Sprintf("http://%s:%s%s", conf.VPSNetbirdIP, agentPort, path)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-API-Key", conf.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gagal menghubungi VPS Edge Agent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Error   string `json:"error"`
+			Details string `json:"details"`
+		}
+		_ = json.Unmarshal(bodyBytes, &errResp)
+		if errResp.Error != "" {
+			if errResp.Details != "" {
+				return nil, fmt.Errorf("%s: %s", errResp.Error, errResp.Details)
+			}
+			return nil, fmt.Errorf("%s", errResp.Error)
+		}
+		return nil, fmt.Errorf("VPS Edge Agent error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	return bodyBytes, nil
+}
+
+func (m *Manager) DeployVPS(ctx context.Context, cb func(string), opts DeployOptions) error {
+	opts.VPSHost = strings.TrimSpace(opts.VPSHost)
+	if opts.VPSHost == "" {
+		return fmt.Errorf("host / IP VPS tidak boleh kosong")
+	}
+	if opts.SSHPort <= 0 {
+		opts.SSHPort = 22
+	}
+	if opts.SSHUser == "" {
+		opts.SSHUser = "root"
+	}
+	if opts.AuthMethod == "" {
+		opts.AuthMethod = "password"
+	}
+
+	cb(fmt.Sprintf("=== MEMULAI DEPLOYMENT VPS EDGE GATEWAY (%s) ===", opts.VPSHost))
+
+	buildSSH := func(remoteCmd string) *exec.Cmd {
+		args := []string{
+			"-p", fmt.Sprintf("%d", opts.SSHPort),
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "ConnectTimeout=15",
+		}
+		if opts.AuthMethod == "key" && opts.KeyPath != "" {
+			args = append(args, "-i", opts.KeyPath)
+		}
+		target := fmt.Sprintf("%s@%s", opts.SSHUser, opts.VPSHost)
+		args = append(args, target, remoteCmd)
+
+		if opts.AuthMethod == "password" {
+			return exec.CommandContext(ctx, "sshpass", append([]string{"-p", opts.Password, "ssh"}, args...)...)
+		}
+		return exec.CommandContext(ctx, "ssh", args...)
+	}
+
+	// 1. Uji koneksi SSH
+	cb(fmt.Sprintf("[1/4] Menguji koneksi SSH ke %s@%s:%d...", opts.SSHUser, opts.VPSHost, opts.SSHPort))
+	testCmd := buildSSH("echo SSH_OK")
+	testOut, err := testCmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(testOut), "SSH_OK") {
+		return fmt.Errorf("gagal autentikasi SSH ke %s@%s: %s (periksa IP, Port, Username, atau Password)", opts.SSHUser, opts.VPSHost, strings.TrimSpace(string(testOut)))
+	}
+	cb("  ✓ Autentikasi SSH berhasil terhubung!")
+
+	// 2. Unggah script installer bawaan via stdin
+	cb("[2/4] Mengunggah script installer bawaan ke VPS (/tmp/vps-edge-setup.sh)...")
+	uploadCmd := buildSSH("cat > /tmp/vps-edge-setup.sh && chmod +x /tmp/vps-edge-setup.sh")
+	uploadCmd.Stdin = strings.NewReader(GetVPSEdgeSetupScript())
+	if out, err := uploadCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gagal mengunggah script ke VPS: %s (%w)", string(out), err)
+	}
+	cb("  ✓ Berkas installer bawaan berhasil diunggah.")
+
+	// 3. Jalankan installer otomatis di VPS
+	cb("[3/4] Menjalankan installer otomatis di VPS (PowerDNS + SQLite3 + Nginx + NetBird)...")
+	runCmd := buildSSH("chmod +x /tmp/vps-edge-setup.sh && sudo /tmp/vps-edge-setup.sh")
+
+	stdout, err := runCmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	runCmd.Stderr = runCmd.Stdout
+
+	if err := runCmd.Start(); err != nil {
+		return fmt.Errorf("gagal menjalankan installer di VPS: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		cb(line)
+	}
+
+	if err := runCmd.Wait(); err != nil {
+		return fmt.Errorf("instalasi di VPS gagal: %w", err)
+	}
+	cb("  ✓ Eksekusi instalasi di VPS selesai.")
+
+	// 4. Ambil kredensial dari /etc/wdev-edge/edge.conf
+	cb("[4/4] Mengambil kredensial dari VPS & mengonfigurasi mesin lokal...")
+	catCmd := buildSSH("sudo cat /etc/wdev-edge/edge.conf 2>/dev/null")
+	credOut, err := catCmd.Output()
+	if err != nil || len(credOut) == 0 {
+		return fmt.Errorf("gagal membaca /etc/wdev-edge/edge.conf di VPS: %w", err)
+	}
+
+	pubIP := ""
+	apiKey := ""
+	pdnsPort := "8081"
+	agentPort := "8082"
+	vpsNetbird := opts.VPSHost
+
+	credScanner := bufio.NewScanner(bytes.NewReader(credOut))
+	for credScanner.Scan() {
+		l := strings.TrimSpace(credScanner.Text())
+		if strings.HasPrefix(l, "#") || !strings.Contains(l, "=") {
+			continue
+		}
+		parts := strings.SplitN(l, "=", 2)
+		k := strings.TrimSpace(parts[0])
+		v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+		switch k {
+		case "PUBLIC_IP":
+			pubIP = v
+		case "API_KEY":
+			apiKey = v
+		case "PDNS_API_PORT":
+			pdnsPort = v
+		case "AGENT_PORT":
+			agentPort = v
+		case "NETBIRD_IP":
+			if v != "" {
+				vpsNetbird = v
+			}
+		}
+	}
+
+	if apiKey == "" {
+		return fmt.Errorf("tidak dapat menemukan API_KEY di /etc/wdev-edge/edge.conf")
+	}
+
+	cb(fmt.Sprintf("  -> NetBird IP : %s", vpsNetbird))
+	cb(fmt.Sprintf("  -> Public IP  : %s", pubIP))
+	cb(fmt.Sprintf("  -> PDNS Port  : %s", pdnsPort))
+	cb(fmt.Sprintf("  -> Agent Port : %s", agentPort))
+
+	if err := m.SaveConfig(vpsNetbird, pubIP, apiKey, pdnsPort, agentPort); err != nil {
+		return fmt.Errorf("gagal menyimpan konfigurasi lokal: %w", err)
+	}
+	cb("  ✓ Konfigurasi /etc/wdev/edge-dns.conf lokal berhasil diperbarui.")
+
+	cb("=== DEPLOYMENT VPS EDGE GATEWAY SELESAI DENGAN SUKSES ===")
+	return nil
 }

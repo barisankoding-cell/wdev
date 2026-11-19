@@ -23,17 +23,20 @@
       <button class="sidebar-close-btn" id="sidebar-close" aria-label="Tutup Menu" type="button">✕</button>
     </div>
     <ul class="nav-links">
+      <li class="nav-category">Ringkasan</li>
       <li class="nav-item active" data-tab="status">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18 9l-5 5-4-4-3 3"/></svg>
         <span>Status & Update</span>
       </li>
-      <li class="nav-item" data-tab="switchers">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
-        <span>Multi-Versi Runtime</span>
-      </li>
+
+      <li class="nav-category">Web & Pengembangan</li>
       <li class="nav-item" data-tab="webstack">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
         <span>Web Stack & VHost</span>
+      </li>
+      <li class="nav-item" data-tab="switchers">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+        <span>Multi-Versi Runtime</span>
       </li>
       <li class="nav-item" data-tab="toolchains">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
@@ -43,14 +46,22 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         <span>Workspace & ADE</span>
       </li>
-      <li class="nav-item" data-tab="cloudflare">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
-        <span>Cloudflare Tunnel</span>
-      </li>
+
+      <li class="nav-category">Jaringan & Edge Gateway</li>
       <li class="nav-item" data-tab="powerdns">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/><polyline points="8 16 12 12 16 16"/></svg>
         <span>PowerDNS & Edge</span>
       </li>
+      <li class="nav-item" data-tab="cloudflare">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+        <span>Cloudflare Tunnel</span>
+      </li>
+      <li class="nav-item" data-tab="mail">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        <span>Mail Server & Relay</span>
+      </li>
+
+      <li class="nav-category">Instalasi & Setup</li>
       <li class="nav-item" data-tab="full-install">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         <span>Full Auto Setup</span>
@@ -87,7 +98,14 @@
           <span>LAN IP:</span>
           <strong id="stat-lan-ip" style="color:var(--success);">-</strong>
         </div>
-        <button class="btn btn-sm" onclick="loadStatus()">↻ Segarkan</button>
+        <button class="btn btn-sm btn-icon" id="topbar-terminal-btn" onclick="openTerminalModal()" data-tooltip="Live Terminal Console" aria-label="Buka Live Terminal Console" title="Buka Live Terminal Console" style="position:relative;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <span id="terminal-active-dot" style="display:none;position:absolute;top:3px;right:3px;width:8px;height:8px;border-radius:50%;background:#10b981;box-shadow:0 0 8px #10b981;"></span>
+        </button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="loadStatus()" title="Segarkan Status Sistem" aria-label="Segarkan Status Sistem" style="display:inline-flex;align-items:center;gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <span>Segarkan</span>
+        </button>
       </div>
     </header>
 
@@ -137,6 +155,32 @@
           </div>
         </div>
 
+        <!-- Pemeliharaan Cepat Sistem & Terminal Runner -->
+        <div class="section-header" style="margin-top:10px;margin-bottom:18px;">
+          <div>
+            <h3>Pemeliharaan & Pembaruan Sistem</h3>
+            <span style="font-size:12.5px;color:var(--text-muted);">Aksi cepat pembaruan paket, diagnostik mandiri, dan inspeksi runner log secara langsung</span>
+          </div>
+          <div class="action-btn-group" role="toolbar" aria-label="Aksi Pemeliharaan & Pembaruan Sistem" style="margin-bottom:0;">
+            <button class="btn btn-primary btn-sm" onclick="triggerInstall('update')">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+              <span>Perbarui Semua (Update All)</span>
+            </button>
+            <button class="btn btn-sm btn-outline" onclick="triggerInstall('check-updates')">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <span>Cek Pembaruan</span>
+            </button>
+            <button class="btn btn-sm btn-outline" onclick="triggerInstall('self-check')">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+              <span>Self-Check</span>
+            </button>
+            <button class="btn btn-sm btn-outline" onclick="openTerminalModal()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              <span>Buka Live Terminal</span>
+            </button>
+          </div>
+        </div>
+
         <!-- Runtimes Summary -->
         <div class="section-header">
           <h3>Versi Runtime Aktif</h3>
@@ -144,37 +188,43 @@
         <div id="runtimes-container" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px;"></div>
 
         <!-- Services Grid -->
-        <div class="section-header">
-          <h3>Status Layanan Inti</h3>
+        <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+          <div>
+            <h3 style="margin:0;">Status Layanan Inti</h3>
+            <span style="font-size:12.5px;color:var(--text-muted);">Status daemon background, versi terpasang, dan ketersediaan pembaruan paket</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline btn-sm" id="btn-refresh-services" onclick="refreshCoreServices(true)" style="display:inline-flex;align-items:center;gap:6px;" title="Periksa ketersediaan pembaruan layanan inti">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span id="btn-refresh-services-text">Periksa Pembaruan</span>
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="triggerInstall('update')" style="display:inline-flex;align-items:center;gap:6px;" title="Perbarui seluruh sistem, paket dan layanan">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Perbarui Seluruh Layanan</span>
+            </button>
+          </div>
         </div>
         <div id="services-container" class="services-grid"></div>
       </section>
 
       <!-- ========================================== -->
-      <!-- TAB 2: PENGELOLA MULTI-VERSI RUNTIME       -->
-      <!-- ========================================== -->
-      <section id="tab-switchers" class="tab-content">
-        <div class="section-header">
-          <h3>Pengelola Multi-Versi Runtime (Switchers)</h3>
-        </div>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:18px;">
-          Beralih versi runtime Node.js (<code>node-switch</code>), PHP CLI & FPM (<code>php-switch</code>), PostgreSQL (<code>pg-switch</code>), serta Java OpenJDK dengan satu klik.
-        </p>
-        <div id="switchers-container" class="services-grid"></div>
-      </section>
-
-      <!-- ========================================== -->
-      <!-- TAB 3: WEB STACK & DOMAIN LOKAL        -->
+      <!-- TAB 2: WEB STACK & DOMAIN LOKAL        -->
       <!-- ========================================== -->
       <section id="tab-webstack" class="tab-content">
         <div class="section-header">
           <h3>Web Stack & Domain Lokal (dev-site)</h3>
-          <div style="display:flex;gap:8px;">
-            <button class="btn" onclick="triggerInstall('sync-hosts')">🔄 Sync Hosts & SSL</button>
-            <button class="btn btn-primary" onclick="openCreateSiteModal()">+ Tambah Virtual Host</button>
+          <div class="mail-header-actions" role="toolbar" aria-label="Aksi Virtual Host">
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('sync-hosts')" title="Sinkronkan hosts dan generate sertifikat SSL lokal" aria-label="Sync Hosts & SSL">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span>Sync Hosts & SSL</span>
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openCreateSiteModal()" title="Buat virtual host Nginx baru" aria-label="Tambah Virtual Host">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+              <span>+ Tambah Virtual Host</span>
+            </button>
           </div>
         </div>
-        <div class="table-container">
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Virtual Host Lokal">
           <table>
             <thead>
               <tr>
@@ -193,47 +243,42 @@
       </section>
 
       <!-- ========================================== -->
+      <!-- TAB 3: PENGELOLA MULTI-VERSI RUNTIME       -->
+      <!-- ========================================== -->
+      <section id="tab-switchers" class="tab-content">
+        <div class="section-header">
+          <h3>Pengelola Multi-Versi Runtime (Switchers)</h3>
+        </div>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:18px;">
+          Beralih versi runtime Node.js (<code>node-switch</code>), PHP CLI & FPM (<code>php-switch</code>), PostgreSQL (<code>pg-switch</code>), serta Java OpenJDK dengan satu klik.
+        </p>
+        <div id="switchers-container" class="services-grid"></div>
+      </section>
+
+      <!-- ========================================== -->
       <!-- TAB 4: TOOLCHAINS, COMPILERS & SDKS   -->
       <!-- ========================================== -->
       <section id="tab-toolchains" class="tab-content">
-        <div class="section-header">
-          <h3>Toolchains, Compilers & SDKs</h3>
+        <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:18px;">
+          <div>
+            <h3 style="margin:0;">Toolchains, Compilers & SDKs</h3>
+            <span style="font-size:12.5px;color:var(--text-muted);">Status versi terpasang dan deteksi pembaruan rilis resmi untuk SDK dan compiler pengembang</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline btn-sm" id="btn-refresh-toolchains" onclick="loadToolchains(true)" style="display:inline-flex;align-items:center;gap:6px;" title="Periksa ketersediaan pembaruan dari repositori resmi">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span id="btn-refresh-toolchains-text">Periksa Pembaruan</span>
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="triggerInstall('update')" style="display:inline-flex;align-items:center;gap:6px;" title="Perbarui seluruh sistem, paket dan toolchain">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Perbarui Seluruh Toolchain</span>
+            </button>
+          </div>
         </div>
-        <div class="services-grid">
-          <div class="service-card">
-            <div class="service-name">🦀 Rust, Mold Linker & Sccache</div>
-            <div class="service-meta">Toolchain compiler Rust modern dengan linker super cepat Mold dan cache Sccache.</div>
-            <button class="btn btn-sm btn-primary" onclick="triggerInstall('rust')">Pasang / Perbarui Rust</button>
-          </div>
-          <div class="service-card">
-            <div class="service-name">🐹 Golang (Go Rilis Terbaru)</div>
-            <div class="service-meta">Compiler bahasa Go resmi terbaru di <code>/usr/local/go</code>.</div>
-            <button class="btn btn-sm btn-primary" onclick="triggerInstall('go')">Pasang / Perbarui Go</button>
-          </div>
-          <div class="service-card">
-            <div class="service-name">☕ OpenJDK Java (JDK Multi-versi)</div>
-            <div class="service-meta">Java Development Kit OpenJDK versi 17, 21, dan 25.</div>
-            <button class="btn btn-sm btn-primary" onclick="triggerInstall('java')">Pasang / Perbarui OpenJDK</button>
-          </div>
-          <div class="service-card">
-            <div class="service-name">🎯 Flutter SDK (Channel Stable)</div>
-            <div class="service-meta">Framework UI multiplatform di <code>/usr/local/flutter</code>.</div>
-            <button class="btn btn-sm btn-primary" onclick="triggerInstall('flutter')">Pasang / Perbarui Flutter</button>
-          </div>
-          <div class="service-card">
-            <div class="service-name">🤖 Android SDK & CLI Tools</div>
-            <div class="service-meta">Command Line Tools, Platform Tools, dan SDK API 34-36 di <code>/usr/local/android-sdk</code>.</div>
-            <button class="btn btn-sm btn-primary" onclick="triggerInstall('android')">Pasang / Perbarui Android SDK</button>
-          </div>
-          <div class="service-card">
-            <div class="service-name">⚡ Redis / Valkey Cache Server</div>
-            <div class="service-meta">Server in-memory cache lokal berkecepatan tinggi port 6379.</div>
-            <button class="btn btn-sm btn-primary" onclick="triggerInstall('redis')">Pasang / Perbarui Redis</button>
-          </div>
-          <div class="service-card">
-            <div class="service-name">📦 Dependensi Dasar Sistem</div>
-            <div class="service-meta">Build tools esensial, clang, cmake, ninja, curl, git, jq, dan pustaka dev distro.</div>
-            <button class="btn btn-sm btn-primary" onclick="triggerInstall('base')">Pasang / Perbarui Base Deps</button>
+        <div id="toolchains-container" class="services-grid">
+          <div style="grid-column:1/-1;text-align:center;padding:36px;color:var(--text-muted);">
+            <div class="pulse-dot" style="display:inline-block;margin-bottom:8px;"></div>
+            <div>Memuat data versi SDK & toolchain...</div>
           </div>
         </div>
       </section>
@@ -250,27 +295,194 @@
             <div class="service-name">🐬 Orca ADE (Autonomous Development Environment)</div>
             <div class="service-meta">Dukungan mode Desktop GUI atau Headless Server 24/7 dengan QR code pairing remote.</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
-              <button class="btn btn-sm btn-primary" onclick="triggerInstall('orca-desktop')">Setup Desktop GUI</button>
-              <button class="btn btn-sm" onclick="triggerInstall('orca-headless')">Setup Headless Server</button>
-              <button class="btn btn-sm" onclick="triggerInstall('orca-pair')">Tampilkan QR Pairing</button>
-              <button class="btn btn-sm" onclick="triggerInstall('orca-ai')">Konfigurasi Commit AI</button>
+              <button type="button" class="btn btn-sm btn-primary" onclick="triggerInstall('orca-desktop')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                <span>Setup Desktop GUI</span>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-headless')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                <span>Setup Headless Server</span>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-pair')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                <span>Pairing QR</span>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-ai')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                <span>Commit AI</span>
+              </button>
             </div>
           </div>
           <div class="service-card">
             <div class="service-name">🐚 Oh My Zsh & Terminal Shell</div>
             <div class="service-meta">Shell Zsh interaktif lengkap dengan plugin populer (autosuggestions, syntax-highlighting).</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
-              <button class="btn btn-sm btn-primary" onclick="triggerInstall('zsh')">Instal Oh My Zsh</button>
-              <button class="btn btn-sm" onclick="triggerInstall('zsh-p10k')">Tema Powerlevel10k</button>
-              <button class="btn btn-sm" onclick="triggerInstall('zsh-agnoster')">Tema Agnoster</button>
-              <button class="btn btn-sm" onclick="triggerInstall('zsh-robbyrussell')">Tema Robbyrussell</button>
+              <button type="button" class="btn btn-sm btn-primary" onclick="triggerInstall('zsh')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                <span>Instal Oh My Zsh</span>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('zsh-p10k')">Tema Powerlevel10k</button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('zsh-agnoster')">Tema Agnoster</button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('zsh-robbyrussell')">Tema Robbyrussell</button>
             </div>
           </div>
         </div>
       </section>
 
       <!-- ========================================== -->
-      <!-- TAB 6: CLOUDFLARE TUNNEL & DNS         -->
+      <!-- TAB 6: POWERDNS & VPS EDGE GATEWAY     -->
+      <!-- ========================================== -->
+      <section id="tab-powerdns" class="tab-content">
+        <div class="section-header">
+          <div>
+            <h3 style="margin:0 0 4px 0;">PowerDNS & VPS Edge Gateway (Netbird)</h3>
+            <span style="font-size:12.5px;color:var(--text-muted);">Authoritative DNS mandiri & reverse-proxy SSL otomatis di VPS Edge</span>
+          </div>
+          <div class="mail-header-actions" role="toolbar" aria-label="Aksi PowerDNS & VPS Edge">
+            <div id="pdns-status-badge">
+              <span class="status-pill active" title="Status Edge VPS">
+                <span class="pulse-dot pulse-success"></span>
+                <span>Terhubung ke Edge VPS</span>
+              </span>
+            </div>
+            <button type="button" id="btn-pdns-deploy" class="btn btn-outline btn-sm" onclick="openVPSDeployModal()" title="Deploy otomatis PowerDNS & Nginx ke VPS via SSH" aria-label="Deploy ke VPS">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+              <span>Deploy ke VPS</span>
+            </button>
+            <button type="button" id="btn-pdns-connect" class="btn btn-outline btn-sm" onclick="openVPSConnectModal()" title="Hubungkan manual ke VPS Edge via NetBird" aria-label="Hubungkan Manual">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              <span>Hubungkan Manual</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Banner Pemberitahuan Belum Terhubung -->
+        <div id="pdns-unconnected-banner" class="metric-card" style="display:none;background:rgba(239,68,68,0.06);border-color:rgba(239,68,68,0.25);margin-bottom:20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <strong style="color:var(--danger);font-size:14px;">⚠️ VPS Edge Gateway Belum Terhubung</strong>
+              <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">
+                Mesin lokal belum terhubung ke PowerDNS & Nginx di VPS. Masukkan login SSH VPS untuk menginstal otomatis via NetBird.
+              </div>
+            </div>
+            <div class="mail-header-actions" role="toolbar" aria-label="Aksi Deploy Banner">
+              <button type="button" class="btn btn-primary btn-sm" onclick="openVPSDeployModal()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                <span>Mulai Deploy ke VPS</span>
+              </button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="openVPSConnectModal()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                <span>Hubungkan Manual</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="metric-grid" style="margin-bottom:22px;">
+          <div class="metric-card">
+            <div class="metric-title">IP VPS (NetBird Mesh)</div>
+            <div class="metric-value" id="pdns-netbird-ip" style="font-size:16px;">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">IP Publik Edge Gateway</div>
+            <div class="metric-value" id="pdns-public-ip" style="font-size:16px;">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">IP NetBird Mesin Lokal (wt0)</div>
+            <div class="metric-value" id="pdns-local-ip" style="font-size:16px;">-</div>
+          </div>
+        </div>
+
+        <!-- STATUS EKSPOS PROYEK LOKAL (OVERVIEW) -->
+        <div class="section-header" style="margin-top:8px;">
+          <div>
+            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Status Ekspos Virtual Host Lokal</h4>
+            <span style="font-size:12.5px;color:var(--text-muted);">Memetakan seluruh virtual host lokal ke domain publik VPS Edge Gateway</span>
+          </div>
+          <div class="mail-header-actions" role="toolbar" aria-label="Aksi Overview Ekspos">
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadPDNS()" title="Perbarui status ekspos lokal">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span>Perbarui Status</span>
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openPDNSExposeModal('site')" title="Ekspos vhost lokal ke domain publik">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+              <span>+ Tambah Ekspos</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Status Ekspos Virtual Host Lokal" style="margin-bottom:24px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Virtual Host Lokal</th>
+                <th>Framework</th>
+                <th>Status Ekspos</th>
+                <th>Domain Publik di VPS</th>
+                <th>Target NetBird</th>
+                <th>Aksi Cepat</th>
+              </tr>
+            </thead>
+            <tbody id="pdns-local-sites-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Daftar Domain yang Diekspos di VPS -->
+        <div class="section-header">
+          <div>
+            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Daftar Proxy Domain yang Diekspos di VPS</h4>
+            <span style="font-size:12.5px;color:var(--text-muted);">Seluruh reverse-proxy yang aktif melayani lalu lintas internet di VPS Edge</span>
+          </div>
+          <div class="mail-header-actions" role="toolbar" aria-label="Aksi Proxy Domain">
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadPDNSExposures()" title="Perbarui daftar proxy domain aktif">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span>Perbarui Status</span>
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openPDNSExposeModal()" title="Tambah ekspos proxy domain ke VPS">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+              <span>+ Tambah Ekspos</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Proxy Domain VPS" style="margin-bottom:24px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Domain Publik VPS</th>
+                <th>Tipe & Rute Target</th>
+                <th>Status Proxy</th>
+                <th>File Konfigurasi VPS</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="pdns-exposures-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Zone Authoritative DNS -->
+        <div class="section-header">
+          <h3>Zone Authoritative DNS</h3>
+          <button type="button" class="btn btn-primary btn-sm" onclick="submitAddZone()" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+            <span>+ Tambah Zone</span>
+          </button>
+        </div>
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Zone DNS Authoritative">
+          <table>
+            <thead>
+              <tr>
+                <th>Nama Zone</th>
+                <th>Tipe</th>
+                <th>Serial</th>
+                <th>Status</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="pdns-zones-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ========================================== -->
+      <!-- TAB 7: CLOUDFLARE TUNNEL & DNS         -->
       <!-- ========================================== -->
       <section id="tab-cloudflare" class="tab-content">
         <div class="section-header">
@@ -295,15 +507,21 @@
               <label>Domain Publik Cloudflare</label>
               <input type="text" id="cf-public-host" class="form-control" placeholder="myapp.example.com">
             </div>
-            <button class="btn btn-primary" onclick="submitCFExpose()">Ekspos Sekarang</button>
+            <button type="button" class="btn btn-primary" onclick="submitCFExpose()" style="display:inline-flex;align-items:center;gap:6px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><polyline points="12 11 12 17"/><polyline points="9 14 12 11 15 14"/></svg>
+              <span>Ekspos Sekarang</span>
+            </button>
           </div>
         </div>
 
         <div class="section-header">
           <h3>Daftar Domain Publik Aktif</h3>
-          <button class="btn btn-sm" onclick="triggerInstall('cf-doctor')">🩺 Jalankan Doctor</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('cf-doctor')" title="Jalankan diagnostik Cloudflare tunnel" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            <span>Diagnostik Doctor</span>
+          </button>
         </div>
-        <div class="table-container">
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Domain Publik Cloudflare">
           <table>
             <thead>
               <tr>
@@ -319,163 +537,140 @@
       </section>
 
       <!-- ========================================== -->
-      <!-- TAB 7: POWERDNS & VPS EDGE GATEWAY     -->
+      <!-- TAB 8: MAIL SERVER & RELAY                 -->
       <!-- ========================================== -->
-      <section id="tab-powerdns" class="tab-content">
-        <div class="section-header">
-          <h3>PowerDNS & VPS Edge Gateway (Netbird)</h3>
-          <div id="pdns-status-badge"></div>
+      <section id="tab-mail" class="tab-content">
+        <div class="section-header" style="gap:14px;align-items:flex-start;">
+          <div>
+            <h3>Mail Server & Outbound SMTP Relay</h3>
+            <span style="font-size:12.5px;color:var(--text-muted);">Manajemen kotak pos, autentikasi IMAP/SMTP Stalwart, dan relay per domain</span>
+          </div>
+          <div class="mail-header-actions" role="toolbar" aria-label="Aksi Cepat Mail Server">
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadMail()" title="Segarkan status email dan relay" aria-label="Segarkan status email dan relay">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span>Segarkan</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="openMailRelayModal()" title="Konfigurasi outbound SMTP relay domain" aria-label="Setel Outbound SMTP Relay">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              <span>Setel Relay</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="openMailSetupModal()" title="Setup domain email baru dan instalasi otomatis Stalwart Mail Server" aria-label="Setup Domain Mail">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              <span>+ Setup Domain Mail</span>
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openMailAddAccountModal()" title="Buat akun email kotak pos baru" aria-label="Tambah Akun Email">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7.5" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+              <span>+ Tambah Email</span>
+            </button>
+          </div>
         </div>
+
+        <!-- Banner Pemberitahuan Setup Mail Server -->
+        <div id="mail-setup-banner" class="metric-card" style="display:none;background:rgba(59,130,246,0.06);border-color:rgba(59,130,246,0.25);margin-bottom:20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+              <strong style="color:var(--primary);font-size:14px;">📧 Setup Domain & Mail Server</strong>
+              <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">
+                Inisialisasi engine Stalwart Mail Server lokal, Webmail SnappyMail, record DNS (MX, SPF, DMARC), dan SSL Let's Encrypt untuk domain Anda.
+              </div>
+            </div>
+            <div class="mail-header-actions" role="toolbar" aria-label="Aksi Setup Mail Banner">
+              <button type="button" class="btn btn-primary btn-sm" onclick="openMailSetupModal()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                <span>Mulai Setup Domain</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Metric Grid -->
         <div class="metric-grid" style="margin-bottom:22px;">
           <div class="metric-card">
-            <div class="metric-title">IP VPS (NetBird Mesh)</div>
-            <div class="metric-value" id="pdns-netbird-ip" style="font-size:16px;">-</div>
+            <div class="metric-title">Stalwart Mail Engine</div>
+            <div class="metric-value" id="mail-engine-status" style="font-size:16px;">Memeriksa...</div>
+            <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Port: 25, 465, 587, 993, 8080</div>
           </div>
           <div class="metric-card">
-            <div class="metric-title">IP Publik Edge Gateway</div>
-            <div class="metric-value" id="pdns-public-ip" style="font-size:16px;">-</div>
+            <div class="metric-title">SnappyMail Webmail</div>
+            <div class="metric-value" id="mail-webmail-status" style="font-size:16px;">Memeriksa...</div>
+            <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;" id="mail-webmail-path">/var/www/snappymail</div>
           </div>
           <div class="metric-card">
-            <div class="metric-title">IP NetBird Mesin Lokal (wt0)</div>
-            <div class="metric-value" id="pdns-local-ip" style="font-size:16px;">-</div>
+            <div class="metric-title">Kapasitas Disk Bebas</div>
+            <div class="metric-value" id="mail-storage-free" style="font-size:16px;">-</div>
+            <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Penyimpanan Maildir / RocksDB</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">Total Domain & Akun</div>
+            <div class="metric-value" id="mail-summary-counts" style="font-size:16px;">-</div>
+            <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Tersimpan di Stalwart DB</div>
           </div>
         </div>
 
-        <!-- STATUS EKSPOS PROYEK LOKAL (OVERVIEW) -->
+        <!-- TABEL 1: Status & Relay per Domain -->
         <div class="section-header" style="margin-top:8px;">
           <div>
-            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Status Ekspos Virtual Host Lokal</h4>
-            <span style="font-size:12.5px;color:var(--text-muted);">Memetakan seluruh virtual host lokal ke domain publik VPS Edge Gateway</span>
+            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Status Domain & Outbound SMTP Relay</h4>
+            <span style="font-size:12.5px;color:var(--text-muted);">Konfigurasi pengiriman email keluar per domain (Resend, Brevo, Custom SMTP, Direct MX)</span>
           </div>
-          <button class="btn btn-outline btn-sm" onclick="loadPDNS()">Perbarui Status</button>
         </div>
-        <div class="table-container" style="margin-bottom:24px;">
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Status Relay per Domain" style="margin-bottom:24px;">
           <table>
             <thead>
               <tr>
-                <th>Virtual Host Lokal</th>
-                <th>Framework</th>
-                <th>Status Ekspos</th>
-                <th>Domain Publik di VPS</th>
-                <th>Target NetBird</th>
-                <th>Aksi Cepat</th>
+                <th>Domain</th>
+                <th>Provider Relay</th>
+                <th>Relay Host & Port</th>
+                <th>Username / User</th>
+                <th>Panel Admin Stalwart</th>
+                <th>Webmail Client</th>
+                <th>Aksi</th>
               </tr>
             </thead>
-            <tbody id="pdns-local-sites-tbody"></tbody>
+            <tbody id="mail-domain-relay-tbody">
+              <tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:14px;">Memuat status domain & relay...</td></tr>
+            </tbody>
           </table>
         </div>
 
-        <!-- Ekspos Proyek atau Port ke VPS Edge Gateway -->
-        <div class="metric-card" style="margin-bottom:24px;">
-          <div class="section-header" style="margin-bottom:14px;">
-            <h4 style="margin:0;font-size:15px;color:var(--text-main);">Ekspos Proyek / Port ke VPS Edge Gateway</h4>
-          </div>
-          <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">
-            Ekspos vhost lokal (PHP/Laravel/WordPress) atau port aplikasi lokal (Node.js/Go/Python/Docker) ke internet melalui VPS Edge Gateway dengan otomatisasi DNS dan SSL Let's Encrypt.
-          </p>
-
-          <!-- Mode Switcher -->
-          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px;">
-            <button type="button" id="pdns-btn-mode-site" class="btn btn-primary btn-sm" onclick="setPDNSExposeMode('site')">
-              🌐 VHost Lokal (PHP / Laravel / WordPress)
-            </button>
-            <button type="button" id="pdns-btn-mode-port" class="btn btn-outline btn-sm" onclick="setPDNSExposeMode('port')">
-              🔌 Port Aplikasi (Node.js / Go / Python / Docker)
-            </button>
-          </div>
-
-          <!-- Site Mode Form Group -->
-          <div id="pdns-expose-site-group">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:14px;margin-bottom:4px;">
-              <div class="form-group" style="margin-bottom:0;">
-                <label>Pilih Virtual Host Lokal</label>
-                <select id="pdns-expose-site-select" class="form-control" onchange="onPDNSSiteSelected()"></select>
-              </div>
-              <div class="form-group" style="margin-bottom:0;">
-                <label>Domain Publik VPS</label>
-                <input type="text" id="pdns-expose-site-pub" class="form-control" placeholder="contoh: portal.erposoft.my.id">
-              </div>
-            </div>
-            <div id="pdns-expose-site-alert" style="margin-top:10px;font-size:12.5px;padding:8px 12px;border-radius:var(--radius-sm);display:none;"></div>
-          </div>
-
-          <!-- Port Mode Form Group -->
-          <div id="pdns-expose-port-group" style="display:none;">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:14px;margin-bottom:14px;">
-              <div class="form-group" style="margin-bottom:0;">
-                <label>Domain Publik VPS</label>
-                <input type="text" id="pdns-expose-port-pub" class="form-control" placeholder="contoh: api.erposoft.my.id">
-              </div>
-              <div class="form-group" style="margin-bottom:0;">
-                <label>Port Target Mesin Lokal</label>
-                <input type="number" id="pdns-expose-port-target" class="form-control" placeholder="3000" min="1" max="65535">
-              </div>
-            </div>
-          </div>
-
-          <!-- Options -->
-          <div style="display:flex;flex-wrap:wrap;gap:20px;margin:14px 0 18px 0;align-items:center;">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-main);margin-bottom:0;">
-              <input type="checkbox" id="pdns-expose-ssl" checked style="cursor:pointer;width:18px;height:18px;">
-              <span>Otomatis Pasang SSL Let's Encrypt (HTTPS)</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-main);margin-bottom:0;">
-              <input type="checkbox" id="pdns-expose-ws" checked style="cursor:pointer;width:18px;height:18px;">
-              <span>Dukungan WebSocket (WSS/Upgrade)</span>
-            </label>
-          </div>
-
-          <button class="btn btn-primary" onclick="submitPDNSExpose()" style="padding:10px 22px;font-size:13.5px;">
-            🚀 Ekspos ke Internet via Edge VPS
-          </button>
-        </div>
-
-        <!-- Daftar Domain yang Diekspos di VPS -->
-        <div class="section-header">
+        <!-- TABEL 2: Daftar Akun Email per Domain -->
+        <div class="section-header" style="gap:12px;align-items:center;">
           <div>
-            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Daftar Proxy Domain yang Diekspos di VPS</h4>
-            <span style="font-size:12.5px;color:var(--text-muted);">Seluruh reverse-proxy yang aktif melayani lalu lintas internet di VPS Edge</span>
+            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Daftar Akun Email per Domain</h4>
+            <span style="font-size:12.5px;color:var(--text-muted);">Akun email kotak pos yang terdaftar di server Stalwart</span>
           </div>
-          <button class="btn btn-outline btn-sm" onclick="loadPDNSExposures()">Perbarui Status</button>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label for="mail-domain-filter" style="font-size:12px;color:var(--text-muted);margin-bottom:0;">Domain:</label>
+            <select id="mail-domain-filter" class="form-control" style="width:auto;min-width:160px;padding:5px 10px;font-size:12.5px;" onchange="filterMailAccounts()">
+              <option value="">Semua Domain</option>
+            </select>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openMailAddAccountModal()" title="Buat akun email kotak pos baru" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:5px 12px;min-height:34px;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7.5" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+              <span>+ Tambah Email</span>
+            </button>
+          </div>
         </div>
-        <div class="table-container" style="margin-bottom:24px;">
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Akun Email" style="margin-bottom:24px;">
           <table>
             <thead>
               <tr>
-                <th>Domain Publik VPS</th>
-                <th>Tipe & Rute Target</th>
-                <th>Status Proxy</th>
-                <th>File Konfigurasi VPS</th>
+                <th>Domain</th>
+                <th>Alamat Email</th>
+                <th>Nama / ID Akun</th>
+                <th>Tipe / Role</th>
+                <th>Outbound Relay</th>
                 <th>Aksi</th>
               </tr>
             </thead>
-            <tbody id="pdns-exposures-tbody"></tbody>
-          </table>
-        </div>
-
-        <!-- Zone Authoritative DNS -->
-        <div class="section-header">
-          <h3>Zone Authoritative DNS</h3>
-          <button class="btn btn-primary btn-sm" onclick="submitAddZone()">+ Tambah Zone</button>
-        </div>
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Nama Zone</th>
-                <th>Tipe</th>
-                <th>Serial</th>
-                <th>Status</th>
-                <th>Aksi</th>
-              </tr>
-            </thead>
-            <tbody id="pdns-zones-tbody"></tbody>
+            <tbody id="mail-accounts-tbody">
+              <tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:14px;">Memuat daftar akun email...</td></tr>
+            </tbody>
           </table>
         </div>
       </section>
 
       <!-- ========================================== -->
-      <!-- TAB 8: INSTALASI LENGKAP (FULL AUTO)   -->
+      <!-- TAB 9: INSTALASI LENGKAP (FULL AUTO)   -->
       <!-- ========================================== -->
       <section id="tab-full-install" class="tab-content">
         <div class="section-header">
@@ -501,100 +696,71 @@
             <div>✓ 13. Local SSL (mkcert CA)</div>
             <div>✓ 14. Oh My Zsh & Powerlevel10k</div>
           </div>
-          <button class="btn btn-primary" style="padding:10px 20px;font-size:13.5px;" onclick="triggerInstall('full-install')">
-            🚀 Jalankan Instalasi Lengkap Sekarang (14 Langkah)
+          <button type="button" class="btn btn-primary" style="padding:10px 22px;font-size:13.5px;display:inline-flex;align-items:center;gap:8px;" onclick="triggerInstall('full-install')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>Jalankan Instalasi Lengkap Sekarang (14 Langkah)</span>
           </button>
         </div>
       </section>
 
       <!-- ========================================== -->
-      <!-- TAB 9: KOMPONEN MODULAR (19 ITEM)      -->
+      <!-- TAB 10: KOMPONEN MODULAR (19 ITEM)     -->
       <!-- ========================================== -->
       <section id="tab-modular" class="tab-content">
         <div class="section-header">
-          <h3>Instalasi Komponen Modular</h3>
+          <div>
+            <h3>Instalasi Komponen Modular</h3>
+            <span style="font-size:12.5px;color:var(--text-muted);">Pasang atau perbarui paket sistem, runtime, database, dan toolchain secara terpisah</span>
+          </div>
         </div>
 
         <div style="margin-bottom:16px;">
           <div style="font-size:12px;color:var(--text-dim);font-weight:700;margin-bottom:8px;text-transform:uppercase;">Core & Build Tools</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-sm" onclick="triggerInstall('base')">Dependensi Dasar</button>
-            <button class="btn btn-sm" onclick="triggerInstall('node')">Node.js</button>
-            <button class="btn btn-sm" onclick="triggerInstall('rust')">Rust Toolchain</button>
-            <button class="btn btn-sm" onclick="triggerInstall('go')">Golang</button>
-            <button class="btn btn-sm" onclick="triggerInstall('java')">OpenJDK Java</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('base')">Dependensi Dasar</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('node')">Node.js LTS</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('rust')">Rust Toolchain</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('go')">Golang</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('java')">OpenJDK Java</button>
           </div>
         </div>
 
         <div style="margin-bottom:16px;">
           <div style="font-size:12px;color:var(--text-dim);font-weight:700;margin-bottom:8px;text-transform:uppercase;">Mobile & SDKs</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-sm" onclick="triggerInstall('android')">Android SDK & Tools</button>
-            <button class="btn btn-sm" onclick="triggerInstall('flutter')">Flutter SDK</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('android')">Android SDK & Tools</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('flutter')">Flutter SDK</button>
           </div>
         </div>
 
         <div style="margin-bottom:16px;">
           <div style="font-size:12px;color:var(--text-dim);font-weight:700;margin-bottom:8px;text-transform:uppercase;">Database & Cache</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-sm" onclick="triggerInstall('postgres')">PostgreSQL Server</button>
-            <button class="btn btn-sm" onclick="triggerInstall('redis')">Redis Cache Server</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('postgres')">PostgreSQL Server</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('redis')">Redis Cache Server</button>
           </div>
         </div>
 
         <div style="margin-bottom:16px;">
           <div style="font-size:12px;color:var(--text-dim);font-weight:700;margin-bottom:8px;text-transform:uppercase;">Web Stack & Networking</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-sm" onclick="triggerInstall('nginx')">Nginx Web Server</button>
-            <button class="btn btn-sm" onclick="triggerInstall('php')">PHP & PHP-FPM</button>
-            <button class="btn btn-sm" onclick="triggerInstall('composer')">Composer</button>
-            <button class="btn btn-sm" onclick="triggerInstall('ssl')">Local SSL (mkcert)</button>
-            <button class="btn btn-sm" onclick="triggerInstall('php-stack')">Full PHP Stack</button>
-            <button class="btn btn-sm" onclick="triggerInstall('cloudflare')">Cloudflare Tunnel</button>
-            <button class="btn btn-sm" onclick="triggerInstall('pdns')">PowerDNS & Netbird</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('nginx')">Nginx Web Server</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('php')">PHP & PHP-FPM</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('composer')">Composer</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('ssl')">Local SSL (mkcert)</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('php-stack')">Full PHP Stack</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('cloudflare')">Cloudflare Tunnel</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('pdns')">PowerDNS & Netbird</button>
           </div>
         </div>
 
         <div style="margin-bottom:22px;">
           <div style="font-size:12px;color:var(--text-dim);font-weight:700;margin-bottom:8px;text-transform:uppercase;">Workspace, ADE & Shell</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-sm" onclick="triggerInstall('zsh')">Oh My Zsh</button>
-            <button class="btn btn-sm" onclick="triggerInstall('orca-desktop')">Orca Desktop GUI</button>
-            <button class="btn btn-sm" onclick="triggerInstall('orca-headless')">Orca Headless Server</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('zsh')">Oh My Zsh</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('orca-desktop')">Orca Desktop GUI</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('orca-headless')">Orca Headless Server</button>
           </div>
-        </div>
-      </section>
-
-      <!-- ========================================== -->
-      <!-- GLOBAL LIVE TERMINAL CONSOLE               -->
-      <!-- ========================================== -->
-      <section style="margin-top:28px;">
-        <div class="section-header" style="margin-bottom:12px;gap:12px;">
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <h3>Live Terminal Console</h3>
-            <div class="action-btn-group" role="toolbar" aria-label="Aksi Pemeliharaan & Pembaruan Sistem" style="margin-bottom:0;">
-              <button class="btn btn-primary btn-icon" data-tooltip="Perbarui Seluruh Paket & Toolchain (Update All)" aria-label="Perbarui Seluruh Paket & Toolchain (Update All)" title="Perbarui Seluruh Paket & Toolchain (Update All)" onclick="triggerInstall('update')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-              </button>
-              <button class="btn btn-icon" data-tooltip="Cek Ketersediaan Pembaruan" aria-label="Cek Ketersediaan Pembaruan" title="Cek Ketersediaan Pembaruan" onclick="triggerInstall('check-updates')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              </button>
-              <button class="btn btn-icon" data-tooltip="Validasi Sintaks & Helper (Self-Check)" aria-label="Validasi Sintaks & Helper (Self-Check)" title="Validasi Sintaks & Helper (Self-Check)" onclick="triggerInstall('self-check')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-              </button>
-              <button class="btn btn-icon" data-tooltip="Segarkan Informasi Layanan" aria-label="Segarkan Informasi Layanan" title="Segarkan Informasi Layanan" onclick="loadStatus()">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              </button>
-            </div>
-          </div>
-          <button class="btn btn-sm" onclick="clearTerminal()">Bersihkan Layar</button>
-        </div>
-        <div class="terminal-card">
-          <div class="terminal-header">
-            <span class="terminal-title">wdev-runner-console ~ bash log stream</span>
-          </div>
-          <div class="terminal-body" id="terminal-log-output">Menunggu perintah... Pilih salah satu menu atau aksi di atas untuk melihat output instalasi.
-</div>
         </div>
       </section>
     </main>
@@ -605,7 +771,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h3>Buat Virtual Host Baru (dev-site create)</h3>
-        <button class="btn btn-sm" onclick="closeCreateSiteModal()">✕</button>
+        <button class="btn btn-outline btn-sm" onclick="closeCreateSiteModal()" style="padding:4px 10px;">✕</button>
       </div>
       <div class="form-group">
         <label>Domain Lokal (akhiran .test disarankan)</label>
@@ -646,7 +812,197 @@
       </div>
       <div class="modal-footer">
         <button class="btn" onclick="closeCreateSiteModal()">Batal</button>
-        <button class="btn btn-primary" onclick="submitCreateSite()">Buat Virtual Host</button>
+        <button class="btn btn-primary" onclick="submitCreateSite()" style="display:inline-flex;align-items:center;gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Buat Virtual Host</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Ekspos Proyek / Port ke VPS Edge Gateway -->
+  <div class="modal-overlay" id="modal-pdns-expose" onclick="if(event.target===this)closePDNSExposeModal()">
+    <div class="modal-box" style="max-width:540px;">
+      <div class="modal-header">
+        <h3>Ekspos ke VPS Edge Gateway</h3>
+        <button class="btn btn-outline btn-sm" onclick="closePDNSExposeModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <p style="color:var(--text-muted);font-size:12.5px;margin-bottom:16px;">
+        Ekspos vhost lokal (PHP/Laravel/WordPress) atau port aplikasi lokal (Node.js/Go/Python/Docker) ke internet melalui VPS Edge Gateway dengan otomatisasi DNS dan SSL Let's Encrypt.
+      </p>
+
+      <!-- Mode Switcher -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px;" role="tablist" aria-label="Mode Ekspos">
+        <button type="button" id="pdns-btn-mode-site" role="tab" aria-selected="true" class="btn btn-primary btn-sm" onclick="setPDNSExposeMode('site')" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:8px 12px;font-weight:600;" title="Virtual Host Lokal (PHP / Laravel / WordPress)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+          <span>VHost</span>
+        </button>
+        <button type="button" id="pdns-btn-mode-port" role="tab" aria-selected="false" class="btn btn-outline btn-sm" onclick="setPDNSExposeMode('port')" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:8px 12px;font-weight:600;" title="Port Aplikasi Lokal (Node.js / Go / Python / Docker)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          <span>Port App</span>
+        </button>
+      </div>
+
+      <!-- Site Mode Form Group -->
+      <div id="pdns-expose-site-group" role="tabpanel" aria-labelledby="pdns-btn-mode-site">
+        <div class="form-group">
+          <label>Pilih Virtual Host Lokal</label>
+          <select id="pdns-expose-site-select" class="form-control" onchange="onPDNSSiteSelected()"></select>
+        </div>
+        <div class="form-group">
+          <label>Domain Publik VPS</label>
+          <input type="text" id="pdns-expose-site-pub" class="form-control" placeholder="contoh: portal.erposoft.my.id">
+        </div>
+        <div id="pdns-expose-site-alert" style="margin-top:10px;font-size:12.5px;padding:8px 12px;border-radius:var(--radius-sm);display:none;"></div>
+      </div>
+
+      <!-- Port Mode Form Group -->
+      <div id="pdns-expose-port-group" role="tabpanel" aria-labelledby="pdns-btn-mode-port" style="display:none;">
+        <div class="form-group">
+          <label>Domain Publik VPS</label>
+          <input type="text" id="pdns-expose-port-pub" class="form-control" placeholder="contoh: api.erposoft.my.id">
+        </div>
+        <div class="form-group">
+          <label>Port Target Mesin Lokal</label>
+          <input type="number" id="pdns-expose-port-target" class="form-control" placeholder="3000" min="1" max="65535">
+        </div>
+      </div>
+
+      <!-- Options -->
+      <div style="display:flex;flex-direction:column;gap:10px;margin:16px 0 20px 0;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-main);margin-bottom:0;">
+          <input type="checkbox" id="pdns-expose-ssl" checked style="cursor:pointer;width:18px;height:18px;">
+          <span>Otomatis Pasang SSL Let's Encrypt (HTTPS)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-main);margin-bottom:0;">
+          <input type="checkbox" id="pdns-expose-ws" checked style="cursor:pointer;width:18px;height:18px;">
+          <span>Dukungan WebSocket (WSS/Upgrade)</span>
+        </label>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn" onclick="closePDNSExposeModal()">Batal</button>
+        <button type="button" class="btn btn-primary" onclick="submitPDNSExpose()" style="display:inline-flex;align-items:center;gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path d="M12 13v6"/><path d="m9 16 3-3 3 3"/></svg>
+          <span>Ekspos Sekarang</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Deploy & Install ke VPS via SSH -->
+  <div class="modal-overlay" id="modal-vps-deploy" onclick="if(event.target===this)closeVPSDeployModal()">
+    <div class="modal-box" style="max-width:560px;">
+      <div class="modal-header">
+        <h3 style="display:inline-flex;align-items:center;gap:8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          <span>Deploy & Install VPS Edge Gateway</span>
+        </h3>
+        <button class="btn btn-outline btn-sm" onclick="closeVPSDeployModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <p style="color:var(--text-muted);font-size:12.5px;margin-bottom:16px;">
+        Instalasi otomatis PowerDNS Authoritative, SQLite3, Nginx Reverse Proxy, dan Edge Agent ke VPS Anda via SSH. Konfigurasi dan API key otomatis disinkronkan ke mesin lokal.
+      </p>
+
+      <div class="form-group">
+        <label>Host / IP VPS (NetBird IP atau IP Publik)</label>
+        <input type="text" id="vps-deploy-host" class="form-control" placeholder="contoh: 100.68.66.249 (NetBird) atau 103.150.20.50">
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Disarankan menggunakan IP NetBird mesh agar jalur manajemen terenkripsi aman.</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Username SSH</label>
+          <input type="text" id="vps-deploy-user" class="form-control" value="root" placeholder="root">
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Port SSH</label>
+          <input type="number" id="vps-deploy-port" class="form-control" value="22" placeholder="22">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Metode Autentikasi SSH</label>
+        <div style="display:flex;gap:10px;">
+          <button type="button" id="vps-auth-btn-pass" class="btn btn-primary btn-sm" onclick="setVPSAuthMethod('password')" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21 2-2 2m-6 6 7 7-2 2-2-2-2 2-2-2m2-2 2 2M3 14a5 5 0 1 1 7.07-7.07 5 5 0 0 1-7.07 7.07Z"/></svg>
+            <span>Password SSH</span>
+          </button>
+          <button type="button" id="vps-auth-btn-key" class="btn btn-outline btn-sm" onclick="setVPSAuthMethod('key')" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            <span>SSH Private Key</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Password Group -->
+      <div class="form-group" id="vps-auth-pass-group">
+        <label>Password Login SSH</label>
+        <input type="password" id="vps-deploy-password" class="form-control" placeholder="Masukkan password SSH user VPS" autocomplete="new-password">
+      </div>
+
+      <!-- Key Group -->
+      <div class="form-group" id="vps-auth-key-group" style="display:none;">
+        <label>Path Private Key SSH di Mesin Lokal</label>
+        <input type="text" id="vps-deploy-keypath" class="form-control" placeholder="/root/.ssh/id_rsa atau ~/.ssh/id_ed25519">
+      </div>
+
+      <div class="modal-footer" style="margin-top:20px;">
+        <button type="button" class="btn" onclick="closeVPSDeployModal()">Batal</button>
+        <button type="button" class="btn btn-primary" onclick="submitVPSDeploy()" style="display:inline-flex;align-items:center;gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <span>Mulai Deploy & Setup VPS</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Hubungkan Manual ke VPS Edge -->
+  <div class="modal-overlay" id="modal-vps-connect" onclick="if(event.target===this)closeVPSConnectModal()">
+    <div class="modal-box" style="max-width:540px;">
+      <div class="modal-header">
+        <h3 style="display:inline-flex;align-items:center;gap:8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>Hubungkan Manual ke VPS Edge</span>
+        </h3>
+        <button class="btn btn-outline btn-sm" onclick="closeVPSConnectModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <p style="color:var(--text-muted);font-size:12.5px;margin-bottom:16px;">
+        Gunakan ini jika VPS sudah terpasang PowerDNS & Edge Agent sebelumnya. Masukkan kredensial dari <code>/etc/wdev-edge/edge.conf</code> di VPS.
+      </p>
+
+      <div class="form-group">
+        <label>IP NetBird VPS (wt0)</label>
+        <input type="text" id="vps-conn-netbird-ip" class="form-control" placeholder="contoh: 100.68.66.249">
+      </div>
+
+      <div class="form-group">
+        <label>IP Publik Edge Gateway (Opsional)</label>
+        <input type="text" id="vps-conn-public-ip" class="form-control" placeholder="contoh: 174.128.205.124">
+      </div>
+
+      <div class="form-group">
+        <label>API Key PowerDNS (dari edge.conf)</label>
+        <input type="text" id="vps-conn-api-key" class="form-control" placeholder="API Key PowerDNS">
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Port PowerDNS API</label>
+          <input type="number" id="vps-conn-pdns-port" class="form-control" value="8081" placeholder="8081">
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Port Edge Agent</label>
+          <input type="number" id="vps-conn-agent-port" class="form-control" value="8082" placeholder="8082">
+        </div>
+      </div>
+
+      <div class="modal-footer" style="margin-top:20px;">
+        <button type="button" class="btn" onclick="closeVPSConnectModal()">Batal</button>
+        <button type="button" class="btn btn-primary" onclick="submitVPSConnect()" style="display:inline-flex;align-items:center;gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>Simpan & Hubungkan</span>
+        </button>
       </div>
     </div>
   </div>
@@ -684,12 +1040,15 @@
             <input type="number" id="pdns-rec-ttl" class="form-control" value="300">
           </div>
           <div>
-            <button class="btn btn-primary" onclick="submitAddPDNSRecord()" style="width:100%;min-height:var(--target-size);">Simpan</button>
+            <button class="btn btn-primary" onclick="submitAddPDNSRecord()" style="width:100%;min-height:var(--target-size);display:inline-flex;align-items:center;justify-content:center;gap:6px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span>Simpan</span>
+            </button>
           </div>
         </div>
       </div>
 
-      <div class="table-container" style="max-height:340px;overflow-y:auto;">
+      <div class="table-container" tabindex="0" role="region" aria-label="Tabel Record DNS PowerDNS" style="max-height:340px;overflow-y:auto;">
         <table>
           <thead>
             <tr>
@@ -705,6 +1064,230 @@
       </div>
       <div class="modal-footer" style="margin-top:14px;">
         <button class="btn" onclick="closePDNSRecordsModal()">Tutup</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Tambah Akun Email -->
+  <div class="modal-overlay" id="modal-mail-add-account">
+    <div class="modal-box" style="max-width:480px;">
+      <div class="modal-header">
+        <h3 id="modal-mail-add-title">Tambah Akun Email Baru</h3>
+        <button class="btn btn-outline btn-sm" onclick="closeMailAddAccountModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <form id="form-mail-add-account" onsubmit="submitMailAddAccount(event)">
+        <div class="form-group">
+          <label for="mail-new-email">Alamat Email Lengkap</label>
+          <input type="email" id="mail-new-email" class="form-control" placeholder="user@erposoft.my.id" required autocomplete="username">
+          <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Domain email harus sudah terdaftar di Stalwart (contoh: info@erposoft.my.id).</div>
+        </div>
+        <div class="form-group">
+          <label for="mail-new-password">Password Kotak Pos</label>
+          <input type="password" id="mail-new-password" class="form-control" placeholder="Minimal 8 karakter..." required autocomplete="new-password">
+        </div>
+        <div class="modal-footer" style="margin-top:18px;">
+          <button type="button" class="btn" onclick="closeMailAddAccountModal()">Batal</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-mail-account" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span>Buat Akun Email</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Setel Relay Domain -->
+  <div class="modal-overlay" id="modal-mail-relay">
+    <div class="modal-box" style="max-width:540px;">
+      <div class="modal-header">
+        <h3>Konfigurasi Outbound SMTP Relay</h3>
+        <button class="btn btn-outline btn-sm" onclick="closeMailRelayModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <form id="form-mail-relay" onsubmit="submitMailRelay(event)">
+        <div class="form-group">
+          <label for="mail-relay-domain">Domain Target</label>
+          <select id="mail-relay-domain" class="form-control" required>
+            <!-- Populated dynamically -->
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="mail-relay-provider">Provider Relay</label>
+          <select id="mail-relay-provider" class="form-control" onchange="toggleMailRelayFields()" required>
+            <option value="resend">Resend (smtp.resend.com:465 - Implicit TLS)</option>
+            <option value="brevo">Brevo / Sendinblue (smtp-relay.brevo.com:587)</option>
+            <option value="custom">Custom SMTP Relay (Server / Port Kustom)</option>
+            <option value="direct">Direct MX (Kirim langsung tanpa relay pihak ketiga)</option>
+          </select>
+          <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Provider pihak ketiga berguna jika IP VPS memblokir port outbound 25 atau reputasi IP baru.</div>
+        </div>
+
+        <!-- Field khusus Resend / Brevo -->
+        <div class="form-group" id="mail-relay-group-secret">
+          <label id="mail-relay-secret-label" for="mail-relay-secret">API Key / SMTP Key</label>
+          <input type="password" id="mail-relay-secret" class="form-control" placeholder="re_... atau xkeysib-..." autocomplete="current-password">
+          <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;" id="mail-relay-secret-help">Masukkan API Key Resend. Username otomatis disetel ke 'resend'.</div>
+        </div>
+
+        <!-- Field khusus Custom -->
+        <div id="mail-relay-group-custom" style="display:none;">
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;">
+            <div class="form-group">
+              <label for="mail-relay-host">Host SMTP</label>
+              <input type="text" id="mail-relay-host" class="form-control" placeholder="smtp.mailgun.org">
+            </div>
+            <div class="form-group">
+              <label for="mail-relay-port">Port</label>
+              <input type="number" id="mail-relay-port" class="form-control" value="587">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="mail-relay-user">Username SMTP</label>
+            <input type="text" id="mail-relay-user" class="form-control" placeholder="postmaster@domain.com">
+          </div>
+          <div class="form-group">
+            <label for="mail-relay-pass">Password SMTP</label>
+            <input type="password" id="mail-relay-pass" class="form-control" placeholder="Password relay...">
+          </div>
+        </div>
+
+        <div class="modal-footer" style="margin-top:18px;">
+          <button type="button" class="btn" onclick="closeMailRelayModal()">Batal</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-mail-relay" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            <span>Simpan Konfigurasi</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Setup Domain & Mail Server -->
+  <div class="modal-overlay" id="modal-mail-setup" role="dialog" aria-modal="true" aria-labelledby="modal-mail-setup-title">
+    <div class="modal-box" style="max-width:520px;">
+      <div class="modal-header">
+        <h3 id="modal-mail-setup-title">Setup Domain & Mail Server Baru</h3>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeMailSetupModal()" style="padding:4px 10px;" aria-label="Tutup Modal">✕</button>
+      </div>
+      <form id="form-mail-setup" onsubmit="submitMailSetup(event)">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:16px;">
+          Mengonfigurasi otomatis engine Stalwart lokal, webmail SnappyMail, record DNS (A, MX, SPF, DMARC) di VPS Edge, serta reverse-proxy SSL Let's Encrypt.
+        </div>
+        <div class="form-group">
+          <label for="mail-setup-domain-select">Domain Publik (Terdeteksi di PowerDNS Edge)</label>
+          <select id="mail-setup-domain-select" class="form-control" onchange="onMailSetupDomainSelectChange()" required aria-describedby="mail-setup-domain-help">
+            <option value="">Memeriksa domain yang tersedia...</option>
+          </select>
+          <div id="mail-setup-custom-domain-wrap" style="display:none;margin-top:8px;">
+            <label for="mail-setup-domain-custom" style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Masukkan Domain Manual:</label>
+            <input type="text" id="mail-setup-domain-custom" class="form-control" placeholder="contoh: domainanda.com" autocomplete="off" autocapitalize="none" spellcheck="false">
+          </div>
+          <div id="mail-setup-domain-help" style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">
+            Sistem otomatis mendeteksi Zone DNS yang tersedia di PowerDNS VPS Edge Gateway untuk konfigurasi Stalwart, SnappyMail & DNS Record.
+          </div>
+          <div id="mail-setup-domain-warning" style="display:none;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:var(--warning);padding:8px 12px;border-radius:6px;font-size:12px;margin-top:8px;">
+            ⚠️ Belum ada Zone DNS terdaftar di VPS Edge PowerDNS. Tambahkan zone di tab <strong>PowerDNS</strong> terlebih dahulu, atau ketik domain manual di atas jika zone baru saja ditambahkan.
+          </div>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+          <input type="checkbox" id="mail-setup-ssl" checked style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;">
+          <label for="mail-setup-ssl" style="margin-bottom:0;cursor:pointer;font-weight:500;font-size:13px;">Aktifkan SSL Let's Encrypt Otomatis (webmail & mailadmin)</label>
+        </div>
+        <div class="form-group">
+          <label for="mail-setup-relay-prov">Outbound SMTP Relay (Opsional)</label>
+          <select id="mail-setup-relay-prov" class="form-control" onchange="onMailSetupRelayChange()">
+            <option value="direct">Direct MX (Port 25, Tanpa Relay)</option>
+            <option value="resend">Resend (smtp.resend.com:465 - Rekomendasi)</option>
+            <option value="brevo">Brevo (smtp-relay.brevo.com:587)</option>
+            <option value="custom">Custom SMTP Relay Server</option>
+          </select>
+          <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Relay mencegah email keluar dianggap spam atau diblokir oleh ISP lokal.</div>
+        </div>
+
+        <!-- Field Relay: Resend -->
+        <div id="mail-setup-grp-resend" style="display:none;" class="form-group">
+          <label for="mail-setup-resend-key">API Key Resend (re_...)</label>
+          <input type="password" id="mail-setup-resend-key" class="form-control" placeholder="re_123456789...">
+        </div>
+
+        <!-- Field Relay: Brevo -->
+        <div id="mail-setup-grp-brevo" style="display:none;" class="form-group">
+          <label for="mail-setup-brevo-user">Brevo SMTP Login (Email)</label>
+          <input type="text" id="mail-setup-brevo-user" class="form-control" placeholder="akun@domain.com">
+          <label for="mail-setup-brevo-key" style="margin-top:8px;">Brevo SMTP Key (xsmtpsib-...)</label>
+          <input type="password" id="mail-setup-brevo-key" class="form-control" placeholder="xsmtpsib-...">
+        </div>
+
+        <!-- Field Relay: Custom -->
+        <div id="mail-setup-grp-custom" style="display:none;">
+          <div style="display:grid;grid-template-columns:1fr 100px;gap:8px;" class="form-group">
+            <div>
+              <label for="mail-setup-custom-host">SMTP Host</label>
+              <input type="text" id="mail-setup-custom-host" class="form-control" placeholder="mail.smtp.com">
+            </div>
+            <div>
+              <label for="mail-setup-custom-port">Port</label>
+              <input type="number" id="mail-setup-custom-port" class="form-control" value="587">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="mail-setup-custom-user">Username</label>
+            <input type="text" id="mail-setup-custom-user" class="form-control" placeholder="smtp-user">
+          </div>
+          <div class="form-group">
+            <label for="mail-setup-custom-pass">Password</label>
+            <input type="password" id="mail-setup-custom-pass" class="form-control" placeholder="••••••••">
+          </div>
+        </div>
+
+        <div class="modal-footer" style="margin-top:20px;display:flex;justify-content:flex-end;gap:8px;">
+          <button type="button" class="btn" onclick="closeMailSetupModal()">Batal</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-mail-setup" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            <span>Mulai Setup Domain</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Live Terminal Console -->
+  <div class="modal-overlay" id="modal-terminal" role="dialog" aria-modal="true" aria-labelledby="modal-terminal-title">
+    <div class="modal-box terminal-modal-box">
+      <div class="terminal-modal-header">
+        <div class="terminal-header-left">
+          <div class="terminal-window-dots" aria-hidden="true">
+            <span class="dot dot-red" onclick="closeTerminalModal()" title="Tutup Terminal"></span>
+            <span class="dot dot-yellow" onclick="clearTerminal()" title="Bersihkan Layar"></span>
+            <span class="dot dot-green" title="Proses Aktif"></span>
+          </div>
+          <div class="terminal-header-title-wrap">
+            <h3 id="modal-terminal-title" class="terminal-modal-title">Live Terminal Console</h3>
+            <span id="terminal-task-name" class="terminal-task-label">wdev-runner</span>
+          </div>
+          <span id="terminal-status-badge" class="stat-badge terminal-badge-idle">● Standby</span>
+        </div>
+        <div class="terminal-header-actions">
+          <button type="button" class="btn btn-sm btn-outline" id="btn-copy-terminal" onclick="copyTerminalLog()" title="Salin seluruh log ke clipboard" style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 10px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span id="copy-terminal-text">Salin Log</span>
+          </button>
+          <button type="button" class="btn btn-sm btn-outline" onclick="clearTerminal()" title="Bersihkan output konsol" style="font-size:11.5px;padding:3px 10px;">
+            Bersihkan
+          </button>
+          <button type="button" class="btn btn-sm btn-icon" onclick="closeTerminalModal()" aria-label="Tutup Console" title="Tutup Jendela Konsol">✕</button>
+        </div>
+      </div>
+      <div class="terminal-modal-body">
+        <div class="terminal-body" id="terminal-log-output" tabindex="0" role="region" aria-label="Output Konsol Terminal" aria-live="polite">Menunggu perintah... Pilih salah satu menu atau aksi untuk melihat output eksekusi.</div>
+      </div>
+      <div class="terminal-modal-footer">
+        <div class="terminal-footer-hint">
+          <span class="pulse-dot" id="terminal-stream-pulse" style="display:none;"></span>
+          <span id="terminal-footer-status">Streaming log langsung (SSE). Menutup modal tidak menghentikan proses di background.</span>
+        </div>
+        <div class="terminal-footer-buttons">
+          <button type="button" class="btn btn-primary btn-sm" onclick="closeTerminalModal()">Tutup / Minimalkan</button>
+        </div>
       </div>
     </div>
   </div>

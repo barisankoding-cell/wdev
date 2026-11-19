@@ -51,26 +51,9 @@ func Load() *Config {
 		}
 	}
 
-	// Detect where the bash scripts are located
 	scriptDir := os.Getenv("WDEV_SCRIPT_DIR")
 	if scriptDir == "" {
-		// Priority 1: Current working directory if scripts exist
-		if _, err := os.Stat("setup_dev.sh"); err == nil {
-			scriptDir, _ = filepath.Abs(".")
-		} else if _, err := os.Stat("/opt/wdev/setup_dev.sh"); err == nil {
-			scriptDir = "/opt/wdev"
-		} else {
-			// Try executable directory
-			if exe, err := os.Executable(); err == nil {
-				dir := filepath.Dir(exe)
-				if _, err := os.Stat(filepath.Join(dir, "setup_dev.sh")); err == nil {
-					scriptDir = dir
-				}
-			}
-		}
-	}
-	if scriptDir == "" {
-		scriptDir, _ = filepath.Abs(".")
+		scriptDir = "/var/lib/wdev"
 	}
 
 	port := os.Getenv("WDEV_PORT")

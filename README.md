@@ -21,33 +21,72 @@ Aplikasi manajemen lingkungan pengembangan & infrastruktur Linux terpadu dalam s
 
 ## Mulai Cepat
 
-### Menggunakan Go Control Plane (Disarankan)
+### 1. Instalasi Mandiri dari Biner Release (Stand-Alone)
+
+Biner release `wdev` bersifat **mandiri (self-contained)** — seluruh file Web UI dan skrip automasi sudah tertanam di dalam biner menggunakan `go:embed`. Anda **tidak memerlukan skrip installer `.sh`** maupun compiler Go.
+
+Cukup unduh biner rilis dan jalankan perintah install:
+
+```bash
+# 1. Berikan izin eksekusi pada biner release wdev
+chmod +x wdev
+
+# 2. Pasang wdev ke sistem & aktifkan systemd background service (auto-start)
+sudo ./wdev install
+```
+
+Setelah instalasi selesai, Web Dashboard langsung aktif di:
+👉 **`http://localhost:3200`**
+
+---
+
+### 2. Mengelola Layanan (CLI)
+
+```bash
+# Cek status layanan wdev
+wdev service status wdev
+
+# Restart / Stop / Start layanan
+sudo wdev service restart wdev
+sudo wdev service stop wdev
+sudo wdev service start wdev
+
+# Lihat log real-time
+journalctl -u wdev.service -f
+```
+
+---
+
+### 3. Uninstall Layanan & Biner
+
+Untuk menghapus service systemd dan biner `wdev` secara mandiri dari biner:
+
+```bash
+# Hapus service systemd dan biner (data konfigurasi di /etc/wdev dipertahankan)
+sudo wdev uninstall
+
+# Atau hapus total termasuk seluruh database & konfigurasi
+sudo wdev uninstall --purge
+```
+
+---
+
+### 4. Instalasi Manual (Pengembang)
 
 ```bash
 # Build & install biner wdev secara global
-go build -o wdev ./cmd/wdev
-sudo cp wdev /usr/local/bin/
+go build -ldflags="-s -w" -o wdev ./cmd/wdev
+sudo install -m 755 ./wdev /usr/local/bin/wdev
 
-# Jalankan Web Dashboard (Buka http://localhost:3200 di browser)
+# Pasang systemd service via CLI
+sudo wdev install --port 3200
+
+# Atau jalankan secara langsung di terminal (foreground)
 wdev serve
 
 # Atau jalankan Terminal UI Interaktif
 wdev tui
-
-# Atau cek status via CLI
-wdev status
 ```
-
-### Menggunakan Skrip Bash Klasik
-
-```bash
-sudo ./setup_dev.sh            # menu interaktif
-sudo ./setup_dev.sh --install  # instalasi penuh (14 langkah)
-```
-
-Setelah selesai: `source /etc/profile` atau buka terminal baru.
-
-## `setup_dev.sh`
 
 ### Mode Interaktif
 
@@ -411,9 +450,24 @@ Tanpa `CF_API_TOKEN`, DNS tidak diubah otomatis; `cf-tunnel` mencetak CNAME yang
 
 ```
 wdev/
-├── setup_dev.sh
-├── cf-tunnel.sh
-├── setup_orca_headless.sh
+├── cmd/
+│   └── wdev/
+│       └── main.go
+├── internal/
+│   ├── config/
+│   ├── installer/
+│   ├── mail/
+│   ├── monitor/
+│   ├── pdns/
+│   ├── runner/
+│   ├── server/
+│   ├── site/
+│   ├── store/
+│   ├── switcher/
+│   └── tui/
+├── web/
+│   ├── embed.go
+│   └── static/
 ├── README.md
 └── .gitignore
 ```

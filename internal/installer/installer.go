@@ -85,7 +85,7 @@ func needsSudo(name string, args ...string) bool {
 		return false
 	}
 	switch name {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "pacman", "zypper", "systemctl", "ufw", "netfilter-persistent":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "pacman", "zypper", "systemctl", "ufw", "netfilter-persistent", "update-alternatives", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "node-switch", "php-switch", "pg-switch":
 		return true
 	case "cp", "rm", "mkdir", "chmod", "chown", "tar", "ln", "tee", "unzip":
 		for _, arg := range args {
@@ -159,6 +159,10 @@ func detectDistro() (distro string, pkgMgr string, isDebian bool) {
 	}
 
 	return
+}
+
+func (inst *Installer) RunCmd(ctx context.Context, cb LogCallback, name string, args ...string) error {
+	return inst.runCmd(ctx, cb, name, args...)
 }
 
 func (inst *Installer) runCmd(ctx context.Context, cb LogCallback, name string, args ...string) error {
@@ -256,7 +260,7 @@ func (inst *Installer) InstallBase(ctx context.Context, cb LogCallback) error {
 		pkgs := []string{
 			"install", "-y", "build-essential", "curl", "wget", "git", "jq", "unzip",
 			"tar", "xz-utils", "pkg-config", "libssl-dev", "cmake", "clang",
-			"software-properties-common", "ca-certificates", "gnupg",
+			"ca-certificates", "gnupg",
 		}
 		return inst.runCmd(ctx, cb, "apt-get", pkgs...)
 	}
@@ -509,15 +513,15 @@ func (inst *Installer) InstallFlutter(ctx context.Context, cb LogCallback) error
 func (inst *Installer) InstallPostgres(ctx context.Context, cb LogCallback, ver string) error {
 	cb("--- [8] Memasang PostgreSQL Server ---")
 	if inst.isDebian {
-		pkg := "postgresql"
+		pkg := "postgresql-16"
 		if ver != "" && ver != "system" {
 			pkg = fmt.Sprintf("postgresql-%s", ver)
 		}
-		if err := inst.runCmd(ctx, cb, "apt-get", "install", "-y", pkg, "postgresql-contrib"); err != nil {
+		if err := inst.runCmd(ctx, cb, "apt-get", "install", "-y", pkg); err != nil {
 			return err
 		}
 	} else {
-		if err := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "postgresql-server", "postgresql-contrib"); err != nil {
+		if err := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "postgresql-server"); err != nil {
 			return err
 		}
 		_ = inst.runCmd(ctx, cb, "postgresql-setup", "--initdb")
@@ -1113,18 +1117,37 @@ func (inst *Installer) CheckUpdates(ctx context.Context, cb LogCallback) error {
 
 	// 8. PostgreSQL
 	pgInst := "-"
-	if out, err := exec.CommandContext(ctx, "psql", "-V").CombinedOutput(); err == nil {
+	pgMajor := "16"
+	if out, err := exec.CommandContext(ctx, "pg_lsclusters", "-h").CombinedOutput(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 4 && fields[2] == "5432" && fields[3] == "online" {
+				pgMajor = fields[0]
+				break
+			}
+		}
+	}
+	pgBin := fmt.Sprintf("/usr/lib/postgresql/%s/bin/postgres", pgMajor)
+	if out, err := exec.CommandContext(ctx, pgBin, "-V").CombinedOutput(); err == nil {
 		fields := strings.Fields(string(out))
 		if len(fields) >= 3 {
 			pgInst = fields[2]
 		}
 	}
-	pgLatest := getCandidate("postgresql-16")
+	if pgInst == "-" {
+		if out, err := exec.CommandContext(ctx, "psql", "-V").CombinedOutput(); err == nil {
+			fields := strings.Fields(string(out))
+			if len(fields) >= 3 {
+				pgInst = fields[2]
+			}
+		}
+	}
+	pgLatest := getCandidate(fmt.Sprintf("postgresql-%s", pgMajor))
 	results = append(results, VersionCheck{
 		Name:      "PostgreSQL",
 		Installed: pgInst,
 		Latest:    pgLatest,
-		HasUpdate: pgLatest != "-" && pgInst != "-" && !strings.HasPrefix(pgLatest, pgInst),
+		HasUpdate: pgLatest != "-" && pgInst != "-" && hasNewerVersion(pgInst, pgLatest),
 	})
 
 	// 9. Redis

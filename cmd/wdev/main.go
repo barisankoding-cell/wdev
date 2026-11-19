@@ -10,6 +10,7 @@ import (
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
 	"wdev/internal/installer"
+	"wdev/internal/mail"
 	"wdev/internal/monitor"
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
@@ -34,10 +35,13 @@ ANTARMUKA:
     --host <host>           Tentukan host binding (default: 0.0.0.0)
   wdev tui                  Jalankan TUI Terminal Dashboard interaktif
 
-MANAJEMEN LAYANAN & STATUS:
-  wdev status, wdev check   Tampilkan status cepat sistem, IP, dan layanan inti
-  wdev check-updates, -cu   Periksa ketersediaan pembaruan toolchain & paket sistem
-  wdev service <nama> <aksi> Start/Stop/Restart layanan (contoh: wdev service nginx restart)
+MANAJEMEN LAYANAN & SYSTEMD:
+  wdev status, wdev check              Tampilkan status cepat sistem, IP, dan layanan inti
+  wdev check-updates, -cu              Periksa ketersediaan pembaruan toolchain & paket sistem
+  wdev service install [--port 3200]   Pasang wdev sebagai systemd background service (auto-start)
+  wdev service uninstall [--purge]     Hapus systemd service wdev dari sistem
+  wdev service status [nama]           Tampilkan status layanan (default: wdev)
+  wdev service <nama> <aksi>           Start/Stop/Restart layanan (contoh: wdev service nginx restart)
 
 VIRTUAL HOST (NGINX):
   wdev site list            Tampilkan semua virtual host lokal
@@ -67,13 +71,24 @@ POWERDNS & VPS EDGE:
   wdev pdns record list <zone>             Tampilkan record DNS dalam zone
   wdev pdns record add <z> <n> <t> <val>   Tambah/update DNS record (TTL opsional)
   wdev pdns record rm <z> <n> <t>          Hapus DNS record
+  wdev pdns deploy <ip> [--user u] [--port p] [--key path]  Deploy otomatis ke VPS via SSH
+  wdev pdns connect <netbird_ip> <pub_ip> <api_key>          Hubungkan manual ke VPS Edge
   wdev pdns exposures                      Daftar proxy domain aktif di Edge Gateway
   wdev pdns expose <dom> <port> [--ssl]    Ekspos port ke domain publik via VPS Edge
   wdev pdns expose-site <loc> <pub> [--ssl] Ekspos vhost lokal (PHP/Laravel) via VPS Edge
   wdev pdns unexpose <dom> [--keep-dns]    Hapus eksposur dari Edge Gateway
 
-INSTALASI & UPDATE:
-  wdev install <komponen>   Pasang atau perbarui komponen (update, node, php-stack, postgres, dll.)
+MAIL SERVER & RELAY:
+  wdev mail status                         Status Stalwart, SnappyMail, dan relay per domain
+  wdev mail accounts [domain]              Daftar akun email dikelompokkan per domain
+  wdev mail add-account <email> <password> Buat kotak pos / akun email baru
+  wdev mail set-relay <domain> <provider>  Setel outbound SMTP relay (resend, brevo, custom, direct)
+  wdev mail admin-reset <domain>           Reset password admin Stalwart untuk domain
+
+INSTALASI & SYSTEMD SERVICE:
+  wdev install [service]               Pasang wdev ke sistem & aktifkan systemd service (auto-start)
+  wdev uninstall [--purge]             Hapus systemd service wdev & binary dari sistem
+  wdev install <komponen>              Pasang atau perbarui komponen (update, node, php, postgres, dll.)
 `, Version)
 }
 
@@ -95,6 +110,7 @@ func main() {
 	swMgr := switcher.New()
 	cfMgr := cloudflare.New(cfg, db)
 	pdnsMgr := pdns.New(cfg, db)
+	mailMgr := mail.New(cfg, db, pdnsMgr)
 
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -114,7 +130,7 @@ func main() {
 		cfg.HTTPPort = *portFlag
 		cfg.HTTPHost = *hostFlag
 
-		srv := server.New(cfg, db, runMgr, inst, siteMgr, swMgr, cfMgr, pdnsMgr)
+		srv := server.New(cfg, db, runMgr, inst, siteMgr, swMgr, cfMgr, pdnsMgr, mailMgr)
 		if err := srv.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error menjalankan server: %v\n", err)
 			os.Exit(1)
@@ -144,7 +160,11 @@ func main() {
 			if s.Active {
 				status = "AKTIF"
 			}
-			fmt.Printf("  - %-24s : %s\n", s.DisplayName, status)
+			verStr := ""
+			if s.Version != "" {
+				verStr = " (" + s.Version + ")"
+			}
+			fmt.Printf("  - %-34s : %s%s\n", s.DisplayName, status, verStr)
 		}
 		fmt.Println("\nRuntime Aktif:")
 		for k, v := range stats.Runtimes {
@@ -162,16 +182,122 @@ func main() {
 		}
 
 	case "service":
-		if len(args) < 3 {
-			fmt.Println("Penggunaan: wdev service <nama> <start|stop|restart|reload>")
+		if len(args) < 2 {
+			fmt.Println("Penggunaan: wdev service <install|uninstall|status|start|stop|restart|reload> [nama/opsi]")
 			os.Exit(1)
 		}
-		name, action := args[1], args[2]
-		if err := monitor.ControlService(name, action); err != nil {
+		sub := args[1]
+		switch sub {
+		case "install":
+			port := cfg.HTTPPort
+			host := cfg.HTTPHost
+			for i := 2; i < len(args); i++ {
+				if args[i] == "--port" && i+1 < len(args) {
+					port = args[i+1]
+					i++
+				} else if args[i] == "--host" && i+1 < len(args) {
+					host = args[i+1]
+					i++
+				}
+			}
+			ctx := context.Background()
+			cb := func(line string) { fmt.Println(line) }
+			if err := inst.InstallWdevService(ctx, cb, port, host); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		case "uninstall":
+			purge := false
+			for i := 2; i < len(args); i++ {
+				if args[i] == "--purge" || args[i] == "-p" {
+					purge = true
+				}
+			}
+			ctx := context.Background()
+			cb := func(line string) { fmt.Println(line) }
+			if err := inst.UninstallWdevService(ctx, cb, purge); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		case "status":
+			name := "wdev"
+			if len(args) >= 3 {
+				name = args[2]
+			}
+			if name == "wdev" || name == "wdev.service" {
+				st, err := inst.GetWdevServiceStatus()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println(st)
+			} else {
+				st := monitor.GetServiceStatus(name)
+				activeStr := "Nonaktif"
+				if st.Active {
+					activeStr = "Aktif (Running)"
+				}
+				fmt.Printf("Layanan: %s (%s)\nStatus : %s\nVersi  : %s\nPort   : %s\n", st.DisplayName, st.Name, activeStr, st.Version, st.Port)
+			}
+		case "start", "stop", "restart", "reload":
+			if len(args) < 3 {
+				fmt.Printf("Penggunaan: wdev service %s <nama_layanan>\n", sub)
+				os.Exit(1)
+			}
+			name := args[2]
+			if err := monitor.ControlService(name, sub); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Layanan %s berhasil di-%s\n", name, sub)
+		default:
+			// Backward compatibility: wdev service <nama> <action>
+			if len(args) >= 3 {
+				name, action := args[1], args[2]
+				if err := monitor.ControlService(name, action); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Printf("✓ Layanan %s berhasil di-%s\n", name, action)
+			} else {
+				fmt.Printf("Perintah service tidak dikenal: %s\n", sub)
+				fmt.Println("Gunakan: wdev service <install|uninstall|status|start|stop|restart|reload>")
+				os.Exit(1)
+			}
+		}
+
+	case "install-service":
+		port := cfg.HTTPPort
+		host := cfg.HTTPHost
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--port" && i+1 < len(args) {
+				port = args[i+1]
+				i++
+			} else if args[i] == "--host" && i+1 < len(args) {
+				host = args[i+1]
+				i++
+			}
+		}
+		ctx := context.Background()
+		cb := func(line string) { fmt.Println(line) }
+		if err := inst.InstallWdevService(ctx, cb, port, host); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("✓ Layanan %s berhasil di-%s\n", name, action)
+
+	case "uninstall-service":
+		purge := false
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--purge" || args[i] == "-p" {
+				purge = true
+			}
+		}
+		ctx := context.Background()
+		cb := func(line string) { fmt.Println(line) }
+		if err := inst.UninstallWdevService(ctx, cb, purge); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "site":
 		if len(args) < 2 {
@@ -529,20 +655,241 @@ func main() {
 			}
 			fmt.Printf("✓ Eksposur untuk '%s' berhasil dihapus.\n", domain)
 
+		case "connect":
+			if len(args) < 5 {
+				fmt.Println("Penggunaan: wdev pdns connect <vps_netbird_ip> <vps_public_ip> <api_key> [pdns_port] [agent_port]")
+				os.Exit(1)
+			}
+			pPort := "8081"
+			if len(args) >= 6 {
+				pPort = args[5]
+			}
+			aPort := "8082"
+			if len(args) >= 7 {
+				aPort = args[6]
+			}
+			opts := pdns.ConnectOptions{
+				VPSNetbirdIP: args[2],
+				VPSPublicIP:  args[3],
+				APIKey:       args[4],
+				PDNSPort:     pPort,
+				AgentPort:    aPort,
+			}
+			fmt.Printf("Menghubungkan ke PowerDNS VPS di %s...\n", opts.VPSNetbirdIP)
+			if err := pdnsMgr.Connect(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✓ Berhasil terhubung ke VPS Edge Gateway! Konfigurasi tersimpan.")
+
+		case "deploy", "deploy-vps":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev pdns deploy <host_vps> [--user root] [--port 22] [--password pass] [--key path]")
+				os.Exit(1)
+			}
+			opts := pdns.DeployOptions{
+				VPSHost:    args[2],
+				SSHPort:    22,
+				SSHUser:    "root",
+				AuthMethod: "password",
+			}
+			for i := 3; i < len(args); i++ {
+				switch args[i] {
+				case "--user", "-u":
+					if i+1 < len(args) {
+						opts.SSHUser = args[i+1]
+						i++
+					}
+				case "--port", "-p":
+					if i+1 < len(args) {
+						var port int
+						fmt.Sscanf(args[i+1], "%d", &port)
+						opts.SSHPort = port
+						i++
+					}
+				case "--password", "--pass":
+					if i+1 < len(args) {
+						opts.Password = args[i+1]
+						opts.AuthMethod = "password"
+						i++
+					}
+				case "--key", "-i":
+					if i+1 < len(args) {
+						opts.KeyPath = args[i+1]
+						opts.AuthMethod = "key"
+						i++
+					}
+				}
+			}
+			if opts.AuthMethod == "password" && opts.Password == "" {
+				fmt.Print("Masukkan Password SSH: ")
+				var pass string
+				fmt.Scanln(&pass)
+				opts.Password = pass
+			}
+			ctx := context.Background()
+			cb := func(line string) {
+				fmt.Println(line)
+			}
+			if err := pdnsMgr.DeployVPS(ctx, cb, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
 		default:
 			fmt.Printf("Subperintah pdns tidak dikenal: %s\n", args[1])
 			fmt.Println("Jalankan 'wdev help' untuk daftar perintah lengkap.")
 		}
 
-	case "install":
+	case "mail":
 		if len(args) < 2 {
-			fmt.Println("Penggunaan: wdev install <komponen|update>")
-			fmt.Println("Komponen tersedia:")
-			fmt.Println("  all, update, self-check, base, node, rust, go, java, android,")
-			fmt.Println("  flutter, postgres, redis, nginx, php, composer, ssl, php-stack,")
-			fmt.Println("  cloudflare, zsh, orca-desktop, orca-headless, orca-uninstall")
+			fmt.Println("Penggunaan: wdev mail [status|accounts|add-account|set-relay|admin-reset]")
 			os.Exit(1)
 		}
+		switch args[1] {
+		case "status":
+			st, err := mailMgr.GetStatus()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("=== Status Mail Server & Relay ===")
+			fmt.Printf("Stalwart Mail Server: %v\n", st.StalwartActive)
+			fmt.Printf("SnappyMail Webmail:   %v\n", st.SnappyMailActive)
+			fmt.Printf("Free Storage:         %s\n", st.StorageFree)
+			if st.GlobalRelay != nil {
+				fmt.Printf("Global Relay:         %s (%s:%d)\n", st.GlobalRelay.Provider, st.GlobalRelay.Host, st.GlobalRelay.Port)
+			} else {
+				fmt.Printf("Global Relay:         Direct MX (Nonaktif)\n")
+			}
+			fmt.Println("\nRelay per Domain:")
+			if len(st.DomainRelays) == 0 {
+				fmt.Println("  (Belum ada konfigurasi domain relay)")
+			} else {
+				for dom, r := range st.DomainRelays {
+					fmt.Printf("  - %s: %s via %s:%d (User: %s)\n", dom, strings.ToUpper(r.Provider), r.Host, r.Port, r.Username)
+				}
+			}
+			fmt.Println("\nDomain Terdaftar:")
+			for _, d := range st.Domains {
+				fmt.Printf("  - %s (Admin: %s, Webmail: %s)\n", d.Domain, d.AdminURL, d.Webmail)
+			}
+
+		case "accounts", "list":
+			filter := ""
+			if len(args) >= 3 {
+				filter = args[2]
+			}
+			accs, err := mailMgr.GetDomainAccounts(filter)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			for _, d := range accs {
+				relayStr := "Direct MX"
+				if d.Relay != nil {
+					relayStr = fmt.Sprintf("%s (%s:%d)", strings.ToUpper(d.Relay.Provider), d.Relay.Host, d.Relay.Port)
+				}
+				fmt.Printf("\n=== Domain: %s (Relay: %s) ===\n", d.Domain, relayStr)
+				fmt.Printf("Webmail: %s | Admin: %s\n", d.Webmail, d.AdminURL)
+				if len(d.Accounts) == 0 {
+					fmt.Println("  (Tidak ada akun)")
+				} else {
+					for _, a := range d.Accounts {
+						role := "User"
+						if a.IsAdmin {
+							role = "Admin"
+						}
+						fmt.Printf("  - %s [%s]\n", a.Email, role)
+					}
+				}
+			}
+
+		case "add-account":
+			if len(args) < 4 {
+				fmt.Println("Penggunaan: wdev mail add-account <email> <password>")
+				os.Exit(1)
+			}
+			if err := mailMgr.AddAccount(args[2], args[3]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Akun %s berhasil dibuat!\n", args[2])
+
+		case "set-relay":
+			if len(args) < 4 {
+				fmt.Println("Penggunaan: wdev mail set-relay <domain> <provider: resend|brevo|direct|custom> [host] [port] [user] [pass]")
+				os.Exit(1)
+			}
+			dom := args[2]
+			prov := strings.ToLower(args[3])
+			opts := mail.SetRelayOptions{Domain: dom, Provider: prov}
+			if prov == "resend" || prov == "brevo" {
+				if len(args) >= 5 {
+					opts.Password = args[4]
+				} else {
+					fmt.Printf("Masukkan API Key / Password untuk %s: ", prov)
+					var p string
+					fmt.Scanln(&p)
+					opts.Password = p
+				}
+			} else if prov == "custom" {
+				if len(args) >= 8 {
+					opts.Host = args[4]
+					opts.Port, _ = strconv.Atoi(args[5])
+					opts.Username = args[6]
+					opts.Password = args[7]
+				} else {
+					fmt.Println("Untuk custom relay: wdev mail set-relay <domain> custom <host> <port> <user> <pass>")
+					os.Exit(1)
+				}
+			}
+			if err := mailMgr.SetRelay(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Relay untuk domain %s berhasil disetel ke %s!\n", dom, prov)
+
+		case "admin-reset":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mail admin-reset <domain>")
+				os.Exit(1)
+			}
+			if err := mailMgr.ResetAdmin(args[2]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Password admin untuk domain %s berhasil direset!\n", args[2])
+
+		default:
+			fmt.Printf("Subperintah mail tidak dikenal: %s\n", args[1])
+			fmt.Println("Pilihan: status, accounts, add-account, set-relay, admin-reset")
+		}
+
+	case "install":
+		// Jika dipanggil tanpa argumen atau dengan "service" / "self",
+		// jalankan instalasi biner & systemd service wdev secara mandiri!
+		if len(args) < 2 || args[1] == "service" || args[1] == "self" {
+			port := cfg.HTTPPort
+			host := cfg.HTTPHost
+			for i := 1; i < len(args); i++ {
+				if args[i] == "--port" && i+1 < len(args) {
+					port = args[i+1]
+					i++
+				} else if args[i] == "--host" && i+1 < len(args) {
+					host = args[i+1]
+					i++
+				}
+			}
+			ctx := context.Background()
+			cb := func(line string) { fmt.Println(line) }
+			if err := inst.InstallWdevService(ctx, cb, port, host); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
 		comp := strings.TrimPrefix(args[1], "--")
 		var fn func(ctx context.Context, cb func(string)) error
 		taskName := "Instal " + comp
@@ -669,6 +1016,20 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("\n✓ %s selesai dengan sukses!\n", taskName)
+
+	case "uninstall":
+		purge := false
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--purge" || args[i] == "-p" {
+				purge = true
+			}
+		}
+		ctx := context.Background()
+		cb := func(line string) { fmt.Println(line) }
+		if err := inst.UninstallWdevService(ctx, cb, purge); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "-v", "--version", "version":
 		fmt.Printf("wdev version %s\n", Version)

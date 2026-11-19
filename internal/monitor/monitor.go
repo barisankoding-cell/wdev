@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -11,36 +12,110 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 type SystemStats struct {
-	Hostname       string             `json:"hostname"`
-	OSName         string             `json:"os_name"`
-	Kernel         string             `json:"kernel"`
-	UptimeString   string             `json:"uptime_string"`
-	LoadAvg        string             `json:"load_avg"`
-	MemTotalMB     int64              `json:"mem_total_mb"`
-	MemUsedMB      int64              `json:"mem_used_mb"`
-	MemPercent     int                `json:"mem_percent"`
-	DiskTotalGB    int64              `json:"disk_total_gb"`
-	DiskUsedGB     int64              `json:"disk_used_gb"`
-	DiskPercent    int                `json:"disk_percent"`
-	LanIP          string             `json:"lan_ip"`
-	NetbirdIP      string             `json:"netbird_ip"`
-	Services       []ServiceStatus    `json:"services"`
-	Runtimes       map[string]string  `json:"runtimes"`
+	Hostname       string            `json:"hostname"`
+	OSName         string            `json:"os_name"`
+	Kernel         string            `json:"kernel"`
+	UptimeString   string            `json:"uptime_string"`
+	LoadAvg        string            `json:"load_avg"`
+	MemTotalMB     int64             `json:"mem_total_mb"`
+	MemUsedMB      int64             `json:"mem_used_mb"`
+	MemPercent     int               `json:"mem_percent"`
+	DiskTotalGB    int64             `json:"disk_total_gb"`
+	DiskUsedGB     int64             `json:"disk_used_gb"`
+	DiskPercent    int               `json:"disk_percent"`
+	LanIP          string            `json:"lan_ip"`
+	NetbirdIP      string            `json:"netbird_ip"`
+	Services       []ServiceStatus   `json:"services"`
+	Runtimes       map[string]string `json:"runtimes"`
 }
 
 type ServiceStatus struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
-	Category    string `json:"category"`
-	Active      bool   `json:"active"`
-	StatusText  string `json:"status_text"`
-	Port        string `json:"port,omitempty"`
-	IsRemote    bool   `json:"is_remote,omitempty"`
+	Name             string `json:"name"`
+	DisplayName      string `json:"display_name"`
+	Category         string `json:"category"`
+	Active           bool   `json:"active"`
+	StatusText       string `json:"status_text"`
+	Version          string `json:"version,omitempty"`
+	Port             string `json:"port,omitempty"`
+	IsRemote         bool   `json:"is_remote,omitempty"`
+	Installed        bool   `json:"installed"`
+	LatestVersion    string `json:"latest_version,omitempty"`
+	HasUpdate        bool   `json:"has_update"`
+	InstallComponent string `json:"install_component,omitempty"`
+}
+
+type serviceVersionCache struct {
+	mu        sync.RWMutex
+	checkedAt time.Time
+	latest    map[string]string
+}
+
+var globalServiceCache = &serviceVersionCache{
+	latest: make(map[string]string),
+}
+
+func init() {
+	go RefreshLatestVersions(false)
+}
+
+func cleanVersion(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "rust-")
+	v = strings.TrimPrefix(v, "go")
+	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimPrefix(v, "version ")
+	return v
+}
+
+func compareVersions(v1, v2 string) int {
+	v1Clean := cleanVersion(v1)
+	v2Clean := cleanVersion(v2)
+	if v1Clean == v2Clean {
+		return 0
+	}
+	parts1 := strings.Split(strings.Split(v1Clean, "-")[0], ".")
+	parts2 := strings.Split(strings.Split(v2Clean, "-")[0], ".")
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+	for i := 0; i < maxLen; i++ {
+		var n1, n2 int
+		if i < len(parts1) {
+			n1, _ = strconv.Atoi(strings.TrimRight(parts1[i], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+		}
+		if i < len(parts2) {
+			n2, _ = strconv.Atoi(strings.TrimRight(parts2[i], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+		}
+		if n1 < n2 {
+			return -1
+		}
+		if n1 > n2 {
+			return 1
+		}
+	}
+	return 0
+}
+
+func hasNewerVersion(installed, latest string) bool {
+	instClean := cleanVersion(installed)
+	latClean := cleanVersion(latest)
+	if instClean == "" || latClean == "" || latClean == "-" {
+		return false
+	}
+	if instClean == latClean {
+		return false
+	}
+	if strings.HasPrefix(instClean, latClean) || strings.Contains(instClean, latClean) {
+		return false
+	}
+	return compareVersions(instClean, latClean) < 0
 }
 
 func Collect() (*SystemStats, error) {
@@ -234,18 +309,180 @@ func GetServiceStatus(serviceName string) ServiceStatus {
 	}
 }
 
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+func getAptCandidates(ctx context.Context, pkgs ...string) map[string]string {
+	res := make(map[string]string)
+	for _, p := range pkgs {
+		res[p] = "-"
+	}
+	if len(pkgs) == 0 {
+		return res
+	}
+
+	args := append([]string{"policy"}, pkgs...)
+	out, err := exec.CommandContext(ctx, "apt-cache", args...).CombinedOutput()
+	if err != nil {
+		return res
+	}
+
+	lines := strings.Split(string(out), "\n")
+	currentPkg := ""
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ") {
+			pkg := strings.TrimSuffix(trimmed, ":")
+			if _, ok := res[pkg]; ok {
+				currentPkg = pkg
+			} else {
+				currentPkg = ""
+			}
+			continue
+		}
+		if currentPkg != "" && strings.HasPrefix(trimmed, "Candidate:") {
+			parts := strings.Fields(trimmed)
+			if len(parts) >= 2 {
+				cand := parts[1]
+				cand = strings.Split(cand, "+")[0]
+				cand = strings.Split(cand, "~")[0]
+				cand = strings.Split(cand, "-")[0]
+				cand = strings.TrimPrefix(cand, "5:")
+				res[currentPkg] = cand
+			}
+			currentPkg = ""
+		}
+	}
+	return res
+}
+
+func fetchCoreLatestVersions(ctx context.Context) map[string]string {
+	latest := make(map[string]string)
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	setVal := func(key, val string) {
+		if val == "" || val == "-" {
+			return
+		}
+		mu.Lock()
+		latest[key] = val
+		mu.Unlock()
+	}
+
+	// 1. APT candidates
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pgMajor := GetActivePostgresMajor()
+		pgPkg := fmt.Sprintf("postgresql-%s", pgMajor)
+		cands := getAptCandidates(ctx, "nginx", "php8.4", pgPkg, "redis-server", "netbird")
+		if c, ok := cands["nginx"]; ok && c != "-" {
+			setVal("nginx", c)
+		}
+		if c, ok := cands["php8.4"]; ok && c != "-" {
+			setVal("php-fpm", c)
+		}
+		if c, ok := cands[pgPkg]; ok && c != "-" {
+			setVal("postgresql", c)
+		}
+		if c, ok := cands["redis-server"]; ok && c != "-" {
+			setVal("redis", c)
+		}
+		if c, ok := cands["netbird"]; ok && c != "-" {
+			setVal("netbird", c)
+		}
+	}()
+
+	// 2. Cloudflared (GitHub release)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/repos/cloudflare/cloudflared/releases/latest", nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "wdev-control-plane")
+			resp, err := client.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				var rel struct {
+					TagName string `json:"tag_name"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil && rel.TagName != "" {
+					setVal("cloudflared", strings.TrimPrefix(rel.TagName, "v"))
+				}
+			}
+		}
+	}()
+
+	setVal("pdns", "4.9.18")
+	setVal("stalwart", "1.1.1")
+	setVal("wdev", "2.0.0")
+
+	wg.Wait()
+	return latest
+}
+
+// RefreshLatestVersions memperbarui cache versi rilis terbaru untuk layanan inti.
+func RefreshLatestVersions(force bool) {
+	globalServiceCache.mu.Lock()
+	if !force && !globalServiceCache.checkedAt.IsZero() && time.Since(globalServiceCache.checkedAt) < 15*time.Minute {
+		globalServiceCache.mu.Unlock()
+		return
+	}
+	globalServiceCache.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	latest := fetchCoreLatestVersions(ctx)
+
+	globalServiceCache.mu.Lock()
+	for k, v := range latest {
+		globalServiceCache.latest[k] = v
+	}
+	globalServiceCache.checkedAt = time.Now()
+	globalServiceCache.mu.Unlock()
+}
+
 func getServiceStatuses() []ServiceStatus {
 	var list []ServiceStatus
 
+	globalServiceCache.mu.RLock()
+	cachedLatest := make(map[string]string)
+	for k, v := range globalServiceCache.latest {
+		cachedLatest[k] = v
+	}
+	cacheChecked := !globalServiceCache.checkedAt.IsZero()
+	globalServiceCache.mu.RUnlock()
+
+	if !cacheChecked {
+		go RefreshLatestVersions(false)
+	}
+
 	// 1. Nginx
 	nginxActive := isSystemdServiceActive("nginx")
+	nginxVer := getNginxVersion()
+	nginxInstalled := nginxVer != "" || fileExists("/usr/sbin/nginx") || fileExists("/usr/bin/nginx")
+	nginxLatest := cachedLatest["nginx"]
+	if nginxLatest == "" && nginxVer != "" {
+		nginxLatest = cleanVersion(nginxVer)
+	}
 	list = append(list, ServiceStatus{
-		Name:        "nginx",
-		DisplayName: "Nginx Web Server",
-		Category:    "Web Stack",
-		Active:      nginxActive,
-		StatusText:  statusText(nginxActive),
-		Port:        "80, 443",
+		Name:             "nginx",
+		DisplayName:      "Nginx Web Server",
+		Category:         "Web Stack",
+		Active:           nginxActive,
+		StatusText:       statusText(nginxActive),
+		Version:          nginxVer,
+		Port:             "80, 443",
+		Installed:        nginxInstalled,
+		LatestVersion:    nginxLatest,
+		HasUpdate:        nginxInstalled && hasNewerVersion(nginxVer, nginxLatest),
+		InstallComponent: "nginx",
 	})
 
 	// 2. PHP-FPM (check multiple versions)
@@ -262,67 +499,404 @@ func getServiceStatuses() []ServiceStatus {
 	if phpVerActive != "" {
 		phpDisplayName = fmt.Sprintf("PHP-FPM (%s)", phpVerActive)
 	}
+	phpVer := getPHPFPMVersion(phpVerActive)
+	phpInstalled := phpVer != "" || fileExists("/usr/sbin/php-fpm8.4") || fileExists("/usr/bin/php")
+	phpLatest := cachedLatest["php-fpm"]
+	if phpLatest == "" && phpVer != "" {
+		phpLatest = cleanVersion(phpVer)
+	}
 	list = append(list, ServiceStatus{
-		Name:        "php-fpm",
-		DisplayName: phpDisplayName,
-		Category:    "Web Stack",
-		Active:      phpActive,
-		StatusText:  statusText(phpActive),
-		Port:        "Unix Socket",
+		Name:             "php-fpm",
+		DisplayName:      phpDisplayName,
+		Category:         "Web Stack",
+		Active:           phpActive,
+		StatusText:       statusText(phpActive),
+		Version:          phpVer,
+		Port:             "Unix Socket",
+		Installed:        phpInstalled,
+		LatestVersion:    phpLatest,
+		HasUpdate:        phpInstalled && hasNewerVersion(phpVer, phpLatest),
+		InstallComponent: "php",
 	})
 
 	// 3. PostgreSQL
 	pgActive := isSystemdServiceActive("postgresql")
+	pgVer := getPostgresVersion()
+	pgInstalled := pgVer != "" || fileExists("/usr/bin/psql") || dirExists("/usr/lib/postgresql")
+	pgLatest := cachedLatest["postgresql"]
+	if pgLatest == "" && pgVer != "" {
+		pgLatest = cleanVersion(pgVer)
+	}
 	list = append(list, ServiceStatus{
-		Name:        "postgresql",
-		DisplayName: "PostgreSQL Database",
-		Category:    "Database",
-		Active:      pgActive,
-		StatusText:  statusText(pgActive),
-		Port:        "5432",
+		Name:             "postgresql",
+		DisplayName:      "PostgreSQL Database",
+		Category:         "Database",
+		Active:           pgActive,
+		StatusText:       statusText(pgActive),
+		Version:          pgVer,
+		Port:             "5432",
+		Installed:        pgInstalled,
+		LatestVersion:    pgLatest,
+		HasUpdate:        pgInstalled && hasNewerVersion(pgVer, pgLatest),
+		InstallComponent: "postgres",
 	})
 
 	// 4. Redis / Valkey
 	redisActive := isSystemdServiceActive("redis-server") || isSystemdServiceActive("valkey-server") || isSystemdServiceActive("redis")
+	redisVer := getRedisVersion()
+	redisInstalled := redisVer != "" || fileExists("/usr/bin/redis-server") || fileExists("/usr/bin/valkey-server")
+	redisLatest := cachedLatest["redis"]
+	if redisLatest == "" && redisVer != "" {
+		redisLatest = cleanVersion(redisVer)
+	}
 	list = append(list, ServiceStatus{
-		Name:        "redis",
-		DisplayName: "Redis / Valkey Cache",
-		Category:    "Database",
-		Active:      redisActive,
-		StatusText:  statusText(redisActive),
-		Port:        "6379",
+		Name:             "redis",
+		DisplayName:      "Redis / Valkey Cache",
+		Category:         "Database",
+		Active:           redisActive,
+		StatusText:       statusText(redisActive),
+		Version:          redisVer,
+		Port:             "6379",
+		Installed:        redisInstalled,
+		LatestVersion:    redisLatest,
+		HasUpdate:        redisInstalled && hasNewerVersion(redisVer, redisLatest),
+		InstallComponent: "redis",
 	})
 
 	// 5. Cloudflare Tunnel
 	cfActive := isSystemdServiceActive("cloudflared")
 	if !cfActive {
-		// check if running as process
 		_ = exec.Command("pgrep", "cloudflared").Run()
 		cfActive = (exec.Command("pgrep", "cloudflared").Run() == nil)
 	}
+	cfVer := getCloudflaredVersion()
+	cfInstalled := cfVer != "" || fileExists("/usr/local/bin/cloudflared") || fileExists("/usr/bin/cloudflared")
+	cfLatest := cachedLatest["cloudflared"]
+	if cfLatest == "" && cfVer != "" {
+		cfLatest = cleanVersion(cfVer)
+	}
 	list = append(list, ServiceStatus{
-		Name:        "cloudflared",
-		DisplayName: "Cloudflare Tunnel",
-		Category:    "Network / Ingress",
-		Active:      cfActive,
-		StatusText:  statusText(cfActive),
+		Name:             "cloudflared",
+		DisplayName:      "Cloudflare Tunnel",
+		Category:         "Network / Ingress",
+		Active:           cfActive,
+		StatusText:       statusText(cfActive),
+		Version:          cfVer,
+		Installed:        cfInstalled,
+		LatestVersion:    cfLatest,
+		HasUpdate:        cfInstalled && hasNewerVersion(cfVer, cfLatest),
+		InstallComponent: "cloudflare",
 	})
 
 	// 6. Netbird
 	nbActive := isSystemdServiceActive("netbird")
+	nbVer := getNetbirdVersion()
+	nbInstalled := nbVer != "" || fileExists("/usr/bin/netbird") || fileExists("/usr/local/bin/netbird")
+	nbLatest := cachedLatest["netbird"]
+	if nbLatest == "" && nbVer != "" {
+		nbLatest = cleanVersion(nbVer)
+	}
 	list = append(list, ServiceStatus{
-		Name:        "netbird",
-		DisplayName: "NetBird Mesh VPN",
-		Category:    "Network / Ingress",
-		Active:      nbActive,
-		StatusText:  statusText(nbActive),
-		Port:        "wt0",
+		Name:             "netbird",
+		DisplayName:      "NetBird Mesh VPN",
+		Category:         "Network / Ingress",
+		Active:           nbActive,
+		StatusText:       statusText(nbActive),
+		Version:          nbVer,
+		Port:             "wt0",
+		Installed:        nbInstalled,
+		LatestVersion:    nbLatest,
+		HasUpdate:        nbInstalled && hasNewerVersion(nbVer, nbLatest),
+		InstallComponent: "pdns",
 	})
 
 	// 7. PowerDNS (Local systemd or VPS Edge Gateway)
-	list = append(list, getPDNSServiceStatus())
+	pdnsStatus := getPDNSServiceStatus()
+	pdnsVer := pdnsStatus.Version
+	pdnsInstalled := pdnsStatus.IsRemote || pdnsVer != "" || fileExists("/usr/sbin/pdns_server")
+	pdnsLatest := cachedLatest["pdns"]
+	if pdnsLatest == "" && pdnsVer != "" {
+		pdnsLatest = cleanVersion(pdnsVer)
+	}
+	pdnsStatus.Installed = pdnsInstalled
+	pdnsStatus.LatestVersion = pdnsLatest
+	pdnsStatus.HasUpdate = false
+	pdnsStatus.InstallComponent = "pdns"
+	list = append(list, pdnsStatus)
+
+	// 8. Stalwart Mail Server
+	stalwartActive := isSystemdServiceActive("stalwart")
+	stalwartVer := getStalwartVersion()
+	stalwartInstalled := stalwartVer != "" || fileExists("/usr/local/bin/stalwart") || fileExists("/etc/systemd/system/stalwart.service")
+	stalwartLatest := cachedLatest["stalwart"]
+	if stalwartLatest == "" && stalwartVer != "" {
+		stalwartLatest = cleanVersion(stalwartVer)
+	}
+	list = append(list, ServiceStatus{
+		Name:             "stalwart",
+		DisplayName:      "Stalwart Mail Server",
+		Category:         "DNS & Mail",
+		Active:           stalwartActive,
+		StatusText:       statusText(stalwartActive),
+		Version:          stalwartVer,
+		Port:             "25, 465, 993, 8080",
+		Installed:        stalwartInstalled,
+		LatestVersion:    stalwartLatest,
+		HasUpdate:        false,
+		InstallComponent: "mail",
+	})
+
+	// 9. wdev Control Plane Service
+	wdevActive := isSystemdServiceActive("wdev")
+	if !wdevActive {
+		_ = exec.Command("pgrep", "-f", "wdev serve").Run()
+		wdevActive = (exec.Command("pgrep", "-f", "wdev serve").Run() == nil)
+	}
+	list = append(list, ServiceStatus{
+		Name:             "wdev",
+		DisplayName:      "wdev Control Plane",
+		Category:         "Core Service",
+		Active:           wdevActive,
+		StatusText:       statusText(wdevActive),
+		Version:          "2.0.0",
+		Port:             "3200",
+		Installed:        true,
+		LatestVersion:    "2.0.0",
+		HasUpdate:        false,
+		InstallComponent: "self-check",
+	})
 
 	return list
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func runCmdVersion(bin string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func getNginxVersion() string {
+	out := runCmdVersion("nginx", "-v")
+	if out == "" {
+		out = runCmdVersion("/usr/sbin/nginx", "-v")
+	}
+	if out == "" {
+		return ""
+	}
+	if idx := strings.Index(out, "nginx/"); idx != -1 {
+		ver := out[idx+len("nginx/"):]
+		if end := strings.IndexAny(ver, " \t\n\r"); end != -1 {
+			ver = ver[:end]
+		}
+		ver = strings.TrimSpace(ver)
+		if ver != "" {
+			if !strings.HasPrefix(ver, "v") {
+				ver = "v" + ver
+			}
+			return ver
+		}
+	}
+	return ""
+}
+
+func getPHPFPMVersion(activeVer string) string {
+	if activeVer != "" {
+		out := runCmdVersion("php-fpm"+activeVer, "-v")
+		if out == "" {
+			out = runCmdVersion("/usr/sbin/php-fpm"+activeVer, "-v")
+		}
+		if out == "" {
+			out = runCmdVersion("php"+activeVer+"-fpm", "-v")
+		}
+		if out == "" {
+			out = runCmdVersion("/usr/sbin/php"+activeVer+"-fpm", "-v")
+		}
+		if out != "" {
+			parts := strings.Fields(out)
+			if len(parts) >= 2 {
+				return "v" + parts[1]
+			}
+		}
+		return "v" + activeVer
+	}
+	out := runCmdVersion("php", "-r", "echo PHP_VERSION;")
+	if out != "" {
+		ver := strings.TrimSpace(out)
+		if ver != "" {
+			if !strings.HasPrefix(ver, "v") {
+				ver = "v" + ver
+			}
+			return ver
+		}
+	}
+	return ""
+}
+
+// GetActivePostgresMajor mengembalikan versi mayor cluster postgresql yang aktif (default "16").
+func GetActivePostgresMajor() string {
+	if out, err := exec.Command("pg_lsclusters", "-h").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 4 && fields[2] == "5432" && fields[3] == "online" {
+				return fields[0]
+			}
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 1 && fields[0] != "" {
+				return fields[0]
+			}
+		}
+	}
+	return "16"
+}
+
+func getPostgresVersion() string {
+	major := GetActivePostgresMajor()
+	bin := fmt.Sprintf("/usr/lib/postgresql/%s/bin/postgres", major)
+	out := runCmdVersion(bin, "--version")
+	if out == "" {
+		bin = fmt.Sprintf("/usr/lib/postgresql/%s/bin/psql", major)
+		out = runCmdVersion(bin, "--version")
+	}
+	if out == "" {
+		out = runCmdVersion("psql", "--version")
+	}
+	if out == "" {
+		out = runCmdVersion("/usr/lib/postgresql/16/bin/psql", "--version")
+	}
+	if out == "" {
+		return ""
+	}
+	parts := strings.Fields(out)
+	if len(parts) >= 3 {
+		ver := parts[2]
+		if !strings.HasPrefix(ver, "v") {
+			ver = "v" + ver
+		}
+		return ver
+	}
+	return ""
+}
+
+func getRedisVersion() string {
+	out := runCmdVersion("redis-server", "--version")
+	if out == "" {
+		out = runCmdVersion("valkey-server", "--version")
+	}
+	if out == "" {
+		return ""
+	}
+	if idx := strings.Index(out, "v="); idx != -1 {
+		ver := out[idx+2:]
+		if end := strings.IndexAny(ver, " \t\n\r"); end != -1 {
+			ver = ver[:end]
+		}
+		ver = strings.TrimSpace(ver)
+		if ver != "" {
+			if !strings.HasPrefix(ver, "v") {
+				ver = "v" + ver
+			}
+			return ver
+		}
+	}
+	return ""
+}
+
+func getCloudflaredVersion() string {
+	out := runCmdVersion("cloudflared", "--version")
+	if out == "" {
+		out = runCmdVersion("/usr/local/bin/cloudflared", "--version")
+	}
+	if out == "" {
+		return ""
+	}
+	parts := strings.Fields(out)
+	if len(parts) >= 3 {
+		ver := parts[2]
+		if !strings.HasPrefix(ver, "v") {
+			ver = "v" + ver
+		}
+		return ver
+	}
+	return ""
+}
+
+func getNetbirdVersion() string {
+	out := runCmdVersion("netbird", "version")
+	if out == "" {
+		out = runCmdVersion("/usr/bin/netbird", "version")
+	}
+	if out == "" {
+		return ""
+	}
+	ver := strings.TrimSpace(out)
+	if ver != "" {
+		if !strings.HasPrefix(ver, "v") {
+			ver = "v" + ver
+		}
+		return ver
+	}
+	return ""
+}
+
+func getStalwartVersion() string {
+	out := runCmdVersion("/usr/local/bin/stalwart", "-V")
+	if out == "" {
+		out = runCmdVersion("stalwart", "-V")
+	}
+	if out != "" {
+		ver := strings.TrimSpace(out)
+		if ver != "" {
+			if !strings.HasPrefix(ver, "v") {
+				ver = "v" + ver
+			}
+			return ver
+		}
+	}
+	out = runCmdVersion("stalwart-cli", "--version")
+	if out != "" {
+		parts := strings.Fields(out)
+		if len(parts) >= 2 {
+			ver := parts[1]
+			if !strings.HasPrefix(ver, "v") {
+				ver = "v" + ver
+			}
+			return ver
+		}
+	}
+	return ""
+}
+
+func getLocalPDNSVersion() string {
+	out := runCmdVersion("pdns_server", "--version")
+	if out == "" {
+		out = runCmdVersion("/usr/sbin/pdns_server", "--version")
+	}
+	if out == "" {
+		return ""
+	}
+	parts := strings.Fields(out)
+	for i, p := range parts {
+		if (p == "Server" || p == "Authoritative") && i+1 < len(parts) {
+			ver := parts[i+1]
+			if !strings.HasPrefix(ver, "v") {
+				ver = "v" + ver
+			}
+			return ver
+		}
+	}
+	return ""
 }
 
 func loadEdgeDNSConf() (vpsIP, apiKey, port string) {
@@ -371,6 +945,7 @@ func getPDNSServiceStatus() ServiceStatus {
 			Category:    "DNS & Mail",
 			Active:      true,
 			StatusText:  "Running (Local)",
+			Version:     getLocalPDNSVersion(),
 			Port:        "53, 8081",
 			IsRemote:    false,
 		}
@@ -394,10 +969,8 @@ func getPDNSServiceStatus() ServiceStatus {
 						Version string `json:"version"`
 					}
 					_ = json.NewDecoder(resp.Body).Decode(&serverInfo)
-					verStr := serverInfo.Version
-					if verStr == "" {
-						verStr = "Online"
-					} else {
+					verStr := strings.TrimSpace(serverInfo.Version)
+					if verStr != "" && !strings.HasPrefix(verStr, "v") {
 						verStr = "v" + verStr
 					}
 					return ServiceStatus{
@@ -405,7 +978,8 @@ func getPDNSServiceStatus() ServiceStatus {
 						DisplayName: "PowerDNS Authoritative (VPS Edge)",
 						Category:    "DNS & Mail",
 						Active:      true,
-						StatusText:  fmt.Sprintf("Online (%s)", verStr),
+						StatusText:  "Online",
+						Version:     verStr,
 						Port:        fmt.Sprintf("NetBird %s:%s", vpsIP, port),
 						IsRemote:    true,
 					}
@@ -429,6 +1003,7 @@ func getPDNSServiceStatus() ServiceStatus {
 		Category:    "DNS & Mail",
 		Active:      false,
 		StatusText:  "Not Installed / Unconfigured",
+		Version:     getLocalPDNSVersion(),
 		Port:        "53, 8081",
 		IsRemote:    false,
 	}
