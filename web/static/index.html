@@ -288,44 +288,19 @@
       <!-- ========================================== -->
       <section id="tab-workspace" class="tab-content">
         <div class="section-header">
-          <h3>Workspace, ADE & Shell</h3>
+          <div>
+            <h3 style="margin:0 0 4px 0;">Workspace, ADE & Shell</h3>
+            <span style="font-size:12.5px;color:var(--text-muted);">Autonomous Development Environment, Remote Web IDE & Terminal Shell</span>
+          </div>
+          <div class="mail-header-actions" role="toolbar" aria-label="Aksi Workspace">
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadWorkspace()" title="Muat ulang status workspace">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              <span>Refresh</span>
+            </button>
+          </div>
         </div>
-        <div class="services-grid">
-          <div class="service-card">
-            <div class="service-name">🐬 Orca ADE (Autonomous Development Environment)</div>
-            <div class="service-meta">Dukungan mode Desktop GUI atau Headless Server 24/7 dengan QR code pairing remote.</div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
-              <button type="button" class="btn btn-sm btn-primary" onclick="triggerInstall('orca-desktop')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                <span>Setup Desktop GUI</span>
-              </button>
-              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-headless')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-                <span>Setup Headless Server</span>
-              </button>
-              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-pair')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-                <span>Pairing QR</span>
-              </button>
-              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-ai')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-                <span>Commit AI</span>
-              </button>
-            </div>
-          </div>
-          <div class="service-card">
-            <div class="service-name">🐚 Oh My Zsh & Terminal Shell</div>
-            <div class="service-meta">Shell Zsh interaktif lengkap dengan plugin populer (autosuggestions, syntax-highlighting).</div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
-              <button type="button" class="btn btn-sm btn-primary" onclick="triggerInstall('zsh')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-                <span>Instal Oh My Zsh</span>
-              </button>
-              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('zsh-p10k')">Tema Powerlevel10k</button>
-              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('zsh-agnoster')">Tema Agnoster</button>
-              <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('zsh-robbyrussell')">Tema Robbyrussell</button>
-            </div>
-          </div>
+        <div id="workspace-container" class="services-grid">
+          <!-- Dynamic rendering from loadWorkspace() in app.js -->
         </div>
       </section>
 
@@ -1247,6 +1222,56 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal: Orca ADE Pairing Info & Web Client -->
+  <div class="modal-overlay" id="modal-orca-pair" onclick="if(event.target===this)closeOrcaPairModal()">
+    <div class="modal-box" style="max-width:540px;">
+      <div class="modal-header">
+        <h3 id="modal-orca-pair-title">🐬 Info & Akses Orca ADE</h3>
+        <button type="button" class="btn-close" onclick="closeOrcaPairModal()">✕</button>
+      </div>
+      <div style="padding:16px 20px;">
+        <div style="margin-bottom:14px;">
+          <label style="font-size:12px;font-weight:600;color:var(--text-dim);display:block;margin-bottom:4px;">WEB CLIENT URL (BROWSER IDE)</label>
+          <div style="display:flex;gap:6px;">
+            <input type="text" id="orca-modal-weburl" class="form-control" readonly style="font-family:monospace;font-size:12px;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="copyOrcaWebUrl()" title="Salin URL Web Client">Salin</button>
+            <a id="orca-modal-weblink" href="#" target="_blank" class="btn btn-primary btn-sm" style="display:inline-flex;align-items:center;gap:4px;">Buka</a>
+          </div>
+        </div>
+
+        <div style="margin-bottom:14px;">
+          <label style="font-size:12px;font-weight:600;color:var(--text-dim);display:block;margin-bottom:4px;">PAIRING URI / CODE (MOBILE & REMOTE APP)</label>
+          <div style="display:flex;gap:6px;">
+            <input type="text" id="orca-modal-paircode" class="form-control" readonly style="font-family:monospace;font-size:11px;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="copyOrcaPairCode()" title="Salin Pairing URI">Salin</button>
+          </div>
+          <span style="font-size:11.5px;color:var(--text-muted);margin-top:4px;display:block;">Tempelkan URI di atas pada aplikasi Orca Mobile atau Orca Desktop untuk menghubungkan instance ini secara end-to-end terenkripsi.</span>
+        </div>
+
+        <div style="background:var(--bg-subtle, rgba(255,255,255,0.03));border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:12px;line-height:1.6;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:var(--text-dim);">Mode Layanan:</span>
+            <strong id="orca-modal-mode">-</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:var(--text-dim);">Port WebSocket:</span>
+            <strong id="orca-modal-port">-</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;">
+            <span style="color:var(--text-dim);">Status Proses:</span>
+            <strong id="orca-modal-status">-</strong>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;">
+        <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('orca-pair');closeOrcaPairModal();" title="Buka live terminal console untuk QR code ASCII">
+          <span>Tampilkan Terminal QR</span>
+        </button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="closeOrcaPairModal()">Tutup</button>
+      </div>
     </div>
   </div>
 

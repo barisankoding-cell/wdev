@@ -301,6 +301,9 @@ function setupNavigation() {
       if (tabName === 'toolchains') {
         loadToolchains();
       }
+      if (tabName === 'workspace') {
+        loadWorkspace();
+      }
       if (tabName === 'powerdns') {
         loadPDNS();
       }
@@ -694,6 +697,290 @@ function renderToolchains(items) {
 
     container.appendChild(card);
   });
+}
+
+// ==========================================
+// Workspace, ADE & Shell
+// ==========================================
+let cachedWorkspaceData = null;
+
+async function loadWorkspace() {
+  const container = document.getElementById('workspace-container');
+  if (!container) return;
+
+  try {
+    const res = await fetch('/api/workspace/status');
+    if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+    const data = await res.json();
+    cachedWorkspaceData = data;
+    renderWorkspace(data);
+  } catch (err) {
+    console.error('Failed to load workspace status:', err);
+    container.innerHTML = `
+      <div class="service-card" style="grid-column: 1 / -1; padding: 20px; text-align: center; color: var(--text-dim);">
+        Gagal memuat status Workspace & ADE: ${escapeHtml(err.message)}
+      </div>
+    `;
+  }
+}
+
+function renderWorkspace(data) {
+  const container = document.getElementById('workspace-container');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const orca = data.orca || {};
+  const shell = data.shell || {};
+
+  // Card 1: Orca ADE
+  const orcaCard = document.createElement('div');
+  orcaCard.className = 'service-card toolchain-card';
+
+  const orcaActive = orca.active;
+  const orcaInstalled = orca.installed;
+  const orcaMode = (orca.mode || 'headless').toLowerCase();
+  const isHeadless = orcaMode === 'headless';
+
+  let orcaStatusBadge = '';
+  if (orcaActive) {
+    orcaStatusBadge = `<span class="status-pill active"><span class="pulse-dot pulse-success"></span> Running (${isHeadless ? 'Headless Server' : 'Desktop GUI'})</span>`;
+  } else if (orcaInstalled) {
+    orcaStatusBadge = `<span class="status-pill stopped"><span class="pulse-dot pulse-danger"></span> Stopped</span>`;
+  } else {
+    orcaStatusBadge = `<span class="status-pill unknown">Belum Terpasang</span>`;
+  }
+
+  let orcaActions = '';
+  if (orcaInstalled) {
+    orcaActions += `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px;">
+        ${orca.web_client_url ? `
+          <a href="${escapeHtml(orca.web_client_url)}" target="_blank" class="btn btn-sm btn-primary" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            <span>Buka Web Client</span>
+          </a>
+        ` : ''}
+        <button type="button" class="btn btn-sm btn-outline" onclick="openOrcaPairModal()" style="display:inline-flex;align-items:center;gap:6px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          <span>Info & Pairing</span>
+        </button>
+        ${orcaActive ? `
+          <button type="button" class="btn btn-sm btn-outline" onclick="controlOrcaService('restart')" title="Restart layanan orca">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span>Restart</span>
+          </button>
+          <button type="button" class="btn btn-sm btn-outline" style="color:var(--danger);" onclick="controlOrcaService('stop')" title="Hentikan layanan orca">
+            Stop
+          </button>
+        ` : `
+          <button type="button" class="btn btn-sm btn-success" onclick="controlOrcaService('start')" title="Jalankan layanan orca">
+            Mulai Layanan
+          </button>
+        `}
+        ${isHeadless ? `
+          <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-switch-desktop')" title="Beralih ke mode Desktop GUI">
+            Ganti ke Desktop GUI
+          </button>
+        ` : `
+          <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-switch-headless')" title="Beralih ke mode Headless Server 24/7">
+            Ganti ke Headless
+          </button>
+        `}
+        <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-ai')" title="Pengaturan Git Commit AI">
+          Commit AI
+        </button>
+      </div>
+    `;
+  } else {
+    orcaActions += `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px;">
+        <button type="button" class="btn btn-sm btn-primary" onclick="triggerInstall('orca-headless')">
+          Setup Headless Server
+        </button>
+        <button type="button" class="btn btn-sm btn-outline" onclick="triggerInstall('orca-desktop')">
+          Setup Desktop GUI
+        </button>
+      </div>
+    `;
+  }
+
+  orcaCard.innerHTML = `
+    <div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+        <div>
+          <div class="service-name" style="font-size:16px;">🐬 Orca ADE</div>
+          <div style="font-size:11.5px;color:var(--text-dim);font-weight:600;">Autonomous Development Environment</div>
+        </div>
+        <div>${orcaStatusBadge}</div>
+      </div>
+      <div class="service-meta" style="margin-top:8px;line-height:1.45;">
+        IDE & Agent Workspace otonom untuk Linux, mendukung eksekusi lokal dan remote web access terenkripsi.
+      </div>
+
+      <div class="toolchain-version-box" style="margin-top:12px;">
+        <div class="toolchain-version-row">
+          <span class="label">Versi Terpasang:</span>
+          <span class="val">${orca.version ? 'v' + escapeHtml(orca.version) : (orcaInstalled ? 'Terpasang' : '<span style="color:var(--text-dim);">Belum Terpasang</span>')}</span>
+        </div>
+        <div class="toolchain-version-row divider">
+          <span class="label">Mode Operasi:</span>
+          <span class="val" style="font-weight:600;">${isHeadless ? 'Headless Server 24/7 (systemd)' : 'Desktop GUI (X11/Wayland)'}</span>
+        </div>
+        ${orcaActive ? `
+          <div class="toolchain-version-row divider">
+            <span class="label">Port WebSocket:</span>
+            <span class="val" style="font-family:monospace;font-weight:600;color:var(--primary);">${orca.port || 6768}</span>
+          </div>
+          ${orca.pid ? `
+            <div class="toolchain-version-row divider">
+              <span class="label">PID Proses:</span>
+              <span class="val" style="font-family:monospace;">${orca.pid}</span>
+            </div>
+          ` : ''}
+        ` : ''}
+      </div>
+    </div>
+    ${orcaActions}
+  `;
+  container.appendChild(orcaCard);
+
+  // Card 2: Shell
+  const shellCard = document.createElement('div');
+  shellCard.className = 'service-card toolchain-card';
+
+  const omzInstalled = shell.oh_my_zsh;
+  const currentShell = shell.current_shell || '/bin/bash';
+  const activeTheme = shell.active_theme || '-';
+
+  shellCard.innerHTML = `
+    <div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+        <div>
+          <div class="service-name" style="font-size:16px;">🐚 Oh My Zsh & Terminal Shell</div>
+          <div style="font-size:11.5px;color:var(--text-dim);font-weight:600;">CLI Developer Productivity & Theme</div>
+        </div>
+        <div>
+          ${omzInstalled ?
+            `<span class="status-pill active"><span class="pulse-dot pulse-success"></span> Terpasang</span>` :
+            `<span class="status-pill unknown">Belum Terpasang</span>`
+          }
+        </div>
+      </div>
+      <div class="service-meta" style="margin-top:8px;line-height:1.45;">
+        Shell interaktif Zsh lengkap dengan konfigurasi komunitas, autosuggestions, dan tema prompt modern.
+      </div>
+
+      <div class="toolchain-version-box" style="margin-top:12px;">
+        <div class="toolchain-version-row">
+          <span class="label">Shell Default Pengguna:</span>
+          <span class="val" style="font-family:monospace;font-weight:600;">${escapeHtml(currentShell)}</span>
+        </div>
+        <div class="toolchain-version-row divider">
+          <span class="label">Status Oh My Zsh:</span>
+          <span class="val">${omzInstalled ? 'Aktif di ~/.oh-my-zsh' : '<span style="color:var(--text-dim);">Belum Terpasang</span>'}</span>
+        </div>
+        <div class="toolchain-version-row divider">
+          <span class="label">Tema Prompt Aktif:</span>
+          <span class="val" style="font-weight:600;color:var(--primary);">${escapeHtml(activeTheme)}</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <label style="font-size:11px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;text-transform:uppercase;">GANTI TEMA PROMPT:</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        <button type="button" class="btn btn-sm ${activeTheme.includes('powerlevel10k') ? 'btn-primary' : 'btn-outline'}" onclick="triggerInstall('zsh-p10k')">
+          Powerlevel10k
+        </button>
+        <button type="button" class="btn btn-sm ${activeTheme.includes('agnoster') ? 'btn-primary' : 'btn-outline'}" onclick="triggerInstall('zsh-agnoster')">
+          Agnoster
+        </button>
+        <button type="button" class="btn btn-sm ${activeTheme.includes('robbyrussell') ? 'btn-primary' : 'btn-outline'}" onclick="triggerInstall('zsh-robbyrussell')">
+          Robbyrussell
+        </button>
+      </div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-sm ${omzInstalled ? 'btn-outline' : 'btn-primary'}" onclick="triggerInstall('zsh')">
+          ${omzInstalled ? 'Pasang Ulang / Sinkron Oh My Zsh' : 'Instal Oh My Zsh Lengkap'}
+        </button>
+      </div>
+    </div>
+  `;
+  container.appendChild(shellCard);
+}
+
+async function controlOrcaService(action) {
+  try {
+    const res = await fetch(`/api/service/orca/${action}`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Aksi gagal');
+    }
+    await loadWorkspace();
+  } catch (err) {
+    await modalAlert('Gagal mengontrol layanan Orca: ' + err.message, 'error', 'Orca ADE');
+  }
+}
+
+function openOrcaPairModal() {
+  const modal = document.getElementById('modal-orca-pair');
+  if (!modal) return;
+  const data = cachedWorkspaceData && cachedWorkspaceData.orca ? cachedWorkspaceData.orca : {};
+
+  const webUrlInput = document.getElementById('orca-modal-weburl');
+  const webLink = document.getElementById('orca-modal-weblink');
+  const pairCodeInput = document.getElementById('orca-modal-paircode');
+  const modeSpan = document.getElementById('orca-modal-mode');
+  const portSpan = document.getElementById('orca-modal-port');
+  const statusSpan = document.getElementById('orca-modal-status');
+
+  if (webUrlInput) webUrlInput.value = data.web_client_url || `http://${window.location.hostname}:6768`;
+  if (webLink) {
+    if (data.web_client_url) {
+      webLink.href = data.web_client_url;
+      webLink.style.display = 'inline-flex';
+    } else {
+      webLink.style.display = 'none';
+    }
+  }
+  if (pairCodeInput) pairCodeInput.value = data.pairing_url || '-';
+  if (modeSpan) modeSpan.textContent = data.mode === 'desktop' ? 'Desktop GUI' : 'Headless Server';
+  if (portSpan) portSpan.textContent = (data.port || 6768).toString();
+  if (statusSpan) statusSpan.textContent = data.active ? 'Aktif (Running)' : 'Tidak Aktif (Stopped)';
+
+  modal.classList.add('active');
+}
+
+function closeOrcaPairModal() {
+  const modal = document.getElementById('modal-orca-pair');
+  if (modal) modal.classList.remove('active');
+}
+
+function copyOrcaWebUrl() {
+  const input = document.getElementById('orca-modal-weburl');
+  if (input && input.value) {
+    navigator.clipboard.writeText(input.value).then(() => {
+      modalAlert('URL Web Client berhasil disalin ke clipboard!', 'success', 'Orca ADE');
+    }).catch(() => {
+      input.select();
+      document.execCommand('copy');
+      modalAlert('URL Web Client disalin!', 'success', 'Orca ADE');
+    });
+  }
+}
+
+function copyOrcaPairCode() {
+  const input = document.getElementById('orca-modal-paircode');
+  if (input && input.value) {
+    navigator.clipboard.writeText(input.value).then(() => {
+      modalAlert('Pairing URI berhasil disalin ke clipboard!', 'success', 'Orca ADE');
+    }).catch(() => {
+      input.select();
+      document.execCommand('copy');
+      modalAlert('Pairing URI disalin!', 'success', 'Orca ADE');
+    });
+  }
 }
 
 // Sites

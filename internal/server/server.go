@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"wdev/internal/cloudflare"
@@ -91,6 +92,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/sudo/status", s.handleSudoStatus)
 	s.mux.HandleFunc("/api/sudo/verify", s.handleSudoVerify)
 	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
+	s.mux.HandleFunc("/api/workspace/status", s.handleWorkspaceStatus)
 	s.mux.HandleFunc("/api/install", s.handleInstall)
 	s.mux.HandleFunc("/api/tasks/events", s.handleSSEEvents)
 
@@ -996,6 +998,32 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		fn = func(ctx context.Context, cb func(string)) error {
 			return s.installer.InstallOrca(ctx, cb, "headless")
 		}
+	case "orca-switch-desktop":
+		taskName = "Alih Mode Orca ADE (Desktop GUI)"
+		fn = func(ctx context.Context, cb func(string)) error {
+			cb("==> Mengalihkan Orca ADE ke Mode Desktop GUI...")
+			cmd := exec.CommandContext(ctx, "/home/dietpi/.local/bin/orca-switch", "desktop")
+			out, err := cmd.CombinedOutput()
+			for _, line := range strings.Split(string(out), "\n") {
+				if line != "" {
+					cb(line)
+				}
+			}
+			return err
+		}
+	case "orca-switch-headless":
+		taskName = "Alih Mode Orca ADE (Headless Server)"
+		fn = func(ctx context.Context, cb func(string)) error {
+			cb("==> Mengalihkan Orca ADE ke Mode Headless Server...")
+			cmd := exec.CommandContext(ctx, "/home/dietpi/.local/bin/orca-switch", "headless")
+			out, err := cmd.CombinedOutput()
+			for _, line := range strings.Split(string(out), "\n") {
+				if line != "" {
+					cb(line)
+				}
+			}
+			return err
+		}
 	case "orca-uninstall":
 		taskName = "Uninstall Orca ADE"
 		fn = func(ctx context.Context, cb func(string)) error {
@@ -1275,4 +1303,166 @@ func (s *Server) handleMailSetup(w http.ResponseWriter, r *http.Request) {
 		"status":  "started",
 		"task_id": taskID,
 	})
+}
+
+func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+
+	type OrcaInfo struct {
+		Installed    bool   `json:"installed"`
+		Active       bool   `json:"active"`
+		StatusText   string `json:"status_text"`
+		Mode         string `json:"mode"`
+		Version      string `json:"version"`
+		Port         int    `json:"port,omitempty"`
+		PID          int    `json:"pid,omitempty"`
+		WebClientURL string `json:"web_client_url,omitempty"`
+		PairingURL   string `json:"pairing_url,omitempty"`
+		Endpoint     string `json:"endpoint,omitempty"`
+	}
+
+	type ShellInfo struct {
+		ZshInstalled bool     `json:"zsh_installed"`
+		OhMyZsh      bool     `json:"oh_my_zsh"`
+		CurrentShell string   `json:"current_shell"`
+		ActiveTheme  string   `json:"active_theme"`
+		Plugins      []string `json:"plugins"`
+	}
+
+	type WorkspaceData struct {
+		Orca  OrcaInfo  `json:"orca"`
+		Shell ShellInfo `json:"shell"`
+	}
+
+	var data WorkspaceData
+
+	// 1. Orca info
+	orcaBin := "/home/dietpi/.local/bin/orca"
+	if _, err := os.Stat(orcaBin); err == nil {
+		data.Orca.Installed = true
+	} else if _, err := exec.LookPath("orca"); err == nil {
+		data.Orca.Installed = true
+	} else if _, err := os.Stat("/home/dietpi/.config/orca"); err == nil {
+		data.Orca.Installed = true
+	}
+
+	if monitor.IsSystemdServiceActive("orca") {
+		data.Orca.Active = true
+	} else if out, err := exec.Command("pgrep", "-f", "orca-ide").Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		data.Orca.Active = true
+	}
+
+	modeFile := "/home/dietpi/.config/orca/.mode"
+	if mBytes, err := os.ReadFile(modeFile); err == nil {
+		data.Orca.Mode = strings.TrimSpace(string(mBytes))
+	}
+	if data.Orca.Mode == "" {
+		data.Orca.Mode = "headless"
+	}
+
+	modeCapitalized := "Headless Server"
+	if data.Orca.Mode == "desktop" {
+		modeCapitalized = "Desktop GUI"
+	}
+
+	if data.Orca.Active {
+		data.Orca.StatusText = fmt.Sprintf("Running (%s)", modeCapitalized)
+	} else if data.Orca.Installed {
+		data.Orca.StatusText = fmt.Sprintf("Stopped (%s)", modeCapitalized)
+	} else {
+		data.Orca.StatusText = "Belum Terpasang"
+	}
+
+	vCmd := exec.Command(orcaBin, "--version")
+	vCmd.Env = append(os.Environ(), "HOME=/home/dietpi", "USER=dietpi")
+	if out, err := vCmd.Output(); err == nil {
+		data.Orca.Version = strings.TrimSpace(string(out))
+	}
+
+	if data.Orca.Active {
+		rtFile := "/home/dietpi/.config/orca/orca-runtime.json"
+		if rtBytes, err := os.ReadFile(rtFile); err == nil {
+			var rt struct {
+				PID        int `json:"pid"`
+				Transports []struct {
+					Kind     string `json:"kind"`
+					Endpoint string `json:"endpoint"`
+				} `json:"transports"`
+			}
+			if err := json.Unmarshal(rtBytes, &rt); err == nil {
+				data.Orca.PID = rt.PID
+				for _, t := range rt.Transports {
+					if t.Kind == "websocket" {
+						data.Orca.Endpoint = t.Endpoint
+						parts := strings.Split(t.Endpoint, ":")
+						if len(parts) >= 3 {
+							pStr := strings.TrimRight(parts[2], "/")
+							if p, err := strconv.Atoi(pStr); err == nil {
+								data.Orca.Port = p
+							}
+						}
+					}
+				}
+			}
+		}
+		if data.Orca.Port == 0 {
+			data.Orca.Port = 6768
+		}
+
+		pairBin := "/home/dietpi/.local/bin/orca-pair"
+		if _, err := os.Stat(pairBin); err == nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			pCmd := exec.CommandContext(ctx, pairBin, "--json")
+			pCmd.Env = append(os.Environ(), "HOME=/home/dietpi", "USER=dietpi")
+			if pOut, err := pCmd.Output(); err == nil {
+				var pInfo struct {
+					PairingUrl   string `json:"pairingUrl"`
+					WebClientUrl string `json:"webClientUrl"`
+				}
+				if err := json.Unmarshal(pOut, &pInfo); err == nil {
+					data.Orca.PairingURL = pInfo.PairingUrl
+					data.Orca.WebClientURL = pInfo.WebClientUrl
+				}
+			}
+		}
+	}
+
+	// 2. Shell info
+	if _, err := exec.LookPath("zsh"); err == nil {
+		data.Shell.ZshInstalled = true
+	} else if _, err := os.Stat("/usr/bin/zsh"); err == nil {
+		data.Shell.ZshInstalled = true
+	}
+	if fi, err := os.Stat("/home/dietpi/.oh-my-zsh"); err == nil && fi.IsDir() {
+		data.Shell.OhMyZsh = true
+	}
+
+	if out, err := exec.Command("getent", "passwd", "dietpi").Output(); err == nil {
+		parts := strings.Split(strings.TrimSpace(string(out)), ":")
+		if len(parts) >= 7 {
+			data.Shell.CurrentShell = parts[6]
+		}
+	}
+	if data.Shell.CurrentShell == "" {
+		data.Shell.CurrentShell = os.Getenv("SHELL")
+	}
+
+	zshrcFile := "/home/dietpi/.zshrc"
+	if zBytes, err := os.ReadFile(zshrcFile); err == nil {
+		lines := strings.Split(string(zBytes), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "ZSH_THEME=") {
+				theme := strings.TrimPrefix(trimmed, "ZSH_THEME=")
+				theme = strings.Trim(theme, "\"'")
+				data.Shell.ActiveTheme = theme
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, data)
 }
