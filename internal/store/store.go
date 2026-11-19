@@ -275,16 +275,37 @@ func (s *Store) SetSetting(key, val string) error {
 	return err
 }
 
+func (s *Store) SetSiteExposedTo(domain, publicHost string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cleanDom := strings.TrimSuffix(domain, ".conf")
+	_, err := s.db.Exec(`UPDATE sites SET exposed_to = ? WHERE domain = ? OR domain = ?`, publicHost, cleanDom, cleanDom+".conf")
+	return err
+}
+
+func (s *Store) ClearSiteExposedTo(publicHost string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE sites SET exposed_to = '' WHERE exposed_to = ?`, publicHost)
+	return err
+}
+
 // Initial Sync from existing disk configs
 func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
+	// Clean up stale or non-site entries from database
+	_, _ = s.db.Exec(`DELETE FROM sites WHERE domain LIKE '%.conf' OR domain LIKE '%.custom.conf' OR domain LIKE 'wdev_%' OR domain = 'default'`)
+
 	// 1. Scan /etc/nginx/sites-available
 	if entries, err := os.ReadDir(nginxSitesAvail); err == nil {
 		for _, e := range entries {
-			if e.IsDir() || e.Name() == "default" || strings.HasPrefix(e.Name(), ".") {
+			name := e.Name()
+			if e.IsDir() || name == "default" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "wdev_") ||
+				strings.HasSuffix(name, ".custom.conf") || strings.HasSuffix(name, ".bak") || strings.HasSuffix(name, "~") {
 				continue
 			}
-			domain := e.Name()
-			confBytes, err := os.ReadFile(filepath.Join(nginxSitesAvail, domain))
+
+			domain := strings.TrimSuffix(name, ".conf")
+			confBytes, err := os.ReadFile(filepath.Join(nginxSitesAvail, name))
 			if err != nil {
 				continue
 			}
@@ -295,6 +316,7 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 			rootPath := ""
 			proxyPort := 0
 			sslEnabled := strings.Contains(confStr, "ssl_certificate")
+			exposedTo := ""
 
 			if strings.Contains(confStr, "laravel") {
 				framework = "laravel"
@@ -304,18 +326,28 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 				framework = "proxy"
 			}
 
-			// Extract root
+			// Extract root, php version, and server_name aliases
 			for _, line := range strings.Split(confStr, "\n") {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "root ") {
 					rootPath = strings.TrimSuffix(strings.TrimPrefix(line, "root "), ";")
 				}
 				if strings.Contains(line, "php") && strings.Contains(line, "-fpm.sock") {
-					// extract php version
 					for _, v := range []string{"8.4", "8.3", "8.2", "8.1"} {
 						if strings.Contains(line, "php"+v) {
 							phpVer = v
 							break
+						}
+					}
+				}
+				if strings.HasPrefix(line, "server_name ") {
+					tokens := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(line, "server_name "), ";"))
+					for _, tok := range tokens {
+						tok = strings.TrimSpace(tok)
+						if tok != domain && tok != "*."+domain && !strings.HasSuffix(tok, ".test") && !strings.HasSuffix(tok, ".local") {
+							if exposedTo == "" || !strings.Contains(tok, "apps.") {
+								exposedTo = tok
+							}
 						}
 					}
 				}
@@ -328,6 +360,7 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 				Framework:  framework,
 				ProxyPort:  proxyPort,
 				SSLEnabled: sslEnabled,
+				ExposedTo:  exposedTo,
 				CreatedAt:  time.Now(),
 			})
 		}
@@ -339,8 +372,8 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 			if e.IsDir() {
 				continue
 			}
-			domain := e.Name()
-			content, err := os.ReadFile(filepath.Join(exposuresDir, domain))
+			domain := strings.TrimSuffix(e.Name(), ".conf")
+			content, err := os.ReadFile(filepath.Join(exposuresDir, e.Name()))
 			if err == nil {
 				publicHost := strings.TrimSpace(string(content))
 				_, _ = s.db.Exec(`UPDATE sites SET exposed_to = ? WHERE domain = ?`, publicHost, domain)

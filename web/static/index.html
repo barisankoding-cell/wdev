@@ -183,6 +183,7 @@
                 <th>Target Runtime</th>
                 <th>Document Root</th>
                 <th>SSL</th>
+                <th>Ekspos VPS</th>
                 <th>Aksi</th>
               </tr>
             </thead>
@@ -340,6 +341,30 @@
           </div>
         </div>
 
+        <!-- STATUS EKSPOS PROYEK LOKAL (OVERVIEW) -->
+        <div class="section-header" style="margin-top:8px;">
+          <div>
+            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Status Ekspos Virtual Host Lokal</h4>
+            <span style="font-size:12.5px;color:var(--text-muted);">Memetakan seluruh virtual host lokal ke domain publik VPS Edge Gateway</span>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="loadPDNS()">Perbarui Status</button>
+        </div>
+        <div class="table-container" style="margin-bottom:24px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Virtual Host Lokal</th>
+                <th>Framework</th>
+                <th>Status Ekspos</th>
+                <th>Domain Publik di VPS</th>
+                <th>Target NetBird</th>
+                <th>Aksi Cepat</th>
+              </tr>
+            </thead>
+            <tbody id="pdns-local-sites-tbody"></tbody>
+          </table>
+        </div>
+
         <!-- Ekspos Proyek atau Port ke VPS Edge Gateway -->
         <div class="metric-card" style="margin-bottom:24px;">
           <div class="section-header" style="margin-bottom:14px;">
@@ -361,7 +386,7 @@
 
           <!-- Site Mode Form Group -->
           <div id="pdns-expose-site-group">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:14px;margin-bottom:14px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:14px;margin-bottom:4px;">
               <div class="form-group" style="margin-bottom:0;">
                 <label>Pilih Virtual Host Lokal</label>
                 <select id="pdns-expose-site-select" class="form-control" onchange="onPDNSSiteSelected()"></select>
@@ -371,6 +396,7 @@
                 <input type="text" id="pdns-expose-site-pub" class="form-control" placeholder="contoh: portal.erposoft.my.id">
               </div>
             </div>
+            <div id="pdns-expose-site-alert" style="margin-top:10px;font-size:12.5px;padding:8px 12px;border-radius:var(--radius-sm);display:none;"></div>
           </div>
 
           <!-- Port Mode Form Group -->
@@ -406,16 +432,20 @@
 
         <!-- Daftar Domain yang Diekspos di VPS -->
         <div class="section-header">
-          <h3>Daftar Proxy Domain yang Diekspos di VPS</h3>
+          <div>
+            <h4 style="margin:0 0 4px 0;font-size:15px;color:var(--text-main);">Daftar Proxy Domain yang Diekspos di VPS</h4>
+            <span style="font-size:12.5px;color:var(--text-muted);">Seluruh reverse-proxy yang aktif melayani lalu lintas internet di VPS Edge</span>
+          </div>
           <button class="btn btn-outline btn-sm" onclick="loadPDNSExposures()">Perbarui Status</button>
         </div>
         <div class="table-container" style="margin-bottom:24px;">
           <table>
             <thead>
               <tr>
-                <th>Domain Publik</th>
-                <th>Status</th>
-                <th>File Konfigurasi di VPS</th>
+                <th>Domain Publik VPS</th>
+                <th>Tipe & Rute Target</th>
+                <th>Status Proxy</th>
+                <th>File Konfigurasi VPS</th>
                 <th>Aksi</th>
               </tr>
             </thead>

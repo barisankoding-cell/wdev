@@ -39,6 +39,7 @@ type ProxyExposure struct {
 	Enabled    bool   `json:"enabled"`
 	ConfigFile string `json:"config_file"`
 	Target     string `json:"target,omitempty"`
+	LocalSite  string `json:"local_site,omitempty"`
 	SSL        string `json:"ssl,omitempty"`
 }
 
@@ -481,6 +482,63 @@ func (m *Manager) ListExposures() ([]ProxyExposure, error) {
 		return nil, err
 	}
 
+	// Enrich each proxy with local site matching and target information
+	sites, _ := m.store.ListSites()
+	for i := range res.Proxies {
+		p := &res.Proxies[i]
+		p.SSL = "Aktif (HTTPS)"
+
+		// Check local sites from store
+		matchedSite := ""
+		matchedFw := ""
+		for _, s := range sites {
+			if strings.EqualFold(s.ExposedTo, p.Domain) {
+				matchedSite = s.Domain
+				matchedFw = s.Framework
+				break
+			}
+		}
+
+		// Also check /etc/nginx/sites-available directly
+		if matchedSite == "" {
+			if matches, err := filepath.Glob("/etc/nginx/sites-available/*"); err == nil {
+				for _, f := range matches {
+					if strings.HasSuffix(f, ".custom.conf") || strings.HasSuffix(f, ".bak") || strings.HasSuffix(f, "~") {
+						continue
+					}
+					data, err := os.ReadFile(f)
+					if err != nil {
+						continue
+					}
+					content := string(data)
+					if strings.Contains(content, p.Domain) {
+						base := filepath.Base(f)
+						matchedSite = strings.TrimSuffix(base, ".conf")
+						if strings.Contains(content, "laravel") {
+							matchedFw = "laravel"
+						} else if strings.Contains(content, "wordpress") {
+							matchedFw = "wordpress"
+						}
+						break
+					}
+				}
+			}
+		}
+
+		if matchedSite != "" {
+			p.LocalSite = matchedSite
+			p.Target = fmt.Sprintf("VHost Lokal (%s - %s)", matchedSite, strings.ToUpper(matchedFw))
+		} else if strings.HasPrefix(p.Domain, "mailadmin.") {
+			p.Target = "Stalwart Mail Admin UI (:8080)"
+		} else if strings.HasPrefix(p.Domain, "webmail.") {
+			p.Target = "SnappyMail Client (:80)"
+		} else if strings.HasPrefix(p.Domain, "mail.") {
+			p.Target = "Postfix Inbound Mail Host (:25)"
+		} else {
+			p.Target = "Proxy Port VPS Edge"
+		}
+	}
+
 	return res.Proxies, nil
 }
 
@@ -617,6 +675,9 @@ func (m *Manager) ExposeSite(localDomain, publicDomain string, useSSL bool) erro
 	if err := reloadNginx(); err != nil {
 		return fmt.Errorf("gagal me-reload Nginx lokal: %w", err)
 	}
+
+	// Update store with exposed_to
+	_ = m.store.SetSiteExposedTo(localDomain, publicDomain)
 
 	// Expose via port 80 to Edge Gateway
 	return m.Expose(publicDomain, 80, useSSL, true)
@@ -756,6 +817,9 @@ func (m *Manager) Unexpose(domain string, keepDNS bool) error {
 	// 3. Remove alias from local Nginx vhosts
 	removeLocalVhostAlias(domain)
 	_ = reloadNginx()
+
+	// 4. Clear store exposed_to
+	_ = m.store.ClearSiteExposedTo(domain)
 
 	return nil
 }

@@ -437,6 +437,11 @@ async function loadSites() {
         <td><code style="font-size:11px;color:var(--text-muted);">${s.root_path || '-'}</code></td>
         <td>${s.ssl_enabled ? '<span style="color:var(--success);">✓ SSL</span>' : '<span style="color:var(--text-dim);">HTTP</span>'}</td>
         <td>
+          ${s.exposed_to ?
+            `<a href="https://${s.exposed_to}" target="_blank" rel="noopener" style="text-decoration:none;"><span class="status-pill active" style="font-size:11px;font-weight:600;">● ${s.exposed_to} ↗</span></a>` :
+            `<span style="color:var(--text-dim);font-size:12px;">Hanya Lokal</span>`}
+        </td>
+        <td>
           <button class="btn btn-sm btn-danger" onclick="deleteSite('${s.domain}')">Hapus</button>
         </td>
       `;
@@ -673,6 +678,10 @@ async function unexposeCF(localDomain) {
 // ==========================================
 let currentPDNSZone = '';
 let currentPDNSExposeMode = 'site';
+let cachedSites = [];
+let cachedProxies = [];
+let cachedZones = [];
+let cachedLocalNetbirdIP = '-';
 
 function setPDNSExposeMode(mode) {
   currentPDNSExposeMode = mode;
@@ -694,42 +703,12 @@ function setPDNSExposeMode(mode) {
   }
 }
 
-async function loadPDNSSites() {
-  try {
-    const res = await fetch('/api/sites');
-    if (!res.ok) return;
-    const sites = await res.json() || [];
-    const select = document.getElementById('pdns-expose-site-select');
-    if (!select) return;
-
-    const current = select.value;
-    select.innerHTML = sites.length === 0
-      ? '<option value="">(Belum ada vhost lokal dibuat)</option>'
-      : sites.map(s => `<option value="${s.domain}">${s.domain} (${s.framework})</option>`).join('');
-
-    if (current && sites.some(s => s.domain === current)) {
-      select.value = current;
-    }
-  } catch (err) {
-    console.error('Failed to load sites for PDNS:', err);
-  }
-}
-
-function onPDNSSiteSelected() {
-  const select = document.getElementById('pdns-expose-site-select');
-  const pubInput = document.getElementById('pdns-expose-site-pub');
-  if (!select || !pubInput) return;
-  const selDom = select.value.replace(/\.test$/, '').replace(/\.local$/, '');
-  if (selDom && !pubInput.value) {
-    pubInput.value = selDom + '.erposoft.my.id';
-  }
-}
-
 async function loadPDNS() {
   try {
     const res = await fetch('/api/pdns/status');
     if (!res.ok) return;
     const conf = await res.json();
+    cachedLocalNetbirdIP = conf.local_netbird_ip || '-';
 
     const badge = document.getElementById('pdns-status-badge');
     if (badge) {
@@ -747,11 +726,137 @@ async function loadPDNS() {
     const locEl = document.getElementById('pdns-local-ip');
     if (locEl) locEl.textContent = conf.local_netbird_ip || '-';
 
-    await loadPDNSSites();
     await loadPDNSExposures();
+    await loadPDNSLocalSites();
     await loadPDNSZones();
   } catch (err) {
     console.error('Failed to load PDNS:', err);
+  }
+}
+
+async function loadPDNSLocalSites() {
+  const tbody = document.getElementById('pdns-local-sites-tbody');
+  if (!tbody) return;
+
+  try {
+    const res = await fetch('/api/sites');
+    if (!res.ok) return;
+    cachedSites = await res.json() || [];
+
+    tbody.innerHTML = '';
+    if (cachedSites.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px;">Belum ada virtual host lokal. Buat virtual host di menu 'Web Stack' terlebih dahulu.</td></tr>`;
+      return;
+    }
+
+    cachedSites.forEach(s => {
+      const tr = document.createElement('tr');
+      const isExposed = !!s.exposed_to;
+      const targetNetbird = cachedLocalNetbirdIP !== '-' ? `http://${cachedLocalNetbirdIP}:80` : 'Port 80 (wt0)';
+
+      tr.innerHTML = `
+        <td>
+          <div style="font-weight:700;font-size:13.5px;color:var(--text-main);">${s.domain}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${s.root_path || '-'}</div>
+        </td>
+        <td>
+          <span class="stat-badge" style="font-size:11px;padding:2px 8px;">${(s.framework || 'PHP').toUpperCase()}</span>
+          <span style="font-size:11px;color:var(--text-muted);margin-left:4px;">PHP ${s.php_version || '8.4'}</span>
+        </td>
+        <td>
+          ${isExposed ?
+            '<span class="status-pill active" style="font-weight:600;font-size:12px;">● TERHUBUNG KE INTERNET</span>' :
+            '<span class="status-pill stopped" style="font-size:12px;">○ Hanya Lokal (Offline)</span>'}
+        </td>
+        <td>
+          ${isExposed ?
+            `<a href="https://${s.exposed_to}" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;font-size:13px;text-decoration:none;">https://${s.exposed_to} ↗</a>` :
+            '<span style="color:var(--text-dim);font-style:italic;font-size:12px;">Belum diekspos</span>'}
+        </td>
+        <td><code>${targetNetbird}</code></td>
+        <td>
+          <div style="display:flex;gap:6px;align-items:center;">
+            ${isExposed ?
+              `<a href="https://${s.exposed_to}" target="_blank" rel="noopener" class="btn btn-sm btn-outline" style="text-decoration:none;">Buka URL ↗</a>
+               <button class="btn btn-sm btn-danger" onclick="unexposePDNS('${s.exposed_to}')">Putus Ekspos</button>` :
+              `<button class="btn btn-sm btn-primary" onclick="quickExposeSite('${s.domain}')">🚀 Ekspos ke VPS</button>`}
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    loadPDNSSiteDropdown();
+  } catch (err) {
+    console.error('Failed to load local sites for PDNS:', err);
+  }
+}
+
+function loadPDNSSiteDropdown() {
+  const select = document.getElementById('pdns-expose-site-select');
+  if (!select) return;
+
+  const current = select.value;
+  select.innerHTML = cachedSites.length === 0
+    ? '<option value="">(Belum ada vhost lokal dibuat)</option>'
+    : cachedSites.map(s => {
+        const label = s.exposed_to
+          ? `${s.domain} [✓ SUDAH DIEKSPOS -> ${s.exposed_to}]`
+          : `${s.domain} [○ Belum Diekspos]`;
+        return `<option value="${s.domain}">${label}</option>`;
+      }).join('');
+
+  if (current && cachedSites.some(s => s.domain === current)) {
+    select.value = current;
+  }
+  onPDNSSiteSelected();
+}
+
+function onPDNSSiteSelected() {
+  const select = document.getElementById('pdns-expose-site-select');
+  const pubInput = document.getElementById('pdns-expose-site-pub');
+  const alertBox = document.getElementById('pdns-expose-site-alert');
+  if (!select || !pubInput) return;
+
+  const selSite = cachedSites.find(s => s.domain === select.value);
+  const defaultZone = (cachedZones.length > 0) ? cachedZones[0].name.replace(/\.$/, '') : 'erposoft.my.id';
+
+  if (selSite) {
+    if (selSite.exposed_to) {
+      pubInput.value = selSite.exposed_to;
+      if (alertBox) {
+        alertBox.style.display = 'block';
+        alertBox.style.backgroundColor = 'rgba(245, 158, 11, 0.12)';
+        alertBox.style.color = 'var(--warning)';
+        alertBox.style.border = '1px solid rgba(245, 158, 11, 0.3)';
+        alertBox.innerHTML = `⚠️ Virtual host <strong>${selSite.domain}</strong> saat ini <strong>SUDAH DIEKSPOS</strong> ke <strong>https://${selSite.exposed_to}</strong>. Mengekspos ulang akan memperbarui konfigurasi Nginx dan sertifikat SSL Let's Encrypt.`;
+      }
+    } else {
+      const cleanPrefix = selSite.domain.replace(/\.test$/, '').replace(/\.local$/, '');
+      pubInput.value = cleanPrefix + '.' + defaultZone;
+      if (alertBox) {
+        alertBox.style.display = 'block';
+        alertBox.style.backgroundColor = 'rgba(59, 130, 246, 0.12)';
+        alertBox.style.color = 'var(--primary)';
+        alertBox.style.border = '1px solid rgba(59, 130, 246, 0.3)';
+        alertBox.innerHTML = `💡 Virtual host <strong>${selSite.domain}</strong> belum diekspos ke internet. Rekomendasi domain publik: <code>${pubInput.value}</code>`;
+      }
+    }
+  } else {
+    if (alertBox) alertBox.style.display = 'none';
+  }
+}
+
+function quickExposeSite(domain) {
+  setPDNSExposeMode('site');
+  const select = document.getElementById('pdns-expose-site-select');
+  if (select) {
+    select.value = domain;
+    onPDNSSiteSelected();
+  }
+  const formCard = document.getElementById('pdns-btn-mode-site');
+  if (formCard) {
+    formCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 }
 
@@ -762,27 +867,33 @@ async function loadPDNSExposures() {
   try {
     const res = await fetch('/api/pdns/exposures');
     if (!res.ok) {
-      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);padding:16px;">Gagal memuat proxy VPS.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">Gagal memuat proxy VPS.</td></tr>`;
       return;
     }
-    const proxies = await res.json() || [];
+    cachedProxies = await res.json() || [];
     tbody.innerHTML = '';
-    if (proxies.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);padding:16px;">Belum ada proxy atau aplikasi yang diekspos di VPS Edge.</td></tr>`;
+    if (cachedProxies.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">Belum ada proxy atau aplikasi yang diekspos di VPS Edge.</td></tr>`;
       return;
     }
 
-    proxies.forEach(p => {
+    cachedProxies.forEach(p => {
       const tr = document.createElement('tr');
+      const isVhost = !!p.local_site;
+      const targetBadge = isVhost
+        ? `<span class="stat-badge" style="background:rgba(59,130,246,0.15);color:var(--primary);margin-right:6px;">VHost</span> <strong>${p.local_site}</strong>`
+        : `<span class="stat-badge" style="background:rgba(100,116,139,0.15);color:var(--text-muted);margin-right:6px;">Service</span> ${p.target || 'Proxy VPS'}`;
+
       tr.innerHTML = `
         <td>
-          <a href="https://${p.domain}" target="_blank" rel="noopener" style="color:var(--primary);font-weight:600;text-decoration:none;">
+          <a href="https://${p.domain}" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;font-size:13.5px;text-decoration:none;">
             ${p.domain} ↗
           </a>
         </td>
+        <td>${targetBadge}</td>
         <td>
           <span class="status-pill ${p.enabled ? 'active' : 'stopped'}">
-            ${p.enabled ? '● Aktif' : '○ Nonaktif'}
+            ${p.enabled ? '● Aktif (HTTPS Let\'s Encrypt)' : '○ Nonaktif'}
           </span>
         </td>
         <td><code style="font-size:11.5px;color:var(--text-muted);">${p.config_file || '-'}</code></td>
@@ -794,7 +905,7 @@ async function loadPDNSExposures() {
     });
   } catch (err) {
     console.error('Failed to load PDNS exposures:', err);
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);padding:16px;">Edge VPS tidak dapat dihubungi.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">Edge VPS tidak dapat dihubungi.</td></tr>`;
   }
 }
 
@@ -854,8 +965,8 @@ async function submitPDNSExpose() {
       await modalAlert(`Gagal ekspos ke VPS: ${data.error || 'Terjadi kesalahan'}`, 'error', 'VPS Edge Gateway');
     } else {
       await modalAlert(`Domain '${payload.public_domain}' berhasil diekspos ke internet! DNS dan reverse-proxy di VPS telah aktif.`, 'success', 'VPS Edge Gateway');
-      loadPDNSExposures();
-      loadPDNSZones();
+      loadPDNS();
+      loadSites();
     }
   } catch (err) {
     await modalAlert('Kesalahan koneksi: ' + err, 'error', 'VPS Edge Gateway');
@@ -881,8 +992,8 @@ async function unexposePDNS(domain) {
       await modalAlert(`Gagal menghapus ekspos: ${data.error}`, 'error', 'VPS Edge Gateway');
     } else {
       await modalAlert(`Ekspos untuk '${domain}' berhasil dihapus dari VPS Edge.`, 'info', 'VPS Edge Gateway');
-      loadPDNSExposures();
-      loadPDNSZones();
+      loadPDNS();
+      loadSites();
     }
   } catch (err) {
     await modalAlert('Kesalahan jaringan: ' + err, 'error', 'VPS Edge Gateway');
@@ -899,14 +1010,14 @@ async function loadPDNSZones() {
       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">Gagal memuat zone DNS.</td></tr>`;
       return;
     }
-    const zones = await res.json() || [];
+    cachedZones = await res.json() || [];
     tbody.innerHTML = '';
-    if (zones.length === 0) {
+    if (cachedZones.length === 0) {
       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">Belum ada zone DNS.</td></tr>`;
       return;
     }
 
-    zones.forEach(z => {
+    cachedZones.forEach(z => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><strong>${z.name}</strong></td>
@@ -915,7 +1026,7 @@ async function loadPDNSZones() {
         <td><span class="status-pill active">● Aktif</span></td>
         <td>
           <div style="display:flex;gap:6px;">
-            <button class="btn btn-sm btn-outline" onclick="openPDNSRecordsModal('${z.name}')">Record</button>
+            <button class="btn btn-sm btn-outline" onclick="openPDNSRecordsModal('${z.name}')">Kelola Record</button>
             <button class="btn btn-sm btn-danger" onclick="deletePDNSZone('${z.name}')">Hapus</button>
           </div>
         </td>
@@ -1016,10 +1127,17 @@ async function loadPDNSRecords(zoneName) {
 
     rrsets.forEach(rr => {
       const isProtected = (rr.type === 'SOA' || rr.type === 'NS');
+      const cleanName = rr.name.replace(/\.$/, '');
+      const isEdgeProxy = cachedProxies.some(p => p.domain === cleanName);
+
       (rr.records || []).forEach(rec => {
         const tr = document.createElement('tr');
+        const proxyBadge = isEdgeProxy
+          ? '<span class="stat-badge" style="background:rgba(59,130,246,0.18);color:var(--primary);font-size:10px;margin-left:6px;border:1px solid rgba(59,130,246,0.3);">● Edge VPS Proxy</span>'
+          : '';
+
         tr.innerHTML = `
-          <td><strong>${rr.name}</strong></td>
+          <td><strong>${rr.name}</strong>${proxyBadge}</td>
           <td><span class="stat-badge" style="font-size:11px;padding:2px 6px;">${rr.type}</span></td>
           <td>${rr.ttl}</td>
           <td style="max-width:260px;word-break:break-all;font-size:12px;font-family:monospace;">${rec.content}</td>
