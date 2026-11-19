@@ -1,33 +1,46 @@
-# wdev — Linux Developer Environment Installer
+# wdev — Linux Developer Control Plane & Environment Manager
 
-Kumpulan skrip Bash untuk menyiapkan lingkungan pengembangan lengkap di Linux dalam satu perintah: toolchain multi-versi, web stack lokal, serta Orca ADE (Desktop GUI / Headless Server).
+Aplikasi manajemen lingkungan pengembangan & infrastruktur Linux terpadu dalam satu biner Go mandiri (**Web UI Dashboard**, **TUI Terminal**, dan **CLI**), didukung oleh kumpulan automasi skrip Bash tingkat lanjut untuk toolchain multi-versi, web stack lokal, Cloudflare Tunnel, PowerDNS Authoritative, serta Orca ADE.
 
-Dirancang untuk Fedora/RHEL (dnf/yum) dan Debian/Ubuntu (apt). `pacman` dan `zypper` terdeteksi, tetapi alur instalasi paketnya belum diimplementasikan.
+---
 
-## Isi Repo
+## Fitur Utama v2.0 (Go Control Plane)
 
-| Berkas | Fungsi |
-|---|---|
-| `setup_dev.sh` | Manajer dev environment: menu interaktif + CLI, instalasi/update per komponen, helper multi-versi |
-| `cf-tunnel.sh` | Helper manajemen Cloudflare Tunnel multi-akun (dipasang sebagai `cf-tunnel` oleh `setup_dev.sh`) |
-| `pdns-mgr.sh` | Helper manajemen PowerDNS Authoritative & VPS Edge Gateway via Netbird (dipasang sebagai `pdns-mgr`) |
-| `vps-edge-setup.sh` | Installer mandiri 1-klik untuk VPS Edge Gateway (PowerDNS + SQLite3 + Nginx + Netbird Agent) |
-| `setup_orca_headless.sh` | Installer Orca ADE (Desktop GUI atau Headless Server), satu mode aktif per mesin |
+* 🌐 **Web UI Dashboard Tersemat (`wdev serve`)**: Antarmuka web modern & responsif di `http://localhost:3200` dengan live streaming log terminal via Server-Sent Events (SSE).
+* 🖥️ **TUI Terminal Dashboard (`wdev tui`)**: Dashboard terminal interaktif dengan indikator status layanan (🟢 Aktif / 🔴 Nonaktif).
+* 🗄️ **Penyimpanan State SQLite**: State profil tunnel, virtual host, dan DNS terintegrasi dan tersinkronisasi otomatis.
+* ⚡ **CLI Terpadu**:
+  * `wdev status`: Cek cepat status sistem, memori, disk, LAN IP, NetBird IP, dan layanan inti.
+  * `wdev site list|create|delete`: Manajemen virtual host Nginx (Laravel, WordPress, CI4/3, Symfony, Proxy) dengan SSL otomatis (`mkcert`).
+  * `wdev switch list|node|php|pg`: Pengelola versi runtime aktif.
+  * `wdev cf status|expose|unexpose`: Manajemen Cloudflare Tunnel multi-akun & routing ingress.
+  * `wdev pdns status|zone|record`: Manajemen PowerDNS & VPS Edge Gateway via Netbird.
+  * `wdev install <komponen>`: Pasang atau perbarui komponen modular.
 
-## Persyaratan
-
-- Linux x86_64 atau arm64
-- Akses `root`/`sudo`
-- Koneksi internet (unduhan dari repo distro, GitHub, nodejs.org, getcomposer.org)
-- `bash` 4+, `curl`, `git` (dipasang otomatis oleh langkah dependensi dasar)
+---
 
 ## Mulai Cepat
 
-```bash
-git clone https://github.com/barisankoding-cell/wdev.git
-cd wdev
-chmod +x setup_dev.sh setup_orca_headless.sh
+### Menggunakan Go Control Plane (Disarankan)
 
+```bash
+# Build & install biner wdev secara global
+go build -o wdev ./cmd/wdev
+sudo cp wdev /usr/local/bin/
+
+# Jalankan Web Dashboard (Buka http://localhost:3200 di browser)
+wdev serve
+
+# Atau jalankan Terminal UI Interaktif
+wdev tui
+
+# Atau cek status via CLI
+wdev status
+```
+
+### Menggunakan Skrip Bash Klasik
+
+```bash
 sudo ./setup_dev.sh            # menu interaktif
 sudo ./setup_dev.sh --install  # instalasi penuh (14 langkah)
 ```

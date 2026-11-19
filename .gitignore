@@ -31,6 +31,10 @@ Thumbs.db
 *.rej
 
 # Artefak build & cache
+/wdev
+*.db
+*.db-wal
+*.db-shm
 node_modules/
 dist/
 build/
