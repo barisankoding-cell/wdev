@@ -93,8 +93,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/mail/preflight", s.handleMailPreflight)
 	s.mux.HandleFunc("/api/mail/routes", s.handleMailRoutes)
 	s.mux.HandleFunc("/api/mail/relay/remove", s.handleMailRelayRemove)
+	s.mux.HandleFunc("/api/mail/relay/dns", s.handleMailRelayDNS)
 	s.mux.HandleFunc("/api/mail/admin-reset", s.handleMailAdminReset)
 	s.mux.HandleFunc("/api/mail/setup", s.handleMailSetup)
+	s.mux.HandleFunc("/api/mail/domain/delete", s.handleMailDomainDelete)
+	s.mux.HandleFunc("/api/mail/domain/repair", s.handleMailDomainRepair)
 	s.mux.HandleFunc("/api/sudo/status", s.handleSudoStatus)
 	s.mux.HandleFunc("/api/sudo/verify", s.handleSudoVerify)
 	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
@@ -1360,9 +1363,10 @@ func (s *Server) handleMailRelaySet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "updated",
 		"message": "Konfigurasi relay domain " + payload.Domain + " berhasil disimpan",
+		"dns":     s.mailMgr.LastRelayDNSReport(),
 	})
 }
 
@@ -1416,10 +1420,58 @@ func (s *Server) handleMailRelayRemove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "removed",
 		"message": "Override relay domain " + payload.Domain + " dihapus; domain kembali ke relay default",
+		"dns":     s.mailMgr.LastRelayDNSReport(),
 	})
+}
+
+func (s *Server) handleMailRelayDNS(w http.ResponseWriter, r *http.Request) {
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		domain := r.URL.Query().Get("domain")
+		if strings.TrimSpace(domain) == "" {
+			writeError(w, http.StatusBadRequest, "Parameter domain diperlukan")
+			return
+		}
+		writeJSON(w, http.StatusOK, s.mailMgr.ListRelayDNS(domain))
+	case http.MethodPost:
+		var payload struct {
+			Domain   string                    `json:"domain"`
+			Provider string                    `json:"provider"`
+			Records  []mail.ManagedRelayRecord `json:"records"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+			return
+		}
+		report, err := s.mailMgr.AddRelayDNS(payload.Domain, payload.Provider, payload.Records)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "report": report})
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	case http.MethodDelete:
+		domain := r.URL.Query().Get("domain")
+		provider := r.URL.Query().Get("provider")
+		if strings.TrimSpace(domain) == "" {
+			writeError(w, http.StatusBadRequest, "Parameter domain diperlukan")
+			return
+		}
+		report, err := s.mailMgr.DeleteRelayDNS(domain, provider)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+	}
 }
 
 func (s *Server) handleMailAdminReset(w http.ResponseWriter, r *http.Request) {
@@ -1446,6 +1498,78 @@ func (s *Server) handleMailAdminReset(w http.ResponseWriter, r *http.Request) {
 		"status":  "reset",
 		"message": "Password admin domain " + payload.Domain + " berhasil direset",
 	})
+}
+
+func (s *Server) handleMailDomainDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Domain    string `json:"domain"`
+		DeleteDNS bool   `json:"delete_dns"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(payload.Domain) == "" {
+		writeError(w, http.StatusBadRequest, "Domain wajib diisi")
+		return
+	}
+	report, err := s.mailMgr.DeleteDomain(payload.Domain, payload.DeleteDNS)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "report": report})
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Server) handleMailDomainRepair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	domain := strings.TrimSpace(payload.Domain)
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "Domain wajib diisi")
+		return
+	}
+
+	taskName := fmt.Sprintf("Perbaiki Domain Mail (%s)", domain)
+	taskID, err := s.runner.StartNativeTask(taskName, func(ctx context.Context, cb func(string)) error {
+		report, repErr := s.mailMgr.RepairDomain(domain, cb)
+		for _, c := range report.Checks {
+			cb(fmt.Sprintf("[%s] %s: %s", strings.ToUpper(c.Status), c.Name, c.Detail))
+		}
+		if repErr != nil {
+			return repErr
+		}
+		if !report.OK {
+			return fmt.Errorf("sebagian langkah perbaikan gagal; periksa detail di atas")
+		}
+		return nil
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "started", "task_id": taskID})
 }
 
 func (s *Server) handleMailSetup(w http.ResponseWriter, r *http.Request) {

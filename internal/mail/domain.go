@@ -1,0 +1,558 @@
+package mail
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	actionOK    = "ok"
+	actionWarn  = "warn"
+	actionFail  = "fail"
+	actionFixed = "fixed"
+)
+
+// DomainCheck adalah satu langkah hasil perbaikan/penghapusan domain mail.
+type DomainCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+}
+
+// DomainActionReport adalah ringkasan aksi perbaikan atau penghapusan domain.
+type DomainActionReport struct {
+	Domain string        `json:"domain"`
+	Zone   string        `json:"zone,omitempty"`
+	OK     bool          `json:"ok"`
+	Checks []DomainCheck `json:"checks"`
+}
+
+func (r *DomainActionReport) add(name, status, detail string) {
+	r.Checks = append(r.Checks, DomainCheck{Name: name, Status: status, Detail: detail})
+	if status == actionFail {
+		r.OK = false
+	}
+}
+
+func (r *DomainActionReport) hasFail() bool { return !r.OK }
+
+// cleanMailDomain menormalkan nama domain (lowercase, tanpa trailing dot).
+func cleanMailDomain(domain string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+}
+
+// recordNameForZone mengubah FQDN menjadi nama record relatif terhadap zone.
+func recordNameForZone(zone, fqdn string) string {
+	zone = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	fqdn = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(fqdn)), ".")
+	if fqdn == "" || fqdn == zone {
+		return "@"
+	}
+	if strings.HasSuffix(fqdn, "."+zone) {
+		return strings.TrimSuffix(fqdn, "."+zone)
+	}
+	return fqdn
+}
+
+func recordSetEqual(have []string, want string) bool {
+	if len(have) == 0 {
+		return false
+	}
+	want = strings.TrimSpace(strings.TrimSuffix(strings.Trim(want, `"`), "."))
+	for _, h := range have {
+		got := strings.TrimSpace(strings.TrimSuffix(strings.Trim(h, `"`), "."))
+		if !strings.EqualFold(got, want) {
+			return false
+		}
+	}
+	return true
+}
+
+// removeAdminCred menghapus entri kredensial admin satu domain.
+func (m *Manager) removeAdminCred(domain string) error {
+	domain = cleanMailDomain(domain)
+	data, err := readRootFile(m.adminCredPath())
+	if err != nil {
+		return nil
+	}
+	credMap := make(map[string]adminCredEntry)
+	if err := json.Unmarshal(data, &credMap); err != nil {
+		return err
+	}
+	if _, ok := credMap[domain]; !ok {
+		return nil
+	}
+	delete(credMap, domain)
+	out, err := json.MarshalIndent(credMap, "", " ")
+	if err != nil {
+		return err
+	}
+	return writeRootFile(m.adminCredPath(), out, 0600)
+}
+
+// removeDomainState menghapus catatan state setup satu domain.
+func (m *Manager) removeDomainState(domain string) error {
+	domain = cleanMailDomain(domain)
+	all := m.loadDomainsState()
+	if _, ok := all[domain]; !ok {
+		return nil
+	}
+	delete(all, domain)
+	data, err := json.MarshalIndent(all, "", " ")
+	if err != nil {
+		return err
+	}
+	return writeRootFile(m.domainsStatePath(), data, 0600)
+}
+
+func (m *Manager) adminCredPath() string {
+	return filepath.Join(m.cfg.WdevEtc, "mail-admin.cred")
+}
+
+func (m *Manager) listAccountsForDomain(adminEmail, adminPass, domainID string) []string {
+	out, err := m.runStalwartCli(adminEmail, adminPass, "query", "Account", "--where", "domainId="+domainID, "--fields", "id", "--json")
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var item struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &item); err == nil && item.ID != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+// deleteMailDNS menghapus record DNS khusus mail milik satu domain.
+func (m *Manager) deleteMailDNS(zone, domain string, rep *DomainActionReport) {
+	privateNames := []string{
+		"mail." + domain,
+		"mx." + domain,
+		"webmail." + domain,
+		"mailadmin." + domain,
+	}
+	removed := 0
+	for _, fqdn := range privateNames {
+		name := recordNameForZone(zone, fqdn)
+		if err := m.pdnsMgr.DeleteRecord(zone, name, "A"); err != nil {
+			rep.add("DNS A "+name, actionWarn, err.Error())
+			continue
+		}
+		removed++
+	}
+
+	// MX hanya dihapus bila seluruh isinya memang menunjuk ke mail.<domain>.
+	if mx, err := m.pdnsMgr.LookupRecords(zone, "@", "MX"); err == nil && len(mx) > 0 {
+		allOurs := true
+		for _, content := range mx {
+			c := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(content), "."))
+			if !strings.HasSuffix(c, "mail."+domain) {
+				allOurs = false
+				break
+			}
+		}
+		if allOurs {
+			if err := m.pdnsMgr.DeleteRecord(zone, "@", "MX"); err == nil {
+				removed++
+			}
+		}
+	}
+
+	// DMARC hanya dihapus jika memang merujuk domain ini.
+	if txt, err := m.pdnsMgr.LookupRecords(zone, "_dmarc", "TXT"); err == nil {
+		for _, content := range txt {
+			c := strings.ToLower(content)
+			if strings.Contains(c, "dmarc@"+domain) || strings.Contains(c, "mailto:dmarc@"+domain) {
+				if err := m.pdnsMgr.DeleteRecord(zone, "_dmarc", "TXT"); err == nil {
+					removed++
+				}
+				break
+			}
+		}
+	}
+
+	// SPF hanya dihapus bila TXT apex tunggal dan persis kebijakan bawaan wdev
+	// (v=spf1 -all); TXT lain seperti verifikasi domain tidak boleh ikut hilang.
+	if txt, err := m.pdnsMgr.LookupRecords(zone, "@", "TXT"); err == nil && len(txt) == 1 {
+		if strings.EqualFold(strings.Trim(strings.TrimSpace(txt[0]), `"`), "v=spf1 -all") {
+			if err := m.pdnsMgr.DeleteRecord(zone, "@", "TXT"); err == nil {
+				removed++
+			}
+		}
+	}
+
+	rep.add("DNS mail", actionOK, fmt.Sprintf("%d record mail dihapus dari zone %s (record SPF kustom lain dipertahankan)", removed, zone))
+}
+
+// DeleteDomain menghapus domain mail dari Stalwart, Edge Gateway, dan state lokal.
+// Record DNS hanya dihapus bila deleteDNS=true.
+func (m *Manager) DeleteDomain(domain string, deleteDNS bool) (DomainActionReport, error) {
+	domain = cleanMailDomain(domain)
+	rep := DomainActionReport{Domain: domain, OK: true}
+	if domain == "" {
+		return rep, fmt.Errorf("domain wajib diisi")
+	}
+	if !validMailDomain(domain) {
+		return rep, fmt.Errorf("domain tidak valid: %s", domain)
+	}
+
+	adminEmail, adminPass, credErr := m.pickValidAdminCred(domain)
+	if credErr == nil {
+		// Relay dibersihkan lebih dulu: akun admin domain ini ikut terhapus
+		// bersama domain Stalwart, sehingga kredensial tidak valid setelahnya.
+		_, hasCred := m.loadDomainRelayCred(domain)
+		hasBranch := false
+		if route, err := m.loadOutboundRoute(adminEmail, adminPass); err == nil {
+			hasBranch = route.hasDomain(domain)
+		}
+		if !hasCred && !hasBranch {
+			rep.add("Relay outbound", actionOK, "tidak ada override relay domain")
+		} else if err := m.removeDomainRelay(adminEmail, adminPass, domain); err != nil {
+			rep.add("Relay outbound", actionWarn, err.Error())
+		} else {
+			rep.add("Relay outbound", actionOK, "override relay domain dihapus (fallback ke relay default)")
+		}
+
+		// Bila akun admin yang dipakai berasal dari domain ini dan masih ada
+		// domain lain, siapkan admin pengganti agar akses Stalwart tidak hilang.
+		if strings.HasSuffix(strings.ToLower(adminEmail), "@"+domain) {
+			other := ""
+			for _, d := range m.stalwartDomainNames() {
+				if d = cleanMailDomain(d); d != "" && d != domain {
+					other = d
+					break
+				}
+			}
+			if other != "" {
+				if _, _, err := m.resetAdminInternal(other); err != nil {
+					rep.add("Admin Stalwart", actionWarn, "admin pengganti untuk "+other+" gagal disiapkan: "+err.Error())
+				} else {
+					rep.add("Admin Stalwart", actionOK, "admin pengganti disiapkan di "+other)
+				}
+			}
+		}
+
+		domainID, _ := m.findDomainID(adminEmail, adminPass, domain)
+		if domainID == "" {
+			rep.add("Domain Stalwart", actionWarn, "domain tidak ditemukan di Stalwart")
+		} else {
+			accIDs := m.listAccountsForDomain(adminEmail, adminPass, domainID)
+			deleted := 0
+			for _, id := range accIDs {
+				if out, err := m.runStalwartCli(adminEmail, adminPass, "delete", "--ids", id, "Account"); err != nil {
+					rep.add("Akun Stalwart", actionWarn, fmt.Sprintf("gagal hapus akun %s: %v (%s)", id, err, strings.TrimSpace(string(out))))
+					continue
+				}
+				deleted++
+			}
+			rep.add("Akun Stalwart", actionOK, fmt.Sprintf("%d akun dihapus", deleted))
+			if out, err := m.runStalwartCli(adminEmail, adminPass, "delete", "--ids", domainID, "Domain"); err != nil {
+				rep.add("Domain Stalwart", actionFail, fmt.Sprintf("%v (%s)", err, strings.TrimSpace(string(out))))
+			} else {
+				rep.add("Domain Stalwart", actionOK, "domain "+domain+" dihapus dari Stalwart")
+			}
+		}
+
+	} else {
+		rep.add("Kredensial Stalwart", actionWarn, "kredensial admin tidak valid; domain Stalwart tidak dapat dihapus: "+credErr.Error())
+	}
+
+	if err := m.removeDomainRelayCred(domain); err != nil {
+		rep.add("Kredensial relay", actionWarn, err.Error())
+	}
+	if err := m.removeAdminCred(domain); err != nil {
+		rep.add("Kredensial admin", actionWarn, err.Error())
+	}
+	if err := m.removeDomainState(domain); err != nil {
+		rep.add("State domain", actionWarn, err.Error())
+	}
+	rep.add("State lokal", actionOK, "kredensial admin, relay, dan state domain dibersihkan")
+
+	if _, err := m.pdnsMgr.AgentPost("/api/v1/mail/remove-domain", map[string]any{"domain": domain}); err != nil {
+		rep.add("VPS Edge Gateway", actionWarn, "gagal membersihkan vhost/stream/proxy di VPS: "+err.Error())
+	} else {
+		rep.add("VPS Edge Gateway", actionOK, "vhost webmail/admin, postfix relay, dan stream mail dibersihkan di VPS")
+	}
+
+	if deleteDNS {
+		zone, err := m.pdnsMgr.FindMatchingZone(domain)
+		if err != nil {
+			rep.add("DNS", actionWarn, err.Error())
+		} else {
+			rep.Zone = zone
+			m.deleteMailDNS(zone, domain, &rep)
+		}
+	} else {
+		rep.add("DNS", actionOK, "record DNS dipertahankan (hapus manual dari tab PowerDNS bila perlu)")
+	}
+
+	_ = restartStalwart()
+	return rep, nil
+}
+
+// RepairDomain memperbaiki NS/SOA zone dan memastikan record MX, A, SPF, DMARC,
+// edge gateway, serta routing relay untuk satu domain mail sudah tepat.
+func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionReport, error) {
+	if cb == nil {
+		cb = func(string) {}
+	}
+	domain = cleanMailDomain(domain)
+	rep := DomainActionReport{Domain: domain, OK: true}
+	if domain == "" {
+		return rep, fmt.Errorf("domain wajib diisi")
+	}
+	if !validMailDomain(domain) {
+		return rep, fmt.Errorf("domain tidak valid: %s", domain)
+	}
+
+	zone, err := m.pdnsMgr.FindMatchingZone(domain)
+	if err != nil {
+		rep.add("Zone DNS", actionFail, err.Error())
+		return rep, err
+	}
+	rep.Zone = zone
+	cb(fmt.Sprintf("Zone DNS: %s", zone))
+
+	// 1. Perbaiki NS/SOA/glue di level zone (idempoten).
+	zoneReport, zoneErr := m.pdnsMgr.RepairZone(zone)
+	if zoneErr != nil {
+		rep.add("NS & SOA zone", actionFail, zoneErr.Error())
+	} else {
+		for _, c := range zoneReport.Checks {
+			if strings.Contains(strings.ToLower(c.Name), "ns") || strings.Contains(strings.ToLower(c.Name), "soa") {
+				status := actionOK
+				if c.Status != "ok" {
+					status = actionWarn
+				}
+				rep.add("NS & SOA zone · "+c.Name, status, c.Detail)
+			}
+		}
+		rep.add("NS & SOA zone", actionOK, "NS, SOA primary/serial, dan glue A diperiksa ulang")
+	}
+
+	// 2. Pastikan domain & admin Stalwart siap.
+	adminUser, adminPass, admErr := m.ensureStalwartMailDomain(domain)
+	if admErr != nil {
+		rep.add("Domain Stalwart", actionWarn, admErr.Error())
+	} else {
+		rep.add("Domain Stalwart", actionOK, "domain & akun admin siap ("+adminUser+")")
+	}
+
+	// 3. Sinkronkan record DNS inbound/outbound.
+	m.syncMailDNS(zone, domain, &rep, cb)
+
+	// 4. Daftarkan ulang edge gateway (vhost, postfix, stream, TLS) bila agent tersedia.
+	if localNB := m.pdnsMgr.GetLocalNetbirdIP(); localNB == "" {
+		rep.add("Edge Gateway", actionWarn, "IP NetBird lokal (wt0) tidak terdeteksi; vhost VPS tidak bisa disegarkan")
+	} else {
+		ssl := true
+		if st, ok := m.loadDomainsState()[domain]; ok && !st.SSL {
+			ssl = false
+		}
+		payload := map[string]any{"domain": domain, "target_ip": localNB, "ssl": ssl}
+		resp, agentErr := m.pdnsMgr.AgentPost("/api/v1/mail/setup-domain", payload)
+		if agentErr != nil {
+			rep.add("Edge Gateway", actionWarn, "gagal menyegarkan vhost/proxy VPS: "+agentErr.Error())
+		} else {
+			var respMap map[string]any
+			_ = json.Unmarshal(resp, &respMap)
+			adminURL, _ := respMap["admin_url"].(string)
+			webmailURL, _ := respMap["webmail_url"].(string)
+			m.recordDomainState(domain, ssl, adminURL, webmailURL)
+			rep.add("Edge Gateway", actionOK, "vhost webmail/admin, postfix relay, dan stream mail disegarkan")
+		}
+	}
+
+	// 5. Pastikan routing relay outbound konsisten.
+	m.repairRelayRouting(domain, adminUser, adminPass, &rep)
+
+	// 6. Pasang ulang record DNS relay yang tercatat milik provider aktif.
+	if cred, ok := m.loadDomainRelayCred(domain); ok {
+		dnsRep := m.EnsureManagedRelayDNS(domain, cred.Provider)
+		for _, a := range dnsRep.Added {
+			rep.add("DNS relay", actionFixed, a)
+		}
+		for _, warn := range dnsRep.Manual {
+			rep.add("DNS relay", actionWarn, warn)
+		}
+		if len(dnsRep.Added) == 0 && len(dnsRep.Manual) == 0 {
+			rep.add("DNS relay", actionOK, "record relay terkelola sudah sesuai")
+		}
+	}
+
+	if rep.hasFail() {
+		cb("Perbaikan selesai dengan beberapa kegagalan; lihat detail.")
+	} else {
+		cb("Perbaikan domain selesai.")
+	}
+	return rep, nil
+}
+
+// syncMailDNS menegakkan record A, MX, SPF, dan DMARC yang benar untuk domain.
+func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb func(string)) {
+	conf := m.pdnsMgr.LoadConfig()
+	publicIP := strings.TrimSpace(conf.VPSPublicIP)
+	if publicIP == "" {
+		rep.add("Record A", actionFail, "IP publik VPS belum tercatat; jalankan 'wdev pdns connect'")
+		return
+	}
+
+	hosts := []string{"mail", "mx", "webmail", "mailadmin"}
+	for _, host := range hosts {
+		fqdn := host + "." + domain
+		name := recordNameForZone(zone, fqdn)
+		existing, err := m.pdnsMgr.LookupRecords(zone, name, "A")
+		if err != nil {
+			rep.add("A "+fqdn, actionFail, err.Error())
+			continue
+		}
+		if len(existing) == 1 && strings.TrimSpace(existing[0]) == publicIP {
+			rep.add("A "+fqdn, actionOK, publicIP)
+			continue
+		}
+		if err := m.pdnsMgr.AddRecord(zone, name, "A", publicIP, 300); err != nil {
+			rep.add("A "+fqdn, actionFail, err.Error())
+			continue
+		}
+		if len(existing) == 0 {
+			rep.add("A "+fqdn, actionFixed, publicIP+" (dibuat)")
+		} else {
+			rep.add("A "+fqdn, actionFixed, publicIP+" (mengganti "+strings.Join(existing, ", ")+")")
+			cb(fmt.Sprintf("Perbaiki A %s: %s -> %s", fqdn, strings.Join(existing, ", "), publicIP))
+		}
+	}
+
+	// MX harus menunjuk mail.<domain>.
+	wantMX := "10 mail." + domain + "."
+	mx, err := m.pdnsMgr.LookupRecords(zone, "@", "MX")
+	if err != nil {
+		rep.add("MX", actionFail, err.Error())
+	} else if recordSetEqual(mx, wantMX) {
+		rep.add("MX "+domain, actionOK, wantMX)
+	} else {
+		if err := m.pdnsMgr.AddRecord(zone, "@", "MX", wantMX, 300); err != nil {
+			rep.add("MX "+domain, actionFail, err.Error())
+		} else if len(mx) == 0 {
+			rep.add("MX "+domain, actionFixed, wantMX+" (dibuat)")
+		} else {
+			rep.add("MX "+domain, actionFixed, wantMX+" (mengganti "+strings.Join(mx, ", ")+")")
+			cb(fmt.Sprintf("Perbaiki MX %s: %s -> %s", domain, strings.Join(mx, ", "), wantMX))
+		}
+	}
+
+	// SPF: tambah hanya jika belum ada agar include relay tidak tertimpa.
+	spf, err := m.pdnsMgr.LookupRecords(zone, "@", "TXT")
+	if err != nil {
+		rep.add("SPF", actionWarn, err.Error())
+	} else if containsSPF(spf) {
+		rep.add("SPF", actionOK, "record SPF sudah ada; nilai custom dipertahankan")
+	} else if err := m.pdnsMgr.AddRecordKeep(zone, "@", "TXT", `"v=spf1 -all"`, 300); err != nil {
+		rep.add("SPF", actionFail, err.Error())
+	} else {
+		rep.add("SPF", actionFixed, `"v=spf1 -all" (dibuat)`)
+	}
+
+	// DMARC: tambah hanya jika belum ada.
+	dmarc, err := m.pdnsMgr.LookupRecords(zone, "_dmarc", "TXT")
+	if err != nil {
+		rep.add("DMARC", actionWarn, err.Error())
+	} else if len(dmarc) > 0 {
+		rep.add("DMARC", actionOK, "record _dmarc sudah ada")
+	} else {
+		value := fmt.Sprintf(`"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s"`, domain)
+		if err := m.pdnsMgr.AddRecordKeep(zone, "_dmarc", "TXT", value, 300); err != nil {
+			rep.add("DMARC", actionFail, err.Error())
+		} else {
+			rep.add("DMARC", actionFixed, value+" (dibuat)")
+		}
+	}
+}
+
+// repairRelayRouting memastikan MtaRoute + cabang outbound untuk domain konsisten
+// dengan kredensial relay yang tersimpan.
+func (m *Manager) repairRelayRouting(domain, adminEmail, adminPass string, rep *DomainActionReport) {
+	if adminEmail == "" || adminPass == "" {
+		var err error
+		adminEmail, adminPass, err = m.pickValidAdminCred(domain)
+		if err != nil {
+			rep.add("Relay outbound", actionWarn, "kredensial admin tidak valid; routing relay tidak diperiksa")
+			return
+		}
+	}
+
+	route, err := m.loadOutboundRoute(adminEmail, adminPass)
+	if err != nil {
+		rep.add("Relay outbound", actionWarn, err.Error())
+		return
+	}
+
+	hasBranch := route.hasDomain(domain)
+	cred, hasCred := m.loadDomainRelayCred(domain)
+	if hasCred {
+		if !hasBranch || routeBranchTarget(route, domain) != cred.Route {
+			cred.Route = relayRouteName(domain)
+			if err := m.applyRelay(adminEmail, adminPass, domain, cred.Provider, cred.Host, cred.Port, cred.ImplicitTLS, cred.Username, cred.Password); err != nil {
+				rep.add("Relay outbound", actionFail, "gagal menerapkan ulang relay domain: "+err.Error())
+				return
+			}
+			rep.add("Relay outbound", actionFixed, "routing relay domain dipasang ulang ("+cred.Provider+" "+cred.Host+")")
+		} else {
+			rep.add("Relay outbound", actionOK, "routing relay domain sudah tepat ("+cred.Provider+" "+cred.Host+")")
+		}
+		return
+	}
+
+	if hasBranch {
+		target := routeBranchTarget(route, domain)
+		if target != "" {
+			if existing, _ := m.findMtaRoute(adminEmail, adminPass, target); existing != nil {
+				rep.add("Relay outbound", actionOK, "domain memakai route "+target+" yang valid")
+				return
+			}
+		}
+		route.removeDomain(domain)
+		if route.Else == "" || route.Else == "mx" {
+			if _, err := m.ensureDefaultRelay(adminEmail, adminPass); err != nil {
+				rep.add("Relay outbound", actionWarn, "route domain menunjuk route tidak valid dan relay default belum siap: "+err.Error())
+			}
+		}
+		if err := m.saveOutboundRoute(adminEmail, adminPass, route); err != nil {
+			rep.add("Relay outbound", actionFail, err.Error())
+			return
+		}
+		rep.add("Relay outbound", actionFixed, "cabang relay domain yang menunjuk route tidak valid dibersihkan")
+		return
+	}
+
+	if _, ok := m.loadGlobalRelayCred(); ok {
+		if _, err := m.ensureDefaultRelay(adminEmail, adminPass); err != nil {
+			rep.add("Relay outbound", actionWarn, err.Error())
+			return
+		}
+		rep.add("Relay outbound", actionOK, "domain memakai relay default; routing default valid")
+		return
+	}
+	rep.add("Relay outbound", actionWarn, "belum ada relay default maupun override domain; email keluar tidak akan terkirim")
+}
+
+func routeBranchTarget(route *outboundRoute, domain string) string {
+	want := normalizeExpr(relayMatchCondition(domain))
+	for _, b := range route.Branches {
+		if normalizeExpr(b.If) == want {
+			return strings.Trim(strings.TrimSpace(b.Then), `'"`)
+		}
+	}
+	return ""
+}

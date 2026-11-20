@@ -2494,6 +2494,14 @@ async function loadMailStatus() {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-1.5 1.5L16 7m-1.5 1.5L13 10m-1.5 1.5L10 13m-1.5 1.5L7 16m-4 5a4 4 0 1 1 5.66-5.66l9.9-9.9a2 2 0 0 1 2.83 0l1.41 1.41a2 2 0 0 1 0 2.83L12.9 19.66A4 4 0 0 1 7 21z"/></svg>
                 <span>Reset Admin</span>
               </button>
+ <button class="btn btn-sm btn-outline" style="padding:4px 10px;font-size:11.5px;display:inline-flex;align-items:center;gap:4px;" onclick="repairMailDomain('${d.domain}')" title="Perbaiki NS/MX/relay domain ${d.domain}">
+ <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+ <span>Perbaiki</span>
+ </button>
+ <button class="btn btn-sm btn-outline" style="padding:4px 10px;font-size:11.5px;color:var(--danger);border-color:rgba(239,68,68,0.35);display:inline-flex;align-items:center;gap:4px;" onclick="openMailDomainDeleteModal('${d.domain}')" title="Hapus domain mail ${d.domain}">
+ <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+ <span>Hapus</span>
+ </button>
             </div>
           </td>
         `;
@@ -2606,6 +2614,90 @@ async function deleteMailAccount(email) {
  }
 }
 
+// Hapus / perbaiki domain mail
+function openMailDomainDeleteModal(domain) {
+ const modal = document.getElementById('modal-mail-domain-delete');
+ const nameEl = document.getElementById('mail-domain-delete-name');
+ const inputEl = document.getElementById('mail-domain-delete-confirm');
+ const dnsEl = document.getElementById('mail-domain-delete-dns');
+ if (nameEl) nameEl.textContent = domain || '';
+ if (inputEl) inputEl.value = '';
+ if (dnsEl) dnsEl.checked = false;
+ if (modal) { modal.dataset.domain = domain || ''; modal.classList.add('active'); }
+ setTimeout(() => { if (inputEl) inputEl.focus(); }, 50);
+}
+
+function closeMailDomainDeleteModal() {
+ const modal = document.getElementById('modal-mail-domain-delete');
+ if (modal) modal.classList.remove('active');
+}
+
+async function submitMailDomainDelete(e) {
+ if (e) e.preventDefault();
+ const modal = document.getElementById('modal-mail-domain-delete');
+ const domain = modal?.dataset.domain || '';
+ const typed = document.getElementById('mail-domain-delete-confirm')?.value.trim() || '';
+ const deleteDNS = !!document.getElementById('mail-domain-delete-dns')?.checked;
+ const btn = document.getElementById('btn-submit-mail-domain-delete');
+
+ if (typed !== domain) {
+ await modalAlert('Ketik nama domain persis sama untuk konfirmasi penghapusan.', 'warning', 'Konfirmasi Tidak Cocok');
+ return;
+ }
+
+ if (btn) {
+ btn.disabled = true;
+ btn.textContent = 'Menghapus...';
+ }
+ try {
+ const res = await fetch('/api/mail/domain/delete', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ domain, delete_dns: deleteDNS })
+ });
+ const data = await res.json().catch(() => ({}));
+ if (!res.ok) {
+ await modalAlert(`Gagal menghapus domain: ${data.error || res.statusText}`, 'error', 'Hapus Domain Mail');
+ return;
+ }
+ const checks = (data.checks || []).map(c => `• [${String(c.status).toUpperCase()}] ${c.name}: ${c.detail}`).join('\n');
+ closeMailDomainDeleteModal();
+ await modalAlert(`Domain ${domain} dihapus.\n\n${checks || ''}`, data.ok === false ? 'warning' : 'success', 'Domain Mail Dihapus');
+ loadMail();
+ } catch (err) {
+ await modalAlert('Error: ' + err, 'error', 'Hapus Domain Mail');
+ } finally {
+ if (btn) {
+ btn.disabled = false;
+ btn.textContent = 'Hapus Domain';
+ }
+ }
+}
+
+async function repairMailDomain(domain) {
+ const confirmed = await modalConfirm(
+ `Perbaiki domain mail ${domain}?\n\nTindakan: perbaiki NS/SOA & glue zone, pastikan record A/MX/SPF/DMARC, segarkan vhost VPS, lalu rapikan routing relay outbound.`,
+ { title: 'Perbaiki Domain Mail', confirmText: 'Perbaiki Sekarang' }
+ );
+ if (!confirmed) return;
+ try {
+ const res = await fetch('/api/mail/domain/repair', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ domain })
+ });
+ const data = await res.json().catch(() => ({}));
+ if (!res.ok) {
+ await modalAlert(`Gagal memulai perbaikan: ${data.error || res.statusText}`, 'error', 'Perbaiki Domain Mail');
+ return;
+ }
+ openTerminalModal(`Perbaiki Domain Mail: ${domain}`);
+ } catch (err) {
+ await modalAlert('Error: ' + err, 'error', 'Perbaiki Domain Mail');
+ }
+}
+
+
 // Modal: Add Account
 function openMailAddAccountModal(domain) {
   const modal = document.getElementById('modal-mail-add-account');
@@ -2682,7 +2774,71 @@ function openMailRelayModal(domain) {
  }
  prefillMailRelay(domain);
  toggleMailRelayFields();
+ loadMailRelayDNS(domSelect?.value || domain);
  if (modal) modal.classList.add('active');
+}
+
+function onMailRelayDomainChange() {
+ const domain = document.getElementById('mail-relay-domain')?.value;
+ loadMailRelayDNS(domain);
+}
+
+function currentMailRelayProvider() {
+ return document.getElementById('mail-relay-provider')?.value || '';
+}
+
+async function loadMailRelayDNS(domain) {
+ const area = document.getElementById('mail-relay-dns-records');
+ if (!area) return;
+ if (!domain) {
+ area.value = '';
+ return;
+ }
+ try {
+ const res = await fetch('/api/mail/relay/dns?domain=' + encodeURIComponent(domain));
+ const list = res.ok ? await res.json() : [];
+ const provider = currentMailRelayProvider();
+ area.value = (Array.isArray(list) ? list : [])
+ .filter(r => !provider || String(r.provider || '').toLowerCase() === provider)
+ .map(r => `${r.type} ${r.name} ${r.content}`)
+ .join('\n');
+ } catch (_) {
+ area.value = '';
+ }
+}
+
+function parseMailRelayDNS(text) {
+ return String(text || '').split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+ const parts = line.split(/\s+/);
+ if (parts.length < 3) {
+ throw new Error('Format baris tidak valid: ' + line);
+ }
+ return { type: parts[0].toUpperCase(), name: parts[1], content: parts.slice(2).join(' ') };
+ });
+}
+
+async function saveMailRelayDNS(domain, provider, text) {
+ let records = [];
+ try {
+ records = parseMailRelayDNS(text);
+ } catch (err) {
+ return { added: [], kept: [], manual: [err.message] };
+ }
+ if (!records.length) return null;
+ try {
+ const res = await fetch('/api/mail/relay/dns', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ domain, provider, records })
+ });
+ const data = await res.json().catch(() => ({}));
+ if (!res.ok) {
+ return { added: [], kept: [], manual: ['Gagal menyimpan record relay: ' + (data.error || res.statusText)] };
+ }
+ return data;
+ } catch (err) {
+ return { added: [], kept: [], manual: ['Gagal menyimpan record relay: ' + err.message] };
+ }
 }
 
 function prefillMailRelay(domain) {
@@ -2729,7 +2885,7 @@ async function removeMailRelay(domain) {
  await modalAlert(`Gagal menghapus relay: ${data.error || res.statusText}`, 'error', 'Mail Server');
  return;
  }
- await modalAlert(data.message || `Override relay ${domain} dihapus.`, 'success', 'Relay Dihapus');
+ await modalAlert(relayDNSMessage(domain, data.dns).replace('berhasil disimpan', 'dihapus'), relayDNSHasIssue(data.dns) ? 'warning' : 'success', 'Relay Dihapus');
  loadMail();
  } catch (err) {
  await modalAlert('Error: ' + err, 'error', 'Mail Server');
@@ -2770,6 +2926,39 @@ function toggleMailRelayFields() {
     if (groupCustom) groupCustom.style.display = 'none';
   }
 }
+
+function relayDNSHasIssue(dns) {
+ if (!dns) return false;
+ return (dns.manual || []).length > 0;
+}
+
+function relayDNSMessage(domain, dns) {
+ let msg = `Konfigurasi outbound SMTP relay domain ${domain} berhasil disimpan.`;
+ if (!dns) {
+ msg += '\n\nRecord DNS relay tidak berubah (belum ada record terkelola).';
+ return msg;
+ }
+ const lines = [];
+ if ((dns.removed || []).length) {
+ lines.push(`Dihapus otomatis (${dns.previous_provider || 'provider lama'}):`);
+ dns.removed.forEach(r => lines.push('  - ' + r));
+ }
+ if ((dns.added || []).length) {
+ lines.push(`Dipasang otomatis (${dns.provider || 'provider baru'}):`);
+ dns.added.forEach(r => lines.push('  - ' + r));
+ }
+ if ((dns.kept || []).length) {
+ lines.push('Dipertahankan:');
+ dns.kept.forEach(r => lines.push('  - ' + r));
+ }
+ if ((dns.manual || []).length) {
+ lines.push('Perlu dipasang manual:');
+ dns.manual.forEach(r => lines.push('  - ' + r));
+ }
+ if (lines.length) msg += '\n\n' + lines.join('\n');
+ return msg;
+}
+
 
 async function submitMailRelay(e) {
   if (e) e.preventDefault();
@@ -2820,9 +3009,20 @@ async function submitMailRelay(e) {
     if (!res.ok) {
       await modalAlert(`Gagal menyetel relay: ${data.error}`, 'error', 'Mail Server');
     } else {
-      await modalAlert(`Konfigurasi outbound SMTP relay domain ${domain} berhasil disimpan!`, 'success', 'Relay Berhasil Disetel');
-      closeMailRelayModal();
-      loadMail();
+  const dnsText = document.getElementById('mail-relay-dns-records')?.value || '';
+  const saved = await saveMailRelayDNS(domain, provider, dnsText);
+  let dnsReport = data.dns;
+  if (saved) {
+  const base = dnsReport || {};
+  dnsReport = Object.assign({}, base, {
+  added: (saved.added || []).concat(base.added || []),
+  kept: (saved.kept || []).concat(base.kept || []),
+  manual: (saved.manual || []).concat(base.manual || [])
+  });
+  }
+ closeMailRelayModal();
+ await modalAlert(relayDNSMessage(domain, dnsReport), relayDNSHasIssue(dnsReport) ? 'warning' : 'success', 'Relay Berhasil Disetel');
+ loadMail();
     }
   } catch (err) {
     await modalAlert('Error: ' + err, 'error', 'Mail Server');

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"wdev/internal/config"
 	"wdev/internal/pdns"
@@ -24,6 +25,25 @@ type Manager struct {
 	cfg     *config.Config
 	store   *store.Store
 	pdnsMgr *pdns.Manager
+
+	// LastRelayDNS menyimpan hasil rekonsiliasi DNS dari operasi relay terakhir
+	// agar handler HTTP/CLI bisa melaporkan record yang dihapus & dibuat.
+	relayDNSMu   sync.Mutex
+	LastRelayDNS RelayDNSReport
+}
+
+// setLastRelayDNS mencatat hasil rekonsiliasi DNS secara aman.
+func (m *Manager) setLastRelayDNS(rep RelayDNSReport) {
+	m.relayDNSMu.Lock()
+	m.LastRelayDNS = rep
+	m.relayDNSMu.Unlock()
+}
+
+// LastRelayDNSReport mengembalikan hasil rekonsiliasi DNS terakhir.
+func (m *Manager) LastRelayDNSReport() RelayDNSReport {
+	m.relayDNSMu.Lock()
+	defer m.relayDNSMu.Unlock()
+	return m.LastRelayDNS
 }
 
 type MailStatus struct {
@@ -1158,11 +1178,25 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 	}
 
 	prov := strings.ToLower(strings.TrimSpace(opts.Provider))
+	if prov == "disable" || prov == "none" || prov == "off" {
+		previous := ""
+		if prev, ok := m.loadDomainRelayCred(cleanDom); ok {
+			previous = strings.ToLower(prev.Provider)
+		}
+		if err := m.removeDomainRelay(adminEmail, adminPass, cleanDom); err != nil {
+			return err
+		}
+		// Provider baru = relay default efektif setelah override dihapus.
+		effective := ""
+		if cred, ok := m.loadGlobalRelayCred(); ok {
+			effective = strings.ToLower(cred.Provider)
+		}
+		m.setLastRelayDNS(m.reconcileRelayDNS(cleanDom, previous, effective))
+		return nil
+	}
 	switch prov {
 	case "direct", "mx":
 		return fmt.Errorf("%s: provider direct tidak didukung; pilih resend, brevo, atau custom", relayOnlyMode)
-	case "disable", "none", "off":
-		return m.removeDomainRelay(adminEmail, adminPass, cleanDom)
 	}
 
 	host := opts.Host
@@ -1216,7 +1250,15 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 		return fmt.Errorf("provider relay tidak dikenal: %s (pilihan: resend, brevo, custom, off)", opts.Provider)
 	}
 
-	return m.applyRelay(adminEmail, adminPass, cleanDom, prov, host, port, implicitTLS, user, pass)
+	previous := ""
+	if prev, ok := m.loadDomainRelayCred(cleanDom); ok {
+		previous = strings.ToLower(prev.Provider)
+	}
+	if err := m.applyRelay(adminEmail, adminPass, cleanDom, prov, host, port, implicitTLS, user, pass); err != nil {
+		return err
+	}
+	m.setLastRelayDNS(m.reconcileRelayDNS(cleanDom, previous, prov))
+	return nil
 }
 
 // AdminCredential mengembalikan kredensial admin domain tanpa mencetaknya ke log.

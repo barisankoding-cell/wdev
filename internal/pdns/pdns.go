@@ -469,6 +469,15 @@ func (m *Manager) LookupRecords(zone, name, rtype string) ([]string, error) {
 	return res, nil
 }
 
+// ReplaceRecords menimpa RRset dengan daftar isi tertentu (dipakai saat hanya
+// sebagian nilai pada RRset yang perlu dihapus).
+func (m *Manager) ReplaceRecords(zone, name, rtype string, contents []string, ttl int) error {
+	if len(contents) == 0 {
+		return m.DeleteRecord(zone, name, rtype)
+	}
+	return m.patchRecords(zone, name, rtype, contents, ttl)
+}
+
 // AddRecordKeep menambah record tanpa menghapus record lain pada name/type yang
 // sama (dipakai untuk TXT multi-value seperti verifikasi SPF).
 func (m *Manager) AddRecordKeep(zone, name, rtype, content string, ttl int) error {

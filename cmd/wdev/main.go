@@ -89,6 +89,9 @@ MAIL SERVER & RELAY:
   wdev mail admin-reset <domain>           Reset password admin Stalwart untuk domain
  wdev mail unset-relay <domain> Hapus override relay domain (fallback default)
  wdev mail admin-cred <domain> Tampilkan kredensial admin Stalwart domain
+ wdev mail repair-domain <domain> Perbaiki NS/MX/A/SPF/DMARC & routing relay domain
+ wdev mail delete-domain <domain> [--keep-dns] Hapus domain mail (akun, vhost, relay)
+ wdev mail relay-dns <domain> [list|add|remove ...] Kelola record DNS relay milik wdev
 
 INSTALASI & SYSTEMD SERVICE:
   wdev install [service]               Pasang wdev ke sistem & aktifkan systemd service (auto-start)
@@ -921,7 +924,7 @@ func main() {
 
 	case "mail":
 		if len(args) < 2 {
-			fmt.Println("Penggunaan: wdev mail [setup|status|accounts|add-account|delete-account|set-relay|unset-relay|admin-reset|admin-cred]")
+			fmt.Println("Penggunaan: wdev mail [setup|status|accounts|add-account|delete-account|set-relay|unset-relay|admin-reset|admin-cred|repair-domain|delete-domain|relay-dns]")
 			os.Exit(1)
 		}
 		switch args[1] {
@@ -1111,9 +1114,109 @@ func main() {
 			}
 			fmt.Printf("✓ Password admin untuk domain %s berhasil direset!\n", args[2])
 
+		case "relay-dns":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mail relay-dns <domain> [list|add <TYPE> <NAME> <CONTENT>|remove [provider]]")
+				os.Exit(1)
+			}
+			action := "list"
+			if len(args) >= 4 {
+				action = strings.ToLower(args[3])
+			}
+			switch action {
+			case "list":
+				list := mailMgr.ListRelayDNS(args[2])
+				if len(list) == 0 {
+					fmt.Println("Tidak ada record DNS relay terkelola untuk", args[2])
+				}
+				for _, r := range list {
+					fmt.Printf("[%s] %s %s %s\n", r.Provider, r.Type, r.Name, r.Content)
+				}
+			case "add":
+				if len(args) < 7 {
+					fmt.Println("Penggunaan: wdev mail relay-dns <domain> add <TYPE> <NAME> <CONTENT>")
+					os.Exit(1)
+				}
+				provider := mailMgr.ActiveRelayProvider(args[2])
+				rep, err := mailMgr.AddRelayDNS(args[2], provider, []mail.ManagedRelayRecord{{Type: args[4], Name: args[5], Content: args[6]}})
+				for _, l := range rep.Added {
+					fmt.Println("✓ dibuat:", l)
+				}
+				for _, l := range rep.Kept {
+					fmt.Println("= dipertahankan:", l)
+				}
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			case "remove":
+				provider := ""
+				if len(args) >= 5 {
+					provider = strings.ToLower(args[4])
+				}
+				rep, err := mailMgr.DeleteRelayDNS(args[2], provider)
+				for _, l := range rep.Removed {
+					fmt.Println("✓ dihapus:", l)
+				}
+				for _, l := range rep.Kept {
+					fmt.Println("= dipertahankan:", l)
+				}
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			default:
+				fmt.Println("Aksi relay-dns tidak dikenal:", action)
+				os.Exit(1)
+			}
+
+		case "repair-domain":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mail repair-domain <domain>")
+				os.Exit(1)
+			}
+			rep, err := mailMgr.RepairDomain(args[2], func(line string) { fmt.Println(line) })
+			for _, c := range rep.Checks {
+				fmt.Printf("[%s] %s: %s\n", strings.ToUpper(c.Status), c.Name, c.Detail)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if !rep.OK {
+				fmt.Fprintln(os.Stderr, "Sebagian langkah perbaikan gagal; periksa detail di atas.")
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Domain %s diperbaiki.\n", rep.Domain)
+
+		case "delete-domain":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mail delete-domain <domain> [--keep-dns]")
+				os.Exit(1)
+			}
+			keepDNS := false
+			for n := 3; n < len(args); n++ {
+				if args[n] == "--keep-dns" {
+					keepDNS = true
+				}
+			}
+			rep, err := mailMgr.DeleteDomain(args[2], !keepDNS)
+			for _, c := range rep.Checks {
+				fmt.Printf("[%s] %s: %s\n", strings.ToUpper(c.Status), c.Name, c.Detail)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if !rep.OK {
+				fmt.Fprintln(os.Stderr, "Sebagian langkah penghapusan gagal; periksa detail di atas.")
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Domain %s dihapus.\n", rep.Domain)
+
 		default:
 			fmt.Printf("Subperintah mail tidak dikenal: %s\n", args[1])
-			fmt.Println("Pilihan: status, accounts, add-account, set-relay, unset-relay, admin-reset")
+			fmt.Println("Pilihan: status, accounts, add-account, set-relay, unset-relay, admin-reset, repair-domain, delete-domain")
 		}
 
 	case "install":

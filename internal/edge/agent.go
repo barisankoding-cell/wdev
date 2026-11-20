@@ -458,6 +458,148 @@ func applyMailStream(conf string, moduleInstalled bool) error {
 	return nil
 }
 
+// removeMailTransport menghapus entri relay_domains & transport Postfix untuk
+// satu domain agar VPS tidak lagi meneruskan email ke mesin lokal.
+func removeMailTransport(domain string) {
+	removeLineWithPrefix("/etc/postfix/relay_domains", domain+" ")
+	removeLineWithPrefix("/etc/postfix/transport", domain+" ")
+	_, _ = run("postmap", "/etc/postfix/relay_domains")
+	_, _ = run("postmap", "/etc/postfix/transport")
+	_, _ = run("systemctl", "reload", "postfix")
+}
+
+func removeLineWithPrefix(path, prefix string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := []string{}
+	for _, l := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, prefix) {
+			continue
+		}
+		lines = append(lines, t)
+	}
+	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+// removeMailDomainMembership menghapus domain dari daftar mail_domains.json
+// sehingga sertifikat & stream mail tidak lagi memuatnya.
+func removeMailDomainMembership(domain string) bool {
+	domains := loadMailDomains()
+	kept := make([]string, 0, len(domains))
+	removed := false
+	for _, d := range domains {
+		if strings.EqualFold(strings.TrimSpace(d), domain) {
+			removed = true
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if removed {
+		saveMailDomains(kept)
+	}
+	return removed
+}
+
+// rebuildMailStream menulis ulang stream proxy memakai daftar domain tersisa.
+func rebuildMailStream() string {
+	target := ""
+	if v := loadJSON(MailTargetFile); v != nil {
+		target, _ = v["target_ip"].(string)
+	}
+	if target == "" {
+		return "skipped"
+	}
+	domains := loadMailDomains()
+	certs := collectMailCerts(domains)
+	moduleInstalled := ensureNginxStreamSupport()
+	if len(domains) == 0 {
+		_ = os.Remove(MailStreamConf)
+		action := "reload"
+		if moduleInstalled {
+			action = "restart"
+		}
+		_, _ = run("systemctl", action, "nginx")
+		return "empty"
+	}
+	if err := applyMailStream(mailStreamBlock(target, certs), moduleInstalled); err != nil {
+		return "error: " + truncate(err.Error(), 160)
+	}
+	return "updated"
+}
+
+// cleanupMailCertificate menerbitkan ulang lineage sertifikat mail tanpa domain
+// yang sudah dihapus, atau menghapus lineage bila tidak ada domain tersisa.
+func cleanupMailCertificate() string {
+	if _, err := os.Stat("/etc/letsencrypt/live/wdev-mail/fullchain.pem"); err != nil {
+		return "skipped: lineage wdev-mail belum ada"
+	}
+	domains := loadMailDomains()
+	if len(domains) == 0 {
+		if out, err := run("certbot", "delete", "--cert-name", "wdev-mail", "--non-interactive"); err != nil {
+			return "skipped: " + truncate(out, 120)
+		}
+		return "deleted"
+	}
+	args := []string{"--nginx", "--cert-name", "wdev-mail", "--expand", "--non-interactive", "--agree-tos", "--register-unsafely-without-email", "--deploy-hook", "systemctl reload nginx"}
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if !validDomain(d) {
+			continue
+		}
+		args = append(args, "-d", "mailadmin."+d, "-d", "webmail."+d, "-d", "mail."+d)
+	}
+	if out, err := run("certbot", args...); err != nil {
+		return "partial: " + truncate(out, 160)
+	}
+	return "reissued"
+}
+
+// removeMailDomain membersihkan seluruh artefak domain mail di VPS.
+func removeMailDomain(domain string) (map[string]any, error) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if !validDomain(domain) {
+		return nil, fmt.Errorf("domain tidak valid: %s", domain)
+	}
+
+	removedFiles := 0
+	adminSub := "mailadmin." + domain
+	webmailSub := "webmail." + domain
+	mailHost := "mail." + domain
+	for _, name := range []string{"wdev_" + adminSub + ".conf", "wdev_" + webmailSub + ".conf", "wdev_" + mailHost + ".conf"} {
+		removed := false
+		for _, p := range []string{filepath.Join(NginxEnabled, name), filepath.Join(NginxAvailable, name)} {
+			if err := os.Remove(p); err == nil {
+				removed = true
+			}
+		}
+		if removed {
+			removedFiles++
+		}
+	}
+	_ = nginxTest()
+	_ = nginxReload()
+
+	removeMailTransport(domain)
+	membershipRemoved := removeMailDomainMembership(domain)
+	streamStatus := rebuildMailStream()
+	certStatus := cleanupMailCertificate()
+
+	relayRemoved := false
+	if relays := loadMailRelays(); relays != nil {
+		if _, ok := relays[domain]; ok {
+			delete(relays, domain)
+			saveJSON(MailRelaysFile, relays)
+			relayRemoved = true
+		}
+	}
+
+	return map[string]any{
+		"success": true, "domain": domain, "vhosts_removed": removedFiles, "membership_removed": membershipRemoved, "stream": streamStatus, "certificate": certStatus, "relay_removed": relayRemoved}, nil
+}
+
 func writeMailStream(targetIP, mailHost string) string {
 	if targetIP == "" {
 		return "skipped"
@@ -977,6 +1119,21 @@ func NewAgentHandler() http.Handler {
 			relay = v
 		}
 		res, err := setupMailDomain(domain, targetIP, useSSL, relay)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, res)
+	}))
+
+	mux.HandleFunc("/api/v1/mail/remove-domain", audit(func(w http.ResponseWriter, r *http.Request) {
+		data, err := readBody(r)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		domain := strings.ToLower(strings.TrimSpace(stringOr(data, "domain")))
+		res, err := removeMailDomain(domain)
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return

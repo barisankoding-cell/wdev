@@ -485,6 +485,21 @@ func (m *Manager) ensureRelayReady(domain, adminEmail, adminPass string) error {
 	return err
 }
 
+// ActiveRelayProvider mengembalikan provider relay efektif untuk satu domain
+// (override domain lebih diprioritaskan daripada relay default).
+func (m *Manager) ActiveRelayProvider(domain string) string {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain != "" && domain != RelayScopeAll {
+		if cred, ok := m.loadDomainRelayCred(domain); ok {
+			return strings.ToLower(cred.Provider)
+		}
+	}
+	if cred, ok := m.loadGlobalRelayCred(); ok {
+		return strings.ToLower(cred.Provider)
+	}
+	return ""
+}
+
 // GetOutboundRoutes mengembalikan kondisi routing efektif dari Stalwart.
 func (m *Manager) GetOutboundRoutes() (OutboundRouteInfo, error) {
 	info := OutboundRouteInfo{Domains: make(map[string]string)}
@@ -612,5 +627,56 @@ func (m *Manager) RemoveRelay(domain string) error {
 	if err != nil || adminEmail == "" {
 		return fmt.Errorf("kredensial admin Stalwart belum ada atau tidak valid")
 	}
-	return m.removeDomainRelay(adminEmail, adminPass, domain)
+	previous := ""
+	if prev, ok := m.loadDomainRelayCred(domain); ok {
+		previous = strings.ToLower(prev.Provider)
+	}
+	if err := m.removeDomainRelay(adminEmail, adminPass, domain); err != nil {
+		return err
+	}
+	effective := ""
+	if cred, ok := m.loadGlobalRelayCred(); ok {
+		effective = strings.ToLower(cred.Provider)
+	}
+	m.setLastRelayDNS(m.reconcileRelayDNS(domain, previous, effective))
+	return nil
+}
+
+// EnsureManagedRelayDNS memasang ulang record relay yang tercatat milik provider
+// aktif tetapi sudah hilang dari PowerDNS.
+func (m *Manager) EnsureManagedRelayDNS(domain, provider string) RelayDNSReport {
+	domain = cleanMailDomain(domain)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	rep := RelayDNSReport{Domain: domain, Provider: provider, Removed: []string{}, Added: []string{}, Kept: []string{}, Manual: []string{}}
+	if provider == "" {
+		return rep
+	}
+	zone, err := m.pdnsMgr.FindMatchingZone(domain)
+	if err != nil {
+		rep.Manual = append(rep.Manual, err.Error())
+		return rep
+	}
+	all := m.loadRelayDNS()
+	list := all[domain]
+	for _, r := range list {
+		if !strings.EqualFold(r.Provider, provider) {
+			continue
+		}
+		name := recordNameForZone(zone, r.Name)
+		existing, err := m.pdnsMgr.LookupRecords(zone, name, r.Type)
+		if err != nil {
+			rep.Manual = append(rep.Manual, fmt.Sprintf("gagal membaca %s %s: %v", r.Type, r.Name, err))
+			continue
+		}
+		if recordContentExists(existing, r.Content) {
+			rep.Kept = append(rep.Kept, fmt.Sprintf("%s %s", r.Type, r.Name))
+			continue
+		}
+		if err := m.pdnsMgr.AddRecordKeep(zone, name, r.Type, r.Content, 300); err != nil {
+			rep.Manual = append(rep.Manual, fmt.Sprintf("gagal memasang %s %s: %v", r.Type, r.Name, err))
+			continue
+		}
+		rep.Added = append(rep.Added, fmt.Sprintf("%s %s %s", r.Type, r.Name, r.Content))
+	}
+	return rep
 }

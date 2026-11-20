@@ -1064,7 +1064,39 @@
     </div>
   </div>
 
-  <!-- Modal: Setel Relay Domain -->
+  <!-- Modal: Hapus Domain Mail -->
+<div class="modal-overlay" id="modal-mail-domain-delete">
+<div class="modal-box" style="max-width:520px;">
+<div class="modal-header">
+<h3>Hapus Domain Mail</h3>
+<button class="btn btn-outline btn-sm" onclick="closeMailDomainDeleteModal()" style="padding:4px 10px;">✕</button>
+</div>
+<form id="form-mail-domain-delete" onsubmit="submitMailDomainDelete(event)">
+<div class="metric-card" style="background:rgba(239,68,68,0.06);border-color:rgba(239,68,68,0.25);margin-bottom:16px;">
+<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;">
+Domain <strong id="mail-domain-delete-name" style="color:var(--text-main);">-</strong> akan dihapus dari Stalwart (termasuk seluruh akun email), vhost webmail/admin di VPS, relay Postfix, dan stream mail. Tindakan ini tidak bisa dibatalkan.
+</div>
+</div>
+<div class="form-group">
+<label for="mail-domain-delete-confirm">Ketik nama domain untuk konfirmasi</label>
+<input type="text" id="mail-domain-delete-confirm" class="form-control" placeholder="contoh: erposoft.my.id" autocomplete="off" spellcheck="false" required>
+</div>
+<div class="form-group" style="display:flex;align-items:center;gap:8px;">
+<input type="checkbox" id="mail-domain-delete-dns" style="cursor:pointer;width:18px;height:18px;">
+<label for="mail-domain-delete-dns" style="margin-bottom:0;cursor:pointer;font-size:12.5px;">Hapus juga record DNS milik domain ini (A mail/mx/webmail/mailadmin, MX, DMARC, SPF bawaan)</label>
+</div>
+<div class="modal-footer" style="margin-top:18px;">
+<button type="button" class="btn" onclick="closeMailDomainDeleteModal()">Batal</button>
+<button type="submit" class="btn btn-danger" id="btn-submit-mail-domain-delete" style="display:inline-flex;align-items:center;gap:6px;">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+<span>Hapus Domain</span>
+</button>
+</div>
+</form>
+</div>
+</div>
+
+<!-- Modal: Setel Relay Domain -->
   <div class="modal-overlay" id="modal-mail-relay">
     <div class="modal-box" style="max-width:540px;">
       <div class="modal-header">
@@ -1074,13 +1106,13 @@
       <form id="form-mail-relay" onsubmit="submitMailRelay(event)">
         <div class="form-group">
           <label for="mail-relay-domain">Domain Target</label>
-          <select id="mail-relay-domain" class="form-control" required>
+          <select id="mail-relay-domain" class="form-control" required onchange="onMailRelayDomainChange()">
             <!-- Populated dynamically -->
           </select>
         </div>
         <div class="form-group">
           <label for="mail-relay-provider">Provider Relay</label>
-          <select id="mail-relay-provider" class="form-control" onchange="toggleMailRelayFields()" required>
+          <select id="mail-relay-provider" class="form-control" onchange="toggleMailRelayFields(); loadMailRelayDNS(document.getElementById('mail-relay-domain')?.value)" required>
             <option value="resend">Resend (smtp.resend.com:465 - Implicit TLS)</option>
             <option value="brevo">Brevo / Sendinblue (smtp-relay.brevo.com:587)</option>
             <option value="custom">Custom SMTP Relay (Server / Port Kustom)</option>
@@ -1116,6 +1148,13 @@
             <input type="password" id="mail-relay-pass" class="form-control" placeholder="Password relay...">
           </div>
         </div>
+<div class="form-group">
+<label for="mail-relay-dns-records">Record DNS Relay (dikelola wdev)</label>
+<textarea id="mail-relay-dns-records" class="form-control" rows="4" placeholder="CNAME brevo1._domainkey.domain.com b1.domain.com.dkim.brevo.com" spellcheck="false" style="font-family:monospace;font-size:12px;"></textarea>
+<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Satu record per baris: <code>TYPE NAMA NILAI</code>. Record di sini dicatat sebagai milik wdev dan otomatis dihapus saat provider relay diganti.</div>
+</div>
+
+
 
         <div class="modal-footer" style="margin-top:18px;">
           <button type="button" class="btn" onclick="closeMailRelayModal()">Batal</button>

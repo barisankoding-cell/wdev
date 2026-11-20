@@ -469,6 +469,21 @@ wdev mail status                              # mode + relay efektif
 wdev mail admin-cred domainA.com              # kredensial admin Stalwart
 ```
 
+**DNS relay & pergantian provider.** wdev hanya mengelola record DNS relay
+yang dicatat sebagai miliknya. Daftarkan record (mis. DKIM CNAME dari dashboard
+provider) lewat kolom *Record DNS Relay* di modal Setel Relay atau CLI:
+
+```bash
+wdev mail relay-dns domainA.com list
+wdev mail relay-dns domainA.com add CNAME brevo1._domainkey.domainA.com b1.domainA.com.dkim.brevo.com
+wdev mail relay-dns domainA.com remove brevo   # hapus record milik provider brevo
+```
+
+Saat provider relay domain diganti (atau override dihapus), wdev otomatis
+menghapus record terkelola milik provider lama dan mempertahankan record
+provider lain maupun record manual. Record yang tidak pernah didaftarkan ke
+wdev tidak disentuh. `repair-domain` memasang ulang record terkelola yang hilang.
+
 DNS yang dibuat otomatis saat setup (inbound saja):
 
 | Name | Type | Isi |
@@ -484,6 +499,22 @@ DNS yang dibuat otomatis saat setup (inbound saja):
 Record MX/SPF/DMARC yang sudah ada **tidak ditimpa**; setup berhenti jika MX
 sudah menunjuk host lain. DKIM/SPF outbound bergantung pada provider relay dan
 harus dipasang di dashboard provider (checklist dicetak saat setup).
+
+Perbaikan & penghapusan domain (tersedia juga sebagai tombol di dashboard):
+
+```bash
+wdev mail repair-domain domainA.com   # perbaiki NS/SOA zone, A/MX/SPF/DMARC, vhost VPS, routing relay
+wdev mail delete-domain domainA.com   # hapus domain + akun + vhost VPS; DNS tetap
+wdev mail delete-domain domainA.com --keep-dns  # sama, eksplisit pertahankan DNS
+```
+
+`repair-domain` memaksa record MX ke `10 mail.<domain>.`, menyamakan A
+mail/mx/webmail/mailadmin ke IP publik VPS, memperbaiki NS/SOA/glue zone,
+menyegarkan vhost + stream mail di VPS, dan memulihkan cabang relay outbound
+yang menunjuk route tidak valid. SPF/DMARC kustom yang sudah ada tidak ditimpa.
+`delete-domain` menghapus akun & domain Stalwart, vhost webmail/admin, entri
+Postfix/stream, dan state lokal; record DNS hanya dihapus bila diminta dan
+hanya yang jelas milik domain tersebut.
 
 Prasyarat yang tidak bisa diotomasi: PTR/rDNS IP publik VPS harus menunjuk
 `mail.<domain>`, dan port 25 inbound harus dibuka oleh penyedia VPS.
