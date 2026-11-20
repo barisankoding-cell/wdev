@@ -9,7 +9,6 @@ import (
 type Config struct {
 	WdevEtc          string
 	DBPath           string
-	ScriptDir        string
 	NginxSitesAvail  string
 	NginxSitesEnable string
 	HostsFile        string
@@ -35,7 +34,6 @@ func Load() *Config {
 
 	dbPath := os.Getenv("WDEV_DB")
 	if dbPath == "" {
-		// Test if wdevEtc is writable
 		testFile := filepath.Join(wdevEtc, ".write_test")
 		if err := os.WriteFile(testFile, []byte(""), 0644); err == nil {
 			_ = os.Remove(testFile)
@@ -51,11 +49,6 @@ func Load() *Config {
 		}
 	}
 
-	scriptDir := os.Getenv("WDEV_SCRIPT_DIR")
-	if scriptDir == "" {
-		scriptDir = "/var/lib/wdev"
-	}
-
 	port := os.Getenv("WDEV_PORT")
 	if port == "" {
 		port = "3200"
@@ -69,7 +62,6 @@ func Load() *Config {
 	return &Config{
 		WdevEtc:          wdevEtc,
 		DBPath:           dbPath,
-		ScriptDir:        scriptDir,
 		NginxSitesAvail:  "/etc/nginx/sites-available",
 		NginxSitesEnable: "/etc/nginx/sites-enabled",
 		HostsFile:        "/etc/hosts",

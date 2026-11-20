@@ -698,53 +698,11 @@ func (inst *Installer) removeDistroPackagesIfInstalled(ctx context.Context, cb L
 	}
 }
 
-// ensureWdevProfileEnv menyatukan konfigurasi PATH & environment toolchain ke /etc/profile.d/wdev.sh
-// serta menghapus skrip pecahan lama agar tidak ada duplikasi PATH.
+// ensureWdevProfileEnv mendelegasikan sinkronisasi PATH ke SyncToolchainEnv
+// agar hanya ada satu sumber environment (lihat internal/installer/env.go).
 func (inst *Installer) ensureWdevProfileEnv(ctx context.Context, cb LogCallback) {
-	profileScript := `# Managed by wdev — Centralized Developer Toolchain Environment
-export GOROOT="/usr/local/go"
-export CARGO_HOME="/usr/local/cargo"
-export RUSTUP_HOME="/usr/local/rustup"
-export FLUTTER_ROOT="/usr/local/flutter"
-export ANDROID_HOME="/usr/local/android-sdk"
-export ANDROID_SDK_ROOT="/usr/local/android-sdk"
-
-_wdev_prepend_path() {
-    case ":$PATH:" in
-        *":$1:"*) ;;
-        *) [ -d "$1" ] && PATH="$1:$PATH" ;;
-    esac
-}
-
-_wdev_prepend_path "/usr/local/android-sdk/platform-tools"
-_wdev_prepend_path "/usr/local/android-sdk/cmdline-tools/latest/bin"
-_wdev_prepend_path "/usr/local/flutter/bin"
-_wdev_prepend_path "/usr/local/cargo/bin"
-_wdev_prepend_path "/usr/local/go/bin"
-_wdev_prepend_path "/usr/local/bin"
-export PATH
-unset -f _wdev_prepend_path
-`
-	if err := inst.writeSystemFile(ctx, cb, "/etc/profile.d/wdev.sh", []byte(profileScript), "644"); err != nil {
-		cb(fmt.Sprintf("[WARN] Gagal menulis /etc/profile.d/wdev.sh: %v", err))
-		return
-	}
-
-	legacyProfiles := []string{
-		"/etc/profile.d/flutter.sh",
-		"/etc/profile.d/golang.sh",
-		"/etc/profile.d/rust.sh",
-	}
-	var toRemove []string
-	for _, p := range legacyProfiles {
-		if _, err := os.Stat(p); err == nil {
-			toRemove = append(toRemove, p)
-		}
-	}
-	if len(toRemove) > 0 {
-		cb(fmt.Sprintf("Menghapus file profile lama yang duplikat: %s", strings.Join(toRemove, ", ")))
-		args := append([]string{"-f"}, toRemove...)
-		_ = inst.runCmd(ctx, cb, "rm", args...)
+	if err := inst.SyncToolchainEnv(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Sinkronisasi environment gagal: %v", err))
 	}
 }
 
@@ -814,8 +772,18 @@ func GetOrcaLatestVersion(ctx context.Context, forceRefresh bool) string {
 	return orcaReleaseCache.version
 }
 
+// SetOrcaVersionCache memperbarui cache versi Orca setelah pembaruan berhasil.
+func SetOrcaVersionCache(version string) {
+	orcaReleaseCache.mu.Lock()
+	defer orcaReleaseCache.mu.Unlock()
+	if version == "" {
+		return
+	}
+	orcaReleaseCache.version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	orcaReleaseCache.checkedAt = time.Now()
+}
+
 // HasNewerVersion membandingkan versi terpasang dengan rilis terbaru.
 func HasNewerVersion(installed, latest string) bool {
 	return hasNewerVersion(installed, latest)
 }
-

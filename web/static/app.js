@@ -282,7 +282,7 @@ function setupNavigation() {
 
       const titleMap = {
         'status': 'Status & Pembaruan Sistem',
-        'webstack': 'Web Stack & Domain Lokal (dev-site)',
+        'webstack': 'Web Stack & Domain Lokal (wdev site)',
         'switchers': 'Pengelola Multi-Versi Runtime (Switchers)',
         'toolchains': 'Toolchains, Compilers & SDKs',
         'workspace': 'Workspace, ADE & Shell',
@@ -760,7 +760,7 @@ function renderWorkspace(data) {
     orcaActions += `
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px;">
         ${orca.has_update ? `
-          <button type="button" class="btn btn-sm btn-warning" onclick="triggerInstall('${isHeadless ? 'orca-headless' : 'orca-desktop'}')" title="Perbarui Orca ADE ke v${escapeHtml(orca.latest_version)}" style="display:inline-flex;align-items:center;gap:6px;">
+          <button type="button" class="btn btn-sm btn-warning" onclick="triggerInstall('orca-update')" title="Perbarui Orca ADE ke v${escapeHtml(orca.latest_version)}" style="display:inline-flex;align-items:center;gap:6px;">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             <span>Perbarui ke v${escapeHtml(orca.latest_version)}</span>
           </button>
@@ -2277,11 +2277,14 @@ const COMPONENT_TITLES = {
   'orca': 'Orca ADE Desktop GUI',
   'orca-desktop': 'Orca ADE Desktop GUI',
   'orca-headless': 'Orca ADE Headless Server',
+  'orca-update': 'Pembaruan Orca ADE',
   'orca-switch-desktop': 'Alih Mode Orca ADE ke Desktop GUI',
   'orca-switch-headless': 'Alih Mode Orca ADE ke Headless Server',
   'orca-uninstall': 'Uninstall Orca ADE',
   'orca-pair': 'Info Pairing Orca ADE',
   'orca-ai': 'Konfigurasi Orca Commit AI',
+  'audit': 'Audit Duplikat Path & Toolchain',
+  'audit-fix': 'Perbaikan Duplikat Path & Toolchain',
   'sync-hosts': 'Sinkronisasi Hosts & SSL Lokal',
   'cf-doctor': 'Diagnostik Cloudflare Tunnel'
 };

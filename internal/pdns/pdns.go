@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 	"wdev/internal/config"
@@ -1096,39 +1097,65 @@ func (m *Manager) DeployVPS(ctx context.Context, cb func(string), opts DeployOpt
 	}
 	cb("  ✓ Autentikasi SSH berhasil terhubung!")
 
-	// 2. Unggah script installer bawaan via stdin
-	cb("[2/4] Mengunggah script installer bawaan ke VPS (/tmp/vps-edge-setup.sh)...")
-	uploadCmd := buildSSH("cat > /tmp/vps-edge-setup.sh && chmod +x /tmp/vps-edge-setup.sh")
-	uploadCmd.Stdin = strings.NewReader(GetVPSEdgeSetupScript())
-	if out, err := uploadCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("gagal mengunggah script ke VPS: %s (%w)", string(out), err)
+	// 2. Unggah biner wdev (Go) ke VPS lalu jalankan provisioning native.
+	cb("[2/4] Memeriksa arsitektur & mengunggah biner wdev...")
+	archCmd := buildSSH("uname -m")
+	if archOut, err := archCmd.Output(); err == nil {
+		remote := strings.TrimSpace(string(archOut))
+		mapped := remote
+		switch remote {
+		case "x86_64":
+			mapped = "amd64"
+		case "aarch64", "arm64":
+			mapped = "arm64"
+		}
+		if mapped != runtime.GOARCH {
+			return fmt.Errorf("arsitektur VPS (%s) berbeda dengan biner wdev lokal (%s); jalankan wdev dari mesin dengan arsitektur yang sama", remote, runtime.GOARCH)
+		}
 	}
-	cb("  ✓ Berkas installer bawaan berhasil diunggah.")
+	uploadCmd := buildSSH("cat > /tmp/wdev-edge-bin && chmod 755 /tmp/wdev-edge-bin && mv /tmp/wdev-edge-bin /usr/local/bin/wdev")
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("gagal menemukan biner wdev: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolved
+	}
+	binFile, err := os.Open(exePath)
+	if err != nil {
+		return fmt.Errorf("gagal membuka biner wdev: %w", err)
+	}
+	defer binFile.Close()
+	uploadCmd.Stdin = binFile
+	if out, err := uploadCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gagal mengunggah biner wdev ke VPS: %s (%w)", string(out), err)
+	}
+	cb(" ✓ Biner wdev berhasil diunggah.")
 
-	// 3. Jalankan installer otomatis di VPS
-	cb("[3/4] Menjalankan installer otomatis di VPS (PowerDNS + SQLite3 + Nginx + NetBird)...")
-	runCmd := buildSSH("chmod +x /tmp/vps-edge-setup.sh && sudo /tmp/vps-edge-setup.sh")
-
-	stdout, err := runCmd.StdoutPipe()
+	// 3. Jalankan provisioning native di VPS (tanpa skrip shell).
+	cb("[3/4] Menjalankan provisioning VPS Edge Gateway (native Go)...")
+	provisionRun := "/usr/local/bin/wdev edge-agent provision"
+	if opts.SSHUser != "root" {
+		provisionRun = "sudo " + provisionRun
+	}
+	provisionCmd := buildSSH(provisionRun)
+	stdout, err := provisionCmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	runCmd.Stderr = runCmd.Stdout
-
-	if err := runCmd.Start(); err != nil {
-		return fmt.Errorf("gagal menjalankan installer di VPS: %w", err)
+	provisionCmd.Stderr = provisionCmd.Stdout
+	if err := provisionCmd.Start(); err != nil {
+		return fmt.Errorf("gagal menjalankan provisioning di VPS: %w", err)
 	}
-
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		cb(line)
+		cb(scanner.Text())
 	}
-
-	if err := runCmd.Wait(); err != nil {
-		return fmt.Errorf("instalasi di VPS gagal: %w", err)
+	if err := provisionCmd.Wait(); err != nil {
+		return fmt.Errorf("provisioning di VPS gagal: %w", err)
 	}
-	cb("  ✓ Eksekusi instalasi di VPS selesai.")
+	cb(" ✓ Provisioning VPS selesai.")
 
 	// 4. Ambil kredensial dari /etc/wdev-edge/edge.conf
 	cb("[4/4] Mengambil kredensial dari VPS & mengonfigurasi mesin lokal...")

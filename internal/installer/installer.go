@@ -89,7 +89,7 @@ func needsSudo(name string, args ...string) bool {
 		return true
 	}
 	switch base {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "node-switch", "php-switch", "pg-switch":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster":
 		return true
 	case "cp", "mv", "rm", "mkdir", "chmod", "chown", "tar", "ln", "tee", "unzip", "install":
 		for _, arg := range args {
@@ -171,6 +171,11 @@ func (inst *Installer) RunCmd(ctx context.Context, cb LogCallback, name string, 
 }
 
 func (inst *Installer) runCmd(ctx context.Context, cb LogCallback, name string, args ...string) error {
+	return inst.runCmdStdin(ctx, cb, "", name, args...)
+}
+
+// runCmdStdin menjalankan perintah dengan stdin opsional (tanpa shell).
+func (inst *Installer) runCmdStdin(ctx context.Context, cb LogCallback, stdinData, name string, args ...string) error {
 	useSudo := needsSudo(name, args...)
 	cmdStr := fmt.Sprintf("%s %s", name, strings.Join(args, " "))
 	if useSudo {
@@ -199,14 +204,11 @@ func (inst *Installer) runCmd(ctx context.Context, cb LogCallback, name string, 
 		cmd = exec.CommandContext(ctx, name, args...)
 	}
 
-	cmd.Env = append(os.Environ(),
-		"DEBIAN_FRONTEND=noninteractive",
-		"COMPOSER_ALLOW_SUPERUSER=1",
-		"COMPOSER_NO_INTERACTION=1",
-		"NEEDRESTART_MODE=a",
-		"CARGO_HOME=/usr/local/cargo",
-		"RUSTUP_HOME=/usr/local/rustup",
-	)
+	if stdinData != "" && stdinPipe == nil {
+		cmd.Stdin = strings.NewReader(stdinData)
+	}
+
+	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "COMPOSER_ALLOW_SUPERUSER=1", "COMPOSER_NO_INTERACTION=1", "NEEDRESTART_MODE=a", "CARGO_HOME=/usr/local/cargo", "RUSTUP_HOME=/usr/local/rustup")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -226,6 +228,9 @@ func (inst *Installer) runCmd(ctx context.Context, cb LogCallback, name string, 
 		go func() {
 			defer stdinPipe.Close()
 			_, _ = io.WriteString(stdinPipe, inst.GetSudoPassword()+"\n")
+			if stdinData != "" {
+				_, _ = io.WriteString(stdinPipe, stdinData)
+			}
 		}()
 	}
 
@@ -286,6 +291,7 @@ func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver stri
 		ver = "22"
 	}
 	cb(fmt.Sprintf("--- [2] Memasang Node.js v%s ---", ver))
+	inst.GuardToolchainColumns(ctx, cb, "node", "npm", "npx", "corepack")
 
 	arch := runtime.GOARCH
 	if arch == "amd64" {
@@ -346,7 +352,7 @@ func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver stri
 		src := filepath.Join(targetDir, "bin", b)
 		dst := filepath.Join("/usr/local/bin", b)
 		_ = inst.runCmd(ctx, cb, "rm", "-f", dst)
-		_ = inst.runCmd(ctx, cb, "ln", "-sf", src, dst)
+		_ = inst.runCmd(ctx, cb, "ln", "-sfn", src, dst)
 	}
 
 	// Hapus paket Node.js bawaan distro bila ada agar tidak terjadi duplikasi
@@ -360,6 +366,7 @@ func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver stri
 // 3. Rust, Mold Linker & Sccache
 func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 	cb("--- [3] Memasang Rust Toolchain, Mold Linker & Sccache ---")
+	inst.GuardToolchainColumns(ctx, cb, "rustc", "cargo", "rustup", "mold")
 
 	_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/usr/local/cargo", "/usr/local/rustup")
 	if os.Geteuid() != 0 {
@@ -369,14 +376,21 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 	// 1. Rustup di lokasi kanonik /usr/local/cargo & /usr/local/rustup
 	rustupBin := "/usr/local/cargo/bin/rustup"
 	if _, err := os.Stat(rustupBin); os.IsNotExist(err) {
-		cb("Memasang Rust via rustup ke /usr/local/cargo...")
-		scriptPath := filepath.Join(os.TempDir(), "rustup.sh")
-		if err := downloadFile("https://sh.rustup.rs", scriptPath); err != nil {
+		cb("Memasang Rust via rustup-init resmi ke /usr/local/cargo...")
+		target := "x86_64-unknown-linux-gnu"
+		if runtime.GOARCH == "arm64" {
+			target = "aarch64-unknown-linux-gnu"
+		}
+		rustupInit := filepath.Join(os.TempDir(), "rustup-init")
+		url := fmt.Sprintf("https://static.rust-lang.org/rustup/dist/%s/rustup-init", target)
+		if err := downloadFile(url, rustupInit); err != nil {
 			return err
 		}
-		defer os.Remove(scriptPath)
-		_ = os.Chmod(scriptPath, 0755)
-		if err := inst.runCmd(ctx, cb, "sh", scriptPath, "-y", "--no-modify-path", "--default-toolchain", "stable"); err != nil {
+		defer os.Remove(rustupInit)
+		if err := os.Chmod(rustupInit, 0755); err != nil {
+			return err
+		}
+		if err := inst.runCmd(ctx, cb, rustupInit, "-y", "--no-modify-path", "--default-toolchain", "stable"); err != nil {
 			return err
 		}
 	} else {
@@ -402,7 +416,7 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 			src := filepath.Join(cargoBin, e.Name())
 			dst := filepath.Join("/usr/local/bin", e.Name())
 			_ = inst.runCmd(ctx, cb, "rm", "-f", dst)
-			_ = inst.runCmd(ctx, cb, "ln", "-sf", src, dst)
+			_ = inst.runCmd(ctx, cb, "ln", "-sfn", src, dst)
 		}
 	}
 
@@ -417,6 +431,7 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 // 4. Golang
 func (inst *Installer) InstallGolang(ctx context.Context, cb LogCallback) error {
 	cb("--- [4] Memasang Golang ---")
+	inst.GuardToolchainColumns(ctx, cb, "go", "gofmt")
 	arch := runtime.GOARCH
 
 	// Determine latest stable Go
@@ -468,8 +483,8 @@ func (inst *Installer) InstallGolang(ctx context.Context, cb LogCallback) error 
 
 	// Symlink go & gofmt
 	_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/go", "/usr/local/bin/gofmt")
-	_ = inst.runCmd(ctx, cb, "ln", "-sf", "/usr/local/go/bin/go", "/usr/local/bin/go")
-	_ = inst.runCmd(ctx, cb, "ln", "-sf", "/usr/local/go/bin/gofmt", "/usr/local/bin/gofmt")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", "/usr/local/go/bin/go", "/usr/local/bin/go")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", "/usr/local/go/bin/gofmt", "/usr/local/bin/gofmt")
 
 	inst.removeDistroPackagesIfInstalled(ctx, cb, "golang", "golang-go", "golang-bin")
 	inst.ensureWdevProfileEnv(ctx, cb)
@@ -550,7 +565,7 @@ func (inst *Installer) InstallJava(ctx context.Context, cb LogCallback, ver stri
 		for _, bin := range []string{"java", "javac", "jar"} {
 			src := filepath.Join(targetDir, "bin", bin)
 			if _, err := os.Stat(src); err == nil {
-				_ = inst.runCmd(ctx, cb, "ln", "-sf", src, filepath.Join("/usr/local/bin", bin))
+				_ = inst.runCmd(ctx, cb, "ln", "-sfn", src, filepath.Join("/usr/local/bin", bin))
 			}
 		}
 	}
@@ -623,7 +638,7 @@ func (inst *Installer) installMoldOfficial(ctx context.Context, cb LogCallback) 
 		if _, err := os.Stat(src); err == nil {
 			dst := filepath.Join("/usr/local/bin", b)
 			_ = inst.runCmd(ctx, cb, "rm", "-f", dst)
-			_ = inst.runCmd(ctx, cb, "ln", "-sf", src, dst)
+			_ = inst.runCmd(ctx, cb, "ln", "-sfn", src, dst)
 		}
 	}
 
@@ -645,7 +660,7 @@ func (inst *Installer) InstallAndroidSDK(ctx context.Context, cb LogCallback) er
 
 	if _, err := os.Stat(sdkManager); err == nil {
 		cb("Android Command Line Tools sudah terpasang, memperbarui komponen SDK...")
-		_ = inst.runCmd(ctx, cb, "bash", "-c", fmt.Sprintf("yes | %s --sdk_root=%s --licenses", sdkManager, sdkDir))
+		_ = inst.runCmdStdin(ctx, cb, strings.Repeat("y\n", 50), sdkManager, "--sdk_root="+sdkDir, "--licenses")
 		_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "--update")
 		_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "platform-tools", "platforms;android-34", "platforms;android-35")
 	} else {
@@ -673,7 +688,7 @@ func (inst *Installer) InstallAndroidSDK(ctx context.Context, cb LogCallback) er
 
 		cb("Menerima lisensi Android SDK...")
 		if _, err := os.Stat(sdkManager); err == nil {
-			_ = inst.runCmd(ctx, cb, "bash", "-c", fmt.Sprintf("yes | %s --sdk_root=%s --licenses", sdkManager, sdkDir))
+			_ = inst.runCmdStdin(ctx, cb, strings.Repeat("y\n", 50), sdkManager, "--sdk_root="+sdkDir, "--licenses")
 			_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "platform-tools", "platforms;android-34", "platforms;android-35")
 		}
 	}
@@ -686,6 +701,7 @@ func (inst *Installer) InstallAndroidSDK(ctx context.Context, cb LogCallback) er
 // 7. Flutter SDK
 func (inst *Installer) InstallFlutter(ctx context.Context, cb LogCallback) error {
 	cb("--- [7] Memasang Flutter SDK ---")
+	inst.GuardToolchainColumns(ctx, cb, "flutter", "dart")
 	flutterDir := "/usr/local/flutter"
 
 	if _, err := os.Stat(flutterDir); os.IsNotExist(err) {
@@ -700,8 +716,8 @@ func (inst *Installer) InstallFlutter(ctx context.Context, cb LogCallback) error
 
 	// Symlink flutter & dart
 	_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/flutter", "/usr/local/bin/dart")
-	_ = inst.runCmd(ctx, cb, "ln", "-sf", filepath.Join(flutterDir, "bin", "flutter"), "/usr/local/bin/flutter")
-	_ = inst.runCmd(ctx, cb, "ln", "-sf", filepath.Join(flutterDir, "bin", "dart"), "/usr/local/bin/dart")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", filepath.Join(flutterDir, "bin", "flutter"), "/usr/local/bin/flutter")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", filepath.Join(flutterDir, "bin", "dart"), "/usr/local/bin/dart")
 
 	inst.ensureWdevProfileEnv(ctx, cb)
 	cb("✓ Flutter SDK berhasil dipasang.")
@@ -787,6 +803,7 @@ func (inst *Installer) InstallRedis(ctx context.Context, cb LogCallback) error {
 	cb("--- [9] Memasang Redis Cache Server ---")
 	redisRepoActive := inst.ensureRedisRepo(ctx, cb)
 
+	var svc string
 	if inst.isDebian {
 		pkg := "redis-server"
 		if redisRepoActive {
@@ -801,30 +818,80 @@ func (inst *Installer) InstallRedis(ctx context.Context, cb LogCallback) error {
 				return err
 			}
 		}
-		svc := "redis-server"
+		svc = "redis-server"
 		if _, err := os.Stat("/lib/systemd/system/valkey-server.service"); err == nil {
 			if _, rErr := os.Stat("/lib/systemd/system/redis-server.service"); os.IsNotExist(rErr) {
 				svc = "valkey-server"
 			}
 		}
-		if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", svc); err != nil {
-			return fmt.Errorf("gagal mengaktifkan service %s: %w", svc, err)
-		}
 	} else {
 		if err := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "redis"); err != nil {
 			return err
 		}
-		// Pada Fedora modern, redis adalah alias untuk valkey.service
-		svc := "redis"
+		svc = "redis"
 		if _, err := os.Stat("/usr/lib/systemd/system/valkey.service"); err == nil {
 			svc = "valkey"
 		}
-		if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", svc); err != nil {
-			return fmt.Errorf("gagal mengaktifkan service %s: %w", svc, err)
-		}
 	}
+
+	// Unit systemd Redis memakai Type=notify: daemonize harus "no" dan
+	// supervised "systemd". Bila tidak, proses fork dan systemd menandai
+	// kegagalan "protocol" sehingga instalasi berhenti.
+	conf := findRedisConf()
+	if err := inst.ensureRedisConf(ctx, cb, conf); err != nil {
+		return err
+	}
+
+	inst.freeRedisPort(ctx, cb, svc)
+
+	if err := inst.runCmd(ctx, cb, "systemctl", "enable", svc); err != nil {
+		return fmt.Errorf("gagal mengaktifkan service %s: %w", svc, err)
+	}
+	_ = inst.runCmd(ctx, cb, "systemd-tmpfiles", "--create")
+	if err := inst.runCmd(ctx, cb, "systemctl", "restart", svc); err != nil {
+		inst.reportRedisFailure(ctx, cb, svc, conf)
+		return fmt.Errorf("gagal menjalankan service %s: %w", svc, err)
+	}
+	if !inst.waitRedisReady(ctx) {
+		inst.reportRedisFailure(ctx, cb, svc, conf)
+		return fmt.Errorf("service %s aktif tetapi tidak merespons PING dalam 15 detik", svc)
+	}
+
 	cb("✓ Redis Server berhasil dipasang dan diaktifkan.")
 	return nil
+}
+
+// waitRedisReady menunggu hingga Redis membalas PONG.
+func (inst *Installer) waitRedisReady(ctx context.Context) bool {
+	for i := 0; i < 15; i++ {
+		if redisPing(ctx) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Second):
+		}
+	}
+	return redisPing(ctx)
+}
+
+// reportRedisFailure menampilkan diagnostik singkat saat Redis gagal start.
+func (inst *Installer) reportRedisFailure(ctx context.Context, cb LogCallback, svc, conf string) {
+	cb("[ERROR] Redis gagal dijalankan. Diagnostik:")
+	if out, err := exec.CommandContext(ctx, "systemctl", "status", svc, "--no-pager", "-l").CombinedOutput(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			cb("  " + line)
+		}
+	}
+	if out, err := exec.CommandContext(ctx, "journalctl", "-u", svc, "-n", "20", "--no-pager").CombinedOutput(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			cb("  " + line)
+		}
+	}
+	if conf != "" {
+		cb("  Konfigurasi: " + conf + " (harus daemonize no, supervised systemd)")
+	}
 }
 
 // 10. Nginx Mainline (Official nginx.org Repo)
@@ -916,29 +983,27 @@ func (inst *Installer) InstallPHP(ctx context.Context, cb LogCallback, ver strin
 // 12. Composer
 func (inst *Installer) InstallComposer(ctx context.Context, cb LogCallback) error {
 	cb("--- [12] Memasang Composer ---")
+	inst.GuardToolchainColumns(ctx, cb, "composer")
 	composerBin := "/usr/local/bin/composer"
-	if _, err := os.Stat(composerBin); err == nil {
-		cb("Composer sudah terpasang, memperbarui via self-update...")
-		if err := inst.runCmd(ctx, cb, composerBin, "self-update"); err == nil {
-			inst.removeDistroPackagesIfInstalled(ctx, cb, "composer")
-			cb("✓ Composer berhasil diperbarui di /usr/local/bin/composer")
-			return nil
-		}
-		cb("[WARN] self-update gagal, memasang ulang dari getcomposer.org...")
-	}
 
-	installerPath := filepath.Join(os.TempDir(), "composer-setup.php")
-	if err := downloadFile("https://getcomposer.org/installer", installerPath); err != nil {
-		return err
+	// Ambil PHAR resmi langsung dari rilis GitHub composer/composer.
+	pharPath := filepath.Join(os.TempDir(), "composer.phar")
+	cb("Mengunduh Composer PHAR resmi...")
+	if err := downloadFile("https://getcomposer.org/download/latest-stable/composer.phar", pharPath); err != nil {
+		return fmt.Errorf("gagal mengunduh composer.phar: %w", err)
 	}
-	defer os.Remove(installerPath)
+	defer os.Remove(pharPath)
 
-	_ = inst.runCmd(ctx, cb, "rm", "-f", composerBin)
-	if err := inst.runCmd(ctx, cb, "php", installerPath, "--install-dir=/usr/local/bin", "--filename=composer"); err != nil {
+	if err := inst.runCmd(ctx, cb, "install", "-m", "0755", pharPath, composerBin); err != nil {
 		return err
 	}
 	inst.removeDistroPackagesIfInstalled(ctx, cb, "composer")
-	cb("✓ Composer berhasil dipasang di /usr/local/bin/composer")
+
+	if out, err := exec.CommandContext(ctx, composerBin, "-V").CombinedOutput(); err == nil {
+		cb("✓ " + strings.TrimSpace(string(out)))
+	} else {
+		cb("✓ Composer berhasil dipasang di /usr/local/bin/composer")
+	}
 	return nil
 }
 
@@ -1002,6 +1067,12 @@ func (inst *Installer) InstallPhpStack(ctx context.Context, cb LogCallback) erro
 
 // Orca ADE (Desktop & Headless — Rilis Resmi GitHub stablyai/orca tanpa apt/dnf)
 func (inst *Installer) InstallOrca(ctx context.Context, cb LogCallback, mode string) error {
+	// Debian/Ubuntu: gunakan paket .deb resmi dan ekstrak ke ruang user.
+	// Ini jalur utama wdev, sekaligus memperbarui instalasi .deb yang sudah ada.
+	if inst.isDebian {
+		return inst.installOrcaDeb(ctx, cb, mode)
+	}
+
 	cb("==> Memeriksa rilis terbaru Orca ADE dari GitHub...")
 	tag, assets, err := fetchGitHubLatestRelease(ctx, "stablyai/orca")
 	if err != nil {
@@ -1058,7 +1129,7 @@ func (inst *Installer) InstallOrca(ctx context.Context, cb LogCallback, mode str
 
 		_ = inst.runCmd(ctx, cb, "chmod", "+x", orcaBin)
 		_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/orca")
-		_ = inst.runCmd(ctx, cb, "ln", "-sf", orcaBin, "/usr/local/bin/orca")
+		_ = inst.runCmd(ctx, cb, "ln", "-sfn", orcaBin, "/usr/local/bin/orca")
 
 		svcUser, userHome := ResolveTargetUserAndHome()
 		dataPath := "/var/lib/orca"
@@ -1124,9 +1195,9 @@ WantedBy=multi-user.target
 		return err
 	}
 	_ = inst.runCmd(ctx, cb, "chmod", "+x", dstApp)
-	_ = inst.runCmd(ctx, cb, "ln", "-sf", dstApp, "/usr/local/bin/orca-ide")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", dstApp, "/usr/local/bin/orca-ide")
 	if _, err := os.Stat("/usr/local/bin/orca"); os.IsNotExist(err) {
-		_ = inst.runCmd(ctx, cb, "ln", "-sf", dstApp, "/usr/local/bin/orca")
+		_ = inst.runCmd(ctx, cb, "ln", "-sfn", dstApp, "/usr/local/bin/orca")
 	}
 
 	cb("✓ Orca ADE Desktop (AppImage) berhasil diinstal di " + dstApp)
@@ -1134,13 +1205,36 @@ WantedBy=multi-user.target
 }
 
 func (inst *Installer) UninstallOrca(ctx context.Context, cb LogCallback, purge bool) error {
+	targetUser, userHome := ResolveOrcaUser()
+
 	cb("==> Menghentikan layanan Orca ADE...")
 	_ = inst.runCmd(ctx, cb, "systemctl", "disable", "--now", "orca.service")
-	_ = inst.runCmd(ctx, cb, "rm", "-f", "/etc/systemd/system/orca.service")
+	if userHome != "" {
+		_ = runAsUser(ctx, cb, targetUser, userHome, "systemctl", "--user", "disable", "--now", "orca.service")
+		_ = runAsUser(ctx, cb, targetUser, userHome, "systemctl", "--user", "disable", "--now", "orca-update.timer")
+		_ = os.Remove(filepath.Join(userHome, ".config", "systemd", "user", "orca.service"))
+		_ = os.Remove(filepath.Join(userHome, ".config", "systemd", "user", "orca-update.service"))
+		_ = os.Remove(filepath.Join(userHome, ".config", "systemd", "user", "orca-update.timer"))
+		_ = runAsUser(ctx, cb, targetUser, userHome, "systemctl", "--user", "daemon-reload")
+	}
+	_ = inst.runCmd(ctx, cb, "rm", "-f", "/etc/systemd/system/orca.service", "/etc/systemd/system/orca-update.service", "/etc/systemd/system/orca-update.timer")
 	_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
 
 	cb("==> Menghapus instalasi biner Orca ADE...")
 	_ = inst.runCmd(ctx, cb, "rm", "-rf", "/usr/local/lib/orca-server", "/usr/local/lib/orca-ide", "/usr/local/bin/orca", "/usr/local/bin/orca-ide")
+	if userHome != "" {
+		_ = os.RemoveAll(orcaInstallDir(userHome))
+		_ = os.RemoveAll(orcaInstallDir(userHome) + ".old")
+		_ = os.Remove(filepath.Join(userHome, ".local", "bin", "orca"))
+		_ = os.Remove(filepath.Join(userHome, ".local", "bin", "orca-ide"))
+		_ = os.Remove(filepath.Join(userHome, ".local", "bin", "orca-desktop"))
+		_ = os.Remove(filepath.Join(userHome, ".local", "bin", "orca-update"))
+		_ = os.Remove(filepath.Join(userHome, ".local", "bin", "orca-switch"))
+		_ = os.Remove(filepath.Join(userHome, ".local", "bin", "orca-pair"))
+		_ = os.Remove(filepath.Join(userHome, ".config", "autostart", "orca-ide.desktop"))
+		_ = os.Remove(filepath.Join(userHome, ".local", "share", "applications", "orca-ide.desktop"))
+		_ = os.Remove(filepath.Join(userHome, ".local", "share", "icons", "hicolor", "256x256", "apps", "orca-ide.png"))
+	}
 
 	// Bersihkan paket legacy jika sebelumnya dipasang via dpkg/rpm
 	if inst.isDebian {
@@ -1155,7 +1249,6 @@ func (inst *Installer) UninstallOrca(ctx context.Context, cb LogCallback, purge 
 
 	if purge {
 		cb("==> Menghapus data konfigurasi...")
-		_, userHome := ResolveTargetUserAndHome()
 		if userHome != "" && userHome != "/root" {
 			_ = inst.runCmd(ctx, cb, "rm", "-rf", filepath.Join(userHome, ".config", "orca"), "/var/lib/orca")
 		} else {
@@ -1253,6 +1346,9 @@ func (inst *Installer) RunFullInstall(ctx context.Context, cb LogCallback) error
 	cb(" MEMULAI INSTALASI LENGKAP LINGKUNGAN PENGEMBANGAN LINUX (14 LANGKAH)")
 	cb("=================================================================")
 
+	// Langkah 0: deteksi otomatis duplikat/double path sebelum instalasi.
+	inst.PreflightToolchain(ctx, cb)
+
 	steps := []struct {
 		Name string
 		Fn   func() error
@@ -1281,8 +1377,14 @@ func (inst *Installer) RunFullInstall(ctx context.Context, cb LogCallback) error
 		}
 	}
 
+	// Langkah 15: audit ulang + perbaiki duplikat yang tersisa.
+	if err := inst.PostflightToolchain(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Post-flight toolchain: %v", err))
+	}
+
 	cb("\n=================================================================")
 	cb(" ✓ SELURUH 14 LANGKAH INSTALASI LENGKAP TELAH SELESAI DENGAN SUKSES!")
+	cb(" ✓ Environment PATH tunggal; duplikat sudah diaudit otomatis.")
 	cb("=================================================================")
 	return nil
 }

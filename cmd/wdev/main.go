@@ -9,6 +9,7 @@ import (
 	"strings"
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
+	"wdev/internal/edge"
 	"wdev/internal/installer"
 	"wdev/internal/mail"
 	"wdev/internal/monitor"
@@ -93,6 +94,12 @@ INSTALASI & SYSTEMD SERVICE:
 }
 
 func main() {
+	// Launcher legacy (orca, orca-pair, orca-switch, orca-update, orca-desktop,
+	// orca-ide) kini diarahkan ke biner Go ini tanpa skrip shell.
+	if installer.HandleOrcaProgram(os.Args[0], os.Args[1:]) {
+		return
+	}
+
 	cfg := config.Load()
 
 	db, err := store.New(cfg.DBPath)
@@ -121,6 +128,96 @@ func main() {
 	}
 
 	switch args[0] {
+	case "orca":
+		installer.HandleOrcaProgram("orca", args[1:])
+		return
+	case "env":
+		sub := "status"
+		if len(args) > 1 {
+			sub = args[1]
+		}
+		switch sub {
+		case "status":
+			fmt.Println("=== STATUS ENVIRONMENT TOOLCHAIN (PATH) ===")
+			for _, line := range installer.ToolchainEnvReport() {
+				fmt.Println(line)
+			}
+			if entries := installer.EffectivePathPreview(context.Background()); len(entries) > 0 {
+				fmt.Println("\nPATH efektif (login shell, unik):")
+				for _, p := range entries {
+					fmt.Println("  " + p)
+				}
+			}
+		case "sync":
+			cb := func(line string) { fmt.Println(line) }
+			if err := inst.SyncToolchainEnv(context.Background(), cb); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		default:
+			fmt.Println("Penggunaan: wdev env <status|sync>")
+			os.Exit(1)
+		}
+		return
+	case "edge-agent":
+		sub := "serve"
+		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+			sub = args[1]
+		}
+		cb := func(line string) { fmt.Println(line) }
+		switch sub {
+		case "serve":
+			addr := "0.0.0.0:" + edge.DefaultAgentPort
+			for i := 1; i < len(args); i++ {
+				if args[i] == "--addr" && i+1 < len(args) {
+					addr = args[i+1]
+					i++
+				}
+			}
+			if err := edge.RunAgent(addr, cb); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		case "provision":
+			opts := edge.ProvisionOptions{}
+			for i := 1; i < len(args); i++ {
+				switch args[i] {
+				case "--public-ip":
+					if i+1 < len(args) {
+						opts.PublicIP = args[i+1]
+						i++
+					}
+				case "--netbird-ip":
+					if i+1 < len(args) {
+						opts.NetbirdIP = args[i+1]
+						i++
+					}
+				case "--api-key":
+					if i+1 < len(args) {
+						opts.APIKey = args[i+1]
+						i++
+					}
+				case "--pdns-port":
+					if i+1 < len(args) {
+						opts.PDNSPort = args[i+1]
+						i++
+					}
+				case "--agent-port":
+					if i+1 < len(args) {
+						opts.AgentPort = args[i+1]
+						i++
+					}
+				}
+			}
+			if err := edge.Provision(context.Background(), cb, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		default:
+			fmt.Println("Penggunaan: wdev edge-agent <serve|provision> [opsi]")
+			os.Exit(1)
+		}
+		return
 	case "serve", "web", "dashboard":
 		fs := flag.NewFlagSet("serve", flag.ExitOnError)
 		portFlag := fs.String("port", cfg.HTTPPort, "Port HTTP untuk Web Dashboard")
@@ -904,6 +1001,24 @@ func main() {
 		case "check-updates", "check_updates", "updates", "cu":
 			taskName = "Pemeriksaan Ketersediaan Pembaruan"
 			fn = inst.CheckUpdates
+		case "audit", "audit-toolchain":
+			taskName = "Audit Duplikat Path & Toolchain"
+			fn = func(ctx context.Context, cb func(string)) error {
+				findings := inst.AuditToolchain(ctx, cb)
+				for _, f := range findings {
+					if f.Severity != installer.SeverityOK {
+						cb("→ perbaiki otomatis: wdev install audit-fix")
+						break
+					}
+				}
+				return nil
+			}
+		case "audit-fix", "repair-toolchain":
+			taskName = "Perbaikan Duplikat Path & Toolchain"
+			fn = func(ctx context.Context, cb func(string)) error {
+				findings := inst.AuditToolchain(ctx, cb)
+				return inst.RepairToolchain(ctx, cb, findings)
+			}
 		case "self-check":
 			taskName = "Validasi & Self-Check Sistem"
 			fn = inst.RunSelfCheck
@@ -994,6 +1109,11 @@ func main() {
 			taskName = "Orca ADE (Headless Server)"
 			fn = func(ctx context.Context, cb func(string)) error {
 				return inst.InstallOrca(ctx, cb, "headless")
+			}
+		case "orca-update":
+			taskName = "Pembaruan Orca ADE"
+			fn = func(ctx context.Context, cb func(string)) error {
+				return inst.UpdateOrca(ctx, cb)
 			}
 		case "orca-uninstall":
 			taskName = "Uninstall Orca ADE"

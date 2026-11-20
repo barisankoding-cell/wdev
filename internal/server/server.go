@@ -341,7 +341,7 @@ func (s *Server) executeSwitchNode(ctx context.Context, cb func(string), ver str
 		dst := filepath.Join("/usr/local/bin", b)
 		if _, err := os.Stat(src); err == nil {
 			_ = s.installer.RunCmd(ctx, cb, "rm", "-f", dst)
-			_ = s.installer.RunCmd(ctx, cb, "ln", "-sf", src, dst)
+			_ = s.installer.RunCmd(ctx, cb, "ln", "-sfn", src, dst)
 		}
 	}
 
@@ -865,6 +865,18 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		fn = func(ctx context.Context, cb func(string)) error {
 			return s.installer.RunFullInstall(ctx, cb)
 		}
+	case "audit", "audit-toolchain":
+		taskName = "Audit Duplikat Path & Toolchain"
+		fn = func(ctx context.Context, cb func(string)) error {
+			s.installer.AuditToolchain(ctx, cb)
+			return nil
+		}
+	case "audit-fix", "repair-toolchain":
+		taskName = "Perbaikan Duplikat Path & Toolchain"
+		fn = func(ctx context.Context, cb func(string)) error {
+			findings := s.installer.AuditToolchain(ctx, cb)
+			return s.installer.RepairToolchain(ctx, cb, findings)
+		}
 	case "update":
 		taskName = "Perbarui Seluruh Paket & Toolchain"
 		fn = func(ctx context.Context, cb func(string)) error {
@@ -993,11 +1005,9 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		taskName = "Alih Mode Orca ADE (Desktop GUI)"
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("==> Mengalihkan Orca ADE ke Mode Desktop GUI...")
-			_, userHome := installer.ResolveTargetUserAndHome()
-			modeFile := filepath.Join(userHome, ".config", "orca", ".mode")
-			_ = os.MkdirAll(filepath.Dir(modeFile), 0755)
-			_ = os.WriteFile(modeFile, []byte("desktop\n"), 0644)
-			_ = s.installer.RunCmd(ctx, cb, "systemctl", "disable", "--now", "orca.service")
+			if err := s.installer.SetOrcaMode(ctx, cb, "desktop"); err != nil {
+				return err
+			}
 			cb("✓ Mode Orca ADE diatur ke Desktop GUI.")
 			return nil
 		}
@@ -1005,13 +1015,16 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		taskName = "Alih Mode Orca ADE (Headless Server)"
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("==> Mengalihkan Orca ADE ke Mode Headless Server...")
-			_, userHome := installer.ResolveTargetUserAndHome()
-			modeFile := filepath.Join(userHome, ".config", "orca", ".mode")
-			_ = os.MkdirAll(filepath.Dir(modeFile), 0755)
-			_ = os.WriteFile(modeFile, []byte("headless\n"), 0644)
-			_ = s.installer.RunCmd(ctx, cb, "systemctl", "enable", "--now", "orca.service")
+			if err := s.installer.SetOrcaMode(ctx, cb, "headless"); err != nil {
+				return err
+			}
 			cb("✓ Mode Orca ADE diatur ke Headless Server.")
 			return nil
+		}
+	case "orca-update":
+		taskName = "Pembaruan Orca ADE"
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.installer.UpdateOrca(ctx, cb)
 		}
 	case "orca-uninstall":
 		taskName = "Uninstall Orca ADE"
@@ -1022,24 +1035,19 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		taskName = "Orca ADE Pairing Info"
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("=== INFO PAIRING ORCA ADE ===")
-			orcaCmd := "/usr/local/bin/orca"
-			if _, err := os.Stat(orcaCmd); err != nil {
-				if p, err := exec.LookPath("orca"); err == nil {
-					orcaCmd = p
-				} else {
-					_, userHome := installer.ResolveTargetUserAndHome()
-					orcaCmd = filepath.Join(userHome, ".local", "bin", "orca")
-				}
-			}
-			cmd := exec.CommandContext(ctx, orcaCmd, "pair")
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				cb(fmt.Sprintf("Catatan: %s", string(out)))
+			_, userHome := installer.ResolveOrcaUser()
+			pairing, web, endpoint := installer.OrcaPairInfo(ctx, userHome)
+			if pairing == "" {
+				cb("Catatan: pairing belum tersedia (server Orca mungkin belum aktif).")
 				cb("Tips: Pastikan Orca ADE Headless Server aktif.")
-			} else {
-				for _, line := range strings.Split(string(out), "\n") {
-					cb(line)
-				}
+				return nil
+			}
+			cb("Pairing URL : " + pairing)
+			if web != "" {
+				cb("Web Client  : " + web)
+			}
+			if endpoint != "" {
+				cb("Endpoint    : " + endpoint)
 			}
 			return nil
 		}
@@ -1335,7 +1343,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 
 	var data WorkspaceData
 
-	targetUser, userHome := installer.ResolveTargetUserAndHome()
+	targetUser, userHome := installer.ResolveOrcaUser()
 	orcaConfigDir := filepath.Join(userHome, ".config", "orca")
 
 	// 1. Orca info (prioritaskan biner kanonik /usr/local/bin/orca)
@@ -1427,26 +1435,11 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 			data.Orca.Port = 6768
 		}
 
-		pairBin := "/usr/local/bin/orca-pair"
-		if _, err := os.Stat(pairBin); err != nil {
-			pairBin = filepath.Join(userHome, ".local", "bin", "orca-pair")
-		}
-		if _, err := os.Stat(pairBin); err == nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-			defer cancel()
-			pCmd := exec.CommandContext(ctx, pairBin, "--json")
-			pCmd.Env = append(os.Environ(), "HOME="+userHome, "USER="+targetUser)
-			if pOut, err := pCmd.Output(); err == nil {
-				var pInfo struct {
-					PairingUrl   string `json:"pairingUrl"`
-					WebClientUrl string `json:"webClientUrl"`
-				}
-				if err := json.Unmarshal(pOut, &pInfo); err == nil {
-					data.Orca.PairingURL = pInfo.PairingUrl
-					data.Orca.WebClientURL = pInfo.WebClientUrl
-				}
-			}
-		}
+		pairCtx, pairCancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer pairCancel()
+		pairing, web, _ := installer.OrcaPairInfo(pairCtx, userHome)
+		data.Orca.PairingURL = pairing
+		data.Orca.WebClientURL = web
 	}
 
 	// 2. Shell info

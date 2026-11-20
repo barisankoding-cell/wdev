@@ -11,6 +11,32 @@ import (
 
 const WdevServiceUnitPath = "/etc/systemd/system/wdev.service"
 
+// legacyBashAssets adalah artefak skrip Bash lama yang kini digantikan biner Go.
+var legacyBashAssets = []string{
+	"/opt/wdev/setup_dev.sh",
+	"/opt/wdev/setup_orca_headless.sh",
+	"/opt/wdev/cf-tunnel.sh",
+	"/opt/wdev/pdns-mgr.sh",
+	"/opt/wdev/vps-edge-setup.sh",
+	"/opt/wdev/$dest_dir",
+	"/usr/local/bin/node-switch",
+	"/usr/local/bin/php-switch",
+	"/usr/local/bin/pg-switch",
+	"/usr/local/bin/dev-site",
+	"/usr/local/bin/cf-tunnel",
+	"/usr/local/bin/pdns-mgr",
+}
+
+// removeLegacyBashAssets membersihkan sisa skrip Bash dari instalasi lama.
+func (inst *Installer) removeLegacyBashAssets(ctx context.Context, cb LogCallback) {
+	for _, path := range legacyBashAssets {
+		if _, err := os.Stat(path); err == nil {
+			cb("Menghapus skrip Bash legacy: " + path)
+			_ = os.RemoveAll(path)
+		}
+	}
+}
+
 // InstallWdevService installs the wdev binary, directories, and systemd service unit.
 func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, port, host string) error {
 	if cb == nil {
@@ -24,6 +50,7 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 	}
 
 	cb("=== MEMULAI INSTALASI WDEV SYSTEMD SERVICE ===")
+	inst.removeLegacyBashAssets(ctx, cb)
 
 	// 1. Pastikan direktori sistem ada
 	dirs := []string{"/etc/wdev", "/var/lib/wdev", "/var/log/wdev"}
@@ -101,6 +128,7 @@ func (inst *Installer) UninstallWdevService(ctx context.Context, cb LogCallback,
 	}
 
 	cb("=== MEMULAI UNINSTALL WDEV SYSTEMD SERVICE ===")
+	inst.removeLegacyBashAssets(ctx, cb)
 
 	// 1. Hentikan & nonaktifkan service
 	cb("Menghentikan wdev.service...")

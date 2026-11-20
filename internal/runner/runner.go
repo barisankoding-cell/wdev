@@ -1,11 +1,8 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +35,6 @@ type Runner struct {
 type ActiveTask struct {
 	ID        int64
 	Command   string
-	Cmd       *exec.Cmd
 	StartedAt time.Time
 }
 
@@ -74,127 +70,6 @@ func (r *Runner) broadcast(event TaskEvent) {
 			// Buffer full, skip to prevent blocking
 		}
 	}
-}
-
-// StartCommand executes a bash command and broadcasts logs in real time
-func (r *Runner) StartCommand(commandStr string, workingDir string) (int64, error) {
-	r.mu.Lock()
-	if r.activeTask != nil {
-		r.mu.Unlock()
-		return 0, fmt.Errorf("ada tugas yang sedang berjalan: %s", r.activeTask.Command)
-	}
-
-	taskID, err := r.store.CreateTask(commandStr)
-	if err != nil {
-		r.mu.Unlock()
-		return 0, err
-	}
-
-	cmd := exec.Command("bash", "-c", commandStr)
-	if workingDir != "" {
-		cmd.Dir = workingDir
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		r.mu.Unlock()
-		return 0, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		r.mu.Unlock()
-		return 0, err
-	}
-
-	r.activeTask = &ActiveTask{
-		ID:        taskID,
-		Command:   commandStr,
-		Cmd:       cmd,
-		StartedAt: time.Now(),
-	}
-	r.mu.Unlock()
-
-	r.broadcast(TaskEvent{
-		TaskID:    taskID,
-		Type:      EventStart,
-		Message:   fmt.Sprintf("Memulai: %s", commandStr),
-		Timestamp: time.Now(),
-	})
-
-	if err := cmd.Start(); err != nil {
-		r.mu.Lock()
-		r.activeTask = nil
-		r.mu.Unlock()
-		_ = r.store.FinishTask(taskID, "failed", err.Error())
-		r.broadcast(TaskEvent{
-			TaskID:    taskID,
-			Type:      EventFinish,
-			Status:    "failed",
-			Message:   err.Error(),
-			Timestamp: time.Now(),
-		})
-		return 0, err
-	}
-
-	// Read stdout and stderr concurrently
-	go func() {
-		var logBuf strings.Builder
-		var logMu sync.Mutex
-
-		readPipe := func(pipe io.Reader, prefix string) {
-			scanner := bufio.NewScanner(pipe)
-			for scanner.Scan() {
-				line := scanner.Text()
-				logMu.Lock()
-				logBuf.WriteString(line + "\n")
-				logMu.Unlock()
-
-				r.broadcast(TaskEvent{
-					TaskID:    taskID,
-					Type:      EventLog,
-					Message:   line,
-					Timestamp: time.Now(),
-				})
-			}
-		}
-
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			readPipe(stdout, "")
-		}()
-		go func() {
-			defer wg.Done()
-			readPipe(stderr, "")
-		}()
-
-		wg.Wait()
-		waitErr := cmd.Wait()
-
-		status := "success"
-		msg := "Selesai dengan sukses."
-		if waitErr != nil {
-			status = "failed"
-			msg = fmt.Sprintf("Gagal dengan error: %v", waitErr)
-		}
-
-		r.mu.Lock()
-		r.activeTask = nil
-		r.mu.Unlock()
-
-		_ = r.store.FinishTask(taskID, status, logBuf.String())
-
-		r.broadcast(TaskEvent{
-			TaskID:    taskID,
-			Type:      EventFinish,
-			Status:    status,
-			Message:   msg,
-			Timestamp: time.Now(),
-		})
-	}()
-
-	return taskID, nil
 }
 
 // StartNativeTask runs a native Go function while broadcasting logs

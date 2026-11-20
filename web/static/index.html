@@ -10,7 +10,7 @@
   <!-- Mobile Sidebar Backdrop -->
   <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
 
-  <!-- Sidebar (9 Kategori Sesuai Native setup_dev.sh) -->
+  <!-- Sidebar (9 kategori sesuai control plane Go) -->
   <aside class="sidebar" id="app-sidebar">
     <div class="brand">
       <div class="brand-info">
@@ -212,7 +212,7 @@
       <!-- ========================================== -->
       <section id="tab-webstack" class="tab-content">
         <div class="section-header">
-          <h3>Web Stack & Domain Lokal (dev-site)</h3>
+          <h3>Web Stack & Domain Lokal (wdev site)</h3>
           <div class="mail-header-actions" role="toolbar" aria-label="Aksi Virtual Host">
             <button type="button" class="btn btn-outline btn-sm" onclick="triggerInstall('sync-hosts')" title="Sinkronkan hosts dan generate sertifikat SSL lokal" aria-label="Sync Hosts & SSL">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -250,7 +250,7 @@
           <h3>Pengelola Multi-Versi Runtime (Switchers)</h3>
         </div>
         <p style="color:var(--text-muted);font-size:13px;margin-bottom:18px;">
-          Beralih versi runtime Node.js (<code>node-switch</code>), PHP CLI & FPM (<code>php-switch</code>), PostgreSQL (<code>pg-switch</code>), serta Java OpenJDK dengan satu klik.
+          Beralih versi runtime Node.js (<code>wdev switch node</code>), PHP CLI & FPM (<code>wdev switch php</code>), PostgreSQL (<code>wdev switch pg</code>), serta Java OpenJDK dengan satu klik.
         </p>
         <div id="switchers-container" class="services-grid"></div>
       </section>
@@ -470,7 +470,7 @@
         </div>
 
         <div class="section-header">
-          <h3>Ekspos Site Lokal ke Cloudflare (dev-site expose)</h3>
+          <h3>Ekspos Site Lokal ke Cloudflare (wdev cf expose)</h3>
         </div>
         <div class="metric-card" style="margin-bottom:22px;">
           <div class="responsive-form-grid">
@@ -745,7 +745,7 @@
   <div class="modal-overlay" id="modal-create-site">
     <div class="modal-box">
       <div class="modal-header">
-        <h3>Buat Virtual Host Baru (dev-site create)</h3>
+        <h3>Buat Virtual Host Baru (wdev site create)</h3>
         <button class="btn btn-outline btn-sm" onclick="closeCreateSiteModal()" style="padding:4px 10px;">✕</button>
       </div>
       <div class="form-group">

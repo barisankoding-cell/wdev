@@ -1,6 +1,6 @@
 # wdev — Linux Developer Control Plane & Environment Manager
 
-Aplikasi manajemen lingkungan pengembangan & infrastruktur Linux terpadu dalam satu biner Go mandiri (**Web UI Dashboard**, **TUI Terminal**, dan **CLI**), didukung oleh kumpulan automasi skrip Bash tingkat lanjut untuk toolchain multi-versi, web stack lokal, Cloudflare Tunnel, PowerDNS Authoritative, serta Orca ADE.
+Aplikasi manajemen lingkungan pengembangan & infrastruktur Linux terpadu dalam satu biner Go mandiri (**Web UI Dashboard**, **TUI Terminal**, dan **CLI**) untuk toolchain multi-versi, web stack lokal, Cloudflare Tunnel, PowerDNS Authoritative, serta Orca ADE. Seluruh automasi berjalan native di dalam biner Go — tanpa skrip `.sh`.
 
 ---
 
@@ -23,7 +23,7 @@ Aplikasi manajemen lingkungan pengembangan & infrastruktur Linux terpadu dalam s
 
 ### 1. Instalasi Mandiri dari Biner Release (Stand-Alone)
 
-Biner release `wdev` bersifat **mandiri (self-contained)** — seluruh file Web UI dan skrip automasi sudah tertanam di dalam biner menggunakan `go:embed`. Anda **tidak memerlukan skrip installer `.sh`** maupun compiler Go.
+Biner release `wdev` bersifat **mandiri (self-contained)** — seluruh Web UI tertanam via `go:embed` dan seluruh automasi instalasi/pembaruan dijalankan native oleh biner Go. Tidak ada skrip `.sh` yang perlu diunduh, disalin, atau dijalankan.
 
 Cukup unduh biner rilis dan jalankan perintah install:
 
@@ -94,7 +94,7 @@ Tanpa argumen, skrip menampilkan menu utama:
 
 1. Status & Pembaruan Sistem
 2. Pengelola Multi-Versi Runtime (Switchers)
-3. Web Stack & Domain Lokal (`dev-site`)
+3. Web Stack & Domain Lokal (`wdev site`)
 4. Toolchains, Compilers & SDKs
 5. Workspace, ADE & Shell
 6. Cloudflare Tunnel & DNS
@@ -107,7 +107,7 @@ Struktur submenu:
 | Menu | Isi |
 |---|---|
 | `[1]` | Status layanan, cek update versi, perbarui semua, self-check |
-| `[2]` | Multi-versi Node.js (`node-switch`), PHP (`php-switch`), PostgreSQL (`pg-switch`), & Java OpenJDK |
+| `[2]` | Multi-versi Node.js, PHP, PostgreSQL, & Java OpenJDK (`wdev switch`) |
 | `[3]` | Vhost lokal, SSL (`mkcert`), PHP switch; eksposur publik diarahkan ke `[6]` atau `[7]` |
 | `[4]` | Rust, Go, Java, Flutter, Android SDK, Redis, build tools, & menu modular |
 | `[5]` | Orca ADE (Desktop GUI / Headless Server), Oh My Zsh & tema prompt |
@@ -118,53 +118,38 @@ Struktur submenu:
 
 ### Opsi CLI
 
-| Opsi | Keterangan |
+| Perintah | Keterangan |
 |---|---|
-| `-i`, `--install`, `--all` | Instalasi lengkap 14 langkah (termasuk PHP Web Stack & Zsh) |
-| `-u`, `--update` | Perbarui semua paket yang terpasang (8 langkah) |
-| `-cu`, `--check-update` | Bandingkan versi terpasang vs terbaru (tanpa instalasi) |
-| `-c`, `--check` | Tampilkan status layanan, versi, IP akses, Cloudflare, dan status Orca |
-| `--self-check` | Validasi sintaks `setup_dev.sh` dan semua helper yang di-generate |
-| `--cloudflare` | Install/perbarui `cloudflared` + helper `cf-tunnel` (tanpa membuat akun) |
-| `--cf-tunnel <cmd>` | Teruskan ke helper `cf-tunnel` (profile-aware) |
-| `--pdns <cmd>` | Teruskan ke helper `pdns-mgr` (status, deploy-vps, zone, record, expose) |
-| `-h`, `--help` | Bantuan lengkap |
+| `wdev serve [--port 3200] [--host 0.0.0.0]` | Jalankan Web UI Dashboard |
+| `wdev tui` | Jalankan Terminal UI interaktif |
+| `wdev status` | Status layanan, versi, IP akses, dan status Orca |
+| `wdev check-updates`, `wdev -cu` | Bandingkan versi terpasang vs terbaru (tanpa instalasi) |
+| `wdev install all` | Instalasi lengkap seluruh stack |
+| `wdev install update` | Perbarui semua paket yang terpasang |
+| `wdev install self-check` | Validasi konfigurasi & lingkungan sistem |
+| `wdev install <komponen>` | Instal/perbarui komponen tertentu |
+| `wdev uninstall [--purge]` | Hapus service systemd & biner wdev |
 
-Opsi per komponen: `--base`, `--node`, `--rust`, `--go`, `--java`, `--android`, `--flutter`/`-fl`, `--postgres`/`--pg`, `--redis`, `--nginx`, `--php`, `--composer`, `--php-stack`/`--web-stack`, `--ssl`/`--mkcert`, `--zsh`/`--ohmyzsh`, `--sync`/`--sync-hosts`.
+Komponen instalasi: `all`, `update`, `check-updates`, `self-check`, `base`, `node`, `rust`, `go`, `java`, `android`, `flutter`, `postgres`, `redis`, `nginx`, `php`, `composer`, `ssl`, `php-stack`, `cloudflare`, `zsh`, `orca-desktop`, `orca-headless`, `orca-update`, `orca-uninstall`.
 
-Opsi akses jaringan: `--lan`/`--lan-access` membuka PostgreSQL & Redis ke LAN/Netbird (mewajibkan password non-default), `--no-lan`/`--local-only` mengunci ke localhost (default).
+Pemilih versi saat instalasi (lewat Web UI / TUI / argumen `wdev install`):
 
-Opsi Orca ADE dan passthrough helper:
-
-| Opsi | Keterangan |
-|---|---|
-| `-o`, `--orca` | Setup Orca ADE (otomatis pilih desktop/headless) |
-| `--orca-desktop`, `--orca-headless` | Paksa mode Orca tertentu |
-| `--orca-uninstall [--purge\|--keep-config]` | Hapus instalasi Orca ADE |
-| `--orca-switch <mode>` | Teruskan ke `orca-switch` |
-| `--orca-ai` | Konfigurasi default Git Commit Generator AI |
-| `-p`, `--orca-pair` | Tampilkan QR code & URL pairing |
-| `--dev-site`, `--node-switch`, `--php-switch`, `--pg-switch` | Teruskan ke helper terkait |
-
-Pemilih versi saat instalasi:
-
-| Opsi | Nilai | Default |
+| Komponen | Nilai | Default |
 |---|---|---|
-| `--node-ver` | `20`, `22`, `24` | `22` |
-| `--java-ver` | `17`, `21`, `25` | `21` |
-| `--android-api` | `all`, `36`, `35`, `34` | `all` |
-| `--pg-ver` | `16`, `17`, `18` | `18` |
-| `--php-ver` | `8.1`, `8.2`, `8.3`, `8.4`, `system` | `8.4` |
-| `--php-exts` | `full`, `minimal`, daftar kustom | `full` |
-| `--zsh-theme` | `powerlevel10k`, `agnoster`, `robbyrussell` | `powerlevel10k` |
+| Node.js | `20`, `22`, `24` | `22` |
+| Java | `17`, `21`, `25` | `21` |
+| Android API | `all`, `36`, `35`, `34` | `all` |
+| PostgreSQL | `16`, `17`, `18` | `18` |
+| PHP | `8.1`, `8.2`, `8.3`, `8.4`, `system` | `8.4` |
+| Zsh theme | `powerlevel10k`, `agnoster`, `robbyrussell` | `powerlevel10k` |
 
 Contoh:
 
 ```bash
-sudo ./setup_dev.sh --node --node-ver 20
-sudo ./setup_dev.sh --php --php-ver 8.3 --php-exts full
-sudo ./setup_dev.sh --postgres --pg-ver 17
-sudo ./setup_dev.sh --sync        # sinkronkan /etc/hosts, SSL, trust store
+wdev install node
+wdev install php
+wdev install postgres
+wdev site sync
 ```
 
 ### Komponen yang Dipasang & Sumber Resmi
@@ -188,7 +173,7 @@ sudo ./setup_dev.sh --sync        # sinkronkan /etc/hosts, SSL, trust store
 | Local SSL | Rilis GitHub resmi `FiloSottile/mkcert` di `/usr/local/bin/mkcert` + CA lokal di `/etc/ssl/local-certs` |
 | Cloudflared | Rilis GitHub resmi `cloudflare/cloudflared` di `/usr/local/bin/cloudflared` |
 | Zsh | Paket `zsh` + Oh My Zsh, `zsh-autosuggestions`, `zsh-syntax-highlighting`, dan `powerlevel10k` (auto `git pull` saat update) |
-| Orca ADE | Rilis GitHub resmi `stablyai/orca`: `orca-server-linux-*.tar.gz` (Headless `/usr/local/lib/orca-server`) & `orca-linux*.AppImage` (Desktop `/usr/local/lib/orca-ide`) dengan deteksi pembaruan versi di Web UI |
+| Orca ADE | Rilis GitHub resmi `stablyai/orca`: paket `.deb` `orca-ide_<versi>_<arch>.deb` diekstrak ke `~/.local/lib/orca-ide` (Desktop GUI & Headless Server) dengan deteksi/pembaruan versi di Web UI & CLI |
 
 > **Auto Setup Idempoten (`wdev install all` / tombol Full Auto Setup):** Ketika dijalankan ulang, setiap langkah memeriksa versi/instalasi yang sudah ada terlebih dahulu—melewati unduhan bila sudah pada versi terbaru, memperbarui bila ada rilis lebih baru, serta menjaga `initdb`, layanan `systemd`, dan `/etc/profile.d/wdev.sh` tetap sinkron.
 
@@ -203,162 +188,92 @@ wdev cf <status|expose|unexpose>     # Cloudflare Tunnel multi-akun
 wdev pdns <status|zone|record|...>   # PowerDNS Authoritative & VPS Edge Gateway
 ```
 
-### Helper CLI
+### Padanan Perintah (tanpa skrip shell)
 
-Dipasang ke `/usr/local/bin`; `node-switch`, `pg-switch`, `dev-site`, dan `cf-tunnel` juga disalin ke `~/.local/bin` milik `SUDO_USER`:
+Seluruh helper lama kini menjadi subperintah biner `wdev`:
 
-| Perintah | Fungsi |
+| Helper lama | Perintah Go |
 |---|---|
-| `node-switch [list\|<ver>\|install\|remove]` | Kelola versi Node.js |
-| `pg-switch [list\|<ver>\|switch\|backup\|restore]` | Kelola cluster PostgreSQL dan migrasi data |
-| `php-switch <ver\|list>` | Ganti versi PHP CLI & PHP-FPM aktif |
-| `dev-site create\|delete\|list\|cert\|sync\|custom` | Virtual host Nginx + SSL + entri `/etc/hosts` + deteksi framework (Laravel, WordPress, CI3/CI4, Symfony, generic, proxy) |
-| `dev-site expose\|unexpose\|exposures` | Ekspos vhost ke Cloudflare Tunnel, kelola host publik per profil |
-| `cf-tunnel account\|tunnel\|route\|quick\|cidr\|access\|sync\|dns\|service\|status\|doctor\|raw` | Manajemen multi-akun Cloudflare: tunnel, ingress multi-protokol, quick tunnel, CIDR, Access, DNS, systemd, diagnostik |
-| `pdns-mgr deploy-vps\|connect\|status\|zone\|record\|expose\|expose-site\|unexpose\|list-exposures\|mail` | Manajemen PowerDNS & VPS Edge Gateway via Netbird: authoritative DNS mandiri, SSL otomatis, auto-cleanup DNS, serta Mail Server & Webmail template (Stalwart + SnappyMail) |
-| `orca-switch [desktop\|headless\|autostart\|status]` | Ganti mode Orca ADE |
+| `node-switch` | `wdev switch node <versi>` |
+| `php-switch` | `wdev switch php <versi>` |
+| `pg-switch` | `wdev switch pg <versi>` |
+| `dev-site` | `wdev site list\|create\|delete\|sync` |
+| `cf-tunnel` | `wdev cf status\|expose\|unexpose` |
+| `pdns-mgr` | `wdev pdns ...` (termasuk `wdev mail ...`) |
+| `orca-switch` | `wdev orca switch <desktop\|headless\|status\|autostart>` |
+| `orca-update` | `wdev orca update` (atau `wdev install orca-update`) |
+| `orca-pair` | `wdev orca pair` |
+| `orca-desktop` | `wdev orca desktop` |
 
 Contoh:
 
 ```bash
-node-switch 20
-sudo php-switch 8.3
-sudo dev-site create myapp.test /var/www/myapp 8.4 laravel
-sudo dev-site create mygo.test 3221 proxy
-sudo dev-site list
-sudo dev-site delete myapp.test
+wdev switch node 20
+sudo wdev switch php 8.3
+sudo wdev site create myapp.test /var/www/myapp 8.4 laravel
+sudo wdev site create mygo.test 3221 proxy
+sudo wdev site list
+sudo wdev site delete myapp.test
 
-sudo ./setup_dev.sh --cloudflare
-sudo cf-tunnel account add cf1
-sudo dev-site expose myapp.test myapp.example.com --profile cf1
-sudo dev-site expose mygo.test api.example.com --profile cf1
-sudo cf-tunnel status --all
+sudo wdev install cloudflare
+sudo wdev cf expose myapp.test myapp.example.com --profile cf1
+sudo wdev cf status
 
-# Manajemen PowerDNS & VPS Edge Gateway (Netbird)
-sudo pdns-mgr status
-sudo pdns-mgr zone add domainanda.com
-sudo pdns-mgr expose api.domainanda.com 8080 --ssl
-sudo pdns-mgr expose-site myapp.test myapp.domainanda.com --ssl
-sudo pdns-mgr unexpose myapp.domainanda.com   # otomatis hapus proxy VPS, record DNS subdomain, & alias lokal
-
-# Standarisasi Mail Server & Webmail (Hybrid Local Storage 380GB+ & VPS MX Queue)
-# 1. Setup 1-klik template: DNS + Stalwart & SnappyMail Lokal + VPS Postfix Store-and-Forward + SSL
-sudo pdns-mgr mail setup domainanda.com --ssl --relay-host smtp-relay.brevo.com --relay-port 587 --relay-user "apikey" --relay-pass "rahasia"
-
-# 2. Pengaturan SMTP Relay Outbound (jika port 25 diblokir)
-# Resend per-domain (default): API key + DNS DKIM/MX/SPF/CNAME otomatis
-sudo pdns-mgr mail relay-resend domain-a.com
-printf '%s\n' "$RESEND_API_KEY" | sudo pdns-mgr mail relay-resend domain-b.com --stdin
-
-# Brevo per-domain: API key (DNS) + SMTP login + SMTP key (relay)
-sudo pdns-mgr mail relay-brevo domain-c.com
-printf '%s\n%s\n%s\n' "$BREVO_API_KEY" "$BREVO_SMTP_USER" "$BREVO_SMTP_KEY" | sudo pdns-mgr mail relay-brevo domain-d.com --stdin
-
-# Custom per-domain: tiap domain bisa memakai relay/akun/provider berbeda
-sudo pdns-mgr mail set-relay domain-b.com smtp.mailgun.org 587 user pass
-
-# Custom global (fallback untuk domain tanpa relay per-domain)
-sudo pdns-mgr mail set-relay global smtp-relay.brevo.com 587 brevo_user rahasia
-
-# Hapus relay per-domain / nonaktifkan relay global
-sudo pdns-mgr mail relay-disable domain-a.com
-sudo pdns-mgr mail relay-disable
-
-# Hanya tulis record DNS Resend tanpa mengubah relay:
-printf '%s\n' "$RESEND_API_KEY" | sudo pdns-mgr mail relay-resend domainanda.com --stdin --dns-only
-
-# 3. Tambah Akun Email Klien di Harddisk Lokal (user@domain.com)
-sudo pdns-mgr mail add-account info@domainanda.com "PasswordKuat123!"
-# Password minimal 8 karakter dan harus lolos kebijakan strength Stalwart.
-# Menu interaktif akan meminta ulang otomatis jika password terlalu lemah.
-
-# 3b. Lihat daftar akun email per domain (semua domain / filter satu domain)
-sudo pdns-mgr mail accounts
-sudo pdns-mgr mail accounts domainanda.com
-
-# 4. Cek Antrean Email di VPS Gateway (misal saat PC lokal mati listrik) & Kirim Segera
-sudo pdns-mgr mail queue
-sudo pdns-mgr mail flush-queue
-
-# 5. Cek Status Layanan Mail Server Lokal, Disk Space, & VPS Gateway
-sudo pdns-mgr mail status
-
-# 6. Lihat kredensial admin Stalwart / reset password admin (recovery mode)
-sudo pdns-mgr mail admin
-sudo pdns-mgr mail admin-reset domainanda.com
-
-# 7. Buka/verifikasi port mail di firewall VPS (25/465/587/993/143/995/110)
-sudo pdns-mgr mail open-ports
+sudo wdev pdns status
+sudo wdev pdns zone add domainanda.com
+sudo wdev pdns expose api.domainanda.com 8080 --ssl
+sudo wdev pdns expose-site myapp.test myapp.domainanda.com --ssl
+sudo wdev pdns unexpose myapp.domainanda.com
 ```
 
-> `deploy-vps` otomatis membuka port web, DNS, SSH, dan mail di UFW maupun firewalld. Jika penyedia VPS punya firewall/security group terpisah, port yang sama juga perlu dibuka di panel penyedia.
->
-> Relay SMTP outbound diterapkan ke Stalwart (`MtaRoute` Relay + `MtaOutboundStrategy`). **Resend dan Brevo selalu per-domain**: pilih domain, masukkan kredensial, lalu skrip otomatis menambahkan record DNS dari provider ke zone PowerDNS domain tersebut, meminta verifikasi/autentikasi, dan membuat route relay khusus domain itu.
->
-> - Resend: cukup API key; DNS DKIM/MX/SPF/CNAME otomatis.
-> - Brevo: API key untuk DNS + SMTP login/SMTP key untuk relay. Record TXT Brevo di apex digabung dengan SPF yang ada, dan DMARC lama tidak ditimpa.
-> - Custom provider (Mailgun/SES/dll) bisa global atau per-domain. Global relay hanya fallback untuk domain tanpa relay per-domain.
+## Orca ADE (Debian/Ubuntu)
 
-> Panel admin Stalwart ada di `https://mailadmin.<domain>/admin/` (root domain akan redirect ke `/account`, yaitu portal user). Saat `mail setup` pertama kali dijalankan, Stalwart di-bootstrap otomatis (tanpa wizard) dan kredensial admin disimpan di `/etc/wdev/mail-admin.cred` (mode 0600). Gunakan `pdns-mgr mail admin` untuk melihatnya.
->
-> Webmail klien ada di `https://webmail.<domain>` — login memakai **alamat email lengkap** dan password akun yang dibuat lewat menu 15 / `pdns-mgr mail add-account`. SnappyMail lokal otomatis dikonfigurasi ke **IMAPS 127.0.0.1:993** dan **SMTPS 127.0.0.1:465**, jadi tidak perlu mengisi server manual.
->
-> VPS juga dikonfigurasi sebagai TCP proxy (`nginx stream`) untuk port **993 (IMAPS)**, **465 (SMTPS)**, dan **995 (POP3S)** menuju Stalwart di mesin lokal, sehingga klien cukup memakai `mail.<domain>`. Bila sertifikat Let's Encrypt untuk `mail.<domain>` tersedia di VPS, proxy memakai **TLS termination** sehingga klien melihat sertifikat valid; jika belum, otomatis fallback ke passthrough. Statusnya terlihat di `pdns-mgr mail status`.
->
-> VPS **tidak** memasang Stalwart maupun SnappyMail. Keduanya hanya berjalan di mesin lokal; `webmail.<domain>` diproxy oleh nginx VPS ke SnappyMail lokal.
-
-### Variabel Environment
-
-| Variabel | Default | Keterangan |
-|---|---|---|
-| `REDIS_PASSWORD` | `redis` | Password Redis/Valkey |
-| `PG_SUPERUSER_PASSWORD` | `postgres` | Password superuser PostgreSQL |
-| `DEV_LAN_ACCESS` | `0` | `1` = buka Redis/PostgreSQL ke LAN & Netbird, `0` = lokal saja |
-
-Akses LAN juga bisa diaktifkan lewat flag `--lan`, atau dimatikan eksplisit lewat `--no-lan`.
-
-Nilai password hanya boleh berisi `[A-Za-z0-9_.-]`. Nilai tidak valid akan **ditampilkan sebagai error** (tidak lagi diganti diam-diam ke default). Saat akses LAN aktif (`--lan`), password default `postgres`/`redis` ditolak.
-
-### Log & Lock
-
-- Log: `/var/log/dev-install.log`
-- Lock: `/var/lock/dev-install.lock` (mencegah dua proses bersamaan; hapus manual bila proses sebelumnya mati mendadak)
-
-## `setup_orca_headless.sh`
-
-Installer Orca ADE (mengunduh rilis `.deb` dari GitHub `stablyai/orca` dan mengekstraknya ke ruang user).
+Installer & pembaruan Orca ADE ditangani langsung oleh biner Go `wdev` — tanpa
+skrip Bash. Paket resmi yang dipakai adalah `orca-ide_<versi>_<arch>.deb` dari
+rilis GitHub `stablyai/orca`, lalu diekstrak ke ruang user
+(`~/.local/lib/orca-ide`) sehingga tidak memerlukan `dpkg`/`apt` dan tidak
+bertabrakan dengan paket sistem.
 
 ```bash
-./setup_orca_headless.sh              # auto: desktop bila DE terdeteksi, headless bila tidak
-./setup_orca_headless.sh --desktop    # paksa Desktop GUI
-./setup_orca_headless.sh --headless   # paksa Headless Server
-./setup_orca_headless.sh --uninstall  # hapus Orca ADE (tambahkan --purge untuk hapus ~/.config/orca)
-./setup_orca_headless.sh --help
+wdev orca update            # perbarui ke rilis resmi terbaru
+wdev install orca-desktop   # pasang / perbarui mode Desktop GUI
+wdev install orca-headless  # pasang / perbarui mode Headless Server
+wdev install orca-uninstall # hapus Orca ADE
 ```
+
+Dari Web UI, tombol **Perbarui ke vX.Y.Z** pada kartu Orca ADE memanggil alur
+yang sama. Proses update: unduh `.deb` resmi -> ekstrak dengan `dpkg-deb`
+(fallback `ar` + `tar`) -> ganti direktori aplikasi secara atomik -> aktifkan
+kembali layanan sesuai mode -> segarkan cache versi.
 
 Orca bersifat single-instance: hanya satu mode yang dipasang/dijalankan.
 
 | Mode | Perilaku |
 |---|---|
-| Desktop | Launcher `orca-desktop`, entri menu, autostart opsional |
-| Headless | Unit `orca.service` (systemd user, `Restart=always`) + `orca-update.timer` harian, `loginctl enable-linger` agar tetap jalan setelah boot tanpa login |
+| Desktop | Entri menu `orca-ide.desktop`, autostart opsional (`wdev orca autostart en`) |
+| Headless | Unit `orca.service` (systemd user, `Restart=always`) + `orca-update.timer` harian yang memanggil `wdev install orca-update`, `loginctl enable-linger` agar tetap jalan setelah boot tanpa login |
 
 Lokasi:
 
 - Aplikasi: `~/.local/lib/orca-ide`
-- Binari/helper: `~/.local/bin` (`orca`, `orca-ide`, `orca-desktop`, `orca-pair`, `orca-update`, `orca-switch`)
+- Launcher: `~/.local/bin/{orca,orca-ide,orca-desktop,orca-pair,orca-switch,orca-update}` — semuanya **symlink ke biner `wdev`** (kecuali `orca-ide` yang menunjuk CLI resmi Orca), bukan skrip shell
 - Konfigurasi & state: `~/.config/orca` (`.mode`, `orca-runtime.json`, keypair pairing)
 - Unit systemd user: `~/.config/systemd/user`
 
-Dependensi: `curl`, `node`, `dpkg-deb` atau `ar`; `Xvfb` untuk headless; Chromium/Chrome untuk Browser Automation (dipasang otomatis bila memungkinkan).
+Dependensi: `dpkg-deb` (atau `ar` + `tar`) untuk mengekstrak paket `.deb`;
+Chromium/Chrome untuk Browser Automation (dideteksi otomatis).
 
-Pairing:
+Pairing & mode:
 
 ```bash
-orca pair            # URL Web/WebSocket + QR code
-orca switch status   # status mode, proses, layanan, IP akses
-orca switch headless # pindah ke server 24/7
+wdev orca pair             # URL pairing + web client (via CLI resmi Orca)
+wdev orca status           # mode, versi, layanan, pairing
+wdev orca switch headless  # server 24/7
+wdev orca switch desktop   # kembali ke GUI
 ```
+
+Perintah lama (`orca pair`, `orca switch status`, `orca update`, `orca-desktop`)
+tetap berfungsi karena merupakan symlink ke biner `wdev` yang sama.
 
 ## Cloudflare Tunnel & DNS (Multi-Akun)
 
@@ -378,89 +293,115 @@ Satu site lokal cukup diekspos lewat satu tunnel. Setiap akun Cloudflare = satu 
 
 Aturan:
 
-- `accounts/*.conf`, `routes/*.conf`, `access/*.conf`, dan `exposures/*.conf` dikelola CLI, jangan diedit manual.
+- `accounts/*.conf`, `routes/*.conf`, `access/*.conf`, dan `exposures/*.conf` dikelola `wdev`/Web UI, jangan diedit manual.
 - `config.yml`, unit systemd, dan `server_name` Nginx bersifat generated.
 - Satu host publik (non-path) hanya boleh dimiliki satu site/route dan satu profil.
 
 ### Instalasi
 
 ```bash
-sudo ./setup_dev.sh --cloudflare        # cloudflared + helper cf-tunnel (tanpa akun)
-sudo ./setup_dev.sh --cf-tunnel account add cf1
-sudo ./setup_dev.sh --cf-tunnel account add cf2 --zone example.net
+sudo wdev install cloudflare   # pasang/update cloudflared
+wdev cf status                 # status tunnel, profil, dan eksposur aktif
 ```
 
-`account add` melakukan login origin cert, membuat tunnel, menulis credentials, membuat config + unit `cloudflared-<profil>`, lalu mengaktifkan service. Pilihan yang tersedia: `--mode local|token`, `--protocol auto|quic|http2`, `--zone`, `--api-token`, `--tunnel-token`, `--account-id`, `--no-login`, `--no-start`. Profil yang sudah ada dapat diperbarui via `cf-tunnel account update <profil>`.
+Profil tunnel, ingress, dan unit systemd dikelola dari Web UI Dashboard
+(tab **Cloudflare**) atau lewat API `wdev`. Tidak ada helper Bash terpisah.
 
-- `local` (default): ingress dikelola file lokal (`config.yml`), butuh `cert.pem` dari `tunnel login`.
-- `token`: tunnel dijalankan dengan `TUNNEL_TOKEN` di `accounts/<profil>.env` (0600). Ingress dapat diatur di dashboard Cloudflare atau disinkronkan via API dengan `sudo cf-tunnel sync --remote --profile <profil>` (membutuhkan `CF_API_TOKEN` dengan izin Tunnel Write).
+- `local`: ingress dikelola file lokal (`/etc/cloudflared/<profil>/config.yml`), butuh `cert.pem` hasil `cloudflared tunnel login`.
+- `token`: tunnel dijalankan dengan `TUNNEL_TOKEN` di `accounts/<profil>.env` (0600); ingress diatur di dashboard Cloudflare.
 
-### Ekspos subdomain & Custom Routes
+### Ekspos subdomain
 
 ```bash
-sudo dev-site expose myapp.test app-dev.example.com --profile cf1
-sudo dev-site expose myapp.test example.com --profile cf1                  # apex domain (CNAME flattening)
-sudo dev-site expose api.test v1.dev.example.com --profile cf1 --allow-deep # butuh Total TLS / ACM
-sudo dev-site exposures
-sudo dev-site unexpose myapp.test app-dev.example.com
+wdev cf expose myapp.test app-dev.example.com --profile cf1
+wdev cf expose myapp.test example.com --profile cf1   # apex domain
+wdev cf unexpose myapp.test
+wdev cf status
 ```
 
-`expose` mendukung profil mode `local` maupun `token`: validasi host terhadap zone profil, cek konflik host antar site/route, tulis state eksposur, regenerasi `server_name`, regenerasi cert `mkcert` dengan SAN host publik, jalankan `cf-tunnel sync` (untuk mode `token`, menampilkan opsi `cf-tunnel sync --remote` dan langkah dashboard), lalu membuat CNAME proxied ke `<uuid>.cfargotunnel.com`. `delete` dan `unexpose` membersihkan DNS + ingress + SAN, vhost lokal tetap aman.
-
-Untuk layanan non-Nginx, multi-protokol, routing path, Quick Tunnel, Private Network (CIDR), dan Cloudflare Access:
-
-```bash
-# Quick Tunnel (tanpa akun & domain, menghasilkan URL *.trycloudflare.com)
-cf-tunnel quick 3000
-cf-tunnel quick mygo.test --bg --name goapp
-cf-tunnel quick status && cf-tunnel quick stop goapp
-
-# Custom Ingress Routes (HTTP/HTTPS/TCP/SSH/RDP/SMB/Unix + path routing)
-sudo cf-tunnel route add --profile cf1 api.example.com http://127.0.0.1:8080 --path '/api/.*'
-sudo cf-tunnel route add --profile cf1 ssh.example.com ssh://127.0.0.1:22
-sudo cf-tunnel route add --profile cf1 db.example.com tcp://127.0.0.1:5432
-sudo cf-tunnel route list --all
-
-# Private Network / WARP CIDR Routing
-sudo cf-tunnel cidr add --profile cf1 10.10.0.0/24 --comment "LAN dev"
-sudo cf-tunnel cidr list --profile cf1
-
-# Cloudflare Access (Zero Trust App + validasi JWT di tunnel & client proxy)
-sudo cf-tunnel access protect --profile cf1 app-dev.example.com --team myteam --allow-domains example.com
-cf-tunnel access ssh --hostname ssh.example.com
-
-# Passthrough langsung ke binary cloudflared dengan context profil
-sudo cf-tunnel raw --profile cf1 tunnel list
-```
+`expose` memvalidasi host terhadap zone profil, menulis state eksposur,
+meregenerasi `server_name` Nginx, menerbitkan sertifikat `mkcert` dengan SAN
+host publik, menyinkronkan ingress cloudflared, lalu membuat CNAME proxied ke
+`<uuid>.cfargotunnel.com`.
 
 ### Operasional
 
 ```bash
-sudo cf-tunnel status --all           # profil, zone, service, connector, eksposur, route
-sudo cf-tunnel account list
-sudo cf-tunnel account update cf1 --protocol http2
-sudo cf-tunnel sync --all             # regenerate ingress + validasi + restart bila berubah
-sudo cf-tunnel sync --remote --profile cf2  # push ingress ke API untuk mode token
-sudo cf-tunnel tunnel info --profile cf1    # didukung untuk mode local maupun token
-sudo cf-tunnel tunnel rotate --profile cf1
-sudo cf-tunnel dns ensure --profile cf1
-sudo cf-tunnel service restart --profile cf1
-sudo cf-tunnel doctor --all           # cert, credentials, ingress, DNS, origin lokal & route
-sudo cf-tunnel account remove cf2 --yes
+wdev cf status
+sudo systemctl status cloudflared-<profil>
+sudo journalctl -u cloudflared-<profil> -f
+sudo cloudflared tunnel list          # passthrough langsung ke binary resmi
 ```
-
-Tanpa `CF_API_TOKEN`, DNS tidak diubah otomatis; `cf-tunnel` mencetak CNAME yang harus dibuat manual. Token butuh scope `Zone:DNS:Edit` + `Zone:Read` (opsional `Cloudflare Tunnel:Edit`, `Cloudflare One Networks:Edit`, `Access: Apps and Policies:Edit` untuk sync remote/CIDR/Access otomatis).
 
 ### Batasan Platform Cloudflare
 
 | Batasan | Dampak |
 |---|---|
-| Universal SSL gratis hanya `example.com` dan `*.example.com` | Subdomain bertingkat (`foo.dev.example.com`) butuh flag `--allow-deep` dan Total TLS/ACM di Cloudflare agar TLS publik valid |
+| Universal SSL gratis hanya `example.com` dan `*.example.com` | Subdomain bertingkat (`foo.dev.example.com`) butuh Total TLS/ACM di Cloudflare agar TLS publik valid |
 | Tunnel harus di akun pemilik zone | Zone akun B tidak bisa memakai tunnel akun A; buat profil terpisah |
 | Body request Cloudflare Free/Pro ~100 MB | `client_max_body_size 128M` tidak tercapai lewat tunnel |
 | Timeout origin ~100 detik | Request panjang kena 524 |
 | Cache Cloudflare | Aset dev bisa tersaji lama; kirim `Cache-Control: no-store` atau Cache Rule bypass |
-| Quick Tunnel (`trycloudflare.com`) | Hanya untuk URL/port langsung atau vhost `proxy`; tidak mendukung override `Host` header ke vhost PHP Nginx |
+
+## PowerDNS & VPS Edge Gateway (Native Go)
+
+Deployment VPS sepenuhnya native Go — biner `wdev` yang sama diunggah ke VPS lalu
+menjalankan provisioning sendiri (tanpa `vps-edge-setup.sh`, tanpa Python agent).
+
+```bash
+wdev pdns deploy <ip-vps> --user root --key ~/.ssh/id_ed25519
+wdev pdns status
+wdev pdns zone add domainanda.com
+wdev pdns expose api.domainanda.com 8080 --ssl
+```
+
+Yang diprovision di VPS: PowerDNS Authoritative + SQLite3 + REST API, Nginx
+(sites & stream), certbot, Postfix gateway, firewall, dan service
+`wdev-edge-agent` (`wdev edge-agent serve`) yang mengelola reverse proxy,
+sertifikat, serta TCP stream mail.
+
+Agent diekspos di port `8082` (API key di `/etc/wdev-edge/api_key.secret`);
+PowerDNS API di port `8081`. Keduanya hanya dibuka untuk subnet NetBird
+`100.64.0.0/10`.
+
+## Environment & PATH (Satu Sumber)
+
+PATH dan variabel toolchain hanya dihasilkan oleh wdev — tidak ada file
+`/etc/profile.d/*.sh` lain atau blok PATH manual di rc yang ikut campur.
+
+```bash
+wdev env status   # cek sumber PATH, file legacy, dan drift symlink
+wdev env sync     # bangun ulang /etc/profile.d/wdev.sh + rapikan rc shell
+```
+
+### Deteksi Duplikat Otomatis
+
+Full Auto Setup (`wdev install all`) menjalankan audit **sebelum** (pre-flight)
+dan **sesudah** (post-flight) 14 langkah instalasi:
+
+```bash
+wdev install audit        # deteksi duplikat path / double PATH
+wdev install audit-fix    # perbaiki otomatis
+```
+
+Yang dideteksi:
+- biner tool yang punya lebih dari satu realpath (mis. `/usr/local/bin/node` + `/usr/bin/node`)
+- salinan asing di `/usr/local/bin` yang bukan symlink ke area kanonik
+- paket distro yang menghasilkan biner duplikat (`nodejs`, `golang-go`, `rustc`, `mkcert`, `composer`, `cloudflared`, dll.)
+- file `/etc/profile.d/*.sh` legacy di luar `wdev.sh`
+- direktori toolchain kedua di home (`.cargo`, `.rustup`, `.nvm`, `.pyenv`)
+- entri `_wdev_prepend_path` ganda di profil/rc
+
+Setiap langkah instalasi komponen tunggal (`node`, `rust`, `go`, `flutter`, `composer`)
+juga memanggil `GuardToolchainColumns` untuk memperingatkan duplikat lebih awal.
+Perbaikan otomatis menghapus paket distro duplikat, membuang salinan asing, lalu
+membangun ulang PATH tunggal. Symlink ke target identik **tidak** dianggap duplikat.
+
+`wdev env sync` bersifat idempoten:
+- menulis ulang `/etc/profile.d/wdev.sh` (GOROOT, CARGO_HOME, NODE_HOME, CAROOT, FLUTTER/ANDROID, ORCA_BROWSER)
+- menghapus file profile lama (`nodejs.sh`, `rust.sh`, `golang.sh`, `flutter.sh`, `orca-browser.sh`, `mkcert.sh`, dll.)
+- mengarahkan symlink `/usr/local/bin/*` ke sumber kanonik (`/usr/local/go`, `/usr/local/cargo`, `/usr/local/lib/nodejs/<versi>`)
+- menaruh blok terkelola di `~/.bashrc`/`~/.zshrc` yang hanya me-load `wdev.sh`, dan membuang blok PATH duplikat
 
 ## Struktur Repo
 
@@ -471,9 +412,14 @@ wdev/
 │       └── main.go
 ├── internal/
 │   ├── config/
+│ ├── edge/
+│ │ ├── agent.go
+│ │ └── provision.go
 │   ├── installer/
 │   │   ├── installer.go
 │   │   ├── official_repos.go
+│ │ ├── orca.go
+│ │ ├── orca_runtime.go
 │   │   ├── service.go
 │   │   └── toolchains.go
 │   ├── mail/
@@ -494,17 +440,17 @@ wdev/
 
 ## Catatan Keamanan
 
-- Skrip membutuhkan `sudo` dan menulis ke `/usr/local`, `/etc`, serta `/var`.
+- Perintah pada biner `wdev` membutuhkan `sudo` untuk menulis ke `/usr/local`, `/etc`, serta `/var`.
 - Default `DEV_LAN_ACCESS=0`: Redis/PostgreSQL hanya mendengarkan di localhost. Akses LAN harus dibuka eksplisit dengan `--lan` dan mewajibkan password non-default.
 - Default password Redis/PostgreSQL bersifat publik. Ganti lewat variabel environment bila layanan akan diakses dari luar mesin.
 - Log instalasi (`/var/log/dev-install.log`) dibuat dengan mode `600` dan tidak menampilkan nilai password.
 - CA `mkcert` ditambahkan ke trust store sistem dan browser; hanya untuk pengembangan lokal.
 - Kredensial Cloudflare (`accounts/*.conf`, `cert.pem`, `*.json`, `.env`) disimpan mode `0600` di bawah `/etc/wdev` dan `/etc/cloudflared`; jangan di-commit.
 - Gunakan API token Cloudflare ber-scope minimal (`Zone:DNS:Edit`, `Zone:Read`), bukan Global API Key.
-- Tunnel mengekspos vhost ke internet. Aktifkan Cloudflare Access (`sudo cf-tunnel access protect ...`) untuk site yang bukan demo statis; `dev-site expose` tidak memasang Access otomatis.
+- Tunnel mengekspos vhost ke internet. Pasang Cloudflare Access dari dashboard Zero Trust untuk site yang bukan demo statis.
 - Jangan menambahkan host publik ke `/etc/hosts`; itu memotong jalur tunnel di mesin lokal.
 - Jangan commit kredensial, token, atau berkas `.env`; gunakan `.gitignore` yang disertakan.
-- Review skrip sebelum menjalankannya sebagai root.
+- Review perubahan konfigurasi sebelum menjalankan perintah `wdev` sebagai root.
 
 ## Lisensi
 
