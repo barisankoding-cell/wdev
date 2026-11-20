@@ -2367,7 +2367,7 @@ async function loadMailStatus() {
           data.domains.map(d => `<option value="${d.domain}" ${d.domain === currentFilter ? 'selected' : ''}>${d.domain}</option>`).join('');
       }
       if (relayDomainSelect) {
-        relayDomainSelect.innerHTML = data.domains.map(d => `<option value="${d.domain}">${d.domain}</option>`).join('');
+ relayDomainSelect.innerHTML = '<option value="global">Semua Domain (relay default)</option>' + data.domains.map(d => `<option value="${d.domain}">${d.domain}</option>`).join('');
       }
     }
 
@@ -2383,19 +2383,29 @@ async function loadMailStatus() {
         const relay = data.domain_relays && data.domain_relays[d.domain];
         const tr = document.createElement('tr');
 
-        let providerBadge = '<span class="stat-badge" style="background:rgba(107,114,128,0.18);color:var(--text-muted);font-size:11px;">Direct MX</span>';
-        let hostPort = '<span style="color:var(--text-dim);font-size:12px;">Port 25 (Tanpa Relay)</span>';
-        let userStr = '<span style="color:var(--text-dim);font-size:12px;">-</span>';
+ const globalRelay = data.global_relay;
+ const effective = (data.outbound_routes && data.outbound_routes[d.domain]) || data.outbound_default || '';
+ const badgeFor = (r, label) => {
+ const prov = (r.provider || 'custom').toUpperCase();
+ const color = prov === 'RESEND' ? 'rgba(59,130,246,0.18);color:var(--primary);' :
+ prov === 'BREVO' ? 'rgba(16,185,129,0.18);color:var(--success);' :
+ 'rgba(245,158,11,0.18);color:var(--warning);';
+ return `<span class="stat-badge" style="background:${color}font-size:11px;font-weight:600;">● ${label}${prov}</span>`;
+ };
 
-        if (relay && relay.host) {
-          const prov = (relay.provider || 'custom').toUpperCase();
-          const badgeColor = prov === 'RESEND' ? 'rgba(59,130,246,0.18);color:var(--primary);' :
-                             prov === 'BREVO' ? 'rgba(16,185,129,0.18);color:var(--success);' :
-                             'rgba(245,158,11,0.18);color:var(--warning);';
-          providerBadge = `<span class="stat-badge" style="background:${badgeColor}font-size:11px;font-weight:600;">● ${prov}</span>`;
-          hostPort = `<span style="font-family:monospace;font-size:12px;">${relay.host}:${relay.port}</span>`;
-          userStr = `<span style="font-size:12px;color:var(--text-main);">${relay.username || '-'}</span>`;
-        }
+ let providerBadge = '<span class="stat-badge" style="background:rgba(239,68,68,0.18);color:var(--danger);font-size:11px;font-weight:600;">● BELUM ADA RELAY</span>';
+ let hostPort = '<span style="color:var(--danger);font-size:12px;">Outbound nonaktif</span>';
+ let userStr = '<span style="color:var(--text-dim);font-size:12px;">-</span>';
+
+ if (relay && relay.host) {
+ providerBadge = badgeFor(relay, '');
+ hostPort = `<span style="font-family:monospace;font-size:12px;" title="route: ${effective || '-'}">${relay.host}:${relay.port}</span>`;
+ userStr = `<span style="font-size:12px;color:var(--text-main);">${relay.username || '-'}</span><div style="font-size:10.5px;color:var(--text-dim);">override domain</div>`;
+ } else if (globalRelay && globalRelay.host) {
+ providerBadge = badgeFor(globalRelay, 'DEFAULT · ');
+ hostPort = `<span style="font-family:monospace;font-size:12px;" title="route: ${effective || '-'}">${globalRelay.host}:${globalRelay.port}</span>`;
+ userStr = `<span style="font-size:12px;color:var(--text-main);">${globalRelay.username || '-'}</span><div style="font-size:10.5px;color:var(--text-dim);">ikut relay default</div>`;
+ }
 
         tr.innerHTML = `
           <td><strong>${d.domain}</strong></td>
@@ -2418,8 +2428,9 @@ async function loadMailStatus() {
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
               <button class="btn btn-sm btn-primary" style="padding:4px 10px;font-size:11.5px;display:inline-flex;align-items:center;gap:4px;" onclick="openMailRelayModal('${d.domain}')" title="Setel outbound SMTP relay domain ${d.domain}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                <span>Setel Relay</span>
+                <span>${relay && relay.host ? 'Ubah Relay' : 'Setel Relay'}</span>
               </button>
+ ${relay && relay.host ? `<button class="btn btn-sm btn-outline" style="padding:4px 10px;font-size:11.5px;color:var(--danger);border-color:rgba(239,68,68,0.35);" onclick="removeMailRelay('${d.domain}')" title="Hapus override relay; domain memakai relay default"><span>Hapus Override</span></button>` : ''}
               <button class="btn btn-sm btn-outline" style="padding:4px 10px;font-size:11.5px;display:inline-flex;align-items:center;gap:4px;" onclick="resetMailAdmin('${d.domain}')" title="Reset password admin domain ${d.domain}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-1.5 1.5L16 7m-1.5 1.5L13 10m-1.5 1.5L10 13m-1.5 1.5L7 16m-4 5a4 4 0 1 1 5.66-5.66l9.9-9.9a2 2 0 0 1 2.83 0l1.41 1.41a2 2 0 0 1 0 2.83L12.9 19.66A4 4 0 0 1 7 21z"/></svg>
                 <span>Reset Admin</span>
@@ -2479,7 +2490,7 @@ function filterMailAccounts() {
 
     const relayInfo = grp.relay && grp.relay.host
       ? `<span class="stat-badge" style="background:rgba(59,130,246,0.18);color:var(--primary);font-size:11px;">${grp.relay.provider.toUpperCase()} (${grp.relay.host})</span>`
-      : '<span class="stat-badge" style="background:rgba(107,114,128,0.18);color:var(--text-muted);font-size:11px;">Direct MX</span>';
+      : '<span class="stat-badge" style="background:rgba(107,114,128,0.18);color:var(--text-muted);font-size:11px;">Relay Default</span>';
 
     (grp.accounts || []).forEach(acc => {
       accountsFound++;
@@ -2502,6 +2513,7 @@ function filterMailAccounts() {
               <span>Login Webmail</span>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             </a>
+ ${acc.is_admin ? '' : `<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11.5px;color:var(--danger);border-color:rgba(239,68,68,0.35);" onclick="deleteMailAccount('${acc.email}')" title="Hapus akun ${acc.email}">Hapus</button>`}
           </div>
         </td>
       `;
@@ -2512,6 +2524,27 @@ function filterMailAccounts() {
   if (accountsFound === 0) {
     tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:14px;">Tidak ada akun email yang cocok dengan filter.</td></tr>`;
   }
+}
+
+async function deleteMailAccount(email) {
+ const confirmed = await modalConfirm(`Hapus akun email ${email}? Semua email di kotak pos tersebut akan ikut terhapus.`, {
+ title: 'Hapus Akun Email', confirmText: 'Hapus Akun', danger: true
+ });
+ if (!confirmed) return;
+ try {
+ const res = await fetch('/api/mail/account/delete', {
+ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+ });
+ const data = await res.json().catch(() => ({}));
+ if (!res.ok) {
+ await modalAlert(`Gagal menghapus akun: ${data.error || res.statusText}`, 'error', 'Mail Server');
+ return;
+ }
+ await modalAlert(data.message || 'Akun dihapus.', 'success', 'Akun Dihapus');
+ loadMail();
+ } catch (err) {
+ await modalAlert('Error: ' + err, 'error', 'Mail Server');
+ }
 }
 
 // Modal: Add Account
@@ -2578,13 +2611,65 @@ async function submitMailAddAccount(e) {
 
 // Modal: Relay
 function openMailRelayModal(domain) {
-  const modal = document.getElementById('modal-mail-relay');
-  const domSelect = document.getElementById('mail-relay-domain');
-  if (domSelect && domain) {
-    domSelect.value = domain;
-  }
-  toggleMailRelayFields();
-  if (modal) modal.classList.add('active');
+ const modal = document.getElementById('modal-mail-relay');
+ const domSelect = document.getElementById('mail-relay-domain');
+ if (domSelect && domain) {
+ domSelect.value = domain;
+ }
+ prefillMailRelay(domain);
+ toggleMailRelayFields();
+ if (modal) modal.classList.add('active');
+}
+
+function prefillMailRelay(domain) {
+ const data = cachedMailStatus || {};
+ const relay = domain === 'global'
+ ? data.global_relay
+ : (data.domain_relays && data.domain_relays[domain]) || data.global_relay;
+ const provSel = document.getElementById('mail-relay-provider');
+ const secret = document.getElementById('mail-relay-secret');
+ const host = document.getElementById('mail-relay-host');
+ const port = document.getElementById('mail-relay-port');
+ const user = document.getElementById('mail-relay-user');
+ const pass = document.getElementById('mail-relay-pass');
+ if (secret) secret.value = '';
+ if (pass) pass.value = '';
+ if (!relay || !relay.host) {
+ if (provSel) provSel.value = 'brevo';
+ if (host) host.value = '';
+ if (user) user.value = '';
+ return;
+ }
+ const prov = String(relay.provider || '').toLowerCase();
+ if (provSel && ['resend', 'brevo', 'custom'].includes(prov)) {
+ provSel.value = prov;
+ }
+ if (host) host.value = relay.host || '';
+ if (port) port.value = relay.port || 587;
+ if (user) user.value = relay.username || '';
+}
+
+async function removeMailRelay(domain) {
+ const confirmed = await modalConfirm(`Hapus override relay untuk ${domain}? Domain akan memakai relay default (bukan direct).`, {
+ title: 'Hapus Override Relay',
+ confirmText: 'Hapus Override',
+ danger: true
+ });
+ if (!confirmed) return;
+ try {
+ const res = await fetch('/api/mail/relay/remove', {
+ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain })
+ });
+ const data = await res.json().catch(() => ({}));
+ if (!res.ok) {
+ await modalAlert(`Gagal menghapus relay: ${data.error || res.statusText}`, 'error', 'Mail Server');
+ return;
+ }
+ await modalAlert(data.message || `Override relay ${domain} dihapus.`, 'success', 'Relay Dihapus');
+ loadMail();
+ } catch (err) {
+ await modalAlert('Error: ' + err, 'error', 'Mail Server');
+ }
 }
 
 function closeMailRelayModal() {
@@ -2718,7 +2803,53 @@ async function openMailSetupModal(defaultDomain) {
     onMailSetupRelayChange();
     modal.classList.add('active');
     await populateMailSetupDomainOptions(defaultDomain);
+ refreshMailPreflight();
   }
+}
+
+async function refreshMailPreflight() {
+ const box = document.getElementById('mail-setup-preflight');
+ if (!box) return;
+ const sel = document.getElementById('mail-setup-domain-select');
+ let domain = sel ? sel.value.trim() : '';
+ if (domain === '__custom__') {
+ domain = document.getElementById('mail-setup-domain-custom')?.value.trim() || '';
+ }
+ box.style.display = 'block';
+ box.style.background = 'rgba(107,114,128,0.12)';
+ box.style.color = 'var(--text-muted)';
+ box.textContent = 'Memeriksa prasyarat mail...';
+ try {
+ const res = await fetch('/api/mail/preflight?domain=' + encodeURIComponent(domain || ''));
+ if (!res.ok) {
+ box.textContent = 'Gagal memeriksa prasyarat mail.';
+ return;
+ }
+ const p = await res.json();
+ const rows = [];
+ if (p.blockers && p.blockers.length) {
+ box.style.background = 'rgba(239,68,68,0.10)';
+ box.style.color = 'var(--text-main)';
+ rows.push('<strong style="color:var(--danger);">Blocker (setup akan gagal):</strong>');
+ p.blockers.forEach(b => rows.push('• ' + b));
+ }
+ if (p.warnings && p.warnings.length) {
+ if (!(p.blockers && p.blockers.length)) {
+ box.style.background = 'rgba(245,158,11,0.10)';
+ box.style.color = 'var(--text-main)';
+ }
+ rows.push('<strong style="color:var(--warning);">Peringatan:</strong>');
+ p.warnings.forEach(w => rows.push('• ' + w));
+ }
+ if (!rows.length) {
+ box.style.background = 'rgba(16,185,129,0.10)';
+ box.style.color = 'var(--text-main)';
+ rows.push('<strong style="color:var(--success);">Prasyarat lengkap.</strong> Stalwart, CLI, NetBird, Edge Gateway, dan relay default siap.');
+ }
+ box.innerHTML = rows.join('<br>');
+ } catch (err) {
+ box.textContent = 'Gagal memeriksa prasyarat: ' + err;
+ }
 }
 
 async function populateMailSetupDomainOptions(defaultDomain) {
@@ -2833,6 +2964,7 @@ function onMailSetupDomainSelectChange() {
   const customWrap = document.getElementById('mail-setup-custom-domain-wrap');
   const customInput = document.getElementById('mail-setup-domain-custom');
   if (!select) return;
+ refreshMailPreflight();
 
   if (select.value === '__custom__') {
     if (customWrap) customWrap.style.display = 'block';
@@ -2848,7 +2980,7 @@ function closeMailSetupModal() {
 }
 
 function onMailSetupRelayChange() {
-  const prov = document.getElementById('mail-setup-relay-prov')?.value || 'direct';
+  const prov = document.getElementById('mail-setup-relay-prov')?.value || '';
   const grpResend = document.getElementById('mail-setup-grp-resend');
   const grpBrevo = document.getElementById('mail-setup-grp-brevo');
   const grpCustom = document.getElementById('mail-setup-grp-custom');
@@ -2869,7 +3001,7 @@ async function submitMailSetup(e) {
     domain = document.getElementById('mail-setup-domain')?.value.trim() || '';
   }
   const ssl = document.getElementById('mail-setup-ssl')?.checked ?? true;
-  const relayProv = document.getElementById('mail-setup-relay-prov')?.value || 'direct';
+  const relayProv = document.getElementById('mail-setup-relay-prov')?.value || '';
 
   if (!domain) {
     await modalAlert('Silakan pilih atau masukkan domain publik yang valid.', 'warning', 'Validasi Input');
@@ -2881,7 +3013,9 @@ async function submitMailSetup(e) {
   let relayUser = '';
   let relayPass = '';
 
-  if (relayProv === 'resend') {
+  if (!relayProv) {
+ // warisi relay default; backend menolak jika belum ada
+ } else if (relayProv === 'resend') {
     relayPass = document.getElementById('mail-setup-resend-key')?.value.trim() || '';
     if (!relayPass) {
       await modalAlert('API Key Resend wajib diisi jika memilih relay Resend.', 'warning', 'Validasi Input');

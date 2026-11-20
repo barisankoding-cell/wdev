@@ -357,6 +357,53 @@ func normalizeRecordName(name, zone string) string {
 }
 
 func (m *Manager) AddRecord(zone, name, rtype, content string, ttl int) error {
+	return m.patchRecords(zone, name, rtype, []string{content}, ttl)
+}
+
+// LookupRecords mengembalikan isi RRset yang sudah ada pada name/type tertentu.
+func (m *Manager) LookupRecords(zone, name, rtype string) ([]string, error) {
+	zi, err := m.GetZone(zone)
+	if err != nil {
+		return nil, err
+	}
+	zone = strings.TrimSuffix(strings.TrimSpace(zone), ".") + "."
+	fqdn := normalizeRecordName(name, zone)
+	rtype = strings.ToUpper(strings.TrimSpace(rtype))
+	var res []string
+	for _, rr := range zi.RRsets {
+		if rr.Name != fqdn || !strings.EqualFold(rr.Type, rtype) {
+			continue
+		}
+		for _, rec := range rr.Records {
+			if !rec.Disabled {
+				res = append(res, rec.Content)
+			}
+		}
+	}
+	return res, nil
+}
+
+// AddRecordKeep menambah record tanpa menghapus record lain pada name/type yang
+// sama (dipakai untuk TXT multi-value seperti verifikasi SPF).
+func (m *Manager) AddRecordKeep(zone, name, rtype, content string, ttl int) error {
+	existing, err := m.LookupRecords(zone, name, rtype)
+	if err != nil {
+		return err
+	}
+	return m.patchRecords(zone, name, rtype, mergeRecordContents(existing, content), ttl)
+}
+
+func mergeRecordContents(existing []string, content string) []string {
+	want := strings.TrimSpace(content)
+	for _, e := range existing {
+		if strings.TrimSpace(e) == want {
+			return existing
+		}
+	}
+	return append(existing, content)
+}
+
+func (m *Manager) patchRecords(zone, name, rtype string, contents []string, ttl int) error {
 	conf := m.LoadConfig()
 	if !conf.Configured || conf.VPSNetbirdIP == "" {
 		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
@@ -370,31 +417,24 @@ func (m *Manager) AddRecord(zone, name, rtype, content string, ttl int) error {
 		ttl = 300
 	}
 
-	// Format record content according to type
-	content = strings.TrimSpace(content)
-	if rtype == "TXT" {
-		if !strings.HasPrefix(content, "\"") || !strings.HasSuffix(content, "\"") {
-			content = `"` + content + `"`
+	records := make([]map[string]any, 0, len(contents))
+	for _, c := range contents {
+		c = strings.TrimSpace(c)
+		if rtype == "TXT" {
+			if !strings.HasPrefix(c, "\"") || !strings.HasSuffix(c, "\"") {
+				c = `"` + c + `"`
+			}
+		} else if rtype == "CNAME" {
+			if !strings.HasSuffix(c, ".") {
+				c = c + "."
+			}
 		}
-	} else if rtype == "CNAME" {
-		if !strings.HasSuffix(content, ".") {
-			content = content + "."
-		}
+		records = append(records, map[string]any{"content": c, "disabled": false})
 	}
-
 	payload := map[string]any{
 		"rrsets": []map[string]any{
 			{
-				"name":       fqdn,
-				"type":       rtype,
-				"ttl":        ttl,
-				"changetype": "REPLACE",
-				"records": []map[string]any{
-					{
-						"content":  content,
-						"disabled": false,
-					},
-				},
+				"name": fqdn, "type": rtype, "ttl": ttl, "changetype": "REPLACE", "records": records,
 			},
 		},
 	}

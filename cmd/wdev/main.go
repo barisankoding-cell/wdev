@@ -20,9 +20,11 @@ import (
 	"wdev/internal/store"
 	"wdev/internal/switcher"
 	"wdev/internal/tui"
+	"wdev/internal/updater"
+	"wdev/internal/version"
 )
 
-const Version = "2.0.0"
+var Version = version.Version
 
 func printHelp() {
 	fmt.Printf(`wdev v%s — Linux Developer Control Plane
@@ -83,14 +85,23 @@ MAIL SERVER & RELAY:
   wdev mail status                         Status Stalwart, SnappyMail, dan relay per domain
   wdev mail accounts [domain]              Daftar akun email dikelompokkan per domain
   wdev mail add-account <email> <password> Buat kotak pos / akun email baru
-  wdev mail set-relay <domain> <provider>  Setel outbound SMTP relay (resend, brevo, custom, direct)
+ wdev mail set-relay <domain|global> <provider> Setel relay (resend, brevo, custom, off)
   wdev mail admin-reset <domain>           Reset password admin Stalwart untuk domain
+ wdev mail unset-relay <domain> Hapus override relay domain (fallback default)
+ wdev mail admin-cred <domain> Tampilkan kredensial admin Stalwart domain
 
 INSTALASI & SYSTEMD SERVICE:
   wdev install [service]               Pasang wdev ke sistem & aktifkan systemd service (auto-start)
   wdev uninstall [--purge]             Hapus systemd service wdev & binary dari sistem
   wdev install <komponen>              Pasang atau perbarui komponen (update, node, php, postgres, dll.)
 `, Version)
+}
+
+func relayModeLabel(relayOnly bool) string {
+	if relayOnly {
+		return "relay-only (direct/port 25 nonaktif)"
+	}
+	return "belum relay-only (periksa konfigurasi relay)"
 }
 
 func main() {
@@ -862,10 +873,58 @@ func main() {
 
 	case "mail":
 		if len(args) < 2 {
-			fmt.Println("Penggunaan: wdev mail [status|accounts|add-account|set-relay|admin-reset]")
+			fmt.Println("Penggunaan: wdev mail [setup|status|accounts|add-account|delete-account|set-relay|unset-relay|admin-reset|admin-cred]")
 			os.Exit(1)
 		}
 		switch args[1] {
+		case "setup":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mail setup <domain> [--no-ssl] [--relay <provider>] [--relay-key <key>] [--relay-host <host>] [--relay-port <port>] [--relay-user <user>] [--relay-pass <pass>]")
+				os.Exit(1)
+			}
+			opts := mail.SetupMailOptions{Domain: args[2], SSL: true}
+			for n := 3; n < len(args); n++ {
+				switch args[n] {
+				case "--no-ssl":
+					opts.SSL = false
+				case "--relay":
+					if n+1 < len(args) {
+						opts.RelayProv = args[n+1]
+						n++
+					}
+				case "--relay-key":
+					if n+1 < len(args) {
+						opts.RelayPass = args[n+1]
+						n++
+					}
+				case "--relay-host":
+					if n+1 < len(args) {
+						opts.RelayHost = args[n+1]
+						n++
+					}
+				case "--relay-port":
+					if n+1 < len(args) {
+						opts.RelayPort, _ = strconv.Atoi(args[n+1])
+						n++
+					}
+				case "--relay-user":
+					if n+1 < len(args) {
+						opts.RelayUser = args[n+1]
+						n++
+					}
+				case "--relay-pass":
+					if n+1 < len(args) {
+						opts.RelayPass = args[n+1]
+						n++
+					}
+				}
+			}
+			if err := mailMgr.SetupMail(context.Background(), func(line string) { fmt.Println(line) }, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+
 		case "status":
 			st, err := mailMgr.GetStatus()
 			if err != nil {
@@ -876,10 +935,11 @@ func main() {
 			fmt.Printf("Stalwart Mail Server: %v\n", st.StalwartActive)
 			fmt.Printf("SnappyMail Webmail:   %v\n", st.SnappyMailActive)
 			fmt.Printf("Free Storage:         %s\n", st.StorageFree)
+			fmt.Printf("Mode Outbound: %s\n", relayModeLabel(st.RelayOnly))
 			if st.GlobalRelay != nil {
 				fmt.Printf("Global Relay:         %s (%s:%d)\n", st.GlobalRelay.Provider, st.GlobalRelay.Host, st.GlobalRelay.Port)
 			} else {
-				fmt.Printf("Global Relay:         Direct MX (Nonaktif)\n")
+				fmt.Printf("Global Relay:         (belum dikonfigurasi)\n")
 			}
 			fmt.Println("\nRelay per Domain:")
 			if len(st.DomainRelays) == 0 {
@@ -905,7 +965,7 @@ func main() {
 				os.Exit(1)
 			}
 			for _, d := range accs {
-				relayStr := "Direct MX"
+				relayStr := "Relay Default"
 				if d.Relay != nil {
 					relayStr = fmt.Sprintf("%s (%s:%d)", strings.ToUpper(d.Relay.Provider), d.Relay.Host, d.Relay.Port)
 				}
@@ -935,9 +995,20 @@ func main() {
 			}
 			fmt.Printf("✓ Akun %s berhasil dibuat!\n", args[2])
 
+		case "relay-remove", "unset-relay":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mail unset-relay <domain>")
+				os.Exit(1)
+			}
+			if err := mailMgr.RemoveRelay(args[2]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Override relay domain %s dihapus; memakai relay default.\n", args[2])
+
 		case "set-relay":
 			if len(args) < 4 {
-				fmt.Println("Penggunaan: wdev mail set-relay <domain> <provider: resend|brevo|direct|custom> [host] [port] [user] [pass]")
+				fmt.Println("Penggunaan: wdev mail set-relay <domain|global> <provider: resend|brevo|custom|off> [host] [port] [user] [pass]")
 				os.Exit(1)
 			}
 			dom := args[2]
@@ -969,6 +1040,18 @@ func main() {
 			}
 			fmt.Printf("✓ Relay untuk domain %s berhasil disetel ke %s!\n", dom, prov)
 
+		case "admin-cred":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mail admin-cred <domain>")
+				os.Exit(1)
+			}
+			email, pass, err := mailMgr.AdminCredential(args[2])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Domain: %s\nUsername: %s\nPassword: %s\n", args[2], email, pass)
+
 		case "admin-reset":
 			if len(args) < 3 {
 				fmt.Println("Penggunaan: wdev mail admin-reset <domain>")
@@ -982,7 +1065,7 @@ func main() {
 
 		default:
 			fmt.Printf("Subperintah mail tidak dikenal: %s\n", args[1])
-			fmt.Println("Pilihan: status, accounts, add-account, set-relay, admin-reset")
+			fmt.Println("Pilihan: status, accounts, add-account, set-relay, unset-relay, admin-reset")
 		}
 
 	case "install":
@@ -1110,6 +1193,9 @@ func main() {
 		case "php-stack", "web-stack":
 			taskName = "Full PHP Web Stack"
 			fn = inst.InstallPhpStack
+		case "mail", "mail-stack":
+			taskName = "Mail Stack (Stalwart + SnappyMail)"
+			fn = inst.InstallMailStack
 		case "cloudflare":
 			taskName = "Cloudflare Tunnel (cloudflared)"
 			fn = inst.InstallCloudflared
@@ -1171,6 +1257,45 @@ func main() {
 		if err := inst.UninstallWdevService(ctx, cb, purge); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+
+	case "update", "self-update", "upgrade":
+		opts := updater.Options{}
+		for n := 1; n < len(args); n++ {
+			switch args[n] {
+			case "--check", "-c":
+				opts.CheckOnly = true
+			case "--force", "-f":
+				opts.Force = true
+			case "--edge":
+				if n+1 < len(args) {
+					opts.EdgeHost = args[n+1]
+					n++
+				}
+			case "--edge-key":
+				if n+1 < len(args) {
+					opts.EdgeKey = args[n+1]
+					n++
+				}
+			case "--source":
+				if n+1 < len(args) {
+					opts.SourceDir = args[n+1]
+					n++
+				}
+			}
+		}
+		res, err := updater.Run(context.Background(), Version, opts, func(line string) { fmt.Println(line) })
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if opts.CheckOnly {
+			if res.HasUpdate {
+				fmt.Printf("Update tersedia: v%s -> v%s\n", res.Current, res.Latest)
+				fmt.Println("Jalankan: sudo wdev update")
+			} else {
+				fmt.Printf("wdev v%s sudah terbaru\n", res.Current)
+			}
 		}
 
 	case "-v", "--version", "version":

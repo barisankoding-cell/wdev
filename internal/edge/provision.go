@@ -308,12 +308,21 @@ func Provision(ctx context.Context, cb func(string), opts ProvisionOptions) erro
 	}
 
 	// 6.1/6.2 mail cleanup + postfix alignment.
-	if exec.Command("systemctl", "cat", "stalwart.service").Run() == nil {
-		cb("Menonaktifkan Stalwart lama di VPS (tidak dipakai gateway)...")
-		_ = exec.Command("systemctl", "disable", "--now", "stalwart").Run()
+	// Jangan mematikan mail stack lokal bila mesin ini juga menjalankan wdev mail.
+	localMailHost := false
+	if _, err := os.Stat("/etc/wdev/mail-admin.cred"); err == nil {
+		localMailHost = true
 	}
-	_ = os.RemoveAll("/var/www/snappymail")
-	_ = os.Remove("/tmp/snappymail.zip")
+	if !localMailHost {
+		if exec.Command("systemctl", "cat", "stalwart.service").Run() == nil {
+			cb("Menonaktifkan Stalwart lama di VPS (tidak dipakai gateway)...")
+			_ = exec.Command("systemctl", "disable", "--now", "stalwart").Run()
+		}
+		_ = os.RemoveAll("/var/www/snappymail")
+		_ = os.Remove("/tmp/snappymail.zip")
+	} else {
+		cb(" Mesin ini juga mail host lokal; Stalwart/SnappyMail dibiarkan aktif")
+	}
 	alignPostfix(cb)
 
 	// 7. Firewall.
@@ -519,10 +528,14 @@ func alignPostfix(cb func(string)) {
 		{"smtp_tls_verify_cert", "no"},
 	}
 	if len(domains) > 0 {
-		settings = append(settings,
-			[2]string{"myhostname", "mx." + domains[0]},
-			[2]string{"smtp_helo_name", "mx." + domains[0]},
-		)
+		current, _ := run("postconf", "-h", "myhostname")
+		current = strings.TrimSpace(current)
+		if current == "" || !strings.HasPrefix(current, "mx.") {
+			settings = append(settings,
+				[2]string{"myhostname", "mx." + domains[0]},
+				[2]string{"smtp_helo_name", "mx." + domains[0]},
+			)
+		}
 		cert, key := findLetsEncryptCert("mail." + domains[0])
 		if cert != "" {
 			settings = append(settings,

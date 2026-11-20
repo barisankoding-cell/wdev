@@ -25,14 +25,33 @@ Aplikasi manajemen lingkungan pengembangan & infrastruktur Linux terpadu dalam s
 
 Biner release `wdev` bersifat **mandiri (self-contained)** — seluruh Web UI tertanam via `go:embed` dan seluruh automasi instalasi/pembaruan dijalankan native oleh biner Go. Tidak ada skrip `.sh` yang perlu diunduh, disalin, atau dijalankan.
 
-Cukup unduh biner rilis dan jalankan perintah install:
+Unduh aset rilis dari halaman GitHub Releases
+(`wdev-linux-amd64`, `wdev-linux-arm64`, atau `wdev-linux-armv7`), lalu:
 
 ```bash
-# 1. Berikan izin eksekusi pada biner release wdev
-chmod +x wdev
+chmod +x wdev-linux-amd64
+sudo ./wdev-linux-amd64 install
+```
 
-# 2. Pasang wdev ke sistem & aktifkan systemd background service (auto-start)
-sudo ./wdev install
+Untuk update berikutnya tidak perlu unduh manual:
+
+```bash
+sudo wdev update --check      # cek versi terbaru
+sudo wdev update              # pasang biner terbaru + restart service
+sudo wdev update --edge root@<IP-VPS> --edge-key ~/.ssh/id_ed25519
+sudo wdev update --source ~/projects/wdev   # bila tidak memakai rilis GitHub
+```
+
+`wdev update` memverifikasi SHA256, menyimpan biner lama sebagai
+`/usr/local/bin/wdev.bak`, dan me-restart `wdev.service`.
+
+Setelah update, jalankan migrasi mail satu kali:
+
+```bash
+sudo wdev install mail
+sudo wdev mail set-relay global <provider> <key>
+sudo wdev mail setup <domain>     # ulangi untuk tiap domain
+wdev mail status
 ```
 
 Setelah instalasi selesai, Web Dashboard langsung aktif di:
@@ -130,7 +149,7 @@ Struktur submenu:
 | `wdev install <komponen>` | Instal/perbarui komponen tertentu |
 | `wdev uninstall [--purge]` | Hapus service systemd & biner wdev |
 
-Komponen instalasi: `all`, `update`, `check-updates`, `self-check`, `base`, `node`, `rust`, `go`, `java`, `android`, `flutter`, `postgres`, `redis`, `nginx`, `php`, `composer`, `ssl`, `php-stack`, `cloudflare`, `zsh`, `orca-desktop`, `orca-headless`, `orca-update`, `orca-uninstall`.
+Komponen instalasi: `all`, `update`, `check-updates`, `self-check`, `base`, `node`, `rust`, `go`, `java`, `android`, `flutter`, `postgres`, `redis`, `nginx`, `php`, `composer`, `ssl`, `php-stack`, `cloudflare`, `mail`, `zsh`, `orca-desktop`, `orca-headless`, `orca-update`, `orca-uninstall`.
 
 Pemilih versi saat instalasi (lewat Web UI / TUI / argumen `wdev install`):
 
@@ -181,7 +200,7 @@ wdev site sync
 
 ```bash
 wdev status                          # Status sistem, layanan inti & runtime aktif
-wdev install <komponen>              # all, update, check-updates, self-check, base, node, rust, go, java, android, flutter, postgres, redis, nginx, php, composer, ssl, php-stack, cloudflare, zsh, orca-desktop, orca-headless
+wdev install <komponen>              # all, update, check-updates, self-check, base, node, rust, go, java, android, flutter, postgres, redis, nginx, php, composer, ssl, php-stack, cloudflare, mail, zsh, orca-desktop, orca-headless
 wdev switch <list|node|php|pg|java>  # Pengelola versi runtime aktif
 wdev site <list|create|delete>       # Virtual host Nginx + SSL + /etc/hosts
 wdev cf <status|expose|unexpose>     # Cloudflare Tunnel multi-akun
@@ -375,6 +394,129 @@ DNS `A` valid. API key PowerDNS dibuat sekali, disimpan di
 Agent diekspos di port `8082` (API key di `/etc/wdev-edge/api_key.secret`);
 PowerDNS API di port `8081`. Keduanya hanya dibuka untuk subnet NetBird
 `100.64.0.0/10`.
+
+## Mail Server (Relay-Only, Multi-Domain)
+
+Mail server berjalan di mesin lokal (Stalwart + SnappyMail) dan hanya
+dipublikasikan lewat VPS Edge Gateway. Transport antar mesin memakai
+**NetBird** (`100.64.0.0/10`); Cloudflare Tunnel tidak dipakai untuk mail.
+
+```
+Internet -> VPS publik -> NetBird -> PC lokal
+  25   : Postfix queue -> [netbird]:25 (Stalwart)
+  465  : nginx stream TLS (Let's Encrypt) -> [netbird]:465
+  587  : nginx stream passthrough -> [netbird]:587 (STARTTLS)
+  993/143/995/110 : nginx stream -> [netbird]:<port>
+  443  : nginx -> webmail.<domain> / mailadmin.<domain> -> [netbird]:80/:8080
+```
+
+Aturan outbound:
+
+- **Direct MX / port 25 keluar tidak dipakai.** Semua email keluar lewat relay.
+- Relay default disimpan di `MtaOutboundStrategy.route.else`. Domain yang tidak
+  punya override otomatis memakai relay default.
+- Override per domain memakai cabang `sender_domain == '<domain>'`; satu domain
+  boleh memakai provider berbeda.
+- `direct`/`mx` ditolak API, CLI, dan UI. Gunakan `off` untuk menghapus override.
+
+```bash
+wdev mail set-relay global brevo <SMTP_KEY>   # relay default
+wdev mail set-relay domainA.com resend <KEY>  # override domain A
+wdev mail unset-relay domainA.com             # kembali ke default
+wdev mail status                              # mode + relay efektif
+wdev mail admin-cred domainA.com              # kredensial admin Stalwart
+```
+
+DNS yang dibuat otomatis saat setup (inbound saja):
+
+| Name | Type | Isi |
+| --- | --- | --- |
+| `mail.<domain>` | A | IP publik VPS |
+| `mx.<domain>` | A | IP publik VPS |
+| `webmail.<domain>` | A | IP publik VPS |
+| `mailadmin.<domain>` | A | IP publik VPS |
+| `@` | MX | `10 mail.<domain>.` |
+| `@` | TXT | `v=spf1 -all` (relay-only) |
+| `_dmarc` | TXT | `v=DMARC1; p=none; rua=mailto:dmarc@<domain>` |
+
+Record MX/SPF/DMARC yang sudah ada **tidak ditimpa**; setup berhenti jika MX
+sudah menunjuk host lain. DKIM/SPF outbound bergantung pada provider relay dan
+harus dipasang di dashboard provider (checklist dicetak saat setup).
+
+Prasyarat yang tidak bisa diotomasi: PTR/rDNS IP publik VPS harus menunjuk
+`mail.<domain>`, dan port 25 inbound harus dibuka oleh penyedia VPS.
+
+Penyimpanan lokal memakai `WDEV_MAIL_DATA` (default `/var/lib/wdev-mail`).
+
+### Memperbarui instalasi yang sudah ada
+
+`wdev install` hanya memasang **biner + systemd service** wdev. Perintah itu tidak
+memasang ulang mail stack dan tidak menulis ulang konfigurasi domain yang sudah
+ada. Untuk upgrade lengkap:
+
+```bash
+# 1. Pasang biner/Web UI terbaru (dari rilis GitHub)
+sudo wdev update
+
+# Alternatif tanpa rilis GitHub: build dari source
+# go build -o wdev ./cmd/wdev && sudo ./wdev install
+
+# 2. Pasang/perbarui komponen mail (idempoten; aman jika sudah ada)
+sudo ./wdev install mail
+
+# 3. Perbarui edge agent di VPS (stream/vhost baru ada di biner ini)
+scp wdev root@<ip-vps>:/usr/local/bin/wdev-edge
+ssh root@<ip-vps> systemctl restart wdev-edge-agent
+
+# 4. Pastikan relay default ada (wajib untuk mode relay-only)
+sudo ./wdev mail set-relay global brevo <SMTP_KEY>
+
+# 5. Tulis ulang config domain lama: DNS, vhost, stream, sertifikat
+sudo ./wdev mail setup domainanda.com
+# ulangi untuk setiap domain; atau lewat Web UI -> Mail -> Setup Domain
+```
+
+`wdev mail setup` aman dijalankan berulang: DNS yang sudah benar tidak
+ditimpa, dan record MX milik provider lain akan menghentikan setup (tidak
+dihapus). Relay per domain lama otomatis dipromosikan menjadi relay default
+saat setup pertama.
+
+Catatan:
+
+- `go run ./cmd/wdev install` juga bekerja, tetapi menyalin biner sementara
+  hasil `go run`. Lebih aman `go build` dulu.
+- Perubahan kode edge agent hanya aktif setelah biner VPS diganti dan
+  `wdev-edge-agent` di-restart.
+- `wdev install all` tidak memasang mail stack; gunakan `wdev install mail`.
+
+## Distribusi & Rilis (Maintainer)
+
+Rilis dibangun otomatis oleh `.github/workflows/release.yml` saat tag `v*`
+di-push. Aset yang dihasilkan:
+
+```
+wdev-linux-amd64        wdev-linux-amd64.sha256
+wdev-linux-arm64        wdev-linux-arm64.sha256
+wdev-linux-armv7        wdev-linux-armv7.sha256
+```
+
+Langkah merilis:
+
+```bash
+# 1. Ubah internal/version/version.go bila perlu (default digunakan saat build lokal)
+# 2. Commit perubahan
+git add -A && git commit -m "release: v2.1.0"
+git tag v2.1.0
+git push origin main --tags
+```
+
+CI menjalankan test, membangun ketiga arsitektur dengan
+`-ldflags "-X wdev/internal/version.Version=<tag>"`, membuat checksum, lalu
+membuat GitHub Release. Pengguna menjalankan `sudo wdev update` untuk
+mendapatkan versi tersebut.
+
+Untuk pengguna yang tidak memakai rilis GitHub, update tetap bisa lewat
+`git pull` lalu `go build -o wdev ./cmd/wdev && sudo ./wdev install`.
 
 ## Environment & PATH (Satu Sumber)
 

@@ -1,0 +1,54 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release binaries
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          build() {
+            arch="$1"; name="$2"; goarm="${3:-}"
+            GOOS=linux GOARCH="$arch" GOARM="$goarm" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w -X wdev/internal/version.Version=${tag}" \
+              -o "dist/wdev-linux-${name}" ./cmd/wdev
+          }
+          build amd64 amd64
+          build arm64 arm64
+          build arm armv7 7
+          cd dist
+          for f in wdev-linux-*; do
+            [ -f "$f.sha256" ] && continue
+            sha256sum "$f" > "$f.sha256"
+          done
+          ls -lh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "wdev ${GITHUB_REF_NAME}" \
+            --generate-notes

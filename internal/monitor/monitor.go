@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"wdev/internal/version"
 )
 
 type SystemStats struct {
@@ -462,7 +464,7 @@ func fetchCoreLatestVersions(ctx context.Context) map[string]string {
 
 	setVal("pdns", "4.9.18")
 	setVal("stalwart", "1.1.1")
-	setVal("wdev", "2.0.0")
+	setVal("wdev", version.Version)
 
 	wg.Wait()
 	return latest

@@ -370,36 +370,70 @@ func findLetsEncryptCert(hostname string) (string, string) {
 	return "", ""
 }
 
-func mailStreamBlock(targetIP string, cert, key string) string {
-	server := func(port int, timeout string) string {
-		if cert != "" {
-			return fmt.Sprintf(`  server {
-    listen %d ssl;
-    ssl_certificate %s;
-    ssl_certificate_key %s;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    proxy_pass %s:%d;
-    proxy_ssl on;
-    proxy_ssl_verify off;
-    proxy_connect_timeout 10s;
-    proxy_timeout %s;
-  }`, port, cert, key, targetIP, port, timeout)
+type mailCert struct {
+	Cert string
+	Key  string
+}
+
+// mailStreamBlock membuat proxy semua port mail. Port implicit TLS (465/993/995)
+// diterminasi di VPS memakai semua sertifikat yang ada (SNI), lalu diteruskan ke
+// Stalwart lokal. Port STARTTLS/plain (587/143/110) diteruskan apa adanya.
+func mailStreamBlock(targetIP string, certs []mailCert) string {
+	var b strings.Builder
+	mode := "passthrough"
+	if len(certs) > 0 {
+		mode = "tls"
+	}
+	fmt.Fprintf(&b, "# Managed by wdev-edge: %s mail ports -> Stalwart lokal (%s)\n", mode, targetIP)
+	b.WriteString("stream {\n")
+	tlsServer := func(port int, timeout string) {
+		fmt.Fprintf(&b, "\tserver {\n\t\tlisten %d ssl;\n", port)
+		for _, c := range certs {
+			fmt.Fprintf(&b, "\t\tssl_certificate %s;\n\t\tssl_certificate_key %s;\n", c.Cert, c.Key)
 		}
-		return fmt.Sprintf(`  server {
-    listen %d;
-    proxy_pass %s:%d;
-    proxy_connect_timeout 10s;
-    proxy_timeout %s;
-  }`, port, targetIP, port, timeout)
+		b.WriteString("\t\tssl_protocols TLSv1.2 TLSv1.3;\n")
+		fmt.Fprintf(&b, "\t\tproxy_pass %s:%d;\n", targetIP, port)
+		b.WriteString("\t\tproxy_ssl on;\n\t\tproxy_ssl_verify off;\n")
+		b.WriteString("\t\tproxy_connect_timeout 10s;\n")
+		fmt.Fprintf(&b, "\t\tproxy_timeout %s;\n\t}\n", timeout)
 	}
-	mode := "TCP passthrough"
-	header := "# Managed by wdev-edge: " + mode + " port mail -> Stalwart lokal (" + targetIP + ")\n"
-	if cert != "" {
-		header = "# Managed by wdev-edge: TLS Let's Encrypt port mail -> Stalwart lokal (" + targetIP + ")\n"
+	plainServer := func(port int, timeout string) {
+		fmt.Fprintf(&b, "\tserver {\n\t\tlisten %d;\n\t\tproxy_pass %s:%d;\n", port, targetIP, port)
+		b.WriteString("\t\tproxy_connect_timeout 10s;\n")
+		fmt.Fprintf(&b, "\t\tproxy_timeout %s;\n\t}\n", timeout)
 	}
-	return header + "stream {\n" +
-		server(993, "24h") + "\n" + server(465, "5m") + "\n" + server(995, "24h") +
-		"\n}\n"
+	for _, p := range []struct {
+		port    int
+		timeout string
+	}{{465, "5m"}, {993, "24h"}, {995, "24h"}} {
+		if len(certs) > 0 {
+			tlsServer(p.port, p.timeout)
+		} else {
+			plainServer(p.port, p.timeout)
+		}
+	}
+	for _, p := range []struct {
+		port    int
+		timeout string
+	}{{587, "5m"}, {143, "24h"}, {110, "24h"}} {
+		plainServer(p.port, p.timeout)
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func collectMailCerts(domains []string) []mailCert {
+	seen := make(map[string]bool)
+	var certs []mailCert
+	for _, d := range domains {
+		cert, key := findLetsEncryptCert("mail." + d)
+		if cert == "" || key == "" || seen[cert] {
+			continue
+		}
+		seen[cert] = true
+		certs = append(certs, mailCert{Cert: cert, Key: key})
+	}
+	return certs
 }
 
 func applyMailStream(conf string, moduleInstalled bool) error {
@@ -431,18 +465,33 @@ func writeMailStream(targetIP, mailHost string) string {
 	moduleInstalled := ensureNginxStreamSupport()
 	_ = os.MkdirAll(NginxStreamsDir, 0755)
 
-	cert, key := findLetsEncryptCert(mailHost)
-	if cert != "" {
-		if err := applyMailStream(mailStreamBlock(targetIP, cert, key), moduleInstalled); err == nil {
-			saveJSON(MailTargetFile, map[string]any{"target_ip": targetIP, "mail_host": mailHost, "mode": "tls"})
-			return "active-tls"
+	domains := loadMailDomains()
+	added := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(mailHost)), "mail.")
+	if added != "" && added != strings.ToLower(strings.TrimSpace(mailHost)) {
+		found := false
+		for _, existing := range domains {
+			if strings.EqualFold(existing, added) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			domains = append(domains, added)
 		}
 	}
-	if err := applyMailStream(mailStreamBlock(targetIP, "", ""), moduleInstalled); err == nil {
-		saveJSON(MailTargetFile, map[string]any{"target_ip": targetIP, "mail_host": mailHost, "mode": "passthrough"})
-		return "active-passthrough"
+	certs := collectMailCerts(domains)
+	mode := "passthrough"
+	if len(certs) > 0 {
+		mode = "tls"
 	}
-	return "failed"
+	if err := applyMailStream(mailStreamBlock(targetIP, certs), moduleInstalled); err != nil {
+		return "failed: " + err.Error()
+	}
+	saveJSON(MailTargetFile, map[string]any{"target_ip": targetIP, "mail_host": mailHost, "mode": mode, "domains": domains, "certs": len(certs)})
+	if mode == "tls" {
+		return "active-tls"
+	}
+	return "active-passthrough"
 }
 
 func restoreMailStream() {
@@ -497,8 +546,24 @@ func loadMailRelays() map[string]any {
 	return map[string]any{}
 }
 
-func ensurePostfixInstalled(mailHost string) {
-	_, _ = run("systemctl", "disable", "--now", "stalwart")
+// mergeMynetworks menyusun mynetworks tanpa membuka seluruh subnet NetBird.
+func mergeMynetworks(current, targetIP string) string {
+	seen := map[string]bool{"127.0.0.0/8": true, "[::1]/128": true}
+	res := []string{"127.0.0.0/8", "[::1]/128"}
+	for _, f := range strings.Fields(current) {
+		if f == "127.0.0.1/32" || f == "::1/128" || f == "100.64.0.0/10" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		res = append(res, f)
+	}
+	if targetIP != "" && !seen[targetIP] {
+		res = append(res, targetIP)
+	}
+	return strings.Join(res, " ")
+}
+
+func ensurePostfixInstalled(mailHost, targetIP string) {
 	if _, err := os.Stat("/usr/sbin/postfix"); err != nil {
 		_, _ = runStdin("postfix postfix/mailname string mail.wdev.local\n"+
 			"postfix postfix/main_mailer_type string \"Internet Site\"\n", "debconf-set-selections")
@@ -513,30 +578,33 @@ func ensurePostfixInstalled(mailHost string) {
 		}
 		_, _ = run("postmap", f)
 	}
-	base := mailHost
-	if strings.HasPrefix(base, "mail.") {
-		base = strings.TrimPrefix(base, "mail.")
-	}
+
+	currentNetworks, _ := run("postconf", "-h", "mynetworks")
+	base := strings.TrimPrefix(mailHost, "mail.")
 	myhost := "mail.wdev.local"
-	if base != "" {
+	if base != "" && base != mailHost {
 		myhost = "mx." + base
 	}
 	settings := [][2]string{
-		{"myhostname", myhost},
-		{"smtp_helo_name", myhost},
 		{"mydestination", "localhost.localdomain, localhost"},
 		{"relay_domains", "hash:/etc/postfix/relay_domains"},
 		{"transport_maps", "hash:/etc/postfix/transport"},
 		{"smtp_sasl_auth_enable", "no"},
 		{"smtp_tls_security_level", "may"},
 		{"smtp_tls_verify_cert", "no"},
-		{"mynetworks", "127.0.0.0/8 [::1]/128 100.64.0.0/10"},
+		{"mynetworks", mergeMynetworks(currentNetworks, targetIP)},
 		{"inet_interfaces", "all"},
 		{"maximal_queue_lifetime", "5d"},
 		{"bounce_queue_lifetime", "5d"},
 	}
 	for _, s := range settings {
 		_, _ = run("postconf", "-e", s[0]+"="+s[1])
+	}
+	current, _ := run("postconf", "-h", "myhostname")
+	current = strings.TrimSpace(current)
+	if current == "" || current == "mail.wdev.local" || !strings.HasPrefix(current, "mx.") {
+		_, _ = run("postconf", "-e", "myhostname="+myhost)
+		_, _ = run("postconf", "-e", "smtp_helo_name="+myhost)
 	}
 	_, _ = run("systemctl", "enable", "postfix")
 	_, _ = run("systemctl", "restart", "postfix")
@@ -591,7 +659,7 @@ func queueInfo() (bool, int, string) {
 	return empty, count, summary
 }
 
-func setupMailDomain(domain, targetIP string, useSSL bool, relay map[string]any) (map[string]any, error) {
+func setupMailDomain(domain, targetIP string, useSSL bool, _ map[string]any) (map[string]any, error) {
 	if !validDomain(domain) {
 		return nil, fmt.Errorf("domain tidak valid: %s", domain)
 	}
@@ -604,7 +672,7 @@ func setupMailDomain(domain, targetIP string, useSSL bool, relay map[string]any)
 	webmailSub := "webmail." + domain
 	mailHost := "mail." + domain
 
-	ensurePostfixInstalled(mailHost)
+	ensurePostfixInstalled(mailHost, targetIP)
 	appendLineOnce("/etc/postfix/relay_domains", domain+" OK")
 	replaceTransport(domain, fmt.Sprintf("%s smtp:[%s]:25", domain, targetIP))
 	_, _ = run("postmap", "/etc/postfix/relay_domains")
@@ -652,29 +720,10 @@ func setupMailDomain(domain, targetIP string, useSSL bool, relay map[string]any)
 	_ = nginxTest()
 	_ = nginxReload()
 
-	sslStatus := "none"
-	if useSSL {
-		out, err := run("certbot", "--nginx", "-d", adminSub, "-d", webmailSub, "-d", mailHost,
-			"--non-interactive", "--agree-tos", "--register-unsafely-without-email", "--redirect",
-			"--deploy-hook", "systemctl reload nginx")
-		if err == nil {
-			sslStatus = "active"
-		} else {
-			sslStatus = "partial: " + truncate(out, 100)
-		}
-	}
-
-	smtpStartTLS := configurePostfixTLS(mailHost)
-	streamHost := ""
-	if useSSL {
-		streamHost = mailHost
-	}
-	streamStatus := writeMailStream(targetIP, streamHost)
-
 	domains := loadMailDomains()
 	found := false
 	for _, d := range domains {
-		if d == domain {
+		if strings.EqualFold(d, domain) {
 			found = true
 			break
 		}
@@ -684,18 +733,32 @@ func setupMailDomain(domain, targetIP string, useSSL bool, relay map[string]any)
 		saveMailDomains(domains)
 	}
 
-	if relay != nil && relay["host"] != nil {
-		relays := loadMailRelays()
-		scope := "global"
-		if s, ok := relay["domain"].(string); ok && s != "" {
-			scope = s
+	sslStatus := "none"
+	if useSSL {
+		// Satu lineage sertifikat (SAN) untuk semua domain mail agar Postfix,
+		// nginx stream, dan web memakai cert yang sama.
+		args := []string{"--nginx", "--cert-name", "wdev-mail", "--expand",
+			"--non-interactive", "--agree-tos", "--register-unsafely-without-email",
+			"--redirect", "--deploy-hook", "systemctl reload nginx"}
+		for _, d := range domains {
+			d = strings.ToLower(strings.TrimSpace(d))
+			if !validDomain(d) {
+				continue
+			}
+			args = append(args, "-d", "mailadmin."+d, "-d", "webmail."+d, "-d", "mail."+d)
 		}
-		relays[scope] = relay
-		saveJSON(MailRelaysFile, relays)
+		if out, err := run("certbot", args...); err == nil {
+			sslStatus = "active"
+		} else {
+			sslStatus = "partial: " + truncate(out, 160)
+		}
 	}
 
+	smtpStartTLS := configurePostfixTLS(mailHost)
+	streamStatus := writeMailStream(targetIP, mailHost)
+
 	listeners := mailListeners()
-	allMail := listeners["993"] && listeners["465"] && listeners["995"]
+	allMail := listeners["993"] && listeners["465"] && listeners["587"]
 	scheme := "http"
 	if sslStatus == "active" {
 		scheme = "https"

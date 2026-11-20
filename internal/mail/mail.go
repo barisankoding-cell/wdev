@@ -28,6 +28,9 @@ type Manager struct {
 type MailStatus struct {
 	StalwartActive   bool                   `json:"stalwart_active"`
 	SnappyMailActive bool                   `json:"snappymail_active"`
+	RelayOnly        bool                   `json:"relay_only"`
+	OutboundDefault  string                 `json:"outbound_default,omitempty"`
+	OutboundRoutes   map[string]string      `json:"outbound_routes,omitempty"`
 	StorageFree      string                 `json:"storage_free"`
 	GlobalRelay      *RelayConfig           `json:"global_relay,omitempty"`
 	DomainRelays     map[string]RelayConfig `json:"domain_relays"`
@@ -43,7 +46,7 @@ type DomainSummary struct {
 
 type RelayConfig struct {
 	Domain      string `json:"domain,omitempty"`
-	Provider    string `json:"provider"` // "resend", "brevo", "custom", "direct"
+	Provider    string `json:"provider"` // "resend", "brevo", "custom"
 	Host        string `json:"host"`
 	Port        int    `json:"port"`
 	ImplicitTLS bool   `json:"implicit_tls"`
@@ -70,7 +73,7 @@ type MailAccount struct {
 
 type SetRelayOptions struct {
 	Domain   string `json:"domain"`
-	Provider string `json:"provider"` // "resend", "brevo", "custom", "direct"
+	Provider string `json:"provider"` // "resend", "brevo", "custom"
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
 	Username string `json:"username"`
@@ -80,7 +83,7 @@ type SetRelayOptions struct {
 type SetupMailOptions struct {
 	Domain    string `json:"domain"`
 	SSL       bool   `json:"ssl"`
-	RelayProv string `json:"relay_provider"` // "direct", "resend", "brevo", "custom"
+	RelayProv string `json:"relay_provider"` // "", "resend", "brevo", "custom" (kosong = relay default)
 	RelayHost string `json:"relay_host"`
 	RelayPort int    `json:"relay_port"`
 	RelayUser string `json:"relay_user"`
@@ -501,7 +504,21 @@ func (m *Manager) ensureStalwartMailDomain(domain string) (string, string, error
 	return m.resetAdminInternal(domain)
 }
 
+func reloadLocalNginx() error {
+	if err := exec.Command("nginx", "-t").Run(); err != nil {
+		return fmt.Errorf("nginx -t gagal: %w", err)
+	}
+	if err := exec.Command("systemctl", "reload", "nginx").Run(); err != nil {
+		return exec.Command("sudo", "-n", "systemctl", "reload", "nginx").Run()
+	}
+	return nil
+}
+
 func (m *Manager) ensureSnappyMailDomain(domain string) error {
+	_ = m.ensureWebmailFallbackVhost()
+	_ = m.ensureLocalMailVhost(domain)
+	_ = reloadLocalNginx()
+
 	snapRoot := "/var/www/snappymail"
 	if _, err := os.Stat(snapRoot); err != nil {
 		return nil
@@ -568,11 +585,147 @@ func (m *Manager) ensureSnappyMailDomain(domain string) error {
 	return nil
 }
 
-func (m *Manager) ensureLocalMailStack() error {
-	baseDir := "/mnt/f7d8a899-1e8d-4c44-afaf-2f7c69f2cce5/mail-data"
-	if _, err := os.Stat(baseDir); err != nil {
-		baseDir = "/var/mail-data"
+func (m *Manager) mailDataDir() string {
+	if v := strings.TrimSpace(os.Getenv("WDEV_MAIL_DATA")); v != "" {
+		return v
 	}
+	return "/var/lib/wdev-mail"
+}
+
+func phpFPMsock() string {
+	if _, err := os.Stat("/run/php/php8.4-fpm.sock"); err == nil {
+		return "/run/php/php8.4-fpm.sock"
+	}
+	matches, _ := filepath.Glob("/run/php/*fpm.sock")
+	if len(matches) > 0 {
+		return matches[0]
+	}
+	return "/run/php/php8.4-fpm.sock"
+}
+
+// localMailVhostBlock membuat vhost lokal untuk satu domain: mailadmin -> admin
+// Stalwart (127.0.0.1:8080), webmail -> SnappyMail, mail -> health check.
+func localMailVhostBlock(domain, phpSock string) string {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	return fmt.Sprintf(`# Managed by wdev (mail vhost %[1]s)
+server {
+	listen 80;
+	server_name webmail.%[1]s;
+
+	root /var/www/snappymail;
+	index index.php index.html;
+	client_max_body_size 50M;
+
+	location / {
+		try_files $uri $uri/ /index.php?$query_string;
+	}
+
+	location ~ \.php$ {
+		include fastcgi_params;
+		fastcgi_pass unix:%[2]s;
+		fastcgi_index index.php;
+		fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+	}
+
+	location ~ ^/(data|config)/ {
+		deny all;
+		return 404;
+	}
+}
+
+server {
+	listen 80;
+	server_name mailadmin.%[1]s;
+
+	location / {
+		proxy_pass http://127.0.0.1:8080;
+		proxy_http_version 1.1;
+		proxy_set_header Host $host;
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_read_timeout 300s;
+	}
+}
+
+server {
+	listen 80;
+	server_name mail.%[1]s;
+	location / { return 200 "mail server host ok\n"; }
+}
+`, domain, phpSock)
+}
+
+func (m *Manager) ensureLocalMailVhost(domain string) error {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if !validMailDomain(domain) {
+		return fmt.Errorf("domain vhost tidak valid: %q", domain)
+	}
+	name := "wdev_mail_" + domain + ".conf"
+	available := filepath.Join(m.cfg.NginxSitesAvail, name)
+	enabled := filepath.Join(m.cfg.NginxSitesEnable, name)
+	if err := writeRootFile(available, []byte(localMailVhostBlock(domain, phpFPMsock())), 0644); err != nil {
+		return err
+	}
+	if err := ensureSymlink(available, enabled); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureSymlink(target, link string) error {
+	if fi, err := os.Lstat(link); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		_ = os.Remove(link)
+	}
+	if err := os.Symlink(target, link); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return nil
+}
+
+func runRoot(name string, args ...string) error {
+	if os.Geteuid() == 0 {
+		return exec.Command(name, args...).Run()
+	}
+	sudoArgs := append([]string{"-n", name}, args...)
+	return exec.Command("sudo", sudoArgs...).Run()
+}
+
+func (m *Manager) ensureLocalMailFirewall() string {
+	results := []string{}
+	ports := []int{25, 465, 587, 993, 143, 995, 110}
+	if _, err := exec.LookPath("ufw"); err == nil {
+		out, _ := exec.Command("ufw", "status").Output()
+		if strings.Contains(string(out), "Status: active") {
+			for _, port := range ports {
+				_ = runRoot("ufw", "allow", "from", "100.64.0.0/10", "to", "any", "port", fmt.Sprintf("%d", port), "proto", "tcp")
+			}
+			_ = runRoot("ufw", "reload")
+			results = append(results, "ufw: port mail dibuka untuk NetBird 100.64.0.0/10")
+		}
+	}
+	if _, err := exec.LookPath("firewall-cmd"); err == nil {
+		out, _ := exec.Command("firewall-cmd", "--state").Output()
+		if strings.TrimSpace(string(out)) == "running" {
+			for _, port := range ports {
+				_ = runRoot("firewall-cmd", "--permanent", "--add-rich-rule",
+					fmt.Sprintf("rule family=ipv4 source address=100.64.0.0/10 port port=%d protocol=tcp accept", port))
+			}
+			_ = runRoot("firewall-cmd", "--reload")
+			results = append(results, "firewalld: port mail dibuka untuk NetBird 100.64.0.0/10")
+		}
+	}
+	if len(results) == 0 {
+		return "tidak ada firewall lokal aktif"
+	}
+	return strings.Join(results, "; ")
+}
+
+func (m *Manager) ensureLocalMailStack() error {
+	baseDir := m.mailDataDir()
 	stDir := filepath.Join(baseDir, "stalwart")
 	snDir := filepath.Join(baseDir, "snappymail")
 	_ = os.MkdirAll(stDir, 0755)
@@ -585,47 +738,36 @@ func (m *Manager) ensureLocalMailStack() error {
 	}
 
 	_ = exec.Command("systemctl", "enable", "--now", "stalwart").Run()
-
-	localVhost := "/etc/nginx/sites-available/wdev_webmail.conf"
-	if _, err := os.Stat(localVhost); err != nil {
-		phpSock := "/run/php/php8.4-fpm.sock"
-		if _, err := os.Stat(phpSock); err != nil {
-			matches, _ := filepath.Glob("/run/php/*fpm.sock")
-			if len(matches) > 0 {
-				phpSock = matches[0]
-			}
-		}
-		vhostContent := fmt.Sprintf(`# Managed by wdev (Local SnappyMail Web Client)
-server {
-    listen 80;
-    server_name webmail.* webmail.test;
-
-    root /var/www/snappymail;
-    index index.php index.html;
-    client_max_body_size 50M;
-
-    location / {
-        try_files $uri $uri/ /index.php?$query_string;
-    }
-
-    location ~ \.php$ {
-        include fastcgi_params;
-        fastcgi_pass unix:%s;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-    }
-
-    location ~ ^/(data|config)/ {
-        deny all;
-        return 404;
-    }
-}
-`, phpSock)
-		_ = writeRootFile(localVhost, []byte(vhostContent), 0644)
-		_ = os.Symlink(localVhost, "/etc/nginx/sites-enabled/wdev_webmail.conf")
-		_ = exec.Command("systemctl", "reload", "nginx").Run()
-	}
+	// Stalwart berjalan sebagai user sistem `stalwart`; pastikan data bisa ditulis.
+	_, _ = exec.Command("id", "-u", "stalwart").Output()
+	_ = runRoot("chown", "-R", "stalwart:stalwart", stDir)
+	_ = m.ensureLocalMailFirewall()
 	return nil
+}
+
+func (m *Manager) ensureWebmailFallbackVhost() error {
+	name := "wdev_webmail.conf"
+	available := filepath.Join(m.cfg.NginxSitesAvail, name)
+	enabled := filepath.Join(m.cfg.NginxSitesEnable, name)
+	content := fmt.Sprintf(`# Managed by wdev (fallback SnappyMail)
+server {
+	listen 80;
+	server_name webmail.test;
+	root /var/www/snappymail;
+	index index.php index.html;
+	location / { try_files $uri $uri/ /index.php?$query_string; }
+	location ~ \.php$ {
+		include fastcgi_params;
+		fastcgi_pass unix:%s;
+		fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+	}
+	location ~ ^/(data|config)/ { deny all; return 404; }
+}
+`, phpFPMsock())
+	if err := writeRootFile(available, []byte(content), 0644); err != nil {
+		return err
+	}
+	return ensureSymlink(available, enabled)
 }
 
 // -----------------------------------------------------------------------------
@@ -671,8 +813,8 @@ func (m *Manager) GetStatus() (MailStatus, error) {
 			for d, info := range credMap {
 				status.Domains = append(status.Domains, DomainSummary{
 					Domain:    d,
-					AdminURL:  fmt.Sprintf("https://mailadmin.%s/admin/", d),
-					Webmail:   fmt.Sprintf("https://webmail.%s", d),
+					AdminURL:  m.adminURL(d),
+					Webmail:   m.webmailURL(d),
 					AdminUser: info.Email,
 				})
 			}
@@ -727,6 +869,13 @@ func (m *Manager) GetStatus() (MailStatus, error) {
 				UpdatedAt:   r.UpdatedAt,
 			}
 		}
+	}
+
+	// 7. Routing efektif dari Stalwart (bukan hanya file kredensial)
+	if info, err := m.GetOutboundRoutes(); err == nil {
+		status.RelayOnly = info.RelayOnly
+		status.OutboundDefault = info.Default
+		status.OutboundRoutes = info.Domains
 	}
 
 	return status, nil
@@ -826,8 +975,8 @@ func (m *Manager) GetDomainAccounts(domainFilter string) ([]DomainAccounts, erro
 		group := DomainAccounts{
 			Domain:   d.Name,
 			Enabled:  d.Enable,
-			AdminURL: fmt.Sprintf("https://mailadmin.%s/admin/", d.Name),
-			Webmail:  fmt.Sprintf("https://webmail.%s", d.Name),
+			AdminURL: m.adminURL(d.Name),
+			Webmail:  m.webmailURL(d.Name),
 			Accounts: make([]MailAccount, 0),
 		}
 
@@ -869,6 +1018,9 @@ func (m *Manager) AddAccount(email, password string) error {
 	}
 	userPart := parts[0]
 	domainPart := strings.TrimSuffix(parts[1], ".")
+	if !validMailDomain(domainPart) {
+		return fmt.Errorf("domain email tidak valid: %s", domainPart)
+	}
 
 	adminEmail, adminPass, err := m.ensureStalwartMailDomain(domainPart)
 	if err != nil {
@@ -906,21 +1058,53 @@ func (m *Manager) AddAccount(email, password string) error {
 	return nil
 }
 
+// DeleteAccount menghapus akun email domain dari Stalwart.
+func (m *Manager) DeleteAccount(email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 || parts[0] == "" || !validMailDomain(parts[1]) {
+		return fmt.Errorf("format email tidak valid")
+	}
+	adminEmail, adminPass, err := m.pickValidAdminCred(parts[1])
+	if err != nil {
+		return fmt.Errorf("kredensial admin Stalwart belum valid: %w", err)
+	}
+	did, err := m.findDomainID(adminEmail, adminPass, parts[1])
+	if err != nil || did == "" {
+		return fmt.Errorf("domain '%s' tidak ditemukan di Stalwart", parts[1])
+	}
+	accID, _, _ := m.findAccountByUsername(adminEmail, adminPass, did, parts[0])
+	if accID == "" {
+		return fmt.Errorf("akun '%s' tidak ditemukan", email)
+	}
+	out, err := m.runStalwartCli(adminEmail, adminPass, "delete", "--ids", accID, "Account")
+	if err != nil {
+		return fmt.Errorf("gagal menghapus akun: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if accID, _, _ = m.findAccountByUsername(adminEmail, adminPass, did, parts[0]); accID != "" {
+		return fmt.Errorf("akun '%s' masih ada setelah dihapus", email)
+	}
+	return nil
+}
+
 func (m *Manager) SetRelay(opts SetRelayOptions) error {
 	opts.Domain = strings.TrimSpace(opts.Domain)
 	if opts.Domain == "" {
 		return fmt.Errorf("domain wajib diisi")
 	}
-	cleanDom := strings.TrimSuffix(opts.Domain, ".")
+	cleanDom := strings.ToLower(strings.TrimSuffix(opts.Domain, "."))
 
 	adminEmail, adminPass, err := m.pickValidAdminCred(cleanDom)
 	if err != nil || adminEmail == "" {
 		return fmt.Errorf("kredensial admin Stalwart belum ada atau tidak valid. Jalankan admin-reset terlebih dahulu")
 	}
 
-	prov := strings.ToLower(opts.Provider)
-	if prov == "direct" || prov == "disable" || prov == "none" {
-		return m.disableRelay(adminEmail, adminPass, cleanDom)
+	prov := strings.ToLower(strings.TrimSpace(opts.Provider))
+	switch prov {
+	case "direct", "mx":
+		return fmt.Errorf("%s: provider direct tidak didukung; pilih resend, brevo, atau custom", relayOnlyMode)
+	case "disable", "none", "off":
+		return m.removeDomainRelay(adminEmail, adminPass, cleanDom)
 	}
 
 	host := opts.Host
@@ -932,7 +1116,12 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 	switch prov {
 	case "resend":
 		if pass == "" {
-			return fmt.Errorf("API Key Resend wajib diisi")
+			if prev, ok := m.loadDomainRelayCred(cleanDom); ok && strings.EqualFold(prev.Provider, "resend") {
+				pass = prev.Password
+			}
+		}
+		if pass == "" {
+			return fmt.Errorf("API Key Resend wajib diisi (kosongkan hanya saat mengubah relay yang sudah ada)")
 		}
 		host = "smtp.resend.com"
 		port = 465
@@ -940,7 +1129,14 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 		user = "resend"
 	case "brevo":
 		if pass == "" {
-			return fmt.Errorf("SMTP Key Brevo wajib diisi")
+			if prev, ok := m.loadDomainRelayCred(cleanDom); ok && strings.EqualFold(prev.Provider, "brevo") {
+				pass = prev.Password
+			} else if prev, ok := m.loadGlobalRelayCred(); ok && strings.EqualFold(prev.Provider, "brevo") {
+				pass = prev.Password
+			}
+		}
+		if pass == "" {
+			return fmt.Errorf("SMTP Key Brevo wajib diisi (kosongkan hanya saat mengubah relay yang sudah ada)")
 		}
 		host = "smtp-relay.brevo.com"
 		if port <= 0 {
@@ -959,229 +1155,23 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 		}
 		implicitTLS = (port == 465 || port == 2465)
 	default:
-		return fmt.Errorf("provider relay tidak dikenal: %s (pilihan: resend, brevo, custom, direct)", opts.Provider)
+		return fmt.Errorf("provider relay tidak dikenal: %s (pilihan: resend, brevo, custom, off)", opts.Provider)
 	}
 
 	return m.applyRelay(adminEmail, adminPass, cleanDom, prov, host, port, implicitTLS, user, pass)
 }
 
-func (m *Manager) applyRelay(adminEmail, adminPass, domain, provider, host string, port int, implicitTLS bool, user, pass string) error {
-	isGlobal := (domain == "global" || domain == "")
-	routeName := "relay"
-	if !isGlobal {
-		routeName = "relay_" + strings.ReplaceAll(domain, ".", "_")
+// AdminCredential mengembalikan kredensial admin domain tanpa mencetaknya ke log.
+func (m *Manager) AdminCredential(domain string) (string, string, error) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" {
+		return "", "", fmt.Errorf("domain wajib diisi")
 	}
-
-	// 1. Cari MtaRoute yang ada
-	rOut, _ := m.runStalwartCli(adminEmail, adminPass, "query", "MtaRoute", "--json")
-	var existingID string
-	scanner := bufio.NewScanner(bytes.NewReader(rOut))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var r struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal([]byte(line), &r); err == nil && r.Name == routeName {
-			existingID = r.ID
-			break
-		}
+	entry, ok := m.getAdminCredMap()[domain]
+	if !ok || entry.Email == "" || entry.Password == "" {
+		return "", "", fmt.Errorf("kredensial admin untuk %s belum tercatat", domain)
 	}
-
-	payload := map[string]any{
-		"name":        routeName,
-		"host":        host,
-		"port":        port,
-		"protocol":    "smtp",
-		"implicitTls": implicitTLS,
-	}
-	if user != "" {
-		payload["authUsername"] = user
-		payload["authSecret"] = map[string]any{"@type": "Value", "secret": pass}
-	}
-	pBytes, _ := json.Marshal(payload)
-	tmpFile := fmt.Sprintf("/tmp/wdev_route_%d.json", time.Now().UnixNano())
-	_ = os.WriteFile(tmpFile, pBytes, 0600)
-	defer os.Remove(tmpFile)
-
-	if existingID != "" {
-		_, _ = m.runStalwartCli(adminEmail, adminPass, "update", "MtaRoute", existingID, "--file", tmpFile)
-	} else {
-		_, _ = m.runStalwartCli(adminEmail, adminPass, "create", "MtaRoute/Relay", "--file", tmpFile)
-	}
-
-	// 2. Perbarui MtaOutboundStrategy
-	stratOut, err := m.runStalwartCli(adminEmail, adminPass, "get", "MtaOutboundStrategy", "--json")
-	if err != nil {
-		return fmt.Errorf("gagal membaca MtaOutboundStrategy: %w", err)
-	}
-	var stratMap map[string]any
-	if err := json.Unmarshal(stratOut, &stratMap); err != nil {
-		return fmt.Errorf("format MtaOutboundStrategy tidak valid: %w", err)
-	}
-
-	routeMap, _ := stratMap["route"].(map[string]any)
-	if routeMap == nil {
-		routeMap = make(map[string]any)
-		stratMap["route"] = routeMap
-	}
-
-	if isGlobal {
-		routeMap["else"] = "'relay'"
-	} else {
-		matchMap, _ := routeMap["match"].(map[string]any)
-		if matchMap == nil {
-			matchMap = make(map[string]any)
-		}
-		cond := fmt.Sprintf("sender_domain == '%s'", domain)
-		targetThen := fmt.Sprintf("'%s'", routeName)
-
-		// Filter out duplicate conditions
-		var branches []map[string]string
-		for _, v := range matchMap {
-			if vm, ok := v.(map[string]any); ok {
-				if ifStr, _ := vm["if"].(string); ifStr != cond {
-					thenStr, _ := vm["then"].(string)
-					branches = append(branches, map[string]string{"if": ifStr, "then": thenStr})
-				}
-			}
-		}
-		branches = append(branches, map[string]string{"if": cond, "then": targetThen})
-
-		newMatch := make(map[string]any)
-		for i, b := range branches {
-			newMatch[fmt.Sprintf("%d", i)] = b
-		}
-		routeMap["match"] = newMatch
-	}
-
-	newStratBytes, _ := json.Marshal(map[string]any{"route": routeMap})
-	_, _ = m.runStalwartCli(adminEmail, adminPass, "update", "MtaOutboundStrategy", "--json", string(newStratBytes))
-
-	_ = restartStalwart()
-
-	// 3. Simpan kredensial ke disk
-	if isGlobal {
-		credPath := filepath.Join(m.cfg.WdevEtc, "mail-relay.cred")
-		relData := map[string]any{
-			"provider":    provider,
-			"host":        host,
-			"port":        port,
-			"implicitTls": implicitTLS,
-			"username":    user,
-			"password":    pass,
-			"updatedAt":   time.Now().UTC().Format(time.RFC3339),
-		}
-		b, _ := json.MarshalIndent(relData, "", "  ")
-		_ = writeRootFile(credPath, b, 0600)
-	} else {
-		credPath := filepath.Join(m.cfg.WdevEtc, "mail-relay-domains.cred")
-		rMap := make(map[string]any)
-		if curData, err := readRootFile(credPath); err == nil {
-			_ = json.Unmarshal(curData, &rMap)
-		}
-		rMap[domain] = map[string]any{
-			"provider":    provider,
-			"host":        host,
-			"port":        port,
-			"implicitTls": implicitTLS,
-			"username":    user,
-			"password":    pass,
-			"route":       routeName,
-			"updatedAt":   time.Now().UTC().Format(time.RFC3339),
-		}
-		b, _ := json.MarshalIndent(rMap, "", "  ")
-		_ = writeRootFile(credPath, b, 0600)
-	}
-
-	return nil
-}
-
-func (m *Manager) disableRelay(adminEmail, adminPass, domain string) error {
-	isGlobal := (domain == "global" || domain == "")
-
-	stratOut, err := m.runStalwartCli(adminEmail, adminPass, "get", "MtaOutboundStrategy", "--json")
-	if err != nil {
-		return fmt.Errorf("gagal membaca MtaOutboundStrategy: %w", err)
-	}
-	var stratMap map[string]any
-	if err := json.Unmarshal(stratOut, &stratMap); err != nil {
-		return fmt.Errorf("format MtaOutboundStrategy tidak valid: %w", err)
-	}
-
-	routeMap, _ := stratMap["route"].(map[string]any)
-	if routeMap == nil {
-		routeMap = make(map[string]any)
-		stratMap["route"] = routeMap
-	}
-
-	routeName := "relay"
-	if isGlobal {
-		routeMap["else"] = "'mx'"
-	} else {
-		routeName = "relay_" + strings.ReplaceAll(domain, ".", "_")
-		matchMap, _ := routeMap["match"].(map[string]any)
-		if matchMap != nil {
-			cond := fmt.Sprintf("sender_domain == '%s'", domain)
-			var branches []map[string]string
-			for _, v := range matchMap {
-				if vm, ok := v.(map[string]any); ok {
-					if ifStr, _ := vm["if"].(string); ifStr != cond {
-						thenStr, _ := vm["then"].(string)
-						branches = append(branches, map[string]string{"if": ifStr, "then": thenStr})
-					}
-				}
-			}
-			newMatch := make(map[string]any)
-			for i, b := range branches {
-				newMatch[fmt.Sprintf("%d", i)] = b
-			}
-			routeMap["match"] = newMatch
-		}
-	}
-
-	newStratBytes, _ := json.Marshal(map[string]any{"route": routeMap})
-	_, _ = m.runStalwartCli(adminEmail, adminPass, "update", "MtaOutboundStrategy", "--json", string(newStratBytes))
-
-	// Hapus MtaRoute jika ada
-	rOut, _ := m.runStalwartCli(adminEmail, adminPass, "query", "MtaRoute", "--json")
-	scanner := bufio.NewScanner(bytes.NewReader(rOut))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var r struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal([]byte(line), &r); err == nil && r.Name == routeName && r.ID != "" {
-			_, _ = m.runStalwartCli(adminEmail, adminPass, "delete", "--ids", r.ID, "MtaRoute")
-			break
-		}
-	}
-
-	_ = restartStalwart()
-
-	// Bersihkan berkas kredensial
-	if isGlobal {
-		_ = os.Remove(filepath.Join(m.cfg.WdevEtc, "mail-relay.cred"))
-		_ = exec.Command("sudo", "-n", "rm", "-f", filepath.Join(m.cfg.WdevEtc, "mail-relay.cred")).Run()
-	} else {
-		credPath := filepath.Join(m.cfg.WdevEtc, "mail-relay-domains.cred")
-		rMap := make(map[string]any)
-		if curData, err := readRootFile(credPath); err == nil {
-			_ = json.Unmarshal(curData, &rMap)
-			delete(rMap, domain)
-			b, _ := json.MarshalIndent(rMap, "", "  ")
-			_ = writeRootFile(credPath, b, 0600)
-		}
-	}
-
-	return nil
+	return entry.Email, entry.Password, nil
 }
 
 func (m *Manager) ResetAdmin(domain string) error {
@@ -1193,6 +1183,25 @@ func (m *Manager) ResetAdmin(domain string) error {
 	return err
 }
 
+// validMailDomain memvalidasi FQDN sebelum dipakai sebagai nama file/vhost.
+func validMailDomain(d string) bool {
+	d = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".")
+	if d == "" || len(d) > 253 || !strings.Contains(d, ".") || strings.Contains(d, "..") {
+		return false
+	}
+	for _, label := range strings.Split(d, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMailOptions) error {
 	if cb == nil {
 		cb = func(string) {}
@@ -1201,7 +1210,10 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	if opts.Domain == "" {
 		return fmt.Errorf("domain wajib diisi")
 	}
-	cleanDom := strings.TrimSuffix(opts.Domain, ".")
+	cleanDom := strings.ToLower(strings.TrimSuffix(opts.Domain, "."))
+	if !validMailDomain(cleanDom) {
+		return fmt.Errorf("domain tidak valid: %s", opts.Domain)
+	}
 
 	cb(fmt.Sprintf("=== MEMULAI SETUP MAIL SERVER & DOMAIN (%s) ===", cleanDom))
 
@@ -1212,16 +1224,21 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	cb(fmt.Sprintf("✓ IP NetBird lokal terdeteksi: %s", localNB))
 
 	// 1. Pastikan mail stack lokal siap (Stalwart & SnappyMail)
-	cb("[1/3] Menyiapkan Mail Stack Lokal (Storage di Harddisk PC)...")
+	cb("[1/4] Menyiapkan Mail Stack Lokal (Storage di Harddisk PC)...")
 	if err := m.ensureLocalMailStack(); err != nil {
 		cb(fmt.Sprintf("  Peringatan stack lokal: %v", err))
 	}
 	_ = m.ensureStalwartBootstrap(cleanDom)
 
-	// Set STALWART_PUBLIC_URL
-	pubURL := fmt.Sprintf("https://mailadmin.%s", cleanDom)
-	_ = setStalwartEnv("STALWART_PUBLIC_URL", pubURL)
-	_ = restartStalwart()
+	// Stalwart hanya punya satu public URL. Jangan timpa domain pertama yang
+	// sudah tercatat agar link admin domain lama tidak berubah.
+	envPath := "/etc/stalwart/stalwart.env"
+	envData, _ := readRootFile(envPath)
+	if !strings.Contains(string(envData), "STALWART_PUBLIC_URL=") {
+		pubURL := fmt.Sprintf("https://mailadmin.%s", cleanDom)
+		_ = setStalwartEnv("STALWART_PUBLIC_URL", pubURL)
+		_ = restartStalwart()
+	}
 
 	// Ensure Domain & Admin user di Stalwart
 	adminUser, adminPass, err := m.ensureStalwartMailDomain(cleanDom)
@@ -1234,76 +1251,92 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	// Prekonfigurasi domain di SnappyMail
 	_ = m.ensureSnappyMailDomain(cleanDom)
 
-	// 2. Standarisasi DNS Record di PowerDNS VPS
+	relayProv := strings.ToLower(strings.TrimSpace(opts.RelayProv))
+	if relayProv == "direct" || relayProv == "mx" {
+		relayProv = ""
+	}
+	if relayProv == "" {
+		if err := m.ensureRelayReady(cleanDom, adminUser, adminPass); err != nil {
+			return err
+		}
+	}
+
+	// 2. Standarisasi DNS Record di PowerDNS VPS (inbound only)
 	zone, err := m.pdnsMgr.FindMatchingZone(cleanDom)
 	if err != nil {
 		return fmt.Errorf("gagal menemukan zone DNS yang cocok untuk %s: %w", cleanDom, err)
 	}
-	cb(fmt.Sprintf("[2/3] Membuat Standarisasi DNS Record di PowerDNS VPS (Zone: %s)...", zone))
+	edgeCfg := m.pdnsMgr.LoadConfig()
+	if edgeCfg.VPSPublicIP == "" {
+		return fmt.Errorf("IP publik VPS Edge belum dikonfigurasi; jalankan 'wdev pdns connect' terlebih dahulu")
+	}
+	cb(fmt.Sprintf("[2/4] Membuat DNS Record inbound di PowerDNS VPS (Zone: %s, IP: %s)...", zone, edgeCfg.VPSPublicIP))
 
-	records := []struct {
-		name    string
-		rtype   string
-		content string
-		ttl     int
-	}{
-		{"mail." + cleanDom, "A", "auto", 300},
-		{"mx." + cleanDom, "A", "auto", 300},
-		{"webmail." + cleanDom, "A", "auto", 300},
-		{"mailadmin." + cleanDom, "A", "auto", 300},
-		{"mail." + cleanDom, "TXT", "\"v=spf1 a ip4:100.64.0.0/10 -all\"", 300},
-		{"mx." + cleanDom, "TXT", "\"v=spf1 a ip4:100.64.0.0/10 -all\"", 300},
-		{"@", "MX", "10 mail." + cleanDom + ".", 300},
-		{"@", "TXT", fmt.Sprintf("\"v=spf1 mx a:mail.%s ~all\"", cleanDom), 300},
-		{"_dmarc", "TXT", fmt.Sprintf("\"v=DMARC1; p=none; sp=none; rua=mailto:admin@%s\"", cleanDom), 300},
+	type dnsRec struct {
+		name        string
+		rtype       string
+		content     string
+		keep        bool
+		skipOnExist bool
+	}
+	records := []dnsRec{
+		{name: "mail." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
+		{name: "mx." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
+		{name: "webmail." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
+		{name: "mailadmin." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
+		{name: "@", rtype: "MX", content: "10 mail." + cleanDom + ".", skipOnExist: true},
+		{name: "@", rtype: "TXT", content: "\"v=spf1 -all\"", keep: true, skipOnExist: true},
+		{name: "_dmarc", rtype: "TXT", content: fmt.Sprintf("\"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s\"", cleanDom), skipOnExist: true},
 	}
 
+	var dnsFailed []string
 	for _, rec := range records {
-		cb(fmt.Sprintf("  -> %s %s -> %s", rec.rtype, rec.name, rec.content))
-		if err := m.pdnsMgr.AddRecord(zone, rec.name, rec.rtype, rec.content, rec.ttl); err != nil {
-			cb(fmt.Sprintf("     (catatan DNS: %v)", err))
+		existing, err := m.pdnsMgr.LookupRecords(zone, rec.name, rec.rtype)
+		if err != nil {
+			dnsFailed = append(dnsFailed, fmt.Sprintf("%s %s: %v", rec.rtype, rec.name, err))
+			cb(fmt.Sprintf("    gagal membaca record: %v", err))
+			continue
+		}
+		if rec.skipOnExist && len(existing) > 0 {
+			if rec.rtype == "TXT" && containsSPF(existing) {
+				cb(fmt.Sprintf(" -> %s %s: SPF sudah ada, tidak ditimpa", rec.rtype, rec.name))
+				continue
+			}
+			if !rec.keep && !recordContentExists(existing, rec.content) {
+				msg := fmt.Sprintf("%s %s sudah ada dan berbeda (%s); tidak ditimpa", rec.rtype, rec.name, strings.Join(existing, ", "))
+				if rec.rtype == "MX" {
+					dnsFailed = append(dnsFailed, msg)
+				}
+				cb(" -> " + msg)
+				continue
+			}
+		}
+		cb(fmt.Sprintf(" -> %s %s -> %s", rec.rtype, rec.name, rec.content))
+		var addErr error
+		if rec.keep {
+			addErr = m.pdnsMgr.AddRecordKeep(zone, rec.name, rec.rtype, rec.content, 300)
+		} else {
+			addErr = m.pdnsMgr.AddRecord(zone, rec.name, rec.rtype, rec.content, 300)
+		}
+		if addErr != nil {
+			dnsFailed = append(dnsFailed, fmt.Sprintf("%s %s: %v", rec.rtype, rec.name, addErr))
+			cb(fmt.Sprintf("    gagal: %v", addErr))
 		}
 	}
-	cb("✓ Semua DNS Record Mail (A, MX, SPF, DMARC) berhasil dibuat!")
+	if len(dnsFailed) > 0 {
+		return fmt.Errorf("DNS inbound gagal dibuat: %s", strings.Join(dnsFailed, "; "))
+	}
+	if ptrName, ok := ptrMatches(m.pdnsMgr, edgeCfg.VPSPublicIP, "mail."+cleanDom); !ok {
+		cb(fmt.Sprintf(" ! PTR/rDNS IP %s belum/tidak cocok ke mail.%s (terbaca: %s). Set PTR di panel VPS.", edgeCfg.VPSPublicIP, cleanDom, ptrName))
+	} else {
+		cb(" ✓ PTR/rDNS VPS cocok dengan mail." + cleanDom)
+	}
+	cb("✓ DNS inbound (A, MX) & kebijakan outbound (SPF -all, DMARC) berhasil dibuat")
 
 	// 3. Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Lokal via Edge Agent
-	cb("[3/3] Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Edge Agent...")
-	var relayPayload any = nil
-	if opts.RelayHost != "" || (opts.RelayProv != "" && opts.RelayProv != "direct") {
-		host := opts.RelayHost
-		port := opts.RelayPort
-		user := opts.RelayUser
-		pass := opts.RelayPass
-		switch strings.ToLower(opts.RelayProv) {
-		case "resend":
-			host = "smtp.resend.com"
-			port = 465
-			user = "resend"
-		case "brevo":
-			host = "smtp-relay.brevo.com"
-			if port <= 0 {
-				port = 587
-			}
-			if user == "" {
-				user = pass
-			}
-		}
-		if host != "" {
-			relayPayload = map[string]any{
-				"domain": cleanDom,
-				"host":   host,
-				"port":   port,
-				"user":   user,
-				"pass":   pass,
-			}
-		}
-	}
-
+	cb("[3/4] Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Edge Agent...")
 	agentPayload := map[string]any{
-		"domain":    cleanDom,
-		"target_ip": localNB,
-		"ssl":       opts.SSL,
-		"relay":     relayPayload,
+		"domain": cleanDom, "target_ip": localNB, "ssl": opts.SSL,
 	}
 
 	agentResp, err := m.pdnsMgr.AgentPost("/api/v1/mail/setup-domain", agentPayload)
@@ -1313,29 +1346,44 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 		var respMap map[string]any
 		_ = json.Unmarshal(agentResp, &respMap)
 		cb("✓ Gateway & Reverse Proxy VPS berhasil didaftarkan!")
-		if adminURL, ok := respMap["admin_url"].(string); ok {
-			cb(fmt.Sprintf("  Panel Admin : %s", adminURL))
+		adminURL, _ := respMap["admin_url"].(string)
+		if adminURL != "" {
+			cb(fmt.Sprintf(" Panel Admin : %s", adminURL))
 		}
-		if webmailURL, ok := respMap["webmail_url"].(string); ok {
-			cb(fmt.Sprintf("  Webmail     : %s", webmailURL))
+		webmailURL, _ := respMap["webmail_url"].(string)
+		if webmailURL != "" {
+			cb(fmt.Sprintf(" Webmail : %s", webmailURL))
 		}
+		sslActive := opts.SSL
+		if v, ok := respMap["ssl"].(string); ok {
+			sslActive = strings.HasPrefix(v, "active")
+		}
+		m.recordDomainState(cleanDom, sslActive, adminURL, webmailURL)
 	}
 
-	// 4. Konfigurasi Outbound Relay lokal di Stalwart jika ditentukan
-	if opts.RelayProv != "" && strings.ToLower(opts.RelayProv) != "direct" {
-		cb(fmt.Sprintf("Mengonfigurasi relay outbound (%s)...", opts.RelayProv))
+	// 4. Konfigurasi relay outbound. Relay-only: tidak ada fallback direct.
+	switch {
+	case relayProv != "":
+		cb(fmt.Sprintf("Mengonfigurasi relay outbound (%s)...", relayProv))
 		relayOpts := SetRelayOptions{
-			Domain:   cleanDom,
-			Provider: opts.RelayProv,
-			Host:     opts.RelayHost,
-			Port:     opts.RelayPort,
-			Username: opts.RelayUser,
-			Password: opts.RelayPass,
+			Domain: cleanDom, Provider: relayProv, Host: opts.RelayHost, Port: opts.RelayPort, Username: opts.RelayUser, Password: opts.RelayPass,
 		}
 		if err := m.SetRelay(relayOpts); err != nil {
-			cb(fmt.Sprintf("  Peringatan relay: %v", err))
-		} else {
-			cb(fmt.Sprintf("  ✓ Outbound relay %s berhasil dikonfigurasi!", opts.RelayProv))
+			return fmt.Errorf("relay outbound gagal dikonfigurasi: %w", err)
+		}
+		cb(fmt.Sprintf(" ✓ Outbound relay %s berhasil dikonfigurasi", relayProv))
+		for _, line := range relayDNSPlan(relayProv, cleanDom) {
+			cb("   " + line)
+		}
+	default:
+		if _, err := m.ensureDefaultRelay(adminUser, adminPass); err != nil {
+			return fmt.Errorf("relay default tidak siap: %w", err)
+		}
+		cb(" ✓ Domain memakai relay default yang sudah ada")
+		if cred, ok := m.loadGlobalRelayCred(); ok {
+			for _, line := range relayDNSPlan(cred.Provider, cleanDom) {
+				cb("   " + line)
+			}
 		}
 	}
 
@@ -1343,11 +1391,11 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	cb("✓ EMAIL SERVER & WEBMAIL (HYBRID LOCAL STORAGE) BERHASIL AKTIF!")
 	cb("================================================================================")
 	cb(fmt.Sprintf("  Domain Email        : %s", cleanDom))
-	cb(fmt.Sprintf("  Webmail Klien       : https://webmail.%s", cleanDom))
-	cb(fmt.Sprintf("  Panel Admin (WebUI) : https://mailadmin.%s/admin/", cleanDom))
+	cb(fmt.Sprintf("  Webmail Klien : %s", m.webmailURL(cleanDom)))
+	cb(fmt.Sprintf(" Panel Admin (WebUI) : %s", m.adminURL(cleanDom)))
 	if adminUser != "" && adminPass != "" {
 		cb(fmt.Sprintf("  Username Admin      : %s", adminUser))
-		cb(fmt.Sprintf("  Password Admin      : %s", adminPass))
+		cb(" Password Admin : tersimpan di /etc/wdev/mail-admin.cred (jalankan: wdev mail admin-cred <domain>)")
 	}
 	return nil
 }

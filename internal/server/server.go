@@ -86,7 +86,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/mail/status", s.handleMailStatus)
 	s.mux.HandleFunc("/api/mail/accounts", s.handleMailAccounts)
 	s.mux.HandleFunc("/api/mail/account", s.handleMailAccountAdd)
+	s.mux.HandleFunc("/api/mail/account/delete", s.handleMailAccountDelete)
 	s.mux.HandleFunc("/api/mail/relay", s.handleMailRelaySet)
+	s.mux.HandleFunc("/api/mail/preflight", s.handleMailPreflight)
+	s.mux.HandleFunc("/api/mail/routes", s.handleMailRoutes)
+	s.mux.HandleFunc("/api/mail/relay/remove", s.handleMailRelayRemove)
 	s.mux.HandleFunc("/api/mail/admin-reset", s.handleMailAdminReset)
 	s.mux.HandleFunc("/api/mail/setup", s.handleMailSetup)
 	s.mux.HandleFunc("/api/sudo/status", s.handleSudoStatus)
@@ -1250,6 +1254,29 @@ func (s *Server) handleMailAccountAdd(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleMailAccountDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if err := s.mailMgr.DeleteAccount(payload.Email); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "message": "Akun " + payload.Email + " dihapus"})
+}
+
 func (s *Server) handleMailRelaySet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
@@ -1271,6 +1298,62 @@ func (s *Server) handleMailRelaySet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "updated",
 		"message": "Konfigurasi relay domain " + payload.Domain + " berhasil disimpan",
+	})
+}
+
+func (s *Server) handleMailPreflight(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	domain := r.URL.Query().Get("domain")
+	writeJSON(w, http.StatusOK, s.mailMgr.Preflight(domain))
+}
+
+func (s *Server) handleMailRoutes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	info, err := s.mailMgr.GetOutboundRoutes()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) handleMailRelayRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if err := s.mailMgr.RemoveRelay(payload.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "removed",
+		"message": "Override relay domain " + payload.Domain + " dihapus; domain kembali ke relay default",
 	})
 }
 
