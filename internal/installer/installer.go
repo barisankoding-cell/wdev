@@ -919,6 +919,9 @@ func (inst *Installer) InstallNginx(ctx context.Context, cb LogCallback) error {
 	}
 
 	inst.ensureNginxCompatibility(ctx, cb)
+	if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Perbaikan permission cache Nginx: %v", err))
+	}
 	if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "nginx"); err != nil {
 		return fmt.Errorf("gagal mengaktifkan service nginx: %w", err)
 	}
@@ -1855,6 +1858,11 @@ func (inst *Installer) RunSelfCheck(ctx context.Context, cb LogCallback) error {
 		}
 	} else {
 		cb("  [--] Nginx tidak terpasang.")
+	}
+
+	cb("\nCache & permission Nginx:")
+	for _, line := range DiagnoseNginxCache() {
+		cb(line)
 	}
 
 	cb("\n✓ Self-check selesai.")

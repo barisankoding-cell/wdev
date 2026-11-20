@@ -261,6 +261,19 @@ func (inst *Installer) AuditToolchain(ctx context.Context, cb LogCallback) []Fin
 		}
 	}
 
+	// Permission cache Nginx (penyebab FastCGI/proxy menggantung).
+	for _, line := range DiagnoseNginxCache() {
+		if strings.Contains(line, "[!]") {
+			findings = append(findings, Finding{
+				Severity: SeverityError,
+				Kind:     "nginx-cache",
+				Tool:     "nginx",
+				Detail:   strings.TrimSpace(line),
+				Fixable:  true,
+			})
+		}
+	}
+
 	// Duplikat entri PATH pada profil wdev + shell rc.
 	for _, line := range pathDuplicates(home) {
 		findings = append(findings, Finding{
@@ -348,6 +361,10 @@ func (inst *Installer) RepairToolchain(ctx context.Context, cb LogCallback, find
 			removedPkgs[f.Tool] = true
 			cb("Menghapus paket distro duplikat: " + f.Tool)
 			inst.removeDistroPackagesIfInstalled(ctx, cb, f.Tool)
+		case "nginx-cache":
+			if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
+				cb(fmt.Sprintf("[WARN] Gagal memperbaiki cache Nginx: %v", err))
+			}
 		case "duplicate-path", "foreign-copy":
 			for _, p := range f.Paths {
 				if removedPaths[p] {
