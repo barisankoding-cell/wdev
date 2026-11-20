@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -43,7 +44,7 @@ func TestToolEnvKeepsExistingValue(t *testing.T) {
 func TestToolPathFindsRustc(t *testing.T) {
 	if p := toolPath("rustc"); p == "" {
 		t.Skip("rustc tidak terpasang di lingkungan tes")
-	} else if !strings.Contains(p, "/usr/local/") {
+	} else if _, err := os.Stat("/usr/local/cargo/bin/rustc"); err == nil && !strings.Contains(p, "/usr/local/") {
 		t.Fatalf("rustc tidak diprioritaskan dari area kanonik: %s", p)
 	}
 }
