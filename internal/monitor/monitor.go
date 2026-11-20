@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,11 +22,20 @@ import (
 )
 
 type SystemStats struct {
+	WdevVersion  string            `json:"wdev_version"`
 	Hostname     string            `json:"hostname"`
 	OSName       string            `json:"os_name"`
 	Kernel       string            `json:"kernel"`
 	UptimeString string            `json:"uptime_string"`
 	LoadAvg      string            `json:"load_avg"`
+	CPUCores     int               `json:"cpu_cores"`
+	LoadPercent  int               `json:"load_percent"`
+	Load1m       float64           `json:"load_1m"`
+	Load5m       float64           `json:"load_5m"`
+	Load15m      float64           `json:"load_15m"`
+	Load1mPct    int               `json:"load_1m_percent"`
+	Load5mPct    int               `json:"load_5m_percent"`
+	Load15mPct   int               `json:"load_15m_percent"`
 	MemTotalMB   int64             `json:"mem_total_mb"`
 	MemUsedMB    int64             `json:"mem_used_mb"`
 	MemPercent   int               `json:"mem_percent"`
@@ -126,7 +137,7 @@ func Collect() (*SystemStats, error) {
 	osName := getOSName()
 	kernel := getKernel()
 	uptimeStr := getUptime()
-	loadAvg := getLoadAvg()
+	loadAvg, cpuCores, l1, l5, l15, p1, p5, p15 := getLoadAvgInfo()
 	memTotal, memUsed, memPct := getMemInfo()
 	diskTotal, diskUsed, diskPct := getDiskInfo("/")
 	lanIP, netbirdIP := getNetworkIPs()
@@ -134,11 +145,20 @@ func Collect() (*SystemStats, error) {
 	runtimes := getRuntimeVersions()
 
 	return &SystemStats{
+		WdevVersion:  version.Version,
 		Hostname:     hostname,
 		OSName:       osName,
 		Kernel:       kernel,
 		UptimeString: uptimeStr,
 		LoadAvg:      loadAvg,
+		CPUCores:     cpuCores,
+		LoadPercent:  p1,
+		Load1m:       l1,
+		Load5m:       l5,
+		Load15m:      l15,
+		Load1mPct:    p1,
+		Load5mPct:    p5,
+		Load15mPct:   p15,
 		MemTotalMB:   memTotal,
 		MemUsedMB:    memUsed,
 		MemPercent:   memPct,
@@ -198,16 +218,45 @@ func getUptime() string {
 	return fmt.Sprintf("%dh %dm", hours, minutes)
 }
 
-func getLoadAvg() string {
+func loadToPercent(load float64, cpuCores int) int {
+	if cpuCores <= 0 {
+		cpuCores = 1
+	}
+	if load <= 0 {
+		return 0
+	}
+	return int(math.Round((load / float64(cpuCores)) * 100.0))
+}
+
+func parseLoadAvg(raw string, cpuCores int) (summary string, l1, l5, l15 float64, p1, p5, p15 int) {
+	if cpuCores <= 0 {
+		cpuCores = 1
+	}
+	parts := strings.Fields(raw)
+	if len(parts) < 3 {
+		return "N/A", 0, 0, 0, 0, 0, 0
+	}
+	summary = fmt.Sprintf("%s, %s, %s", parts[0], parts[1], parts[2])
+	l1, _ = strconv.ParseFloat(parts[0], 64)
+	l5, _ = strconv.ParseFloat(parts[1], 64)
+	l15, _ = strconv.ParseFloat(parts[2], 64)
+	p1 = loadToPercent(l1, cpuCores)
+	p5 = loadToPercent(l5, cpuCores)
+	p15 = loadToPercent(l15, cpuCores)
+	return summary, l1, l5, l15, p1, p5, p15
+}
+
+func getLoadAvgInfo() (summary string, cpuCores int, l1, l5, l15 float64, p1, p5, p15 int) {
+	cpuCores = runtime.NumCPU()
+	if cpuCores <= 0 {
+		cpuCores = 1
+	}
 	data, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
-		return "N/A"
+		return "N/A", cpuCores, 0, 0, 0, 0, 0, 0
 	}
-	parts := strings.Fields(string(data))
-	if len(parts) >= 3 {
-		return fmt.Sprintf("%s, %s, %s", parts[0], parts[1], parts[2])
-	}
-	return "N/A"
+	summary, l1, l5, l15, p1, p5, p15 = parseLoadAvg(string(data), cpuCores)
+	return summary, cpuCores, l1, l5, l15, p1, p5, p15
 }
 
 func getMemInfo() (totalMB int64, usedMB int64, percent int) {
@@ -719,10 +768,10 @@ func getServiceStatuses() []ServiceStatus {
 		Category:         "Core Service",
 		Active:           wdevActive,
 		StatusText:       statusText(wdevActive),
-		Version:          "2.0.0",
+		Version:          version.Version,
 		Port:             "3200",
 		Installed:        true,
-		LatestVersion:    "2.0.0",
+		LatestVersion:    version.Version,
 		HasUpdate:        false,
 		InstallComponent: "self-check",
 	})

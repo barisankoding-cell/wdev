@@ -295,7 +295,7 @@ func main() {
 		fmt.Printf("=== wdev Status Sistem ===\n")
 		fmt.Printf("OS:         %s\n", stats.OSName)
 		fmt.Printf("Uptime:     %s\n", stats.UptimeString)
-		fmt.Printf("Load Avg:   %s\n", stats.LoadAvg)
+		fmt.Printf("Load Avg:   %s (%d%%, %d%%, %d%% / %d vCPU)\n", stats.LoadAvg, stats.Load1mPct, stats.Load5mPct, stats.Load15mPct, stats.CPUCores)
 		fmt.Printf("RAM:        %d / %d MB (%d%%)\n", stats.MemUsedMB, stats.MemTotalMB, stats.MemPercent)
 		fmt.Printf("Disk (/):   %d / %d GB (%d%%)\n", stats.DiskUsedGB, stats.DiskTotalGB, stats.DiskPercent)
 		fmt.Printf("LAN IP:     %s\n", stats.LanIP)

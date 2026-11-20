@@ -23,6 +23,8 @@ import (
 	"wdev/internal/site"
 	"wdev/internal/store"
 	"wdev/internal/switcher"
+	"wdev/internal/updater"
+	"wdev/internal/version"
 	"wdev/web"
 )
 
@@ -108,9 +110,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
 	s.mux.HandleFunc("/api/workspace/status", s.handleWorkspaceStatus)
 	s.mux.HandleFunc("/api/install", s.handleInstall)
+	s.mux.HandleFunc("/api/tasks", s.handleTasks)
 	s.mux.HandleFunc("/api/tasks/events", s.handleSSEEvents)
+	s.mux.HandleFunc("/api/env", s.handleEnv)
+	s.mux.HandleFunc("/api/env/sync", s.handleEnvSync)
+	s.mux.HandleFunc("/api/updater/status", s.handleUpdaterStatus)
+	s.mux.HandleFunc("/api/updater/apply", s.handleUpdaterApply)
+	s.mux.HandleFunc("/api/", s.handleAPINotFound)
 
-	// Embedded Static UI
+	// Embedded Static UI (Svelte SPA)
 	s.mux.Handle("/", web.Handler())
 }
 
@@ -419,6 +427,9 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if sites == nil {
+			sites = []store.SiteRecord{}
 		}
 		writeJSON(w, http.StatusOK, sites)
 
@@ -822,10 +833,25 @@ func (s *Server) executeSwitchJava(ctx context.Context, cb func(string), ver str
 }
 
 func (s *Server) handleCFStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.cfMgr.GetStatus())
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	st := s.cfMgr.GetStatus()
+	if st.Profiles == nil {
+		st.Profiles = []string{}
+	}
+	if st.Exposures == nil {
+		st.Exposures = []cloudflare.Exposure{}
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Server) handleCFExpose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
 	var payload struct {
 		LocalDomain string `json:"local_domain"`
 		PublicHost  string `json:"public_host"`
@@ -843,6 +869,10 @@ func (s *Server) handleCFExpose(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
 	var payload struct {
 		LocalDomain string `json:"local_domain"`
 	}
@@ -858,6 +888,10 @@ func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePDNSStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
 	writeJSON(w, http.StatusOK, s.pdnsMgr.LoadConfig())
 }
 
@@ -868,6 +902,9 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if zones == nil {
+			zones = []pdns.ZoneInfo{}
 		}
 		writeJSON(w, http.StatusOK, zones)
 	case http.MethodPost:
@@ -1025,6 +1062,9 @@ func (s *Server) handlePDNSExposures(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if proxies == nil {
+		proxies = []pdns.ProxyExposure{}
+	}
 	writeJSON(w, http.StatusOK, proxies)
 }
 
@@ -1171,12 +1211,14 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	var payload struct {
 		Component string `json:"component"`
+		Version   string `json:"version"`
 		SudoPass  string `json:"sudo_pass"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
+	reqVersion := strings.TrimSpace(payload.Version)
 
 	if payload.SudoPass != "" {
 		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
@@ -1245,9 +1287,13 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return s.installer.InstallBase(ctx, cb)
 		}
 	case "node":
-		taskName = "Node.js LTS"
+		ver := reqVersion
+		if ver == "" {
+			ver = "22"
+		}
+		taskName = "Node.js LTS (" + ver + ")"
 		fn = func(ctx context.Context, cb func(string)) error {
-			return s.installer.InstallNode(ctx, cb, "22")
+			return s.installer.InstallNode(ctx, cb, ver)
 		}
 	case "rust":
 		taskName = "Rust Toolchain & Mold"
@@ -1260,9 +1306,13 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return s.installer.InstallGolang(ctx, cb)
 		}
 	case "java":
-		taskName = "OpenJDK Java 21"
+		ver := reqVersion
+		if ver == "" {
+			ver = "21"
+		}
+		taskName = "OpenJDK Java " + ver
 		fn = func(ctx context.Context, cb func(string)) error {
-			return s.installer.InstallJava(ctx, cb, "21")
+			return s.installer.InstallJava(ctx, cb, ver)
 		}
 	case "android":
 		taskName = "Android SDK & Tools"
@@ -1275,9 +1325,12 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return s.installer.InstallFlutter(ctx, cb)
 		}
 	case "postgres":
+		ver := reqVersion
 		taskName = "PostgreSQL Server"
 		fn = func(ctx context.Context, cb func(string)) error {
-			ver := monitor.GetActivePostgresMajor()
+			if ver == "" {
+				ver = monitor.GetActivePostgresMajor()
+			}
 			if ver == "" {
 				ver = "16"
 			}
@@ -1294,9 +1347,13 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return s.installer.InstallNginx(ctx, cb)
 		}
 	case "php":
-		taskName = "PHP & PHP-FPM"
+		ver := reqVersion
+		if ver == "" {
+			ver = "8.4"
+		}
+		taskName = "PHP & PHP-FPM (" + ver + ")"
 		fn = func(ctx context.Context, cb func(string)) error {
-			return s.installer.InstallPHP(ctx, cb, "8.4")
+			return s.installer.InstallPHP(ctx, cb, ver)
 		}
 	case "composer":
 		taskName = "Composer Package Manager"
@@ -1309,12 +1366,16 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return s.installer.InstallMkcert(ctx, cb)
 		}
 	case "php-stack":
+		ver := reqVersion
+		if ver == "" {
+			ver = "8.4"
+		}
 		taskName = "Full PHP Web Stack"
 		fn = func(ctx context.Context, cb func(string)) error {
 			if err := s.installer.InstallNginx(ctx, cb); err != nil {
 				return err
 			}
-			if err := s.installer.InstallPHP(ctx, cb, "8.4"); err != nil {
+			if err := s.installer.InstallPHP(ctx, cb, ver); err != nil {
 				return err
 			}
 			if err := s.installer.InstallComposer(ctx, cb); err != nil {
@@ -1328,9 +1389,13 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return s.installer.InstallCloudflared(ctx, cb)
 		}
 	case "zsh", "zsh-p10k":
-		taskName = "Oh My Zsh (Powerlevel10k)"
+		theme := reqVersion
+		if theme == "" {
+			theme = "powerlevel10k"
+		}
+		taskName = "Oh My Zsh (" + theme + ")"
 		fn = func(ctx context.Context, cb func(string)) error {
-			return s.installer.InstallZsh(ctx, cb, "powerlevel10k")
+			return s.installer.InstallZsh(ctx, cb, theme)
 		}
 	case "zsh-agnoster":
 		taskName = "Oh My Zsh (Agnoster)"
@@ -2026,4 +2091,169 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	data.Shell.NerdFont = installer.DetectNerdFont(userHome)
 
 	writeJSON(w, http.StatusOK, data)
+}
+
+func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	limit := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+
+	var active any
+	if s.runner != nil {
+		if t := s.runner.GetActiveTask(); t != nil {
+			active = map[string]any{
+				"id":         t.ID,
+				"command":    t.Command,
+				"started_at": t.StartedAt,
+			}
+		}
+	}
+
+	tasks := []store.TaskRecord{}
+	if s.store != nil {
+		list, err := s.store.ListRecentTasks(limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if list != nil {
+			tasks = list
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"active_task": active,
+		"tasks":       tasks,
+	})
+}
+
+func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	report := installer.ToolchainEnvReport()
+	if report == nil {
+		report = []string{}
+	}
+	entries := installer.EffectivePathPreview(r.Context())
+	if entries == nil {
+		entries = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"report":       report,
+		"path_entries": entries,
+	})
+}
+
+func (s *Server) handleEnvSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		SudoPass string `json:"sudo_pass"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+	}
+	if payload.SudoPass != "" {
+		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
+			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+			return
+		}
+	}
+	if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "sudo_required",
+			"message": "Sinkronisasi environment toolchain memerlukan hak akses administrator (sudo).",
+		})
+		return
+	}
+
+	taskID, err := s.runner.StartNativeTask("Sinkronisasi Environment Toolchain (PATH)", func(ctx context.Context, cb func(string)) error {
+		return s.installer.SyncToolchainEnv(ctx, cb)
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "started", "task_id": taskID})
+}
+
+func (s *Server) handleUpdaterStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	check := r.URL.Query().Get("check") == "1" || r.URL.Query().Get("check") == "true"
+	if !check {
+		writeJSON(w, http.StatusOK, updater.Result{
+			Current: version.Version,
+			Latest:  version.Version,
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	res, err := updater.Run(ctx, version.Version, updater.Options{CheckOnly: true}, nil)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"current":    version.Version,
+			"latest":     version.Version,
+			"has_update": false,
+			"error":      err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleUpdaterApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		SourceDir string `json:"source_dir"`
+		SudoPass  string `json:"sudo_pass"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+	}
+	if payload.SudoPass != "" {
+		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
+			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+			return
+		}
+	}
+	if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "sudo_required",
+			"message": "Pembaruan biner wdev memerlukan hak akses administrator (sudo).",
+		})
+		return
+	}
+
+	opts := updater.Options{SourceDir: strings.TrimSpace(payload.SourceDir)}
+	taskID, err := s.runner.StartNativeTask("Pembaruan Biner wdev", func(ctx context.Context, cb func(string)) error {
+		_, err := updater.Run(ctx, version.Version, opts, cb)
+		return err
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "started", "task_id": taskID})
+}
+
+func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotFound, "Endpoint API tidak ditemukan")
 }
