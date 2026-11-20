@@ -539,8 +539,8 @@ func getServiceStatuses() []ServiceStatus {
 	}
 	if !phpActive && isSystemdServiceActive("php-fpm") {
 		phpActive = true
-		if out := runCmdVersion("php", "-r", "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;"); out != "" {
-			phpVerActive = strings.TrimSpace(out)
+		if out := runCmdStdout("php", "-r", "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;"); out != "" {
+			phpVerActive = parsePHPMajorMinor(out)
 		}
 	}
 	phpDisplayName := "PHP-FPM"
@@ -568,13 +568,20 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 3. PostgreSQL
-	pgActive := isSystemdServiceActive("postgresql") ||
-		isSystemdServiceActive("postgresql-16") ||
-		isSystemdServiceActive("postgresql-17") ||
-		isSystemdServiceActive("postgresql-18")
+	pgActive := isSystemdServiceActive("postgresql")
+	pgInstalled := fileExists("/usr/bin/psql") || fileExists("/usr/bin/postgres") || dirExists("/usr/lib/postgresql")
+	for _, v := range supportedPostgresMajors {
+		if !pgActive && isSystemdServiceActive("postgresql-"+v) {
+			pgActive = true
+		}
+		if !pgInstalled && dirExists("/usr/pgsql-"+v) {
+			pgInstalled = true
+		}
+	}
 	pgVer := getPostgresVersion()
-	pgInstalled := pgVer != "" || fileExists("/usr/bin/psql") || dirExists("/usr/lib/postgresql") ||
-		dirExists("/usr/pgsql-16") || dirExists("/usr/pgsql-17") || dirExists("/usr/pgsql-18")
+	if pgVer != "" {
+		pgInstalled = true
+	}
 	pgLatest := cachedLatest["postgresql"]
 	if pgLatest == "" && pgVer != "" {
 		pgLatest = cleanVersion(pgVer)
@@ -737,6 +744,17 @@ func runCmdVersion(bin string, args ...string) string {
 	return string(out)
 }
 
+func runCmdStdout(bin string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
 func getNginxVersion() string {
 	out := runCmdVersion("nginx", "-v")
 	if out == "" {
@@ -761,6 +779,56 @@ func getNginxVersion() string {
 	return ""
 }
 
+func parsePHPMajorMinor(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		parts := strings.Split(line, ".")
+		if len(parts) == 2 && isDigits(parts[0]) && isDigits(parts[1]) {
+			return line
+		}
+	}
+	return ""
+}
+
+func parsePHPVersionFromOutput(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "PHP" && isSemverLike(fields[1]) {
+			return "v" + strings.TrimPrefix(fields[1], "v")
+		}
+		if len(fields) == 1 && isSemverLike(fields[0]) {
+			return "v" + strings.TrimPrefix(fields[0], "v")
+		}
+	}
+	return ""
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isSemverLike(s string) bool {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	base := strings.SplitN(s, "-", 2)[0]
+	parts := strings.Split(base, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	return isDigits(parts[0]) && isDigits(parts[1])
+}
+
 func getPHPFPMVersion(activeVer string) string {
 	candidates := [][]string{}
 	if activeVer != "" {
@@ -776,19 +844,14 @@ func getPHPFPMVersion(activeVer string) string {
 		[]string{"/usr/sbin/php-fpm", "-v"},
 	)
 	for _, c := range candidates {
-		if out := runCmdVersion(c[0], c[1:]...); out != "" {
-			parts := strings.Fields(out)
-			if len(parts) >= 2 && strings.Contains(parts[1], ".") {
-				return "v" + parts[1]
+		if out := runCmdStdout(c[0], c[1:]...); out != "" {
+			if ver := parsePHPVersionFromOutput(out); ver != "" {
+				return ver
 			}
 		}
 	}
-	if out := runCmdVersion("php", "-r", "echo PHP_VERSION;"); out != "" {
-		ver := strings.TrimSpace(out)
-		if ver != "" {
-			if !strings.HasPrefix(ver, "v") {
-				ver = "v" + ver
-			}
+	if out := runCmdStdout("php", "-r", "echo PHP_VERSION;"); out != "" {
+		if ver := parsePHPVersionFromOutput(out); ver != "" {
 			return ver
 		}
 	}
@@ -798,8 +861,26 @@ func getPHPFPMVersion(activeVer string) string {
 	return ""
 }
 
+var supportedPostgresMajors = []string{"19", "18", "17", "16", "15", "14"}
+
+func parsePostgresMajorFromVersion(out string) string {
+	parts := strings.Fields(strings.TrimSpace(out))
+	if len(parts) < 3 {
+		return ""
+	}
+	ver := strings.TrimPrefix(parts[2], "v")
+	major := strings.SplitN(ver, ".", 2)[0]
+	for _, r := range major {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return major
+}
+
 // GetActivePostgresMajor mengembalikan versi mayor cluster postgresql yang aktif (default "16").
 func GetActivePostgresMajor() string {
+	// 1. Debian/Ubuntu (pg_lsclusters)
 	if out, err := exec.Command("pg_lsclusters", "-h").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			fields := strings.Fields(line)
@@ -814,26 +895,60 @@ func GetActivePostgresMajor() string {
 			}
 		}
 	}
+
+	// 2. Fedora/RHEL PGDG systemd units (postgresql-19 .. postgresql-14)
+	for _, v := range supportedPostgresMajors {
+		if isSystemdServiceActive("postgresql-" + v) {
+			return v
+		}
+	}
+
+	// 3. Fedora/RHEL distro unit (postgresql.service)
+	if isSystemdServiceActive("postgresql") {
+		if out := runCmdVersion("/usr/bin/postgres", "--version"); out != "" {
+			if m := parsePostgresMajorFromVersion(out); m != "" {
+				return m
+			}
+		}
+	}
+
+	// 4. Biner PGDG terpasang di /usr/pgsql-<major>
+	for _, v := range supportedPostgresMajors {
+		if fileExists(fmt.Sprintf("/usr/pgsql-%s/bin/postgres", v)) {
+			return v
+		}
+	}
+
+	// 5. Fallback dari postgres / psql di PATH
+	if out := runCmdVersion("/usr/bin/postgres", "--version"); out != "" {
+		if m := parsePostgresMajorFromVersion(out); m != "" {
+			return m
+		}
+	}
+	if out := runCmdVersion("psql", "--version"); out != "" {
+		if m := parsePostgresMajorFromVersion(out); m != "" {
+			return m
+		}
+	}
 	return "16"
 }
 
 func getPostgresVersion() string {
 	major := GetActivePostgresMajor()
-	bin := fmt.Sprintf("/usr/lib/postgresql/%s/bin/postgres", major)
-	out := runCmdVersion(bin, "--version")
-	if out == "" {
-		bin = fmt.Sprintf("/usr/pgsql-%s/bin/postgres", major)
-		out = runCmdVersion(bin, "--version")
+	candidates := []string{
+		fmt.Sprintf("/usr/lib/postgresql/%s/bin/postgres", major),
+		fmt.Sprintf("/usr/pgsql-%s/bin/postgres", major),
+		"/usr/bin/postgres",
+		fmt.Sprintf("/usr/lib/postgresql/%s/bin/psql", major),
+		fmt.Sprintf("/usr/pgsql-%s/bin/psql", major),
+		"psql",
+		"/usr/lib/postgresql/16/bin/psql",
 	}
-	if out == "" {
-		bin = fmt.Sprintf("/usr/lib/postgresql/%s/bin/psql", major)
-		out = runCmdVersion(bin, "--version")
-	}
-	if out == "" {
-		out = runCmdVersion("psql", "--version")
-	}
-	if out == "" {
-		out = runCmdVersion("/usr/lib/postgresql/16/bin/psql", "--version")
+	var out string
+	for _, bin := range candidates {
+		if out = runCmdVersion(bin, "--version"); out != "" {
+			break
+		}
 	}
 	if out == "" {
 		return ""
@@ -1121,8 +1236,16 @@ func getRuntimeVersions() map[string]string {
 	}
 
 	// PostgreSQL
-	if out, err := runToolVersion("psql", "--version"); err == nil {
-		if parts := strings.Fields(out); len(parts) >= 3 {
+	pgMajor := GetActivePostgresMajor()
+	pgPsqlOut, pgPsqlErr := runToolVersion("psql", "--version")
+	if pgPsqlErr != nil {
+		pgdgPsql := fmt.Sprintf("/usr/pgsql-%s/bin/psql", pgMajor)
+		if out := runCmdVersion(pgdgPsql, "--version"); out != "" {
+			pgPsqlOut, pgPsqlErr = out, nil
+		}
+	}
+	if pgPsqlErr == nil {
+		if parts := strings.Fields(pgPsqlOut); len(parts) >= 3 {
 			res["postgresql"] = parts[2]
 		}
 	} else {
@@ -1173,13 +1296,7 @@ func ControlService(serviceName, action string) error {
 			}
 		}
 	case "postgresql":
-		actualService = "postgresql"
-		for _, v := range []string{"18", "17", "16"} {
-			if _, err := os.Stat("/usr/lib/systemd/system/postgresql-" + v + ".service"); err == nil {
-				actualService = "postgresql-" + v
-				break
-			}
-		}
+		actualService = resolvePostgresSystemdUnit()
 	case "redis":
 		if _, err := os.Stat("/usr/lib/systemd/system/valkey.service"); err == nil {
 			actualService = "valkey"
@@ -1218,4 +1335,43 @@ func ControlService(serviceName, action string) error {
 		return fmt.Errorf("systemctl %s %s gagal: %s", action, actualService, string(out))
 	}
 	return nil
+}
+
+// resolvePostgresSystemdUnit menentukan nama unit systemd PostgreSQL yang tepat:
+// memprioritaskan unit PGDG yang aktif (postgresql-16..19), lalu postgresql.service
+// bawaan distro, lalu unit terpasang yang cocok dengan versi mayor aktif.
+func resolvePostgresSystemdUnit() string {
+	return pickPostgresSystemdUnit(
+		isSystemdServiceActive,
+		func(unit string) bool {
+			return fileExists("/usr/lib/systemd/system/"+unit+".service") ||
+				fileExists("/lib/systemd/system/"+unit+".service")
+		},
+		GetActivePostgresMajor(),
+	)
+}
+
+func pickPostgresSystemdUnit(isActive, unitExists func(string) bool, activeMajor string) string {
+	for _, v := range supportedPostgresMajors {
+		unit := "postgresql-" + v
+		if isActive(unit) {
+			return unit
+		}
+	}
+	if isActive("postgresql") {
+		return "postgresql"
+	}
+	if activeMajor != "" {
+		unit := "postgresql-" + activeMajor
+		if unitExists(unit) {
+			return unit
+		}
+	}
+	for _, v := range supportedPostgresMajors {
+		unit := "postgresql-" + v
+		if unitExists(unit) {
+			return unit
+		}
+	}
+	return "postgresql"
 }

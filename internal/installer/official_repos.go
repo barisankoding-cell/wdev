@@ -254,6 +254,7 @@ func (inst *Installer) ensurePGDGRepo(ctx context.Context, cb LogCallback) bool 
 		if exec.CommandContext(ctx, "rpm", "-q", "pgdg-fedora-repo").Run() == nil ||
 			exec.CommandContext(ctx, "rpm", "-q", "pgdg-redhat-repo").Run() == nil {
 			cb("Repositori PGDG RPM sudah terpasang.")
+			inst.importPGDGGPGKey(ctx, cb)
 			return true
 		}
 		arch := rpmArch()
@@ -272,6 +273,7 @@ func (inst *Installer) ensurePGDGRepo(ctx context.Context, cb LogCallback) bool 
 			cb(fmt.Sprintf("[WARN] Gagal memasang PGDG RPM (%v), fallback ke repo distro.", err))
 			return false
 		}
+		inst.importPGDGGPGKey(ctx, cb)
 		if osInfo.ID != "fedora" {
 			_ = inst.runCmd(ctx, cb, inst.pkgMgr, "module", "disable", "-y", "postgresql")
 		}

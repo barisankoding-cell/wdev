@@ -410,16 +410,43 @@ func (s *Server) executeSwitchPG(ctx context.Context, cb func(string), ver strin
 	cb(fmt.Sprintf("=== PENGALIHAN RUNTIME POSTGRESQL KE VERSI %s ===", ver))
 	cleanVer := strings.TrimSpace(ver)
 
+	// Deteksi apakah sistem memakai RPM (Fedora/RHEL + PGDG) atau Debian/Ubuntu.
+	_, hasPgCreate := exec.LookPath("pg_createcluster")
+	_, hasDnf := exec.LookPath("dnf")
+	_, hasYum := exec.LookPath("yum")
+	isRPM := hasPgCreate != nil && (hasDnf == nil || hasYum == nil)
+
+	if isRPM {
+		cb(fmt.Sprintf("[1/3] Memastikan paket PGDG PostgreSQL %s terpasang & terbaru...", cleanVer))
+		// Hentikan cluster versi lain (dan unit bawaan distro postgresql) agar port 5432 kosong.
+		for _, other := range []string{"19", "18", "17", "16", "15", "14"} {
+			if other != cleanVer {
+				_ = s.installer.RunCmd(ctx, cb, "systemctl", "stop", "postgresql-"+other)
+				_ = s.installer.RunCmd(ctx, cb, "systemctl", "disable", "postgresql-"+other)
+			}
+		}
+		_ = s.installer.RunCmd(ctx, cb, "systemctl", "stop", "postgresql")
+		_ = s.installer.RunCmd(ctx, cb, "systemctl", "disable", "postgresql")
+		cb(fmt.Sprintf("[2/3] Memasang/memperbarui & mengaktifkan PostgreSQL %s...", cleanVer))
+		if err := s.installer.InstallPostgres(ctx, cb, cleanVer); err != nil {
+			return err
+		}
+		cb(fmt.Sprintf("[3/3] Memverifikasi PostgreSQL %s aktif...", cleanVer))
+		pgdgPsql := fmt.Sprintf("/usr/pgsql-%s/bin/psql", cleanVer)
+		if _, err := os.Stat(pgdgPsql); err == nil {
+			if out, vErr := exec.CommandContext(ctx, pgdgPsql, "--version").CombinedOutput(); vErr == nil {
+				cb(fmt.Sprintf("✓ %s", strings.TrimSpace(string(out))))
+			}
+		}
+		cb(fmt.Sprintf("✓ [SELESAI] PostgreSQL %s aktif pada port 5432.", cleanVer))
+		return nil
+	}
+
 	binDir := fmt.Sprintf("/usr/lib/postgresql/%s/bin", cleanVer)
 	if _, err := os.Stat(binDir); os.IsNotExist(err) {
-		rhelBinDir := fmt.Sprintf("/usr/pgsql-%s/bin", cleanVer)
-		if _, rErr := os.Stat(rhelBinDir); rErr == nil {
-			binDir = rhelBinDir
-		} else {
-			cb(fmt.Sprintf("[INFO] PostgreSQL %s belum terpasang. Memasang paket postgresql-%s...", cleanVer, cleanVer))
-			if err := s.installer.InstallPostgres(ctx, cb, cleanVer); err != nil {
-				return err
-			}
+		cb(fmt.Sprintf("[INFO] PostgreSQL %s belum terpasang. Memasang paket postgresql-%s...", cleanVer, cleanVer))
+		if err := s.installer.InstallPostgres(ctx, cb, cleanVer); err != nil {
+			return err
 		}
 	}
 

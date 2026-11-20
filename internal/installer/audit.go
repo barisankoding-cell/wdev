@@ -293,6 +293,17 @@ func (inst *Installer) AuditToolchain(ctx context.Context, cb LogCallback) []Fin
 		}
 	}
 
+	// Konflik libpq.so.5 PGDG vs sistem (penyebab php-pgsql/pdo_pgsql gagal di Fedora/RHEL).
+	if DiagnosePGDGLibpqShadow() {
+		findings = append(findings, Finding{
+			Severity: SeverityError,
+			Kind:     "pgdg-libpq-shadow",
+			Tool:     "php-pgsql",
+			Detail:   "/etc/ld.so.conf.d/postgresql-pgdg-libs.conf menimpa /usr/lib64/libpq.so.5 (ekstensi PHP pgsql/pdo_pgsql gagal memuat simbol sistem)",
+			Fixable:  true,
+		})
+	}
+
 	// Duplikat entri PATH pada profil wdev + shell rc.
 	for _, line := range pathDuplicates(home) {
 		findings = append(findings, Finding{
@@ -387,6 +398,10 @@ func (inst *Installer) RepairToolchain(ctx context.Context, cb LogCallback, find
 		case "nginx-cache":
 			if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
 				cb(fmt.Sprintf("[WARN] Gagal memperbaiki cache Nginx: %v", err))
+			}
+		case "pgdg-libpq-shadow":
+			if err := inst.EnsureSystemLibpqPriority(ctx, cb); err != nil {
+				cb(fmt.Sprintf("[WARN] Gagal memulihkan prioritas libpq sistem: %v", err))
 			}
 		case "duplicate-path", "foreign-copy":
 			for _, p := range f.Paths {

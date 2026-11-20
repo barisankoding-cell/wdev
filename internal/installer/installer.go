@@ -89,9 +89,9 @@ func needsSudo(name string, args ...string) bool {
 		return true
 	}
 	switch base {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig":
 		return true
-	case "cp", "mv", "rm", "mkdir", "chmod", "chown", "tar", "ln", "tee", "unzip", "install":
+	case "cp", "mv", "rm", "rmdir", "mkdir", "chmod", "chown", "tar", "ln", "tee", "unzip", "install":
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "/usr/local") ||
 				strings.HasPrefix(arg, "/usr/lib") ||
@@ -761,36 +761,32 @@ func (inst *Installer) InstallPostgres(ctx context.Context, cb LogCallback, ver 
 			}
 		}
 	} else {
-		pkg := fmt.Sprintf("postgresql%s-server", ver)
-		if err := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", pkg); err != nil {
-			cb(fmt.Sprintf("[WARN] Paket %s gagal (%v), mencoba postgresql-server...", pkg, err))
-			if errFallback := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "postgresql-server"); errFallback != nil {
+		pkgServer := fmt.Sprintf("postgresql%s-server", ver)
+		pkgClient := fmt.Sprintf("postgresql%s", ver)
+		wasInstalled := rpmIsInstalled(ctx, pkgServer)
+
+		// Bila saat ini terpasang paket bawaan distro Fedora (unit postgresql.service)
+		// sementara repo PGDG menyediakan versi mayor yang sama, hentikan postgresql.service
+		// sebelum `dnf upgrade` agar WAL bersih dan port 5432 bebas.
+		migratingPG := inst.preparePostgresBeforeRPMUpgrade(ctx, cb, ver)
+
+		if err := inst.installOrUpgradeRPM(ctx, cb, pkgServer, pkgClient); err != nil {
+			if wasInstalled {
+				if migratingPG != "" {
+					_ = inst.runCmd(ctx, cb, "systemctl", "enable", "postgresql")
+					_ = inst.runCmd(ctx, cb, "systemctl", "start", "postgresql")
+				}
+				return fmt.Errorf("gagal memperbarui %s: %w", pkgServer, err)
+			}
+			cb(fmt.Sprintf("[WARN] Paket %s gagal (%v), mencoba postgresql-server...", pkgServer, err))
+			if errFallback := inst.installOrUpgradeRPM(ctx, cb, "postgresql-server", "postgresql"); errFallback != nil {
 				return errFallback
 			}
 		}
 
-		// Deteksi layout aktual: PGDG RPM (/usr/pgsql-<ver>) vs Fedora/RHEL distro (/usr/bin/postgresql-setup)
-		pgdgSetup := fmt.Sprintf("/usr/pgsql-%s/bin/postgresql-%s-setup", ver, ver)
-		pgdgUnit := fmt.Sprintf("postgresql-%s", ver)
-		if _, err := os.Stat(pgdgSetup); err == nil {
-			pgDataMarker := fmt.Sprintf("/var/lib/pgsql/%s/data/PG_VERSION", ver)
-			if _, err := os.Stat(pgDataMarker); os.IsNotExist(err) {
-				if err := inst.runCmd(ctx, cb, pgdgSetup, "initdb"); err != nil {
-					return fmt.Errorf("inisialisasi database PostgreSQL gagal: %w", err)
-				}
-			}
-			if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", pgdgUnit); err != nil {
-				return fmt.Errorf("gagal mengaktifkan service %s: %w", pgdgUnit, err)
-			}
-		} else {
-			if _, err := os.Stat("/var/lib/pgsql/data/PG_VERSION"); os.IsNotExist(err) {
-				if err := inst.runCmd(ctx, cb, "postgresql-setup", "--initdb"); err != nil {
-					return fmt.Errorf("inisialisasi database PostgreSQL gagal: %w", err)
-				}
-			}
-			if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "postgresql"); err != nil {
-				return fmt.Errorf("gagal mengaktifkan service postgresql: %w", err)
-			}
+		_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
+		if err := inst.finalizeRPMPostgresService(ctx, cb, ver); err != nil {
+			return err
 		}
 	}
 
@@ -825,7 +821,7 @@ func (inst *Installer) InstallRedis(ctx context.Context, cb LogCallback) error {
 			}
 		}
 	} else {
-		if err := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "redis"); err != nil {
+		if err := inst.installOrUpgradeRPM(ctx, cb, "redis"); err != nil {
 			return err
 		}
 		svc = "redis"
@@ -904,12 +900,12 @@ func (inst *Installer) InstallNginx(ctx context.Context, cb LogCallback) error {
 			return err
 		}
 	} else {
-		if err := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "nginx"); err != nil {
+		if err := inst.installOrUpgradeRPM(ctx, cb, "nginx"); err != nil {
 			// Jika repo nginx.repo bermasalah (mis. 404), bersihkan lalu coba ulang via repo distro
 			if _, statErr := os.Stat("/etc/yum.repos.d/nginx.repo"); statErr == nil {
 				cb("[WARN] Instalasi via nginx.repo gagal, membersihkan /etc/yum.repos.d/nginx.repo dan mencoba ulang via repo sistem...")
 				_ = inst.runCmd(ctx, cb, "rm", "-f", "/etc/yum.repos.d/nginx.repo")
-				if retryErr := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "nginx"); retryErr != nil {
+				if retryErr := inst.installOrUpgradeRPM(ctx, cb, "nginx"); retryErr != nil {
 					return retryErr
 				}
 			} else {
@@ -922,10 +918,12 @@ func (inst *Installer) InstallNginx(ctx context.Context, cb LogCallback) error {
 	if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
 		cb(fmt.Sprintf("[WARN] Perbaikan permission cache Nginx: %v", err))
 	}
-	if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "nginx"); err != nil {
+	if err := inst.runCmd(ctx, cb, "systemctl", "enable", "nginx"); err != nil {
 		return fmt.Errorf("gagal mengaktifkan service nginx: %w", err)
 	}
-	_ = inst.runCmd(ctx, cb, "systemctl", "reload", "nginx")
+	if err := inst.runCmd(ctx, cb, "systemctl", "restart", "nginx"); err != nil {
+		return fmt.Errorf("gagal menjalankan ulang service nginx: %w", err)
+	}
 	cb("✓ Nginx Web Server berhasil dipasang dan diaktifkan.")
 	return nil
 }
@@ -970,12 +968,17 @@ func (inst *Installer) InstallPHP(ctx context.Context, cb LogCallback, ver strin
 		if remiActive {
 			exts = append(exts, "php-pecl-redis")
 		}
-		args := append([]string{"install", "-y"}, exts...)
-		if err := inst.runCmd(ctx, cb, inst.pkgMgr, args...); err != nil {
+		if err := inst.installOrUpgradeRPM(ctx, cb, exts...); err != nil {
 			return err
 		}
-		if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "php-fpm"); err != nil {
+		if err := inst.EnsureSystemLibpqPriority(ctx, cb); err != nil {
+			cb(fmt.Sprintf("[WARN] Penyelarasan prioritas libpq sistem: %v", err))
+		}
+		if err := inst.runCmd(ctx, cb, "systemctl", "enable", "php-fpm"); err != nil {
 			return fmt.Errorf("gagal mengaktifkan service php-fpm: %w", err)
+		}
+		if err := inst.runCmd(ctx, cb, "systemctl", "restart", "php-fpm"); err != nil {
+			return fmt.Errorf("gagal menjalankan ulang service php-fpm: %w", err)
 		}
 	}
 
@@ -1406,7 +1409,14 @@ func (inst *Installer) RunUpdateAll(ctx context.Context, cb LogCallback) error {
 		_ = inst.runCmd(ctx, cb, "apt-get", "update", "-y")
 		_ = inst.runCmd(ctx, cb, "apt-get", "upgrade", "-y")
 	} else {
+		migratingPG := inst.preparePostgresBeforeRPMUpgrade(ctx, cb, "")
 		_ = inst.runCmd(ctx, cb, inst.pkgMgr, "upgrade", "-y")
+		if err := inst.reconcilePostgresAfterRPMUpgrade(ctx, cb, migratingPG); err != nil {
+			cb(fmt.Sprintf("[WARN] Penyelarasan PostgreSQL pasca-upgrade: %v", err))
+		}
+		if err := inst.EnsureSystemLibpqPriority(ctx, cb); err != nil {
+			cb(fmt.Sprintf("[WARN] Penyelarasan prioritas libpq sistem: %v", err))
+		}
 	}
 
 	if _, err := exec.LookPath("composer"); err == nil {
@@ -1665,7 +1675,7 @@ func (inst *Installer) CheckUpdates(ctx context.Context, cb LogCallback) error {
 
 	// 7. PHP
 	phpInst := "-"
-	if out, err := exec.CommandContext(ctx, "php", "-r", "echo PHP_VERSION;").CombinedOutput(); err == nil {
+	if out, err := exec.CommandContext(ctx, "php", "-r", "echo PHP_VERSION;").Output(); err == nil {
 		phpInst = strings.TrimSpace(string(out))
 	}
 	phpLatest := getCandidate("php8.4", "php")
@@ -1679,34 +1689,42 @@ func (inst *Installer) CheckUpdates(ctx context.Context, cb LogCallback) error {
 	// 8. PostgreSQL
 	pgInst := "-"
 	pgMajor := "16"
-	if out, err := exec.CommandContext(ctx, "pg_lsclusters", "-h").CombinedOutput(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 4 && fields[2] == "5432" && fields[3] == "online" {
-				pgMajor = fields[0]
-				break
+	if inst.isDebian {
+		if out, err := exec.CommandContext(ctx, "pg_lsclusters", "-h").CombinedOutput(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) >= 4 && fields[2] == "5432" && fields[3] == "online" {
+					pgMajor = fields[0]
+					break
+				}
 			}
 		}
+	} else {
+		pgMajor = detectRPMPostgresMajor(ctx)
 	}
-	pgBin := fmt.Sprintf("/usr/lib/postgresql/%s/bin/postgres", pgMajor)
-	if _, err := os.Stat(pgBin); err != nil {
-		pgBin = fmt.Sprintf("/usr/pgsql-%s/bin/postgres", pgMajor)
-	}
-	if out, err := exec.CommandContext(ctx, pgBin, "-V").CombinedOutput(); err == nil {
-		fields := strings.Fields(string(out))
-		if len(fields) >= 3 {
-			pgInst = fields[2]
+	for _, pgBin := range []string{
+		fmt.Sprintf("/usr/lib/postgresql/%s/bin/postgres", pgMajor),
+		fmt.Sprintf("/usr/pgsql-%s/bin/postgres", pgMajor),
+		"/usr/bin/postgres",
+		fmt.Sprintf("/usr/pgsql-%s/bin/psql", pgMajor),
+		"psql",
+	} {
+		if pgInst != "-" {
+			break
 		}
-	}
-	if pgInst == "-" {
-		if out, err := exec.CommandContext(ctx, "psql", "-V").CombinedOutput(); err == nil {
+		if out, err := exec.CommandContext(ctx, pgBin, "-V").CombinedOutput(); err == nil {
 			fields := strings.Fields(string(out))
 			if len(fields) >= 3 {
 				pgInst = fields[2]
 			}
 		}
 	}
-	pgLatest := getCandidate(fmt.Sprintf("postgresql-%s", pgMajor), fmt.Sprintf("postgresql%s-server", pgMajor), "postgresql-server")
+	var pgLatest string
+	if inst.isDebian {
+		pgLatest = getCandidate(fmt.Sprintf("postgresql-%s", pgMajor), "postgresql")
+	} else {
+		pgLatest = getCandidate(fmt.Sprintf("postgresql%s-server", pgMajor), "postgresql-server")
+	}
 	results = append(results, VersionCheck{
 		Name:      "PostgreSQL",
 		Installed: pgInst,

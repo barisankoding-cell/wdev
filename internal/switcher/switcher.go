@@ -217,6 +217,33 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 		}
 	}
 	if active == "None" {
+		// Deteksi unit PGDG RPM (Fedora/RHEL: postgresql-16 .. postgresql-19)
+		for _, v := range []string{"19", "18", "17", "16", "15", "14"} {
+			if exec.Command("systemctl", "is-active", "--quiet", "postgresql-"+v).Run() == nil {
+				activeMajor = v
+				if out, err := exec.Command(fmt.Sprintf("/usr/pgsql-%s/bin/postgres", v), "--version").Output(); err == nil {
+					parts := strings.Fields(string(out))
+					if len(parts) >= 3 {
+						active = parts[2]
+					}
+				}
+				if active == "None" {
+					active = fmt.Sprintf("PG %s (Port 5432)", v)
+				}
+				break
+			}
+		}
+	}
+	if active == "None" {
+		if out, err := exec.Command("/usr/bin/postgres", "--version").Output(); err == nil {
+			parts := strings.Fields(string(out))
+			if len(parts) >= 3 {
+				active = parts[2]
+				activeMajor = strings.Split(parts[2], ".")[0]
+			}
+		}
+	}
+	if active == "None" {
 		if out, err := exec.Command("psql", "--version").Output(); err == nil {
 			parts := strings.Fields(string(out))
 			if len(parts) >= 3 {
@@ -227,19 +254,27 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 	}
 
 	available := []string{"16", "17", "18"}
+	addAvail := func(v string) {
+		for _, a := range available {
+			if a == v {
+				return
+			}
+		}
+		if v != "" {
+			available = append(available, v)
+		}
+	}
 	if entries, err := os.ReadDir("/etc/postgresql"); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
-				found := false
-				for _, a := range available {
-					if a == e.Name() {
-						found = true
-						break
-					}
-				}
-				if !found {
-					available = append(available, e.Name())
-				}
+				addAvail(e.Name())
+			}
+		}
+	}
+	if entries, err := os.ReadDir("/usr"); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "pgsql-") {
+				addAvail(strings.TrimPrefix(e.Name(), "pgsql-"))
 			}
 		}
 	}
@@ -254,9 +289,48 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 
 func (m *Manager) SwitchPG(ver string) error {
 	cleanVer := strings.TrimSpace(ver)
+
+	runSys := func(name string, args ...string) error {
+		cmd := exec.Command(name, args...)
+		if os.Geteuid() != 0 {
+			cmd = exec.Command("sudo", append([]string{name}, args...)...)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%s %s gagal: %s", name, strings.Join(args, " "), strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	// Jalur RPM / PGDG (Fedora/RHEL)
+	pgdgBin := fmt.Sprintf("/usr/pgsql-%s/bin/postgres", cleanVer)
+	if _, err := os.Stat(pgdgBin); err == nil {
+		for _, other := range []string{"19", "18", "17", "16", "15", "14"} {
+			if other != cleanVer {
+				_ = runSys("systemctl", "stop", "postgresql-"+other)
+				_ = runSys("systemctl", "disable", "postgresql-"+other)
+			}
+		}
+		_ = runSys("systemctl", "stop", "postgresql")
+		_ = runSys("systemctl", "disable", "postgresql")
+
+		pgdgUnit := "postgresql-" + cleanVer
+		if err := runSys("systemctl", "enable", pgdgUnit); err != nil {
+			return err
+		}
+		if err := runSys("systemctl", "restart", pgdgUnit); err != nil {
+			return err
+		}
+		pgdgPsql := fmt.Sprintf("/usr/pgsql-%s/bin/psql", cleanVer)
+		if _, pErr := os.Stat(pgdgPsql); pErr == nil {
+			_ = runSys("update-alternatives", "--set", "pgsql-psql", pgdgPsql)
+		}
+		return nil
+	}
+
+	// Jalur Debian/Ubuntu (postgresql-common)
 	clusterConf := fmt.Sprintf("/etc/postgresql/%s/main/postgresql.conf", cleanVer)
 	if _, err := os.Stat(clusterConf); os.IsNotExist(err) {
-		return fmt.Errorf("cluster postgresql %s belum dibuat di %s", cleanVer, clusterConf)
+		return fmt.Errorf("cluster postgresql %s belum terpasang (tidak ditemukan %s maupun %s)", cleanVer, clusterConf, pgdgBin)
 	}
 
 	content, err := os.ReadFile(clusterConf)
@@ -271,13 +345,8 @@ func (m *Manager) SwitchPG(ver string) error {
 		_ = os.WriteFile(clusterConf, []byte(strings.Join(lines, "\n")), 0644)
 	}
 
-	if os.Geteuid() == 0 {
-		_ = exec.Command("systemctl", "restart", fmt.Sprintf("postgresql@%s-main", cleanVer)).Run()
-		_ = exec.Command("systemctl", "restart", "postgresql").Run()
-	} else {
-		_ = exec.Command("sudo", "systemctl", "restart", fmt.Sprintf("postgresql@%s-main", cleanVer)).Run()
-		_ = exec.Command("sudo", "systemctl", "restart", "postgresql").Run()
-	}
+	_ = runSys("systemctl", "restart", fmt.Sprintf("postgresql@%s-main", cleanVer))
+	_ = runSys("systemctl", "restart", "postgresql")
 	return nil
 }
 
