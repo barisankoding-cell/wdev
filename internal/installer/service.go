@@ -68,7 +68,9 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 		targetBin := "/usr/local/bin/wdev"
 		if exePath != targetBin {
 			cb(fmt.Sprintf("Menginstal biner wdev dari %s ke %s...", exePath, targetBin))
-			_ = inst.runCmd(ctx, cb, "install", "-m", "755", exePath, targetBin)
+			if err := inst.runCmd(ctx, cb, "install", "-m", "755", exePath, targetBin); err != nil {
+				return fmt.Errorf("gagal menginstal biner wdev ke %s: %w", targetBin, err)
+			}
 		}
 	}
 
@@ -87,15 +89,9 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 	}
 	_ = inst.runCmd(ctx, cb, "chmod", "644", WdevServiceUnitPath)
 
-	// 5. Reload daemon & aktifkan layanan
-	cb("Memuat ulang daemon systemd...")
-	if err := inst.runCmd(ctx, cb, "systemctl", "daemon-reload"); err != nil {
-		return fmt.Errorf("gagal reload daemon systemd: %w", err)
-	}
-
-	cb("Mengaktifkan & menjalankan wdev.service...")
-	if err := inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "wdev.service"); err != nil {
-		return fmt.Errorf("gagal mengaktifkan wdev.service: %w", err)
+	// 5. Reload daemon, aktifkan auto-start, & restart layanan agar biner + Environment baru langsung aktif
+	if err := reloadAndRestartWdevService(ctx, cb, inst.runCmd); err != nil {
+		return err
 	}
 
 	cb(fmt.Sprintf("✓ wdev.service berhasil diinstal dan aktif di port %s!", port))

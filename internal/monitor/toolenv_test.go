@@ -9,20 +9,25 @@ func TestToolEnvHasRustupHome(t *testing.T) {
 	t.Setenv("RUSTUP_HOME", "")
 	env := toolEnv()
 	var path string
-	found := false
+	var rustupHome string
+	pathCount := 0
 	for _, e := range env {
 		if strings.HasPrefix(e, "RUSTUP_HOME=") {
-			found = true
+			rustupHome = strings.TrimPrefix(e, "RUSTUP_HOME=")
 		}
 		if strings.HasPrefix(e, "PATH=") {
 			path = strings.TrimPrefix(e, "PATH=")
+			pathCount++
 		}
 	}
-	if !found {
-		t.Fatal("RUSTUP_HOME tidak disuntikkan ke environment tool")
+	if rustupHome != "/usr/local/rustup" {
+		t.Fatalf("RUSTUP_HOME kosong harus diisi default /usr/local/rustup, dapat %q", rustupHome)
 	}
 	if !strings.Contains(path, "/usr/local/cargo/bin") {
 		t.Fatalf("PATH tidak memuat area kanonik cargo: %s", path)
+	}
+	if pathCount != 1 {
+		t.Fatalf("PATH tidak boleh duplikat di env, jumlah=%d", pathCount)
 	}
 }
 

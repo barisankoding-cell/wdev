@@ -88,15 +88,90 @@ func (inst *Installer) EnsureWdevServiceUnit(ctx context.Context, cb LogCallback
 	if err := inst.writeSystemFile(ctx, cb, WdevServiceUnitPath, []byte(desired), "644"); err != nil {
 		return err
 	}
-	_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
 
-	if os.Getenv("INVOCATION_ID") != "" {
-		cb(" [i] Unit diperbarui. Environment baru aktif pada restart wdev.service berikutnya.")
-	} else {
-		_ = inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "wdev.service")
-		cb(" ✓ wdev.service diaktifkan ulang dengan environment baru.")
+	return applyWdevServiceUnitUpdate(ctx, cb, isRunningInsideWdevService(), inst.runCmd)
+}
+
+// cmdRunnerFn adalah fungsi abstraksi pemanggilan perintah agar transisi unit
+// systemd mudah diuji tanpa menyentuh systemd nyata.
+type cmdRunnerFn func(ctx context.Context, cb LogCallback, name string, args ...string) error
+
+// reloadAndRestartWdevService memuat ulang daemon systemd, memastikan auto-start
+// aktif, dan me-restart wdev.service. Catatan: `systemctl enable --now` hanya
+// menjalankan `start` yang bersifat no-op bila service sudah berjalan, sehingga
+// `restart` wajib dipanggil agar biner dan Environment baru langsung berlaku.
+func reloadAndRestartWdevService(ctx context.Context, cb LogCallback, run cmdRunnerFn) error {
+	if cb == nil {
+		cb = func(string) {}
+	}
+	cb("Memuat ulang daemon systemd...")
+	if err := run(ctx, cb, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("gagal reload daemon systemd: %w", err)
+	}
+
+	cb("Mengaktifkan wdev.service (auto-start)...")
+	if err := run(ctx, cb, "systemctl", "enable", "wdev.service"); err != nil {
+		return fmt.Errorf("gagal mengaktifkan wdev.service: %w", err)
+	}
+
+	cb("Menjalankan ulang wdev.service agar biner & environment terbaru aktif...")
+	if err := run(ctx, cb, "systemctl", "restart", "wdev.service"); err != nil {
+		return fmt.Errorf("gagal menjalankan ulang wdev.service: %w", err)
 	}
 	return nil
+}
+
+// applyWdevServiceUnitUpdate menerapkan perubahan unit wdev.service setelah file
+// unit ditulis ulang. Bila dipanggil dari dalam proses wdev.service sendiri,
+// service tidak di-restart secara sinkron agar task yang berjalan tidak terputus.
+func applyWdevServiceUnitUpdate(ctx context.Context, cb LogCallback, insideService bool, run cmdRunnerFn) error {
+	if cb == nil {
+		cb = func(string) {}
+	}
+	if insideService {
+		_ = run(ctx, cb, "systemctl", "daemon-reload")
+		cb(" [i] Unit diperbarui. Environment baru aktif pada restart wdev.service berikutnya.")
+		return nil
+	}
+	if err := reloadAndRestartWdevService(ctx, cb, run); err != nil {
+		return err
+	}
+	cb(" ✓ wdev.service di-restart dengan environment baru.")
+	return nil
+}
+
+// isRunningInsideWdevService memeriksa apakah proses saat ini berjalan di dalam
+// cgroup unit systemd wdev.service (bukan sekadar memiliki INVOCATION_ID dari
+// scope terminal/desktop seperti GNOME/Ptyxis).
+func isRunningInsideWdevService() bool {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return false
+	}
+	return isCgroupInUnit(string(data), "wdev.service")
+}
+
+// isCgroupInUnit mendeteksi apakah isi /proc/self/cgroup berada dalam unit target.
+func isCgroupInUnit(cgroupContent, unit string) bool {
+	if unit == "" {
+		return false
+	}
+	needle := "/" + unit
+	for _, line := range strings.Split(cgroupContent, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		path := parts[2]
+		if path == needle || strings.HasSuffix(path, needle) || strings.Contains(path, needle+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseServiceExec mengambil port & host dari baris ExecStart yang ada.

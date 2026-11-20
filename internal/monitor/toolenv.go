@@ -35,20 +35,8 @@ var toolchainEnvDefaults = [][2]string{
 func toolEnv() []string {
 	env := os.Environ()
 
-	have := func(key string) bool {
-		prefix := key + "="
-		for _, e := range env {
-			if strings.HasPrefix(e, prefix) {
-				return true
-			}
-		}
-		return false
-	}
-
 	for _, kv := range toolchainEnvDefaults {
-		if !have(kv[0]) {
-			env = append(env, kv[0]+"="+kv[1])
-		}
+		env = setEnvDefault(env, kv[0], kv[1])
 	}
 
 	// Pastikan direktori kanonik ada di PATH (tanpa duplikasi).
@@ -69,9 +57,34 @@ func toolEnv() []string {
 	}
 	if len(prepend) > 0 {
 		joined := strings.Join(append(prepend, parts...), ":")
-		env = append(env, "PATH="+joined)
+		replaced := false
+		for i, e := range env {
+			if strings.HasPrefix(e, "PATH=") {
+				env[i] = "PATH=" + joined
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			env = append(env, "PATH="+joined)
+		}
 	}
 	return env
+}
+
+// setEnvDefault menyuntikkan key=fallback bila key belum ada atau bernilai kosong.
+func setEnvDefault(env []string, key, fallback string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			if strings.TrimSpace(strings.TrimPrefix(e, prefix)) != "" {
+				return env
+			}
+			env[i] = prefix + fallback
+			return env
+		}
+	}
+	return append(env, prefix+fallback)
 }
 
 // toolPath mencari executable di direktori kanonik lalu PATH.

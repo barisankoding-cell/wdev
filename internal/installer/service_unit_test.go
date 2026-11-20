@@ -1,6 +1,8 @@
 package installer
 
 import (
+	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -49,5 +51,85 @@ func TestUnitContentIsIdempotent(t *testing.T) {
 	b := WdevServiceUnitContent("3200", "0.0.0.0")
 	if a != b {
 		t.Fatal("render unit tidak deterministik")
+	}
+}
+
+func TestReloadAndRestartWdevServiceCallsRestart(t *testing.T) {
+	var calls [][]string
+	fakeRun := func(_ context.Context, _ LogCallback, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+
+	if err := reloadAndRestartWdevService(context.Background(), nil, fakeRun); err != nil {
+		t.Fatalf("reloadAndRestartWdevService error: %v", err)
+	}
+
+	want := [][]string{
+		{"systemctl", "daemon-reload"},
+		{"systemctl", "enable", "wdev.service"},
+		{"systemctl", "restart", "wdev.service"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("urutan perintah systemctl salah:\ngot:  %v\nwant: %v", calls, want)
+	}
+}
+
+func TestApplyWdevServiceUnitUpdate(t *testing.T) {
+	t.Run("outside service restarts unit", func(t *testing.T) {
+		var calls [][]string
+		fakeRun := func(_ context.Context, _ LogCallback, name string, args ...string) error {
+			calls = append(calls, append([]string{name}, args...))
+			return nil
+		}
+		if err := applyWdevServiceUnitUpdate(context.Background(), nil, false, fakeRun); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := [][]string{
+			{"systemctl", "daemon-reload"},
+			{"systemctl", "enable", "wdev.service"},
+			{"systemctl", "restart", "wdev.service"},
+		}
+		if !reflect.DeepEqual(calls, want) {
+			t.Fatalf("got %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("inside service only reloads daemon", func(t *testing.T) {
+		var calls [][]string
+		fakeRun := func(_ context.Context, _ LogCallback, name string, args ...string) error {
+			calls = append(calls, append([]string{name}, args...))
+			return nil
+		}
+		if err := applyWdevServiceUnitUpdate(context.Background(), nil, true, fakeRun); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := [][]string{
+			{"systemctl", "daemon-reload"},
+		}
+		if !reflect.DeepEqual(calls, want) {
+			t.Fatalf("got %v, want %v", calls, want)
+		}
+	})
+}
+
+func TestIsCgroupInUnit(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"cgroup v2 wdev", "0::/system.slice/wdev.service\n", true},
+		{"cgroup v1 wdev", "1:name=systemd:/system.slice/wdev.service\n", true},
+		{"sub-cgroup wdev", "0::/system.slice/wdev.service/worker\n", true},
+		{"desktop terminal scope", "0::/user.slice/user-1000.slice/user@1000.service/app.slice/ptyxis-spawn-c82f885c.scope\n", false},
+		{"different prefix unit", "0::/system.slice/my-wdev.service\n", false},
+		{"different suffix unit", "0::/system.slice/wdev.service.bak\n", false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		if got := isCgroupInUnit(c.content, "wdev.service"); got != c.want {
+			t.Errorf("%s: isCgroupInUnit = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
