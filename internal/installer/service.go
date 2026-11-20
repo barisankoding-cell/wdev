@@ -82,6 +82,14 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/var/lib/wdev
+Environment="GOROOT=/usr/local/go"
+Environment="CARGO_HOME=/usr/local/cargo"
+Environment="RUSTUP_HOME=/usr/local/rustup"
+Environment="FLUTTER_ROOT=/usr/local/flutter"
+Environment="ANDROID_HOME=/usr/local/android-sdk"
+Environment="ANDROID_SDK_ROOT=/usr/local/android-sdk"
+Environment="NODE_HOME=/usr/local/lib/nodejs/current"
+Environment="PATH=/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/flutter/bin:/usr/local/lib/nodejs/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ExecStart=/usr/local/bin/wdev serve --port %s --host %s
 Restart=always
 RestartSec=3

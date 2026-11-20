@@ -18,21 +18,21 @@ import (
 )
 
 type SystemStats struct {
-	Hostname       string            `json:"hostname"`
-	OSName         string            `json:"os_name"`
-	Kernel         string            `json:"kernel"`
-	UptimeString   string            `json:"uptime_string"`
-	LoadAvg        string            `json:"load_avg"`
-	MemTotalMB     int64             `json:"mem_total_mb"`
-	MemUsedMB      int64             `json:"mem_used_mb"`
-	MemPercent     int               `json:"mem_percent"`
-	DiskTotalGB    int64             `json:"disk_total_gb"`
-	DiskUsedGB     int64             `json:"disk_used_gb"`
-	DiskPercent    int               `json:"disk_percent"`
-	LanIP          string            `json:"lan_ip"`
-	NetbirdIP      string            `json:"netbird_ip"`
-	Services       []ServiceStatus   `json:"services"`
-	Runtimes       map[string]string `json:"runtimes"`
+	Hostname     string            `json:"hostname"`
+	OSName       string            `json:"os_name"`
+	Kernel       string            `json:"kernel"`
+	UptimeString string            `json:"uptime_string"`
+	LoadAvg      string            `json:"load_avg"`
+	MemTotalMB   int64             `json:"mem_total_mb"`
+	MemUsedMB    int64             `json:"mem_used_mb"`
+	MemPercent   int               `json:"mem_percent"`
+	DiskTotalGB  int64             `json:"disk_total_gb"`
+	DiskUsedGB   int64             `json:"disk_used_gb"`
+	DiskPercent  int               `json:"disk_percent"`
+	LanIP        string            `json:"lan_ip"`
+	NetbirdIP    string            `json:"netbird_ip"`
+	Services     []ServiceStatus   `json:"services"`
+	Runtimes     map[string]string `json:"runtimes"`
 }
 
 type ServiceStatus struct {
@@ -1080,33 +1080,31 @@ func getRuntimeVersions() map[string]string {
 	res := make(map[string]string)
 
 	// Node.js
-	if out, err := exec.Command("node", "-v").Output(); err == nil {
-		res["node"] = strings.TrimSpace(string(out))
+	if out, err := runToolVersion("node", "-v"); err == nil {
+		res["node"] = out
 	} else {
 		res["node"] = "Not Installed"
 	}
 
 	// PHP
-	if out, err := exec.Command("php", "-r", "echo PHP_VERSION;").Output(); err == nil {
-		res["php"] = "v" + strings.TrimSpace(string(out))
+	if out, err := runToolVersion("php", "-r", "echo PHP_VERSION;"); err == nil {
+		res["php"] = "v" + out
 	} else {
 		res["php"] = "Not Installed"
 	}
 
 	// Go
-	if out, err := exec.Command("go", "version").Output(); err == nil {
-		parts := strings.Fields(string(out))
-		if len(parts) >= 3 {
+	if out, err := runToolVersion("go", "version"); err == nil {
+		if parts := strings.Fields(out); len(parts) >= 3 {
 			res["go"] = parts[2]
 		}
 	} else {
 		res["go"] = "Not Installed"
 	}
 
-	// Rust
-	if out, err := exec.Command("rustc", "--version").Output(); err == nil {
-		parts := strings.Fields(string(out))
-		if len(parts) >= 2 {
+	// Rust: rustc adalah shim rustup, butuh RUSTUP_HOME agar toolchain ketemu.
+	if out, err := runToolVersion("rustc", "--version"); err == nil {
+		if parts := strings.Fields(out); len(parts) >= 2 {
 			res["rust"] = parts[1]
 		}
 	} else {
@@ -1114,9 +1112,8 @@ func getRuntimeVersions() map[string]string {
 	}
 
 	// Composer
-	if out, err := exec.Command("composer", "--version").Output(); err == nil {
-		parts := strings.Fields(string(out))
-		if len(parts) >= 3 {
+	if out, err := runToolVersion("composer", "--version"); err == nil {
+		if parts := strings.Fields(out); len(parts) >= 3 {
 			res["composer"] = parts[2]
 		}
 	} else {
@@ -1124,13 +1121,24 @@ func getRuntimeVersions() map[string]string {
 	}
 
 	// PostgreSQL
-	if out, err := exec.Command("psql", "--version").Output(); err == nil {
-		parts := strings.Fields(string(out))
-		if len(parts) >= 3 {
+	if out, err := runToolVersion("psql", "--version"); err == nil {
+		if parts := strings.Fields(out); len(parts) >= 3 {
 			res["postgresql"] = parts[2]
 		}
 	} else {
 		res["postgresql"] = "Not Installed"
+	}
+
+	// Flutter (opsional; hanya bila terpasang)
+	if out, err := runToolVersion("flutter", "--version"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "Flutter ") {
+				if parts := strings.Fields(line); len(parts) >= 2 {
+					res["flutter"] = parts[1]
+				}
+				break
+			}
+		}
 	}
 
 	return res
