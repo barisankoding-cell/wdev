@@ -395,6 +395,48 @@ Agent diekspos di port `8082` (API key di `/etc/wdev-edge/api_key.secret`);
 PowerDNS API di port `8081`. Keduanya hanya dibuka untuk subnet NetBird
 `100.64.0.0/10`.
 
+### Menambah zone domain
+
+```bash
+wdev pdns zone add domainanda.com
+```
+
+Yang dilakukan `wdev` saat menambah zone:
+
+1. Validasi FQDN (lowercase, tanpa protokol/slash).
+2. Membuat zone `Native` dengan nameserver `ns1.<domain>` dan `ns2.<domain>`.
+3. Membuat glue A untuk kedua nameserver ke IP publik VPS.
+4. Mengaktifkan `SOA-EDIT-API=INCEPTION-INCREMENT` agar serial otomatis naik.
+5. Memverifikasi SOA + NS benar-benar ada; jika gagal, zone dibatalkan (rollback).
+
+Diagnosa zone setelah ditambahkan:
+
+```bash
+wdev pdns zone doctor domainanda.com
+```
+
+Yang diperiksa: zone ada di PowerDNS, NS `ns1`/`ns2`, glue A ke IP publik VPS,
+delegasi NS dari resolver publik, glue publik, serial SOA authoritative vs
+PowerDNS, dan keterjangkauan port 53. Exit code non-zero jika ada kegagalan
+kritis. Tombol **Doctor** juga tersedia di Web UI pada tabel zone.
+
+Untuk zone lama yang dibuat sebelum perbaikan ini, SOA biasanya masih
+`a.misconfigured.dns.server.invalid` dengan serial `0`. Perbaiki dengan:
+
+```bash
+wdev pdns zone repair domainanda.com
+```
+
+Repair menulis ulang SOA (primary `ns1.<domain>`, serial baru), NS, glue A,
+dan metadata `SOA-EDIT-API=INCEPTION-INCREMENT`. Record lain tidak disentuh.
+Tombol **Repair** juga tersedia di Web UI.
+
+Setelah itu arahkan NS domain di registrar ke `ns1.<domain>` dan `ns2.<domain>`
+(glue IP opsional karena glue A sudah disediakan di zone). Record lain bisa
+ditambah lewat CLI/Web UI; penambahan record bersifat *append*, bukan menimpa
+record lain dengan nama/tipe yang sama.
+
+
 ## Mail Server (Relay-Only, Multi-Domain)
 
 Mail server berjalan di mesin lokal (Stalwart + SnappyMail) dan hanya

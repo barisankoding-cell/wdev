@@ -418,6 +418,9 @@ webserver-allow-from=127.0.0.1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.
 
 version-string=anonymous
 security-poll-suffix=
+
+# Zone default: tolak query yang bukan milik zone kita (tetap authoritative-only).
+default-soa-edit=INCEPTION-INCREMENT
 `, localAddr, dbFile, opts.APIKey, opts.PDNSPort)
 	if err := writeRootFile("/etc/powerdns/pdns.conf", []byte(conf), 0640); err != nil {
 		return err

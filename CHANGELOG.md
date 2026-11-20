@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.1.1
+
+### Added
+- `wdev pdns zone doctor <domain>`: diagnosa zone PowerDNS (NS, glue A,
+  delegasi publik, SOA primary/serial, port 53) dengan exit code non-zero
+  saat ada kegagalan kritis.
+- `wdev pdns zone repair <domain>`: menulis ulang SOA/NS/glue dan metadata
+  `SOA-EDIT` untuk zone lama yang SOA-nya `a.misconfigured.dns.server.invalid`
+  atau serial `0`. Record lain tidak diubah.
+- Tombol **Doctor** dan **Repair** di tabel zone Web UI, plus endpoint
+  `GET /api/pdns/zone/doctor` dan `POST /api/pdns/zone/repair`.
+- DNS client native (UDP/TCP, parser compression) tanpa dependensi eksternal.
+
+### Fixed
+- `wdev pdns zone add` sekarang menulis SOA eksplisit (`ns1.<domain>`,
+  serial baru) sehingga zone tidak lagi dibuat dengan SOA misconfigured.
+- Zone baru langsung mendapat NS, glue A ke IP publik VPS, dan
+  `SOA-EDIT=INCEPTION-INCREMENT`/`api_rectify`.
+- Metadata `SOA-EDIT-API` yang read-only di PowerDNS 4.9 tidak lagi membuat
+  repair gagal (fallback ke `SOA-EDIT`).
+- Zone baru di-rollback bila SOA/NS/glue/metadata gagal ditulis.
+- `FindMatchingZone` tidak lagi menebak nama zone; error jelas bila zone
+  belum ada.
+- Tambah record via CLI/Web UI bersifat append, bukan menimpa record lain
+  dengan nama/tipe yang sama.
+- `Expose` melaporkan kegagalan penulisan A record, tidak silent.
+
 ## v2.1.0
 
 Rilis ini berfokus pada mail server relay-only, multi-domain, dan distribusi update.

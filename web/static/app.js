@@ -1895,6 +1895,12 @@ async function loadPDNSZones() {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
               <span>Kelola Record</span>
             </button>
+ <button class="btn btn-sm btn-outline" onclick="doctorPDNSZone('${z.name}')" style="display:inline-flex;align-items:center;gap:4px;">
+ <span>Doctor</span>
+ </button>
+ <button class="btn btn-sm btn-outline" onclick="repairPDNSZone('${z.name}')" style="display:inline-flex;align-items:center;gap:4px;">
+ <span>Repair</span>
+ </button>
             <button class="btn btn-sm btn-danger" onclick="deletePDNSZone('${z.name}')" style="display:inline-flex;align-items:center;gap:4px;">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               <span>Hapus</span>
@@ -1909,18 +1915,63 @@ async function loadPDNSZones() {
   }
 }
 
+async function repairPDNSZone(zoneName) {
+ const confirmed = await modalConfirm(`Perbaiki zone ${zoneName}? Tindakan ini menulis ulang SOA/NS, glue ns1/ns2, dan mengaktifkan SOA-EDIT-API. Record lain tidak diubah.`, {
+ title: 'Repair DNS Zone', confirmText: 'Repair Zone'
+ });
+ if (!confirmed) return;
+ try {
+ const res = await fetch('/api/pdns/zone/repair', {
+ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ zone: zoneName })
+ });
+ const r = await res.json().catch(() => ({}));
+ const icon = (s) => s === 'ok' ? '✓' : s === 'warn' ? '!' : '✗';
+ const rep = r.report || r;
+ const lines = [];
+ if (r.error) lines.push('Error: ' + r.error, '');
+ lines.push(`Zone: ${rep.zone || zoneName}`, '');
+ (rep.checks || []).forEach(c => lines.push(`${icon(c.status)} ${c.name}: ${c.detail}`));
+ await modalAlert(lines.join('\n'), r.error ? 'error' : (rep.ok ? 'success' : 'warning'), 'Repair Zone');
+ loadPDNSZones();
+ } catch (err) {
+ await modalAlert('Error: ' + err, 'error', 'Repair Zone');
+ }
+}
+
+async function doctorPDNSZone(zoneName) {
+ try {
+ const res = await fetch('/api/pdns/zone/doctor?zone=' + encodeURIComponent(zoneName));
+ const r = await res.json().catch(() => ({}));
+ if (!res.ok && !r.checks) {
+ await modalAlert(`Gagal menjalankan doctor: ${r.error || res.statusText}`, 'error', 'Doctor Zone');
+ return;
+ }
+ const icon = (s) => s === 'ok' ? '✓' : s === 'warn' ? '!' : '✗';
+ const lines = [`Zone: ${r.zone || zoneName}`, `Nameserver: ${(r.nameservers || []).join(', ') || '-'}`, ''];
+ (r.checks || []).forEach(c => lines.push(`${icon(c.status)} ${c.name}: ${c.detail}`));
+ await modalAlert(lines.join('\n'), r.ok ? 'success' : 'warning', 'Doctor Zone');
+ } catch (err) {
+ await modalAlert('Error: ' + err, 'error', 'Doctor Zone');
+ }
+}
+
 async function submitAddZone() {
   const zone = await modalPrompt('Masukkan nama zone domain authoritative (contoh: domainanda.com):', {
     title: 'Tambah DNS Zone',
     placeholder: 'domainanda.com'
   });
   if (!zone) return;
+ const clean = String(zone).trim().replace(/\.$/, '').toLowerCase();
+ if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(clean)) {
+ await modalAlert('Nama zone tidak valid. Gunakan FQDN tanpa protokol, contoh: domainanda.com', 'warning', 'Validasi Zone');
+ return;
+ }
 
   try {
     const res = await fetch('/api/pdns/zones', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ zone_name: zone })
+      body: JSON.stringify({ zone_name: clean })
     });
     const data = await res.json();
     if (!res.ok) {

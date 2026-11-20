@@ -104,6 +104,19 @@ func relayModeLabel(relayOnly bool) string {
 	return "belum relay-only (periksa konfigurasi relay)"
 }
 
+func printZoneChecks(report pdns.ZoneDoctorReport) {
+	for _, c := range report.Checks {
+		icon := "✓"
+		switch c.Status {
+		case pdns.CheckWarn:
+			icon = "!"
+		case pdns.CheckFail:
+			icon = "✗"
+		}
+		fmt.Printf(" %s %-26s %s\n", icon, c.Name, c.Detail)
+	}
+}
+
 func main() {
 	// Launcher legacy (orca, orca-pair, orca-switch, orca-update, orca-desktop,
 	// orca-ide) kini diarahkan ke biner Go ini tanpa skrip shell.
@@ -618,7 +631,42 @@ func main() {
 		}
 		switch args[1] {
 		case "zone":
-			if len(args) >= 4 && (args[2] == "add" || args[2] == "create") {
+			if len(args) == 3 && (args[2] == "doctor" || args[2] == "repair") {
+				fmt.Println("Penggunaan: wdev pdns zone " + args[2] + " <domain>")
+				os.Exit(1)
+			}
+			if len(args) >= 4 && args[2] == "doctor" {
+				report, err := pdnsMgr.DoctorZone(args[3])
+				for _, c := range report.Checks {
+					icon := "✓"
+					switch c.Status {
+					case pdns.CheckWarn:
+						icon = "!"
+					case pdns.CheckFail:
+						icon = "✗"
+					}
+					fmt.Printf(" %s %-26s %s\n", icon, c.Name, c.Detail)
+				}
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				if !report.OK {
+					os.Exit(1)
+				}
+				fmt.Println("✓ Zone doctor selesai tanpa kegagalan kritis.")
+			} else if len(args) >= 4 && args[2] == "repair" {
+				report, err := pdnsMgr.RepairZone(args[3])
+				printZoneChecks(report)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				if !report.OK {
+					os.Exit(1)
+				}
+				fmt.Println("✓ Zone diperbaiki dan lolos doctor.")
+			} else if len(args) >= 4 && (args[2] == "add" || args[2] == "create") {
 				if err := pdnsMgr.AddZone(args[3]); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
@@ -677,7 +725,7 @@ func main() {
 				if len(args) >= 8 {
 					_, _ = fmt.Sscanf(args[7], "%d", &ttl)
 				}
-				if err := pdnsMgr.AddRecord(args[3], args[4], args[5], args[6], ttl); err != nil {
+				if err := pdnsMgr.AddRecordKeep(args[3], args[4], args[5], args[6], ttl); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}

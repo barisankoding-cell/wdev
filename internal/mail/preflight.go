@@ -80,6 +80,9 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 	if st.Domain != "" && !validMailDomain(st.Domain) {
 		st.Blockers = append(st.Blockers, "domain tidak valid")
 	}
+	if st.Domain != "" && st.DNSZone == "" && st.EdgeConfigured {
+		st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di tab PowerDNS")
+	}
 
 	if !st.SnappyMail {
 		st.Warnings = append(st.Warnings, "SnappyMail belum terpasang; webmail tidak akan aktif")

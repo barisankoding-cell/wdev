@@ -274,22 +274,55 @@ func (m *Manager) GetZone(zoneName string) (*ZoneInfo, error) {
 	return &zone, nil
 }
 
+// NormalizeZoneName membersihkan dan memvalidasi nama zone authoritative.
+func NormalizeZoneName(zoneName string) (string, error) {
+	z := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zoneName), "."))
+	if z == "" {
+		return "", fmt.Errorf("nama zone wajib diisi")
+	}
+	if len(z) > 253 || !strings.Contains(z, ".") || strings.Contains(z, "..") {
+		return "", fmt.Errorf("nama zone tidak valid: %q", zoneName)
+	}
+	for _, label := range strings.Split(z, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return "", fmt.Errorf("nama zone tidak valid: %q", zoneName)
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return "", fmt.Errorf("nama zone tidak valid: %q", zoneName)
+			}
+		}
+	}
+	return z, nil
+}
+
+// AddZone membuat zone Native lengkap dengan NS, glue A, dan SOA-EDIT-API
+// agar zone langsung valid dan serial otomatis naik saat record berubah.
 func (m *Manager) AddZone(zoneName string) error {
 	conf := m.LoadConfig()
 	if !conf.Configured || conf.VPSNetbirdIP == "" {
 		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
 	}
+	zone, err := NormalizeZoneName(zoneName)
+	if err != nil {
+		return err
+	}
+	if conf.VPSPublicIP == "" {
+		return fmt.Errorf("IP publik VPS belum tercatat; jalankan 'wdev pdns connect' agar NS/glue zone valid")
+	}
 
-	zoneName = strings.TrimSuffix(strings.TrimSpace(zoneName), ".") + "."
-
+	ns1 := "ns1." + zone
+	ns2 := "ns2." + zone
 	payload := map[string]any{
-		"name":        zoneName,
-		"kind":        "Native",
-		"nameservers": []string{},
+		"name":         zone + ".",
+		"kind":         "Native",
+		"nameservers":  []string{ns1 + ".", ns2 + "."},
+		"soa_edit_api": "INCEPTION-INCREMENT",
+		"api_rectify":  true,
 	}
 	jsonBytes, _ := json.Marshal(payload)
 
-	client := http.Client{Timeout: 4 * time.Second}
+	client := http.Client{Timeout: 6 * time.Second}
 	url := fmt.Sprintf("http://%s:%s/api/v1/servers/localhost/zones", conf.VPSNetbirdIP, conf.PDNSPort)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
 	if err != nil {
@@ -304,11 +337,64 @@ func (m *Manager) AddZone(zoneName string) error {
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode == http.StatusConflict {
+		return fmt.Errorf("zone %s sudah ada di PowerDNS", zone)
+	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API PowerDNS merespons %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("API PowerDNS merespons %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
+	rollback := func() { _ = m.DeleteZone(zone) }
+
+	// PowerDNS membuat SOA dari default-soa-content
+	// (a.misconfigured.dns.server.invalid, serial 0). Tulis SOA eksplisit agar
+	// zone langsung valid.
+	soa := fmt.Sprintf("%s. hostmaster.%s. %d 10800 3600 604800 3600", ns1, zone, time.Now().Unix())
+	if err := m.patchRecords(zone, "@", "SOA", []string{soa}, 3600); err != nil {
+		rollback()
+		return fmt.Errorf("SOA gagal ditulis; zone dibatalkan: %w", err)
+	}
+
+	// Glue A untuk nameserver in-zone agar delegasi bisa di-resolve.
+	if err := m.patchRecords(zone, ns1, "A", []string{conf.VPSPublicIP}, 300); err != nil {
+		rollback()
+		return fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns1, err)
+	}
+	if err := m.patchRecords(zone, ns2, "A", []string{conf.VPSPublicIP}, 300); err != nil {
+		rollback()
+		return fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns2, err)
+	}
+	if err := m.setZoneMetadata(zone, "SOA-EDIT", []string{"INCEPTION-INCREMENT"}); err != nil {
+		rollback()
+		return fmt.Errorf("metadata SOA-EDIT gagal; zone dibatalkan: %w", err)
+	}
+
+	// Verifikasi zone benar-benar lengkap.
+	info, err := m.GetZone(zone)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("zone gagal diverifikasi; dibatalkan: %w", err)
+	}
+	hasSOA, hasNS := false, false
+	for _, rr := range info.RRsets {
+		switch strings.ToUpper(rr.Type) {
+		case "SOA":
+			if len(rr.Records) > 0 {
+				if parsed := parseSOAContent(rr.Records[0].Content); parsed.Primary != "" && !strings.Contains(parsed.Primary, "misconfigured") {
+					hasSOA = true
+				}
+			}
+		case "NS":
+			if len(rr.Records) > 0 {
+				hasNS = true
+			}
+		}
+	}
+	if !hasSOA || !hasNS {
+		rollback()
+		return fmt.Errorf("zone %s tidak lengkap (SOA=%v NS=%v); dibatalkan", zone, hasSOA, hasNS)
+	}
 	return nil
 }
 
@@ -606,15 +692,22 @@ func (m *Manager) ListExposures() ([]ProxyExposure, error) {
 
 func (m *Manager) FindMatchingZone(domain string) (string, error) {
 	cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if cleanDom == "" {
+		return "", fmt.Errorf("domain kosong")
+	}
 	zones, err := m.ListZones()
 	if err != nil {
-		parts := strings.Split(cleanDom, ".")
-		if len(parts) >= 2 {
-			return strings.Join(parts[len(parts)-2:], "."), nil
-		}
-		return cleanDom, nil
+		return "", fmt.Errorf("gagal membaca daftar zone PowerDNS: %w", err)
 	}
+	candidate := matchZone(cleanDom, zones)
+	if candidate == "" {
+		return "", fmt.Errorf("zone DNS untuk '%s' tidak ditemukan; tambahkan zone di PowerDNS terlebih dahulu", cleanDom)
+	}
+	return candidate, nil
+}
 
+// matchZone memilih zone terpanjang yang menjadi suffix domain.
+func matchZone(cleanDom string, zones []ZoneInfo) string {
 	var candidate string
 	for _, z := range zones {
 		zClean := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(z.Name), "."))
@@ -624,17 +717,7 @@ func (m *Manager) FindMatchingZone(domain string) (string, error) {
 			}
 		}
 	}
-
-	if candidate == "" {
-		parts := strings.Split(cleanDom, ".")
-		if len(parts) >= 2 {
-			candidate = strings.Join(parts[len(parts)-2:], ".")
-		} else {
-			candidate = cleanDom
-		}
-	}
-
-	return candidate, nil
+	return candidate
 }
 
 func (m *Manager) Expose(domain string, targetPort int, useSSL bool, websocket bool) error {
@@ -656,10 +739,13 @@ func (m *Manager) Expose(domain string, targetPort int, useSSL bool, websocket b
 		return fmt.Errorf("IP Netbird lokal (wt0) tidak terdeteksi. Pastikan Netbird aktif.")
 	}
 
-	// 1. Auto-configure DNS Record in PowerDNS if matching zone exists
-	zone, _ := m.FindMatchingZone(domain)
-	if zone != "" && conf.VPSPublicIP != "" {
-		_ = m.AddRecord(zone, domain, "A", conf.VPSPublicIP, 300)
+	// 1. Auto-configure DNS Record di PowerDNS bila zone dikelola di sini.
+	// Zone yang tidak ada (DNS di provider lain) dilewati; kegagalan tulis pada
+	// zone yang ada harus terlihat, jangan silent.
+	if zone, zoneErr := m.FindMatchingZone(domain); zoneErr == nil && conf.VPSPublicIP != "" {
+		if err := m.AddRecord(zone, domain, "A", conf.VPSPublicIP, 300); err != nil {
+			return fmt.Errorf("gagal membuat A record %s di zone %s: %w", domain, zone, err)
+		}
 	}
 
 	// 2. Call VPS Edge Agent

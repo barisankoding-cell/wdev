@@ -77,6 +77,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/cloudflare/unexpose", s.handleCFUnexpose)
 	s.mux.HandleFunc("/api/pdns/status", s.handlePDNSStatus)
 	s.mux.HandleFunc("/api/pdns/zones", s.handlePDNSZones)
+	s.mux.HandleFunc("/api/pdns/zone/doctor", s.handlePDNSZoneDoctor)
+	s.mux.HandleFunc("/api/pdns/zone/repair", s.handlePDNSZoneRepair)
 	s.mux.HandleFunc("/api/pdns/records", s.handlePDNSRecords)
 	s.mux.HandleFunc("/api/pdns/exposures", s.handlePDNSExposures)
 	s.mux.HandleFunc("/api/pdns/expose", s.handlePDNSExpose)
@@ -621,11 +623,24 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Payload tidak valid")
 			return
 		}
-		if err := s.pdnsMgr.AddZone(payload.ZoneName); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		zone, err := pdns.NormalizeZoneName(payload.ZoneName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "created"})
+		if err := s.pdnsMgr.AddZone(zone); err != nil {
+			if strings.Contains(err.Error(), "sudah ada") {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":      "created",
+			"zone":        zone,
+			"nameservers": []string{"ns1." + zone, "ns2." + zone},
+		})
 	case http.MethodDelete:
 		var payload struct {
 			ZoneName string `json:"zone_name"`
@@ -642,6 +657,56 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 	}
+}
+
+func (s *Server) handlePDNSZoneRepair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		Zone string `json:"zone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || strings.TrimSpace(payload.Zone) == "" {
+		writeError(w, http.StatusBadRequest, "Parameter zone diperlukan")
+		return
+	}
+	report, err := s.pdnsMgr.RepairZone(payload.Zone)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Server) handlePDNSZoneDoctor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	zone := r.URL.Query().Get("zone")
+	if zone == "" && r.Method == http.MethodPost {
+		var payload struct {
+			Zone string `json:"zone"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err == nil {
+			zone = payload.Zone
+		}
+	}
+	if strings.TrimSpace(zone) == "" {
+		writeError(w, http.StatusBadRequest, "Parameter zone diperlukan")
+		return
+	}
+	report, err := s.pdnsMgr.DoctorZone(zone)
+	if err != nil && zone == "" {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	status := http.StatusOK
+	if !report.OK {
+		status = http.StatusOK // hasil diagnosa tetap dikirim; klien menilai report.ok
+	}
+	writeJSON(w, status, report)
 }
 
 func (s *Server) handlePDNSRecords(w http.ResponseWriter, r *http.Request) {
@@ -670,7 +735,7 @@ func (s *Server) handlePDNSRecords(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Payload tidak valid")
 			return
 		}
-		if err := s.pdnsMgr.AddRecord(payload.Zone, payload.Name, payload.Type, payload.Content, payload.TTL); err != nil {
+		if err := s.pdnsMgr.AddRecordKeep(payload.Zone, payload.Name, payload.Type, payload.Content, payload.TTL); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
