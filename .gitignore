@@ -33,6 +33,7 @@ Thumbs.db
 
 # Artefak build & cache
 /wdev
+bin/
 *.db
 *.db-wal
 *.db-shm
