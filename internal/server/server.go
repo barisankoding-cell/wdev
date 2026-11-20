@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"wdev/internal/monitor"
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
+	"wdev/internal/serviceconfig"
 	"wdev/internal/site"
 	"wdev/internal/store"
 	"wdev/internal/switcher"
@@ -34,6 +36,7 @@ type Server struct {
 	cfMgr       *cloudflare.Manager
 	pdnsMgr     *pdns.Manager
 	mailMgr     *mail.Manager
+	svcCfgMgr   *serviceconfig.Manager
 	mux         *http.ServeMux
 }
 
@@ -58,6 +61,7 @@ func New(
 		cfMgr:       cfMgr,
 		pdnsMgr:     pdnsMgr,
 		mailMgr:     mailMgr,
+		svcCfgMgr:   serviceconfig.New(inst.GetSudoPassword),
 		mux:         http.NewServeMux(),
 	}
 	srv.routes()
@@ -68,6 +72,7 @@ func (s *Server) routes() {
 	// API routes
 	s.mux.HandleFunc("/api/status", s.handleStatus)
 	s.mux.HandleFunc("/api/service/", s.handleServiceControl)
+	s.mux.HandleFunc("/api/service-config/", s.handleServiceConfig)
 	s.mux.HandleFunc("/api/sites", s.handleSites)
 	s.mux.HandleFunc("/api/sites/", s.handleSiteDelete)
 	s.mux.HandleFunc("/api/switchers", s.handleSwitchers)
@@ -158,6 +163,253 @@ func (s *Server) handleServiceControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/service-config/"), "/")
+	if trimmed == "" {
+		writeError(w, http.StatusBadRequest, "Nama layanan wajib diisi")
+		return
+	}
+	parts := strings.Split(trimmed, "/")
+	service := parts[0]
+	subAction := ""
+	if len(parts) > 1 {
+		subAction = parts[1]
+	}
+	if len(parts) > 2 {
+		writeError(w, http.StatusBadRequest, "Path konfigurasi tidak valid")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		ver := strings.TrimSpace(r.URL.Query().Get("version"))
+		if subAction == "logs" {
+			lines, _ := strconv.Atoi(r.URL.Query().Get("lines"))
+			unit, logText, err := s.svcCfgMgr.GetServiceLogs(r.Context(), service, ver, lines)
+			if err != nil {
+				if errors.Is(err, serviceconfig.ErrSudoRequired) {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status":  "sudo_required",
+						"message": "Membaca log layanan memerlukan hak akses administrator (sudo).",
+					})
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "ok",
+				"unit":   unit,
+				"logs":   logText,
+			})
+			return
+		}
+
+		if subAction == "inspect" {
+			var (
+				res any
+				err error
+			)
+			switch service {
+			case "redis":
+				res, err = s.svcCfgMgr.InspectRedis(r.Context())
+			case "postgresql", "postgres":
+				res, err = s.svcCfgMgr.InspectPostgres(r.Context(), ver)
+			default:
+				writeError(w, http.StatusBadRequest, "Inspeksi tidak didukung untuk layanan: "+service)
+				return
+			}
+			if err != nil {
+				if errors.Is(err, serviceconfig.ErrSudoRequired) {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status":  "sudo_required",
+						"message": "Inspeksi layanan ini memerlukan hak akses administrator (sudo).",
+					})
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "ok",
+				"inspect": res,
+			})
+			return
+		}
+
+		if subAction != "" {
+			writeError(w, http.StatusBadRequest, "Sub-aksi tidak dikenal: "+subAction)
+			return
+		}
+
+		var (
+			res any
+			err error
+		)
+		switch service {
+		case "redis":
+			res, err = s.svcCfgMgr.GetRedisConfig(r.Context())
+		case "postgresql", "postgres":
+			res, err = s.svcCfgMgr.GetPostgresConfig(r.Context(), ver)
+		case "php-fpm", "php":
+			res, err = s.svcCfgMgr.GetPHPConfig(r.Context(), ver)
+		case "nginx":
+			res, err = s.svcCfgMgr.GetNginxConfig(r.Context())
+		default:
+			writeError(w, http.StatusBadRequest, "Konfigurasi layanan tidak didukung: "+service)
+			return
+		}
+		if err != nil {
+			if errors.Is(err, serviceconfig.ErrSudoRequired) {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":  "sudo_required",
+					"message": "Membaca konfigurasi layanan ini memerlukan hak akses administrator (sudo).",
+				})
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"config": res,
+		})
+
+	case http.MethodPost:
+		var raw map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			writeError(w, http.StatusBadRequest, "Payload JSON tidak valid")
+			return
+		}
+		var sudoPass string
+		if spRaw, ok := raw["sudo_pass"]; ok {
+			_ = json.Unmarshal(spRaw, &sudoPass)
+		}
+		if sudoPass != "" {
+			if err := s.installer.VerifyAndSetSudoPassword(sudoPass); err != nil {
+				writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+				return
+			}
+		}
+		if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "sudo_required",
+				"message": "Aksi ini memerlukan hak akses administrator (sudo).",
+			})
+			return
+		}
+
+		// Re-marshal tanpa field helper sudo_pass agar decode ke struct layanan tetap bersih
+		delete(raw, "sudo_pass")
+		bodyBytes, _ := json.Marshal(raw)
+
+		if subAction == "flush" && service == "redis" {
+			var payload struct {
+				DB int `json:"db"`
+			}
+			if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+				writeError(w, http.StatusBadRequest, "Payload flush Redis tidak valid")
+				return
+			}
+			if err := s.svcCfgMgr.FlushRedisDB(r.Context(), payload.DB); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "flushed",
+				"db":     payload.DB,
+			})
+			return
+		}
+
+		if subAction == "create-db" && (service == "postgresql" || service == "postgres") {
+			var req serviceconfig.PostgresCreateDBRequest
+			if err := json.Unmarshal(bodyBytes, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "Payload pembuatan database tidak valid: "+err.Error())
+				return
+			}
+			if err := s.svcCfgMgr.CreatePostgresDatabase(r.Context(), req); err != nil {
+				if errors.Is(err, serviceconfig.ErrSudoRequired) {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status":  "sudo_required",
+						"message": "Membuat database PostgreSQL memerlukan hak akses administrator (sudo).",
+					})
+					return
+				}
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":   "created",
+				"database": req.Database,
+			})
+			return
+		}
+
+		if subAction != "" {
+			writeError(w, http.StatusBadRequest, "Sub-aksi tidak dikenal: "+subAction)
+			return
+		}
+
+		var (
+			saved any
+			err   error
+		)
+		switch service {
+		case "redis":
+			var cfg serviceconfig.RedisConfig
+			if err = json.Unmarshal(bodyBytes, &cfg); err != nil {
+				writeError(w, http.StatusBadRequest, "Format konfigurasi Redis tidak valid: "+err.Error())
+				return
+			}
+			saved, err = s.svcCfgMgr.SaveRedisConfig(r.Context(), cfg)
+		case "postgresql", "postgres":
+			var cfg serviceconfig.PostgresConfig
+			if err = json.Unmarshal(bodyBytes, &cfg); err != nil {
+				writeError(w, http.StatusBadRequest, "Format konfigurasi PostgreSQL tidak valid: "+err.Error())
+				return
+			}
+			saved, err = s.svcCfgMgr.SavePostgresConfig(r.Context(), cfg)
+		case "php-fpm", "php":
+			var cfg serviceconfig.PHPConfig
+			if err = json.Unmarshal(bodyBytes, &cfg); err != nil {
+				writeError(w, http.StatusBadRequest, "Format konfigurasi PHP tidak valid: "+err.Error())
+				return
+			}
+			saved, err = s.svcCfgMgr.SavePHPConfig(r.Context(), cfg)
+		case "nginx":
+			var cfg serviceconfig.NginxConfig
+			if err = json.Unmarshal(bodyBytes, &cfg); err != nil {
+				writeError(w, http.StatusBadRequest, "Format konfigurasi Nginx tidak valid: "+err.Error())
+				return
+			}
+			saved, err = s.svcCfgMgr.SaveNginxConfig(r.Context(), cfg)
+		default:
+			writeError(w, http.StatusBadRequest, "Konfigurasi layanan tidak didukung: "+service)
+			return
+		}
+
+		if err != nil {
+			if errors.Is(err, serviceconfig.ErrSudoRequired) {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":  "sudo_required",
+					"message": "Menyimpan konfigurasi layanan ini memerlukan hak akses administrator (sudo).",
+				})
+				return
+			}
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "saved",
+			"config": saved,
+		})
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+	}
 }
 
 func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
@@ -1632,6 +1884,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		OhMyZsh      bool     `json:"oh_my_zsh"`
 		CurrentShell string   `json:"current_shell"`
 		ActiveTheme  string   `json:"active_theme"`
+		NerdFont     string   `json:"nerd_font"`
 		Plugins      []string `json:"plugins"`
 	}
 
@@ -1645,15 +1898,18 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	targetUser, userHome := installer.ResolveOrcaUser()
 	orcaConfigDir := filepath.Join(userHome, ".config", "orca")
 
-	// 1. Orca info (prioritaskan biner kanonik /usr/local/bin/orca)
-	orcaBin := "/usr/local/bin/orca"
-	if _, err := os.Stat(orcaBin); err == nil {
+	// 1. Orca info (mendukung .deb ekstrak, AppImage, RPM, maupun Headless Server)
+	if _, err := os.Stat("/usr/local/lib/orca-ide/orca.AppImage"); err == nil {
 		data.Orca.Installed = true
-	} else if p, err := exec.LookPath("orca"); err == nil {
-		orcaBin = p
+	} else if _, err := os.Stat("/usr/local/lib/orca-server"); err == nil {
+		data.Orca.Installed = true
+	} else if _, err := os.Stat("/usr/local/bin/orca"); err == nil {
+		data.Orca.Installed = true
+	} else if _, err := exec.LookPath("orca"); err == nil {
 		data.Orca.Installed = true
 	} else if _, err := os.Stat(filepath.Join(userHome, ".local", "bin", "orca")); err == nil {
-		orcaBin = filepath.Join(userHome, ".local", "bin", "orca")
+		data.Orca.Installed = true
+	} else if _, err := os.Stat(filepath.Join(userHome, ".local", "lib", "orca-ide")); err == nil {
 		data.Orca.Installed = true
 	} else if _, err := os.Stat(orcaConfigDir); err == nil {
 		data.Orca.Installed = true
@@ -1686,14 +1942,8 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		data.Orca.StatusText = "Belum Terpasang"
 	}
 
-	vCmd := exec.Command(orcaBin, "--version")
-	vCmd.Env = append(os.Environ(), "HOME="+userHome, "USER="+targetUser)
-	if out, err := vCmd.Output(); err == nil {
-		ver := strings.TrimSpace(string(out))
-		if fields := strings.Fields(ver); len(fields) > 0 {
-			ver = fields[len(fields)-1]
-		}
-		data.Orca.Version = strings.TrimPrefix(ver, "v")
+	if ver := installer.DetectOrcaInstalledVersion(r.Context(), targetUser, userHome); ver != "" {
+		data.Orca.Version = ver
 	}
 
 	forceRefresh := r.URL.Query().Get("refresh") == "1"
@@ -1773,6 +2023,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	data.Shell.NerdFont = installer.DetectNerdFont(userHome)
 
 	writeJSON(w, http.StatusOK, data)
 }

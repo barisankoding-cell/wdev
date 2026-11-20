@@ -37,3 +37,27 @@ func TestWriteAndReadOrcaMode(t *testing.T) {
 		t.Fatalf("mode = %q, want desktop", got)
 	}
 }
+
+func TestParseOrcaVersionString(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"1.4.264\n", "1.4.264"},
+		{"v1.4.266", "1.4.266"},
+		{"orca-ide 1.4.264", "1.4.264"},
+		{"Warning: something\n1.4.264\n", "1.4.264"},
+		{"error: failed", ""},
+	}
+	for _, tc := range cases {
+		if got := parseOrcaVersionString(tc.in); got != tc.want {
+			t.Fatalf("parseOrcaVersionString(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if !HasNewerVersion("1.4.264", "1.4.266") {
+		t.Fatal("expected 1.4.266 > 1.4.264")
+	}
+	if HasNewerVersion("1.4.266", "1.4.266") {
+		t.Fatal("expected equal versions not to report update")
+	}
+}

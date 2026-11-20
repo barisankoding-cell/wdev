@@ -1373,6 +1373,595 @@ Domain <strong id="mail-domain-delete-name" style="color:var(--text-main);">-</s
     </div>
   </dialog>
 
+  <!-- Modal Config: Redis / Valkey -->
+  <dialog id="modal-config-redis" class="service-config-dialog" closedby="any" aria-labelledby="config-redis-title">
+    <div class="service-config-card">
+      <div class="service-config-header">
+        <div>
+          <h3 id="config-redis-title">Konfigurasi Redis / Valkey</h3>
+          <div class="service-config-meta" id="redis-cfg-meta">Memuat konfigurasi...</div>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeServiceConfigDialog('modal-config-redis')" aria-label="Tutup Konfigurasi Redis" style="min-height:36px;padding:4px 10px;">✕</button>
+      </div>
+
+      <div class="modal-tablist" role="tablist" aria-label="Bagian Konfigurasi Redis">
+        <button type="button" role="tab" id="redis-tab-btn-settings" aria-selected="true" tabindex="0" onclick="switchConfigModalTab('modal-config-redis', 'settings')">Pengaturan</button>
+        <button type="button" role="tab" id="redis-tab-btn-inspect" aria-selected="false" tabindex="-1" onclick="switchConfigModalTab('modal-config-redis', 'inspect')">Inspeksi &amp; Memori</button>
+        <button type="button" role="tab" id="redis-tab-btn-logs" aria-selected="false" tabindex="-1" onclick="switchConfigModalTab('modal-config-redis', 'logs')">Log Layanan</button>
+      </div>
+
+      <div role="tabpanel" id="redis-panel-settings" aria-labelledby="redis-tab-btn-settings" data-tab-panel="settings">
+        <form id="form-config-redis" onsubmit="submitRedisConfig(event)">
+          <div class="service-config-body">
+            <div id="redis-cfg-alert" class="config-inline-alert" role="alert" aria-live="polite"></div>
+
+            <div class="service-config-presets">
+              <span class="service-config-presets-label">Preset Cepat:</span>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyRedisPreset('local')">Dev Lokal</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyRedisPreset('cache')">Cache LRU (256MB)</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyRedisPreset('queue')">Queue / Laravel Horizon</button>
+            </div>
+
+            <fieldset class="service-config-fieldset">
+              <legend>Jaringan &amp; Keamanan</legend>
+              <div class="service-config-grid">
+                <div class="form-group">
+                  <label for="redis-cfg-port">Port Layanan</label>
+                  <input type="text" id="redis-cfg-port" name="port" class="form-control" inputmode="numeric" pattern="[0-9]+" required autofocus>
+                  <span class="service-config-hint">Standar Redis: <code>6379</code>.</span>
+                </div>
+                <div class="form-group">
+                  <label for="redis-cfg-protected">Protected Mode</label>
+                  <select id="redis-cfg-protected" name="protected_mode" class="form-control" aria-describedby="redis-cfg-protected-hint">
+                    <option value="yes">yes (Direkomendasikan)</option>
+                    <option value="no">no (Nonaktifkan proteksi remote)</option>
+                  </select>
+                  <span id="redis-cfg-protected-hint" class="service-config-hint">Jika bind <code>0.0.0.0</code>, wajib set password atau atur ke <code>no</code>.</span>
+                </div>
+                <div class="form-group full-span">
+                  <label for="redis-cfg-bind">Bind Address</label>
+                  <input type="text" id="redis-cfg-bind" name="bind" class="form-control" placeholder="127.0.0.1 -::1" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="redis-cfg-bind-hint" required>
+                  <span id="redis-cfg-bind-hint" class="service-config-hint">Gunakan <code>127.0.0.1 -::1</code> untuk akses lokal saja, atau <code>0.0.0.0</code> untuk akses LAN / NetBird VPN.</span>
+                </div>
+                <div class="form-group full-span">
+                  <label for="redis-cfg-password">Password Autentikasi (requirepass)</label>
+                  <input type="password" id="redis-cfg-password" name="password" class="form-control" placeholder="Isi untuk menyetel / mengganti password..." autocomplete="new-password" aria-describedby="redis-cfg-pass-hint">
+                  <span id="redis-cfg-pass-hint" class="service-config-hint">Status saat ini: <strong id="redis-cfg-pass-status">-</strong>. Biarkan kosong untuk mempertahankan password saat ini.</span>
+                </div>
+                <div class="form-group full-span">
+                  <div class="service-config-checkbox-row">
+                    <input type="checkbox" id="redis-cfg-clear-pass" name="clear_password">
+                    <label for="redis-cfg-clear-pass">Hapus password autentikasi (izinkan koneksi tanpa AUTH)</label>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset class="service-config-fieldset">
+              <legend>Memori, Persistensi &amp; Batas Koneksi</legend>
+              <div class="service-config-grid">
+                <div class="form-group">
+                  <label for="redis-cfg-maxmemory">Batas Memori (maxmemory)</label>
+                  <input type="text" id="redis-cfg-maxmemory" name="maxmemory" class="form-control" placeholder="256mb" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="redis-cfg-mem-hint" required>
+                  <span id="redis-cfg-mem-hint" class="service-config-hint">Gunakan <code>0</code> untuk tanpa batas, atau misalnya <code>256mb</code>, <code>1gb</code>.</span>
+                </div>
+                <div class="form-group">
+                  <label for="redis-cfg-policy">Eviction Policy (maxmemory-policy)</label>
+                  <select id="redis-cfg-policy" name="maxmemory_policy" class="form-control">
+                    <option value="noeviction">noeviction (Cocok untuk Queue/Job)</option>
+                    <option value="allkeys-lru">allkeys-lru (Cocok untuk Cache)</option>
+                    <option value="volatile-lru">volatile-lru</option>
+                    <option value="allkeys-lfu">allkeys-lfu</option>
+                    <option value="volatile-lfu">volatile-lfu</option>
+                    <option value="volatile-ttl">volatile-ttl</option>
+                    <option value="allkeys-random">allkeys-random</option>
+                    <option value="volatile-random">volatile-random</option>
+                  </select>
+                </div>
+                <div class="form-group full-span">
+                  <label for="redis-cfg-persistence">Mode Persistensi Data</label>
+                  <select id="redis-cfg-persistence" name="persistence_mode" class="form-control">
+                    <option value="rdb">RDB Snapshot (Default, hemat I/O)</option>
+                    <option value="aof">AOF (Append-Only File, durabilitas tinggi)</option>
+                    <option value="both">RDB + AOF (Durabilitas maksimal)</option>
+                    <option value="none">Nonaktif (Pure In-Memory Cache)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="redis-cfg-maxclients">Maksimal Klien (maxclients)</label>
+                  <input type="text" id="redis-cfg-maxclients" name="maxclients" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <label for="redis-cfg-databases">Jumlah Logical DB (databases)</label>
+                  <input type="text" id="redis-cfg-databases" name="databases" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+              </div>
+            </fieldset>
+          </div>
+          <div class="service-config-footer">
+            <div class="service-config-checkbox-row">
+              <input type="checkbox" id="redis-cfg-restart" name="restart" checked>
+              <label for="redis-cfg-restart">Restart layanan setelah simpan</label>
+            </div>
+            <div class="service-config-footer-actions">
+              <button type="button" class="btn" onclick="closeServiceConfigDialog('modal-config-redis')">Batal</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-redis-cfg">Simpan Konfigurasi</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div role="tabpanel" id="redis-panel-inspect" aria-labelledby="redis-tab-btn-inspect" data-tab-panel="inspect" hidden>
+        <div class="modal-tabpanel-inner">
+          <div class="inspect-section-header">
+            <h4>Ringkasan Runtime &amp; Memori</h4>
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadRedisInspect()">Segarkan</button>
+          </div>
+          <div id="redis-inspect-alert" class="config-inline-alert" role="alert" aria-live="polite"></div>
+          <div id="redis-inspect-stats" class="inspect-stat-grid"></div>
+          <div class="inspect-section-header" style="margin-top:8px;">
+            <h4>Keyspace per Database</h4>
+          </div>
+          <div class="table-container" style="margin-bottom:0;">
+            <table>
+              <thead>
+                <tr>
+                  <th>DB</th>
+                  <th>Keys</th>
+                  <th>Expires</th>
+                  <th>Avg TTL</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="redis-inspect-keyspace-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div role="tabpanel" id="redis-panel-logs" aria-labelledby="redis-tab-btn-logs" data-tab-panel="logs" hidden>
+        <div class="modal-tabpanel-inner">
+          <div class="inspect-section-header">
+            <h4 id="redis-logs-title">Log Layanan Redis</h4>
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadServiceConfigLogs('redis')">Muat Ulang Log</button>
+          </div>
+          <pre id="redis-logs-output" class="service-log-viewer">Memuat log...</pre>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal Config: PostgreSQL -->
+  <dialog id="modal-config-postgres" class="service-config-dialog" closedby="any" aria-labelledby="config-postgres-title">
+    <div class="service-config-card">
+      <div class="service-config-header">
+        <div>
+          <h3 id="config-postgres-title">Konfigurasi PostgreSQL</h3>
+          <div class="service-config-meta" id="pg-cfg-meta">Memuat konfigurasi...</div>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeServiceConfigDialog('modal-config-postgres')" aria-label="Tutup Konfigurasi PostgreSQL" style="min-height:36px;padding:4px 10px;">✕</button>
+      </div>
+
+      <div class="modal-tablist" role="tablist" aria-label="Bagian Konfigurasi PostgreSQL">
+        <button type="button" role="tab" id="pg-tab-btn-settings" aria-selected="true" tabindex="0" onclick="switchConfigModalTab('modal-config-postgres', 'settings')">Pengaturan</button>
+        <button type="button" role="tab" id="pg-tab-btn-inspect" aria-selected="false" tabindex="-1" onclick="switchConfigModalTab('modal-config-postgres', 'inspect')">Database &amp; Koneksi</button>
+        <button type="button" role="tab" id="pg-tab-btn-logs" aria-selected="false" tabindex="-1" onclick="switchConfigModalTab('modal-config-postgres', 'logs')">Log Layanan</button>
+      </div>
+
+      <div role="tabpanel" id="pg-panel-settings" aria-labelledby="pg-tab-btn-settings" data-tab-panel="settings">
+        <form id="form-config-postgres" onsubmit="submitPostgresConfig(event)">
+          <div class="service-config-body">
+            <div id="pg-cfg-alert" class="config-inline-alert" role="alert" aria-live="polite"></div>
+
+            <div class="service-config-presets">
+              <span class="service-config-presets-label">Preset Cepat:</span>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyPostgresPreset('dev')">Dev Hemat RAM</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyPostgresPreset('balanced')">Balanced (2-4GB RAM)</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyPostgresPreset('high')">High Throughput</button>
+            </div>
+
+            <fieldset class="service-config-fieldset">
+              <legend>Cluster, Jaringan &amp; Akses Remote</legend>
+              <div class="service-config-grid">
+                <div class="form-group">
+                  <label for="pg-cfg-version">Versi Cluster PostgreSQL</label>
+                  <select id="pg-cfg-version" name="version" class="form-control" onchange="onPostgresConfigVersionChange()"></select>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-port">Port Server</label>
+                  <input type="text" id="pg-cfg-port" name="port" class="form-control" inputmode="numeric" pattern="[0-9]+" required autofocus>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-listen">Listen Addresses</label>
+                  <input type="text" id="pg-cfg-listen" name="listen_addresses" class="form-control" placeholder="localhost" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="pg-cfg-listen-hint" required>
+                  <span id="pg-cfg-listen-hint" class="service-config-hint"><code>localhost</code> (aman lokal) atau <code>*</code> (semua interface).</span>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-remote-mode">Aturan Akses (pg_hba.conf)</label>
+                  <select id="pg-cfg-remote-mode" name="remote_access_mode" class="form-control" aria-describedby="pg-cfg-hba-hint">
+                    <option value="local">Lokal Saja (127.0.0.1 / Unix Socket)</option>
+                    <option value="private_vpn">LAN &amp; NetBird VPN (RFC1918 + 100.64.0.0/10)</option>
+                    <option value="all">Semua IP (0.0.0.0/0 — Wajib Password)</option>
+                  </select>
+                  <span id="pg-cfg-hba-hint" class="service-config-hint">Mengelola blok <code>WDEV REMOTE ACCESS</code> secara aman di <code>pg_hba.conf</code>.</span>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-auth">Metode Enkripsi Password</label>
+                  <select id="pg-cfg-auth" name="password_encryption" class="form-control">
+                    <option value="scram-sha-256">scram-sha-256 (Direkomendasikan)</option>
+                    <option value="md5">md5 (Legacy Kompatibilitas)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-newpass">Setel Password User <code>postgres</code> (Opsional)</label>
+                  <input type="password" id="pg-cfg-newpass" name="new_postgres_password" class="form-control" placeholder="Kosongkan bila tidak ingin mengubah..." autocomplete="new-password">
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset class="service-config-fieldset">
+              <legend>Tuning Memori, Koneksi &amp; Diagnostik</legend>
+              <div class="service-config-grid">
+                <div class="form-group">
+                  <label for="pg-cfg-maxconn">max_connections</label>
+                  <input type="text" id="pg-cfg-maxconn" name="max_connections" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-sharedbuf">shared_buffers</label>
+                  <input type="text" id="pg-cfg-sharedbuf" name="shared_buffers" class="form-control" placeholder="256MB" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="pg-cfg-sb-hint" required>
+                  <span id="pg-cfg-sb-hint" class="service-config-hint">Rekomendasi: ~25% dari total RAM sistem.</span>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-effcache">effective_cache_size</label>
+                  <input type="text" id="pg-cfg-effcache" name="effective_cache_size" class="form-control" placeholder="1GB" autocorrect="off" autocapitalize="none" spellcheck="false" required>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-workmem">work_mem</label>
+                  <input type="text" id="pg-cfg-workmem" name="work_mem" class="form-control" placeholder="8MB" autocorrect="off" autocapitalize="none" spellcheck="false" required>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-maintmem">maintenance_work_mem</label>
+                  <input type="text" id="pg-cfg-maintmem" name="maintenance_work_mem" class="form-control" placeholder="128MB" autocorrect="off" autocapitalize="none" spellcheck="false" required>
+                </div>
+                <div class="form-group">
+                  <label for="pg-cfg-timezone">Timezone</label>
+                  <input type="text" id="pg-cfg-timezone" name="timezone" class="form-control" placeholder="Asia/Jakarta" autocorrect="off" autocapitalize="none" spellcheck="false" required>
+                </div>
+                <div class="form-group full-span">
+                  <label for="pg-cfg-slowlog">Log Slow Query (log_min_duration_statement ms)</label>
+                  <input type="text" id="pg-cfg-slowlog" name="log_min_duration_statement" class="form-control" inputmode="numeric" aria-describedby="pg-cfg-slow-hint" required>
+                  <span id="pg-cfg-slow-hint" class="service-config-hint"><code>-1</code> untuk nonaktif, <code>0</code> untuk semua query, atau mis. <code>500</code> (catat query &gt; 500ms).</span>
+                </div>
+              </div>
+            </fieldset>
+          </div>
+          <div class="service-config-footer">
+            <div class="service-config-checkbox-row">
+              <input type="checkbox" id="pg-cfg-restart" name="restart" checked>
+              <label for="pg-cfg-restart">Restart layanan setelah simpan</label>
+            </div>
+            <div class="service-config-footer-actions">
+              <button type="button" class="btn" onclick="closeServiceConfigDialog('modal-config-postgres')">Batal</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-pg-cfg">Simpan Konfigurasi</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div role="tabpanel" id="pg-panel-inspect" aria-labelledby="pg-tab-btn-inspect" data-tab-panel="inspect" hidden>
+        <div class="modal-tabpanel-inner">
+          <div class="inspect-section-header">
+            <h4>Buat Database &amp; User Baru</h4>
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadPostgresInspect()">Segarkan Data</button>
+          </div>
+          <div id="pg-inspect-alert" class="config-inline-alert" role="alert" aria-live="polite"></div>
+
+          <form id="form-pg-create-db" onsubmit="submitCreatePostgresDB(event)" class="service-config-fieldset">
+            <legend>Database Baru</legend>
+            <div class="service-config-grid">
+              <div class="form-group">
+                <label for="pg-new-db-name">Nama Database</label>
+                <input type="text" id="pg-new-db-name" class="form-control" placeholder="myapp_db" autocorrect="off" autocapitalize="none" spellcheck="false" required>
+              </div>
+              <div class="form-group">
+                <label for="pg-new-db-owner">Owner / Username (Opsional)</label>
+                <input type="text" id="pg-new-db-owner" class="form-control" placeholder="postgres atau myapp_user" autocorrect="off" autocapitalize="none" spellcheck="false">
+              </div>
+              <div class="form-group">
+                <label for="pg-new-db-pass">Password User Baru (jika user baru)</label>
+                <input type="password" id="pg-new-db-pass" class="form-control" placeholder="Wajib bila membuat user baru..." autocomplete="new-password">
+              </div>
+              <div class="form-group" style="display:flex;align-items:flex-end;">
+                <button type="submit" class="btn btn-primary" id="btn-pg-create-db" style="width:100%;">Buat Database</button>
+              </div>
+            </div>
+          </form>
+
+          <div class="inspect-section-header">
+            <h4>Daftar Database</h4>
+          </div>
+          <div class="table-container" style="margin-bottom:14px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Database</th>
+                  <th>Owner</th>
+                  <th>Ukuran</th>
+                </tr>
+              </thead>
+              <tbody id="pg-inspect-db-body"></tbody>
+            </table>
+          </div>
+
+          <div class="inspect-section-header">
+            <h4>Roles / Users</h4>
+          </div>
+          <div id="pg-inspect-roles" class="role-badge-list"></div>
+
+          <div class="inspect-section-header">
+            <h4>Koneksi Aktif (pg_stat_activity)</h4>
+          </div>
+          <div class="table-container" style="margin-bottom:0;">
+            <table>
+              <thead>
+                <tr>
+                  <th>PID</th>
+                  <th>DB</th>
+                  <th>User</th>
+                  <th>Client</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody id="pg-inspect-conn-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div role="tabpanel" id="pg-panel-logs" aria-labelledby="pg-tab-btn-logs" data-tab-panel="logs" hidden>
+        <div class="modal-tabpanel-inner">
+          <div class="inspect-section-header">
+            <h4 id="pg-logs-title">Log Layanan PostgreSQL</h4>
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadServiceConfigLogs('postgresql')">Muat Ulang Log</button>
+          </div>
+          <pre id="pg-logs-output" class="service-log-viewer">Memuat log...</pre>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal Config: PHP & PHP-FPM -->
+  <dialog id="modal-config-php" class="service-config-dialog" closedby="any" aria-labelledby="config-php-title">
+    <div class="service-config-card">
+      <div class="service-config-header">
+        <div>
+          <h3 id="config-php-title">Konfigurasi PHP &amp; PHP-FPM</h3>
+          <div class="service-config-meta" id="php-cfg-meta">Memuat konfigurasi...</div>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeServiceConfigDialog('modal-config-php')" aria-label="Tutup Konfigurasi PHP" style="min-height:36px;padding:4px 10px;">✕</button>
+      </div>
+
+      <div class="modal-tablist" role="tablist" aria-label="Bagian Konfigurasi PHP">
+        <button type="button" role="tab" id="php-tab-btn-settings" aria-selected="true" tabindex="0" onclick="switchConfigModalTab('modal-config-php', 'settings')">Pengaturan</button>
+        <button type="button" role="tab" id="php-tab-btn-logs" aria-selected="false" tabindex="-1" onclick="switchConfigModalTab('modal-config-php', 'logs')">Log Layanan</button>
+      </div>
+
+      <div role="tabpanel" id="php-panel-settings" aria-labelledby="php-tab-btn-settings" data-tab-panel="settings">
+        <form id="form-config-php" onsubmit="submitPHPConfig(event)">
+          <div class="service-config-body">
+            <div id="php-cfg-alert" class="config-inline-alert" role="alert" aria-live="polite"></div>
+
+            <div class="service-config-presets">
+              <span class="service-config-presets-label">Preset Cepat:</span>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyPHPPreset('dev')">Development (Debug On)</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyPHPPreset('prod')">Laravel / WordPress Optimal</button>
+            </div>
+
+            <fieldset class="service-config-fieldset">
+              <legend>Versi &amp; Pengaturan PHP.ini (99-wdev.ini)</legend>
+              <div class="service-config-grid">
+                <div class="form-group">
+                  <label for="php-cfg-version">Versi PHP Target</label>
+                  <select id="php-cfg-version" name="version" class="form-control" onchange="onPHPConfigVersionChange()"></select>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-timezone">date.timezone</label>
+                  <input type="text" id="php-cfg-timezone" name="timezone" class="form-control" placeholder="Asia/Jakarta" autocorrect="off" autocapitalize="none" spellcheck="false" required autofocus>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-memlimit">memory_limit</label>
+                  <input type="text" id="php-cfg-memlimit" name="memory_limit" class="form-control" placeholder="512M" autocorrect="off" autocapitalize="none" spellcheck="false" required>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-upload">upload_max_filesize</label>
+                  <input type="text" id="php-cfg-upload" name="upload_max_filesize" class="form-control" placeholder="64M" autocorrect="off" autocapitalize="none" spellcheck="false" required>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-postmax">post_max_size</label>
+                  <input type="text" id="php-cfg-postmax" name="post_max_size" class="form-control" placeholder="64M" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="php-cfg-post-hint" required>
+                  <span id="php-cfg-post-hint" class="service-config-hint">Disarankan &ge; <code>upload_max_filesize</code>.</span>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-maxexec">max_execution_time (detik)</label>
+                  <input type="text" id="php-cfg-maxexec" name="max_execution_time" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-maxvars">max_input_vars</label>
+                  <input type="text" id="php-cfg-maxvars" name="max_input_vars" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-opcache-mem">OPcache Memory (MB)</label>
+                  <input type="text" id="php-cfg-opcache-mem" name="opcache_memory_consumption" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <div class="service-config-checkbox-row">
+                    <input type="checkbox" id="php-cfg-display-errors" name="display_errors">
+                    <label for="php-cfg-display-errors">Tampilkan Error (display_errors = On)</label>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div class="service-config-checkbox-row">
+                    <input type="checkbox" id="php-cfg-opcache" name="opcache_enable" checked>
+                    <label for="php-cfg-opcache">Aktifkan Zend OPcache</label>
+                  </div>
+                </div>
+                <div class="form-group full-span">
+                  <div class="service-config-checkbox-row">
+                    <input type="checkbox" id="php-cfg-sync-cli" name="sync_cli" checked>
+                    <label for="php-cfg-sync-cli">Terapkan juga pengaturan INI ke PHP CLI (Composer / Artisan)</label>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset class="service-config-fieldset">
+              <legend>Worker Pool PHP-FPM ([www] www.conf)</legend>
+              <div class="service-config-grid">
+                <div class="form-group">
+                  <label for="php-cfg-pm">Process Manager (pm)</label>
+                  <select id="php-cfg-pm" name="pm" class="form-control" onchange="togglePHPPoolDynamicFields()">
+                    <option value="dynamic">dynamic (Seimbang &amp; Responsif)</option>
+                    <option value="ondemand">ondemand (Hemat RAM)</option>
+                    <option value="static">static (Trafik Tinggi Tetap)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-maxchildren">pm.max_children</label>
+                  <input type="text" id="php-cfg-maxchildren" name="pm_max_children" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group php-dynamic-only">
+                  <label for="php-cfg-startservers">pm.start_servers</label>
+                  <input type="text" id="php-cfg-startservers" name="pm_start_servers" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group php-dynamic-only">
+                  <label for="php-cfg-minspare">pm.min_spare_servers</label>
+                  <input type="text" id="php-cfg-minspare" name="pm_min_spare_servers" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group php-dynamic-only">
+                  <label for="php-cfg-maxspare">pm.max_spare_servers</label>
+                  <input type="text" id="php-cfg-maxspare" name="pm_max_spare_servers" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <label for="php-cfg-maxreq">pm.max_requests</label>
+                  <input type="text" id="php-cfg-maxreq" name="pm_max_requests" class="form-control" inputmode="numeric" pattern="[0-9]+" aria-describedby="php-cfg-maxreq-hint" required>
+                  <span id="php-cfg-maxreq-hint" class="service-config-hint">Contoh: <code>500</code> untuk mencegah kebocoran memori worker.</span>
+                </div>
+              </div>
+            </fieldset>
+          </div>
+          <div class="service-config-footer">
+            <div class="service-config-checkbox-row">
+              <input type="checkbox" id="php-cfg-restart" name="restart" checked>
+              <label for="php-cfg-restart">Uji sintaks (-t) &amp; restart PHP-FPM</label>
+            </div>
+            <div class="service-config-footer-actions">
+              <button type="button" class="btn" onclick="closeServiceConfigDialog('modal-config-php')">Batal</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-php-cfg">Simpan Konfigurasi</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div role="tabpanel" id="php-panel-logs" aria-labelledby="php-tab-btn-logs" data-tab-panel="logs" hidden>
+        <div class="modal-tabpanel-inner">
+          <div class="inspect-section-header">
+            <h4 id="php-logs-title">Log Layanan PHP-FPM</h4>
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadServiceConfigLogs('php-fpm')">Muat Ulang Log</button>
+          </div>
+          <pre id="php-logs-output" class="service-log-viewer">Memuat log...</pre>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal Config: Nginx Global -->
+  <dialog id="modal-config-nginx" class="service-config-dialog" closedby="any" aria-labelledby="config-nginx-title">
+    <div class="service-config-card">
+      <div class="service-config-header">
+        <div>
+          <h3 id="config-nginx-title">Konfigurasi Global Nginx</h3>
+          <div class="service-config-meta" id="nginx-cfg-meta">Memuat konfigurasi...</div>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeServiceConfigDialog('modal-config-nginx')" aria-label="Tutup Konfigurasi Nginx" style="min-height:36px;padding:4px 10px;">✕</button>
+      </div>
+
+      <div class="modal-tablist" role="tablist" aria-label="Bagian Konfigurasi Nginx">
+        <button type="button" role="tab" id="nginx-tab-btn-settings" aria-selected="true" tabindex="0" onclick="switchConfigModalTab('modal-config-nginx', 'settings')">Pengaturan</button>
+        <button type="button" role="tab" id="nginx-tab-btn-logs" aria-selected="false" tabindex="-1" onclick="switchConfigModalTab('modal-config-nginx', 'logs')">Log &amp; Error</button>
+      </div>
+
+      <div role="tabpanel" id="nginx-panel-settings" aria-labelledby="nginx-tab-btn-settings" data-tab-panel="settings">
+        <form id="form-config-nginx" onsubmit="submitNginxConfig(event)">
+          <div class="service-config-body">
+            <div id="nginx-cfg-alert" class="config-inline-alert" role="alert" aria-live="polite"></div>
+
+            <div class="service-config-presets">
+              <span class="service-config-presets-label">Preset Cepat:</span>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyNginxPreset('dev')">Dev Standar (64M)</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyNginxPreset('upload')">Upload Besar (256M)</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="applyNginxPreset('prod')">Production Hardened</button>
+            </div>
+
+            <fieldset class="service-config-fieldset">
+              <legend>Performa Worker &amp; Batas Request</legend>
+              <div class="service-config-grid">
+                <div class="form-group">
+                  <label for="nginx-cfg-workers">worker_processes</label>
+                  <input type="text" id="nginx-cfg-workers" name="worker_processes" class="form-control" placeholder="auto" autocorrect="off" autocapitalize="none" spellcheck="false" required autofocus>
+                </div>
+                <div class="form-group">
+                  <label for="nginx-cfg-conn">worker_connections</label>
+                  <input type="text" id="nginx-cfg-conn" name="worker_connections" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <label for="nginx-cfg-bodysize">client_max_body_size</label>
+                  <input type="text" id="nginx-cfg-bodysize" name="client_max_body_size" class="form-control" placeholder="64M" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="nginx-cfg-body-hint" required>
+                  <span id="nginx-cfg-body-hint" class="service-config-hint">Samakan minimal dengan <code>post_max_size</code> PHP agar upload tidak error 413.</span>
+                </div>
+                <div class="form-group">
+                  <label for="nginx-cfg-keepalive">keepalive_timeout (detik)</label>
+                  <input type="text" id="nginx-cfg-keepalive" name="keepalive_timeout" class="form-control" inputmode="numeric" pattern="[0-9]+" required>
+                </div>
+                <div class="form-group">
+                  <div class="service-config-checkbox-row">
+                    <input type="checkbox" id="nginx-cfg-gzip" name="gzip" checked>
+                    <label for="nginx-cfg-gzip">Aktifkan Kompresi Gzip</label>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div class="service-config-checkbox-row">
+                    <input type="checkbox" id="nginx-cfg-tokens" name="server_tokens">
+                    <label for="nginx-cfg-tokens">Tampilkan Versi di Header (server_tokens)</label>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+          </div>
+          <div class="service-config-footer">
+            <div class="service-config-checkbox-row">
+              <input type="checkbox" id="nginx-cfg-restart" name="restart" checked>
+              <label for="nginx-cfg-restart">Uji sintaks (nginx -t) &amp; restart Nginx</label>
+            </div>
+            <div class="service-config-footer-actions">
+              <button type="button" class="btn" onclick="closeServiceConfigDialog('modal-config-nginx')">Batal</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-nginx-cfg">Simpan Konfigurasi</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div role="tabpanel" id="nginx-panel-logs" aria-labelledby="nginx-tab-btn-logs" data-tab-panel="logs" hidden>
+        <div class="modal-tabpanel-inner">
+          <div class="inspect-section-header">
+            <h4 id="nginx-logs-title">Log Layanan &amp; Error Nginx</h4>
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadServiceConfigLogs('nginx')">Muat Ulang Log</button>
+          </div>
+          <pre id="nginx-logs-output" class="service-log-viewer">Memuat log...</pre>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   <script src="/app.js"></script>
   <script>
     function toggleFrameworkFields() {

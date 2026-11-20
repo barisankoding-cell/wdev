@@ -37,13 +37,31 @@ func TestStripLegacyPathLines(t *testing.T) {
 	}
 	got := stripLegacyPathLines(lines)
 	joined := strings.Join(got, "\n")
-	for _, bad := range []string{"DEV ENVIRONMENT", "for prof in", "usr/local/cargo/bin:/usr/local/go/bin"} {
+	for _, bad := range []string{"DEV ENVIRONMENT", "for prof in", "$prof", "done", "usr/local/cargo/bin:/usr/local/go/bin"} {
 		if strings.Contains(joined, bad) {
 			t.Fatalf("baris legacy %q masih ada:\n%s", bad, joined)
 		}
 	}
 	if !strings.Contains(joined, "alias ll='ls -lah'") {
 		t.Fatalf("baris tak terkait terhapus:\n%s", joined)
+	}
+}
+
+func TestStripOrphanedProfDone(t *testing.T) {
+	lines := []string{
+		"source $ZSH/oh-my-zsh.sh",
+		"",
+		`  [ -r "$prof" ] && . "$prof" >/dev/null 2>&1`,
+		"done",
+		"typeset -U PATH path",
+	}
+	got := stripLegacyPathLines(lines)
+	joined := strings.Join(got, "\n")
+	if strings.Contains(joined, "$prof") || strings.Contains(joined, "done") {
+		t.Fatalf("baris yatim $prof/done seharusnya dibersihkan:\n%s", joined)
+	}
+	if !strings.Contains(joined, "typeset -U PATH path") {
+		t.Fatalf("baris valid ikut terhapus:\n%s", joined)
 	}
 }
 
@@ -121,5 +139,46 @@ func TestProfileScriptSingleSource(t *testing.T) {
 		if !strings.Contains(script, key) {
 			t.Fatalf("profileScript tidak memuat %q", key)
 		}
+	}
+}
+
+func TestReconcileZshrcCleansOrphanAndSilencesInit(t *testing.T) {
+	broken := `export ZSH="$HOME/.oh-my-zsh"
+if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
+fi
+ZSH_THEME="robbyrussell"
+source $ZSH/oh-my-zsh.sh
+
+  [ -r "$prof" ] && . "$prof" >/dev/null 2>&1
+done
+typeset -U PATH path
+`
+	got := reconcileZshrc(broken, "powerlevel10k")
+	if strings.Contains(got, "$prof") || strings.Contains(got, "\ndone\n") {
+		t.Fatalf("sisa loop yatim masih ada:\n%s", got)
+	}
+	if !strings.Contains(got, `ZSH_THEME="powerlevel10k/powerlevel10k"`) {
+		t.Fatalf("tema tidak diperbarui ke powerlevel10k:\n%s", got)
+	}
+	if !strings.Contains(got, `ZSH_DISABLE_COMPFIX="true"`) || !strings.Contains(got, `zstyle ':omz:update' mode disabled`) {
+		t.Fatalf("opsi senyap P10k tidak disisipkan:\n%s", got)
+	}
+	if strings.Index(got, `ZSH_DISABLE_COMPFIX="true"`) > strings.Index(got, "source $ZSH/oh-my-zsh.sh") {
+		t.Fatalf("ZSH_DISABLE_COMPFIX harus sebelum source oh-my-zsh.sh:\n%s", got)
+	}
+}
+
+func TestDetectNerdFont(t *testing.T) {
+	home := t.TempDir()
+	fontsDir := filepath.Join(home, ".local", "share", "fonts")
+	if err := os.MkdirAll(fontsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fontsDir, "MesloLGS NF Regular.ttf"), []byte("ttf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DetectNerdFont(home); got != "MesloLGS NF" {
+		t.Fatalf("DetectNerdFont = %q, want MesloLGS NF", got)
 	}
 }

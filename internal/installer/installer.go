@@ -1081,133 +1081,19 @@ func (inst *Installer) InstallOrca(ctx context.Context, cb LogCallback, mode str
 
 	cb("==> Memeriksa rilis terbaru Orca ADE dari GitHub...")
 	tag, assets, err := fetchGitHubLatestRelease(ctx, "stablyai/orca")
+	latest := ""
 	if err != nil {
 		cb(fmt.Sprintf("[WARN] GitHub API tidak tersedia (%v), menggunakan URL latest/download...", err))
 	} else if tag != "" {
+		latest = strings.TrimPrefix(strings.TrimSpace(tag), "v")
 		cb(fmt.Sprintf("Rilis terbaru Orca: %s", tag))
 	}
 
 	if mode == "headless" {
-		archName := "x64"
-		if runtime.GOARCH == "arm64" {
-			archName = "arm64"
-		}
-		assetName := fmt.Sprintf("orca-server-linux-%s.tar.gz", archName)
-		downloadURL := ""
-		for _, a := range assets {
-			if a.Name == assetName {
-				downloadURL = a.URL
-				break
-			}
-		}
-		if downloadURL == "" {
-			downloadURL = fmt.Sprintf("https://github.com/stablyai/orca/releases/latest/download/%s", assetName)
-		}
-
-		tarPath := filepath.Join(os.TempDir(), assetName)
-		cb(fmt.Sprintf("==> Mengunduh Orca Server: %s", downloadURL))
-		if err := downloadFile(downloadURL, tarPath); err != nil {
-			return fmt.Errorf("gagal mengunduh Orca Server: %w", err)
-		}
-		defer os.Remove(tarPath)
-
-		installDir := "/usr/local/lib/orca-server"
-		_ = inst.runCmd(ctx, cb, "rm", "-rf", installDir)
-		_ = inst.runCmd(ctx, cb, "mkdir", "-p", installDir)
-		if err := inst.runCmd(ctx, cb, "tar", "-xzf", tarPath, "-C", installDir); err != nil {
-			return fmt.Errorf("gagal mengekstrak Orca Server: %w", err)
-		}
-
-		orcaBin := ""
-		_ = filepath.WalkDir(installDir, func(path string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil || d.IsDir() {
-				return nil
-			}
-			if d.Name() == "orca" {
-				orcaBin = path
-				return filepath.SkipAll
-			}
-			return nil
-		})
-		if orcaBin == "" {
-			return fmt.Errorf("biner 'orca' tidak ditemukan di dalam %s", installDir)
-		}
-
-		_ = inst.runCmd(ctx, cb, "chmod", "+x", orcaBin)
-		_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/orca")
-		_ = inst.runCmd(ctx, cb, "ln", "-sfn", orcaBin, "/usr/local/bin/orca")
-
-		svcUser, userHome := ResolveTargetUserAndHome()
-		dataPath := "/var/lib/orca"
-		if svcUser != "root" && userHome != "" {
-			dataPath = filepath.Join(userHome, ".config", "orca")
-		} else {
-			svcUser = "root"
-		}
-
-		cb("==> Mengonfigurasi mode Headless Server (orca.service)...")
-		serviceUnit := fmt.Sprintf(`[Unit]
-Description=Orca ADE Headless Server
-After=network.target
-
-[Service]
-Type=simple
-User=%s
-Environment=ORCA_USER_DATA_PATH=%s
-ExecStart=/usr/local/bin/orca serve
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-`, svcUser, dataPath)
-		if err := inst.writeSystemFile(ctx, cb, "/etc/systemd/system/orca.service", []byte(serviceUnit), "644"); err != nil {
-			return err
-		}
-		_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
-		_ = inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "orca.service")
-
-		cb("✓ Orca ADE Headless Server berhasil diinstal!")
-		return nil
+		return inst.installOrcaServerTarball(ctx, cb, latest, assets)
 	}
 
-	// Mode Desktop: gunakan AppImage resmi lintas distro
-	assetName := "orca-linux.AppImage"
-	if runtime.GOARCH == "arm64" {
-		assetName = "orca-linux-arm64.AppImage"
-	}
-	downloadURL := ""
-	for _, a := range assets {
-		if a.Name == assetName {
-			downloadURL = a.URL
-			break
-		}
-	}
-	if downloadURL == "" {
-		downloadURL = fmt.Sprintf("https://github.com/stablyai/orca/releases/latest/download/%s", assetName)
-	}
-
-	tmpApp := filepath.Join(os.TempDir(), assetName)
-	cb(fmt.Sprintf("==> Mengunduh Orca Desktop AppImage: %s", downloadURL))
-	if err := downloadFile(downloadURL, tmpApp); err != nil {
-		return fmt.Errorf("gagal mengunduh Orca AppImage: %w", err)
-	}
-	defer os.Remove(tmpApp)
-
-	orcaDir := "/usr/local/lib/orca-ide"
-	dstApp := filepath.Join(orcaDir, "orca.AppImage")
-	_ = inst.runCmd(ctx, cb, "mkdir", "-p", orcaDir)
-	if err := inst.runCmd(ctx, cb, "cp", "-f", tmpApp, dstApp); err != nil {
-		return err
-	}
-	_ = inst.runCmd(ctx, cb, "chmod", "+x", dstApp)
-	_ = inst.runCmd(ctx, cb, "ln", "-sfn", dstApp, "/usr/local/bin/orca-ide")
-	if _, err := os.Stat("/usr/local/bin/orca"); os.IsNotExist(err) {
-		_ = inst.runCmd(ctx, cb, "ln", "-sfn", dstApp, "/usr/local/bin/orca")
-	}
-
-	cb("✓ Orca ADE Desktop (AppImage) berhasil diinstal di " + dstApp)
-	return nil
+	return inst.installOrcaAppImage(ctx, cb, latest, assets)
 }
 
 func (inst *Installer) UninstallOrca(ctx context.Context, cb LogCallback, purge bool) error {
@@ -1276,18 +1162,27 @@ func (inst *Installer) InstallZsh(ctx context.Context, cb LogCallback, theme str
 	// Install zsh package
 	if inst.isDebian {
 		_ = inst.runCmd(ctx, cb, "apt-get", "install", "-y", "zsh")
-	} else {
+	} else if inst.pkgMgr == "dnf" || inst.pkgMgr == "yum" {
 		_ = inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "zsh")
+	} else if inst.pkgMgr == "pacman" {
+		_ = inst.runCmd(ctx, cb, "pacman", "-S", "--noconfirm", "zsh")
+	} else if inst.pkgMgr == "zypper" {
+		_ = inst.runCmd(ctx, cb, "zypper", "install", "-y", "zsh")
 	}
 
-	_, home := ResolveTargetUserAndHome()
+	targetUser, home := ResolveOrcaUser()
+	if home == "" {
+		targetUser, home = ResolveTargetUserAndHome()
+	}
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
 	omzDir := filepath.Join(home, ".oh-my-zsh")
 
 	if _, err := os.Stat(omzDir); os.IsNotExist(err) {
-		_ = inst.runCmd(ctx, cb, "git", "clone", "--depth=1", "https://github.com/ohmyzsh/ohmyzsh.git", omzDir)
+		if err := inst.runCmd(ctx, cb, "git", "clone", "--depth=1", "https://github.com/ohmyzsh/ohmyzsh.git", omzDir); err != nil {
+			return fmt.Errorf("gagal mengkloning Oh My Zsh: %w", err)
+		}
 	} else {
 		_ = inst.runCmd(ctx, cb, "git", "-c", "safe.directory="+omzDir, "-C", omzDir, "pull", "--ff-only")
 	}
@@ -1295,17 +1190,20 @@ func (inst *Installer) InstallZsh(ctx context.Context, cb LogCallback, theme str
 	// Plugins
 	pluginsDir := filepath.Join(omzDir, "custom", "plugins")
 	_ = os.MkdirAll(pluginsDir, 0755)
-	pAuto := filepath.Join(pluginsDir, "zsh-autosuggestions")
-	if _, err := os.Stat(pAuto); os.IsNotExist(err) {
-		_ = inst.runCmd(ctx, cb, "git", "clone", "--depth=1", "https://github.com/zsh-users/zsh-autosuggestions", pAuto)
-	} else {
-		_ = inst.runCmd(ctx, cb, "git", "-c", "safe.directory="+pAuto, "-C", pAuto, "pull", "--ff-only")
-	}
-	pSyn := filepath.Join(pluginsDir, "zsh-syntax-highlighting")
-	if _, err := os.Stat(pSyn); os.IsNotExist(err) {
-		_ = inst.runCmd(ctx, cb, "git", "clone", "--depth=1", "https://github.com/zsh-users/zsh-syntax-highlighting", pSyn)
-	} else {
-		_ = inst.runCmd(ctx, cb, "git", "-c", "safe.directory="+pSyn, "-C", pSyn, "pull", "--ff-only")
+	for _, pl := range []struct {
+		dir string
+		url string
+	}{
+		{"zsh-autosuggestions", "https://github.com/zsh-users/zsh-autosuggestions"},
+		{"zsh-syntax-highlighting", "https://github.com/zsh-users/zsh-syntax-highlighting"},
+		{"zsh-completions", "https://github.com/zsh-users/zsh-completions"},
+	} {
+		pDir := filepath.Join(pluginsDir, pl.dir)
+		if _, err := os.Stat(pDir); os.IsNotExist(err) {
+			_ = inst.runCmd(ctx, cb, "git", "clone", "--depth=1", pl.url, pDir)
+		} else {
+			_ = inst.runCmd(ctx, cb, "git", "-c", "safe.directory="+pDir, "-C", pDir, "pull", "--ff-only")
+		}
 	}
 
 	// Themes
@@ -1318,7 +1216,34 @@ func (inst *Installer) InstallZsh(ctx context.Context, cb LogCallback, theme str
 		_ = inst.runCmd(ctx, cb, "git", "-c", "safe.directory="+p10k, "-C", p10k, "pull", "--ff-only")
 	}
 
-	cb(fmt.Sprintf("✓ Oh My Zsh berhasil dikonfigurasi dengan tema %s.", theme))
+	// Pastikan kepemilikan & permission aman agar compinit/compaudit tidak mencetak warning saat Zsh start
+	chownPath(targetUser, omzDir)
+	_ = exec.CommandContext(ctx, "chmod", "-R", "go-w", omzDir).Run()
+
+	// Pasang Nerd Font (MesloLGS NF) bila belum ada agar ikon tema Powerlevel10k/Agnoster tampil rapi
+	inst.ensureMesloLGSNerdFont(ctx, cb, targetUser, home)
+
+	// Rapikan ~/.zshrc (bersihkan sisa loop yatim & pastikan ZSH_DISABLE_COMPFIX / p10k instant prompt aman)
+	zshrcPath := filepath.Join(home, ".zshrc")
+	existingZshrc, _ := os.ReadFile(zshrcPath)
+	updatedZshrc := reconcileZshrc(string(existingZshrc), theme)
+	if err := os.WriteFile(zshrcPath, []byte(updatedZshrc), 0644); err != nil {
+		cb(fmt.Sprintf("[WARN] Gagal memperbarui %s: %v", zshrcPath, err))
+	} else {
+		chownPath(targetUser, zshrcPath)
+		_, _ = SyncUserShellEnv(targetUser, home)
+		if zshBin, zErr := exec.LookPath("zsh"); zErr == nil {
+			if out, nErr := exec.CommandContext(ctx, zshBin, "-n", zshrcPath).CombinedOutput(); nErr != nil {
+				cb(fmt.Sprintf("[WARN] Pemeriksaan sintaks %s: %s", zshrcPath, strings.TrimSpace(string(out))))
+			}
+		}
+	}
+
+	if zshBin, zErr := exec.LookPath("zsh"); zErr == nil && targetUser != "" {
+		_ = inst.runCmd(ctx, cb, "chsh", "-s", zshBin, targetUser)
+	}
+
+	cb(fmt.Sprintf("✓ Oh My Zsh berhasil dikonfigurasi dengan tema %s untuk user %s.", theme, targetUser))
 	return nil
 }
 
@@ -1762,6 +1687,23 @@ func (inst *Installer) CheckUpdates(ctx context.Context, cb LogCallback) error {
 		Installed: nbInst,
 		Latest:    nbLatest,
 		HasUpdate: nbLatest != "-" && nbInst != "-" && !strings.HasPrefix(nbLatest, nbInst),
+	})
+
+	// 11. Orca ADE
+	orcaInst := "-"
+	orcaUser, orcaHome := ResolveOrcaUser()
+	if v := DetectOrcaInstalledVersion(ctx, orcaUser, orcaHome); v != "" {
+		orcaInst = v
+	}
+	orcaLatest := "-"
+	if v := GetOrcaLatestVersion(ctx, true); v != "" {
+		orcaLatest = v
+	}
+	results = append(results, VersionCheck{
+		Name:      "Orca ADE",
+		Installed: orcaInst,
+		Latest:    orcaLatest,
+		HasUpdate: orcaLatest != "-" && orcaInst != "-" && hasNewerVersion(orcaInst, orcaLatest),
 	})
 
 	// Output Table

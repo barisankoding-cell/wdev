@@ -1415,3 +1415,340 @@ dialog::backdrop {
   border-top: 1px dashed var(--border);
   padding-top: 6px;
 }
+
+/* ==========================================================================
+   SERVICE CONFIG NATIVE DIALOG MODALS (Redis, PostgreSQL, PHP-FPM)
+   ========================================================================== */
+dialog.service-config-dialog {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: auto;
+  width: min(680px, calc(100vw - 28px));
+  max-width: 100%;
+  max-height: 92dvh;
+  color: var(--text-main);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8);
+  overflow: visible;
+}
+
+dialog.service-config-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.service-config-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  max-height: 92dvh;
+  overflow: hidden;
+  animation: system-dialog-pop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.service-config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.service-config-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.service-config-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.service-config-body {
+  padding: 16px 22px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+}
+
+.service-config-presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.service-config-presets-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-inline-end: 4px;
+}
+
+.service-config-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px 6px;
+  margin: 0 0 16px 0;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.service-config-fieldset legend {
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  letter-spacing: 0.2px;
+}
+
+.service-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.service-config-grid .form-group {
+  margin-bottom: 10px;
+}
+
+.service-config-grid .form-group.full-span {
+  grid-column: 1 / -1;
+}
+
+.service-config-hint {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.45;
+}
+
+.service-config-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.service-config-checkbox-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.service-config-checkbox-row label {
+  margin-bottom: 0;
+  font-size: 13px;
+  color: var(--text-main);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.config-inline-alert {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+  display: none;
+}
+
+.config-inline-alert.visible {
+  display: block;
+}
+
+.config-inline-alert.error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.config-inline-alert.warning {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
+
+.config-inline-alert.success {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #6ee7b7;
+}
+
+.service-config-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.service-config-footer-actions {
+  display: flex;
+  gap: 10px;
+  margin-inline-start: auto;
+}
+
+dialog.service-config-dialog :is(input, select, button):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .service-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .service-config-header,
+  .service-config-body,
+  .service-config-footer {
+    padding-inline: 16px;
+  }
+}
+
+/* Modal Tablist & Inspector / Log Panels */
+.modal-tablist {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 4px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.modal-tablist::-webkit-scrollbar {
+  display: none;
+}
+
+.modal-tablist [role="tab"] {
+  position: relative;
+  flex: none;
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 11px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 42px;
+}
+
+.modal-tablist [role="tab"]:hover {
+  color: var(--text-main);
+}
+
+.modal-tablist [role="tab"][aria-selected="true"] {
+  color: var(--primary);
+}
+
+.modal-tablist [role="tab"][aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  border-block-end: 3px solid var(--primary);
+}
+
+.modal-tabpanel-inner {
+  padding: 16px 22px 20px;
+  overflow-y: auto;
+  max-height: calc(92dvh - 125px);
+}
+
+.inspect-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.inspect-stat-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.inspect-stat-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.inspect-stat-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.service-log-viewer {
+  background: #070b14;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #cbd5e1;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.inspect-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.inspect-section-header h4 {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.role-badge-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 640px) {
+  .modal-tablist {
+    padding-inline: 16px;
+  }
+
+  .modal-tabpanel-inner {
+    padding-inline: 16px;
+  }
+}

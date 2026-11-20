@@ -1,6 +1,7 @@
 // wdev Dashboard Application
 document.addEventListener('DOMContentLoaded', () => {
   initModalDialog();
+  initServiceConfigDialogs();
   setupNavigation();
   setupMobileDrawer();
   setupSSE();
@@ -439,15 +440,24 @@ function renderServices(services) {
       } else {
         controlBtn = `<button class="btn btn-sm btn-outline" onclick="serviceAction('${s.name}', 'start')" title="Jalankan Layanan" style="display:inline-flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> Jalankan</button>`;
       }
+      const configBtn = (s.name === 'redis' || s.name === 'postgresql' || s.name === 'php-fpm' || s.name === 'nginx')
+        ? `<button type="button" class="btn btn-sm btn-outline" onclick="openServiceConfigModal('${s.name}')" title="Pengaturan ${escapeHtml(s.display_name)}" aria-label="Konfigurasi ${escapeHtml(s.display_name)}" style="display:inline-flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Konfigurasi</button>`
+        : '';
+
       actionsHtml = `
         <button class="btn btn-sm btn-warning" onclick="triggerInstall('${s.install_component}')" title="Perbarui ke versi ${escapeHtml(s.latest_version)}" style="display:inline-flex;align-items:center;gap:6px;flex:1;">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           <span>Perbarui ke ${escapeHtml(s.latest_version)}</span>
         </button>
         ${controlBtn}
+        ${configBtn}
       `;
     } else {
       // Installed & up-to-date
+      const configBtn = (s.name === 'redis' || s.name === 'postgresql' || s.name === 'php-fpm' || s.name === 'nginx')
+        ? `<button type="button" class="btn btn-sm btn-outline" onclick="openServiceConfigModal('${s.name}')" title="Pengaturan ${escapeHtml(s.display_name)}" aria-label="Konfigurasi ${escapeHtml(s.display_name)}" style="display:inline-flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Konfigurasi</button>`
+        : '';
+
       if (s.is_remote) {
         statusPill = `<span class="status-pill ${s.active ? 'active' : 'stopped'}">${s.active ? '● Online (Edge VPS)' : '○ Nonaktif'}</span>`;
         if (s.active) {
@@ -466,11 +476,13 @@ function renderServices(services) {
         if (s.active) {
           actionsHtml = `
             <button class="btn btn-sm btn-outline" onclick="serviceAction('${s.name}', 'restart')" style="display:inline-flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Restart</button>
+            ${configBtn}
             <button class="btn btn-sm btn-danger" onclick="serviceAction('${s.name}', 'stop')" style="display:inline-flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Hentikan</button>
           `;
         } else {
           actionsHtml = `
             <button class="btn btn-sm btn-primary" onclick="serviceAction('${s.name}', 'start')" style="display:inline-flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> Jalankan</button>
+            ${configBtn}
             <button class="btn btn-sm btn-outline" onclick="triggerInstall('${s.install_component}')" style="display:inline-flex;align-items:center;gap:4px;" title="Pasang ulang atau perbarui paket"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pasang Ulang</button>
           `;
         }
@@ -868,6 +880,7 @@ function renderWorkspace(data) {
   const omzInstalled = shell.oh_my_zsh;
   const currentShell = shell.current_shell || '/bin/bash';
   const activeTheme = shell.active_theme || '-';
+  const nerdFont = shell.nerd_font || '';
 
   shellCard.innerHTML = `
     <div>
@@ -899,6 +912,10 @@ function renderWorkspace(data) {
         <div class="toolchain-version-row divider">
           <span class="label">Tema Prompt Aktif:</span>
           <span class="val" style="font-weight:600;color:var(--primary);">${escapeHtml(activeTheme)}</span>
+        </div>
+        <div class="toolchain-version-row divider">
+          <span class="label">Nerd Font:</span>
+          <span class="val">${nerdFont ? `<span style="color:var(--success);font-weight:600;">${escapeHtml(nerdFont)}</span>` : '<span style="color:var(--text-dim);">Belum Terpasang</span>'}</span>
         </div>
       </div>
     </div>
@@ -1152,10 +1169,17 @@ async function loadSwitchers() {
         `;
       });
 
+      const switcherCfgBtn = (key === 'php' || key === 'pg') && item.active_version && item.active_version !== 'None'
+        ? `<button type="button" class="btn btn-sm btn-outline" onclick="openServiceConfigModal('${key === 'php' ? 'php-fpm' : 'postgresql'}', '${escapeHtml(item.active_major || '')}')" title="Konfigurasi ${escapeHtml(item.name)}" style="display:inline-flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Config</button>`
+        : '';
+
       card.innerHTML = `
-        <div>
-          <div class="service-name">${item.name}</div>
-          <div class="service-meta">Versi Aktif: <strong>${item.active_version}</strong></div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+          <div>
+            <div class="service-name">${item.name}</div>
+            <div class="service-meta">Versi Aktif: <strong>${item.active_version}</strong></div>
+          </div>
+          ${switcherCfgBtn}
         </div>
         <div style="margin-top:10px;">
           <label style="font-size:11px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:6px;">GANTI KE VERSI:</label>
@@ -3364,3 +3388,926 @@ document.addEventListener('click', (e) => {
     e.target.classList.remove('active');
   }
 });
+
+// ==========================================
+// SERVICE CONFIG DIALOGS (Redis, PostgreSQL, PHP-FPM)
+// ==========================================
+function initServiceConfigDialogs() {
+  const dialogs = document.querySelectorAll('dialog.service-config-dialog');
+  dialogs.forEach((dialog) => {
+    dialog.addEventListener('close', () => {
+      dialog.returnValue = '';
+    });
+  });
+
+  // Navigasi keyboard roving tabindex untuk tablist di dalam modal
+  document.querySelectorAll('.modal-tablist[role="tablist"]').forEach((tablist) => {
+    tablist.addEventListener('keydown', (e) => {
+      const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+      const idx = tabs.indexOf(document.activeElement);
+      if (idx === -1) return;
+      let nextIdx = -1;
+      if (e.key === 'ArrowRight') nextIdx = (idx + 1) % tabs.length;
+      else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+      else if (e.key === 'Home') nextIdx = 0;
+      else if (e.key === 'End') nextIdx = tabs.length - 1;
+      if (nextIdx !== -1) {
+        e.preventDefault();
+        tabs[nextIdx].focus();
+      }
+    });
+  });
+
+  // Fallback light dismiss untuk browser tanpa dukungan HTMLDialogElement.prototype.closedBy
+  if (!('closedBy' in HTMLDialogElement.prototype)) {
+    const isOutside = (e, dialog) => {
+      const r = dialog.getBoundingClientRect();
+      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    };
+    for (const dialog of document.querySelectorAll('dialog.service-config-dialog[closedby="any"]')) {
+      let pressedOutside = false;
+      dialog.addEventListener('pointerdown', (e) => {
+        pressedOutside = isOutside(e, dialog);
+      });
+      dialog.addEventListener('pointerup', (e) => {
+        if (pressedOutside && isOutside(e, dialog)) {
+          dialog.close();
+        }
+        pressedOutside = false;
+      });
+    }
+  }
+}
+
+function switchConfigModalTab(dialogId, tabKey) {
+  const dialog = document.getElementById(dialogId);
+  if (!dialog) return;
+
+  const tabs = dialog.querySelectorAll('[role="tab"]');
+  tabs.forEach((tab) => {
+    const selected = tab.id.endsWith(`-${tabKey}`);
+    tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+    tab.setAttribute('tabindex', selected ? '0' : '-1');
+    if (selected && typeof tab.scrollIntoView === 'function') {
+      tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  });
+
+  const panels = dialog.querySelectorAll('[role="tabpanel"]');
+  panels.forEach((panel) => {
+    const match = panel.getAttribute('data-tab-panel') === tabKey;
+    panel.hidden = !match;
+  });
+
+  if (dialogId === 'modal-config-redis') {
+    if (tabKey === 'inspect') loadRedisInspect();
+    else if (tabKey === 'logs') loadServiceConfigLogs('redis');
+  } else if (dialogId === 'modal-config-postgres') {
+    if (tabKey === 'inspect') loadPostgresInspect();
+    else if (tabKey === 'logs') loadServiceConfigLogs('postgresql');
+  } else if (dialogId === 'modal-config-php') {
+    if (tabKey === 'logs') loadServiceConfigLogs('php-fpm');
+  } else if (dialogId === 'modal-config-nginx') {
+    if (tabKey === 'logs') loadServiceConfigLogs('nginx');
+  }
+}
+
+function closeServiceConfigDialog(dialogId) {
+  const dialog = document.getElementById(dialogId);
+  if (dialog && dialog.open) {
+    dialog.close();
+  }
+}
+
+function setConfigInlineAlert(elementId, message, type = 'error') {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (!message) {
+    el.textContent = '';
+    el.className = 'config-inline-alert';
+    return;
+  }
+  el.textContent = message;
+  el.className = `config-inline-alert visible ${type}`;
+}
+
+async function promptAndVerifySudo(message) {
+  let promptMsg = message || 'Operasi konfigurasi ini memerlukan hak akses administrator (sudo).\nSilakan masukkan password sudo Anda:';
+  while (true) {
+    const pass = await modalPrompt(promptMsg, {
+      title: 'Akses Sudo Diperlukan',
+      placeholder: 'Masukkan password sudo...',
+      confirmText: 'Verifikasi',
+      cancelText: 'Batal',
+      isPassword: true
+    });
+    if (!pass) return false;
+    const res = await fetch('/api/sudo/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pass })
+    });
+    if (res.ok) return true;
+    promptMsg = 'Password sudo tidak valid. Silakan masukkan kembali password sudo Anda:';
+  }
+}
+
+async function fetchServiceConfig(serviceName, version = '') {
+  const qs = version ? `?version=${encodeURIComponent(version)}` : '';
+  while (true) {
+    const res = await fetch(`/api/service-config/${encodeURIComponent(serviceName)}${qs}`);
+    const data = await res.json().catch(() => ({}));
+    if (data.status === 'sudo_required') {
+      const ok = await promptAndVerifySudo(data.message);
+      if (!ok) return null;
+      continue;
+    }
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data.config;
+  }
+}
+
+async function postServiceConfig(serviceName, payload) {
+  const bodyPayload = { ...payload };
+  let promptMsg = 'Menyimpan konfigurasi & me-restart layanan memerlukan hak akses sudo.\nSilakan masukkan password sudo Anda:';
+
+  while (true) {
+    const res = await fetch(`/api/service-config/${encodeURIComponent(serviceName)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyPayload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.status === 'sudo_required' || res.status === 401) {
+      if (res.status === 401) {
+        promptMsg = 'Password sudo tidak valid. Silakan masukkan kembali password sudo Anda:';
+      }
+      const pass = await modalPrompt(promptMsg, {
+        title: 'Akses Sudo Diperlukan',
+        placeholder: 'Masukkan password sudo...',
+        confirmText: 'Lanjutkan',
+        cancelText: 'Batal',
+        isPassword: true
+      });
+      if (!pass) return null;
+      bodyPayload.sudo_pass = pass;
+      continue;
+    }
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data.config;
+  }
+}
+
+async function openServiceConfigModal(serviceName, version = '') {
+  try {
+    const cfg = await fetchServiceConfig(serviceName, version);
+    if (!cfg) return;
+
+    if (serviceName === 'redis') {
+      populateRedisConfigForm(cfg);
+      switchConfigModalTab('modal-config-redis', 'settings');
+      const dialog = document.getElementById('modal-config-redis');
+      if (dialog && !dialog.open) dialog.showModal();
+    } else if (serviceName === 'postgresql' || serviceName === 'postgres') {
+      populatePostgresConfigForm(cfg);
+      switchConfigModalTab('modal-config-postgres', 'settings');
+      const dialog = document.getElementById('modal-config-postgres');
+      if (dialog && !dialog.open) dialog.showModal();
+    } else if (serviceName === 'php-fpm' || serviceName === 'php') {
+      populatePHPConfigForm(cfg);
+      switchConfigModalTab('modal-config-php', 'settings');
+      const dialog = document.getElementById('modal-config-php');
+      if (dialog && !dialog.open) dialog.showModal();
+    } else if (serviceName === 'nginx') {
+      populateNginxConfigForm(cfg);
+      switchConfigModalTab('modal-config-nginx', 'settings');
+      const dialog = document.getElementById('modal-config-nginx');
+      if (dialog && !dialog.open) dialog.showModal();
+    }
+  } catch (err) {
+    await modalAlert(`Gagal memuat konfigurasi ${serviceName}: ${err.message}`, 'error', 'Konfigurasi Layanan');
+  }
+}
+
+// --- Redis / Valkey ---
+function populateRedisConfigForm(cfg) {
+  setConfigInlineAlert('redis-cfg-alert', '');
+  const meta = document.getElementById('redis-cfg-meta');
+  if (meta) {
+    meta.textContent = `${cfg.config_path || '-'} • Unit: ${cfg.service_unit || '-'} (${cfg.active ? 'Aktif' : 'Nonaktif'})`;
+  }
+  document.getElementById('redis-cfg-port').value = cfg.port || 6379;
+  document.getElementById('redis-cfg-bind').value = cfg.bind || '127.0.0.1 -::1';
+  document.getElementById('redis-cfg-protected').value = cfg.protected_mode || 'yes';
+  document.getElementById('redis-cfg-password').value = '';
+  document.getElementById('redis-cfg-clear-pass').checked = false;
+  const passStatus = document.getElementById('redis-cfg-pass-status');
+  if (passStatus) {
+    passStatus.textContent = cfg.has_password ? 'Password Aktif (Terpasang)' : 'Tanpa Password';
+    passStatus.style.color = cfg.has_password ? 'var(--success)' : 'var(--warning)';
+  }
+  document.getElementById('redis-cfg-maxmemory').value = cfg.maxmemory || '0';
+  document.getElementById('redis-cfg-policy').value = cfg.maxmemory_policy || 'noeviction';
+  document.getElementById('redis-cfg-persistence').value = cfg.persistence_mode || 'rdb';
+  document.getElementById('redis-cfg-maxclients').value = cfg.maxclients || 10000;
+  document.getElementById('redis-cfg-databases').value = cfg.databases || 16;
+  document.getElementById('redis-cfg-restart').checked = true;
+}
+
+function applyRedisPreset(preset) {
+  setConfigInlineAlert('redis-cfg-alert', '');
+  if (preset === 'local') {
+    document.getElementById('redis-cfg-port').value = 6379;
+    document.getElementById('redis-cfg-bind').value = '127.0.0.1 -::1';
+    document.getElementById('redis-cfg-protected').value = 'yes';
+    document.getElementById('redis-cfg-maxmemory').value = '256mb';
+    document.getElementById('redis-cfg-policy').value = 'noeviction';
+    document.getElementById('redis-cfg-persistence').value = 'rdb';
+  } else if (preset === 'cache') {
+    document.getElementById('redis-cfg-maxmemory').value = '256mb';
+    document.getElementById('redis-cfg-policy').value = 'allkeys-lru';
+    document.getElementById('redis-cfg-persistence').value = 'none';
+  } else if (preset === 'queue') {
+    document.getElementById('redis-cfg-maxmemory').value = '512mb';
+    document.getElementById('redis-cfg-policy').value = 'noeviction';
+    document.getElementById('redis-cfg-persistence').value = 'aof';
+  }
+}
+
+async function submitRedisConfig(event) {
+  event.preventDefault();
+  setConfigInlineAlert('redis-cfg-alert', '');
+
+  const port = parseInt(document.getElementById('redis-cfg-port').value.trim(), 10);
+  const bind = document.getElementById('redis-cfg-bind').value.trim();
+  const protectedMode = document.getElementById('redis-cfg-protected').value;
+  const password = document.getElementById('redis-cfg-password').value;
+  const clearPassword = document.getElementById('redis-cfg-clear-pass').checked;
+  const maxmemory = document.getElementById('redis-cfg-maxmemory').value.trim();
+  const maxmemoryPolicy = document.getElementById('redis-cfg-policy').value;
+  const persistenceMode = document.getElementById('redis-cfg-persistence').value;
+  const maxclients = parseInt(document.getElementById('redis-cfg-maxclients').value.trim(), 10);
+  const databases = parseInt(document.getElementById('redis-cfg-databases').value.trim(), 10);
+  const restart = document.getElementById('redis-cfg-restart').checked;
+
+  if (!port || port < 1 || port > 65535) {
+    setConfigInlineAlert('redis-cfg-alert', 'Port harus berada di antara 1 sampai 65535.');
+    document.getElementById('redis-cfg-port').focus();
+    return;
+  }
+
+  const btn = document.getElementById('btn-save-redis-cfg');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Menyimpan...';
+  }
+  try {
+    const saved = await postServiceConfig('redis', {
+      port,
+      bind,
+      protected_mode: protectedMode,
+      password,
+      clear_password: clearPassword,
+      maxmemory,
+      maxmemory_policy: maxmemoryPolicy,
+      persistence_mode: persistenceMode,
+      maxclients,
+      databases,
+      restart
+    });
+    if (!saved) return;
+    closeServiceConfigDialog('modal-config-redis');
+    loadStatus();
+    await modalAlert('Konfigurasi Redis / Valkey berhasil disimpan dan diterapkan.', 'success', 'Konfigurasi Redis');
+  } catch (err) {
+    setConfigInlineAlert('redis-cfg-alert', err.message || 'Gagal menyimpan konfigurasi Redis.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Simpan Konfigurasi';
+    }
+  }
+}
+
+// --- PostgreSQL ---
+function populatePostgresConfigForm(cfg) {
+  setConfigInlineAlert('pg-cfg-alert', '');
+  const meta = document.getElementById('pg-cfg-meta');
+  if (meta) {
+    meta.textContent = `${cfg.config_path || '-'} • Unit: ${cfg.service_unit || '-'} (${cfg.active ? 'Aktif' : 'Nonaktif'})`;
+  }
+
+  const verSelect = document.getElementById('pg-cfg-version');
+  if (verSelect) {
+    const versions = (cfg.available_versions && cfg.available_versions.length > 0)
+      ? cfg.available_versions
+      : [cfg.version || '16'];
+    verSelect.innerHTML = versions.map(v =>
+      `<option value="${escapeHtml(v)}" ${v === cfg.version ? 'selected' : ''}>PostgreSQL ${escapeHtml(v)}</option>`
+    ).join('');
+  }
+
+  document.getElementById('pg-cfg-port').value = cfg.port || 5432;
+  document.getElementById('pg-cfg-listen').value = cfg.listen_addresses || 'localhost';
+  document.getElementById('pg-cfg-remote-mode').value = cfg.remote_access_mode || 'local';
+  document.getElementById('pg-cfg-auth').value = cfg.password_encryption || 'scram-sha-256';
+  document.getElementById('pg-cfg-newpass').value = '';
+  document.getElementById('pg-cfg-maxconn').value = cfg.max_connections || 100;
+  document.getElementById('pg-cfg-sharedbuf').value = cfg.shared_buffers || '128MB';
+  document.getElementById('pg-cfg-effcache').value = cfg.effective_cache_size || '4GB';
+  document.getElementById('pg-cfg-workmem').value = cfg.work_mem || '4MB';
+  document.getElementById('pg-cfg-maintmem').value = cfg.maintenance_work_mem || '64MB';
+  document.getElementById('pg-cfg-timezone').value = cfg.timezone || 'UTC';
+  document.getElementById('pg-cfg-slowlog').value = (cfg.log_min_duration_statement !== undefined) ? cfg.log_min_duration_statement : -1;
+  document.getElementById('pg-cfg-restart').checked = true;
+}
+
+async function onPostgresConfigVersionChange() {
+  const ver = document.getElementById('pg-cfg-version')?.value || '';
+  try {
+    const cfg = await fetchServiceConfig('postgresql', ver);
+    if (cfg) populatePostgresConfigForm(cfg);
+  } catch (err) {
+    setConfigInlineAlert('pg-cfg-alert', `Gagal memuat versi PostgreSQL ${ver}: ${err.message}`);
+  }
+}
+
+function applyPostgresPreset(preset) {
+  setConfigInlineAlert('pg-cfg-alert', '');
+  if (preset === 'dev') {
+    document.getElementById('pg-cfg-maxconn').value = 50;
+    document.getElementById('pg-cfg-sharedbuf').value = '128MB';
+    document.getElementById('pg-cfg-effcache').value = '512MB';
+    document.getElementById('pg-cfg-workmem').value = '4MB';
+    document.getElementById('pg-cfg-maintmem').value = '64MB';
+    document.getElementById('pg-cfg-slowlog').value = 250;
+  } else if (preset === 'balanced') {
+    document.getElementById('pg-cfg-maxconn').value = 150;
+    document.getElementById('pg-cfg-sharedbuf').value = '512MB';
+    document.getElementById('pg-cfg-effcache').value = '2GB';
+    document.getElementById('pg-cfg-workmem').value = '16MB';
+    document.getElementById('pg-cfg-maintmem').value = '128MB';
+    document.getElementById('pg-cfg-timezone').value = 'Asia/Jakarta';
+    document.getElementById('pg-cfg-slowlog').value = 500;
+  } else if (preset === 'high') {
+    document.getElementById('pg-cfg-maxconn').value = 300;
+    document.getElementById('pg-cfg-sharedbuf').value = '1GB';
+    document.getElementById('pg-cfg-effcache').value = '4GB';
+    document.getElementById('pg-cfg-workmem').value = '32MB';
+    document.getElementById('pg-cfg-maintmem').value = '256MB';
+    document.getElementById('pg-cfg-timezone').value = 'Asia/Jakarta';
+    document.getElementById('pg-cfg-slowlog').value = 1000;
+  }
+}
+
+async function submitPostgresConfig(event) {
+  event.preventDefault();
+  setConfigInlineAlert('pg-cfg-alert', '');
+
+  const version = document.getElementById('pg-cfg-version').value;
+  const port = parseInt(document.getElementById('pg-cfg-port').value.trim(), 10);
+  const listenAddresses = document.getElementById('pg-cfg-listen').value.trim();
+  const remoteMode = document.getElementById('pg-cfg-remote-mode').value;
+  const passwordEncryption = document.getElementById('pg-cfg-auth').value;
+  const newPostgresPassword = document.getElementById('pg-cfg-newpass').value;
+  const maxConnections = parseInt(document.getElementById('pg-cfg-maxconn').value.trim(), 10);
+  const sharedBuffers = document.getElementById('pg-cfg-sharedbuf').value.trim();
+  const effectiveCacheSize = document.getElementById('pg-cfg-effcache').value.trim();
+  const workMem = document.getElementById('pg-cfg-workmem').value.trim();
+  const maintenanceWorkMem = document.getElementById('pg-cfg-maintmem').value.trim();
+  const timezone = document.getElementById('pg-cfg-timezone').value.trim();
+  const slowLogRaw = document.getElementById('pg-cfg-slowlog').value.trim();
+  const logMinDurationStatement = parseInt(slowLogRaw, 10);
+  const restart = document.getElementById('pg-cfg-restart').checked;
+
+  if (!port || port < 1 || port > 65535) {
+    setConfigInlineAlert('pg-cfg-alert', 'Port harus berada di antara 1 sampai 65535.');
+    document.getElementById('pg-cfg-port').focus();
+    return;
+  }
+  if (Number.isNaN(logMinDurationStatement)) {
+    setConfigInlineAlert('pg-cfg-alert', 'log_min_duration_statement harus berupa angka (mis. -1 atau 500).');
+    document.getElementById('pg-cfg-slowlog').focus();
+    return;
+  }
+  if (remoteMode !== 'local' && listenAddresses === 'localhost') {
+    setConfigInlineAlert('pg-cfg-alert', 'Aturan remote diaktifkan: ubah Listen Addresses menjadi * agar koneksi dari luar localhost dapat diterima.', 'warning');
+  }
+
+  const btn = document.getElementById('btn-save-pg-cfg');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Menyimpan...';
+  }
+  try {
+    const saved = await postServiceConfig('postgresql', {
+      version,
+      port,
+      listen_addresses: listenAddresses,
+      remote_access_mode: remoteMode,
+      password_encryption: passwordEncryption,
+      new_postgres_password: newPostgresPassword,
+      max_connections: maxConnections,
+      shared_buffers: sharedBuffers,
+      effective_cache_size: effectiveCacheSize,
+      work_mem: workMem,
+      maintenance_work_mem: maintenanceWorkMem,
+      timezone,
+      log_min_duration_statement: logMinDurationStatement,
+      restart
+    });
+    if (!saved) return;
+    closeServiceConfigDialog('modal-config-postgres');
+    loadStatus();
+    await modalAlert(`Konfigurasi PostgreSQL ${saved.version || ''} berhasil disimpan dan diterapkan.`, 'success', 'Konfigurasi PostgreSQL');
+  } catch (err) {
+    setConfigInlineAlert('pg-cfg-alert', err.message || 'Gagal menyimpan konfigurasi PostgreSQL.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Simpan Konfigurasi';
+    }
+  }
+}
+
+// --- PHP & PHP-FPM ---
+function populatePHPConfigForm(cfg) {
+  setConfigInlineAlert('php-cfg-alert', '');
+  const meta = document.getElementById('php-cfg-meta');
+  if (meta) {
+    meta.textContent = `${cfg.dropin_path || cfg.ini_path || '-'} • Pool: ${cfg.pool_path || '-'} • Unit: ${cfg.service_unit || '-'} (${cfg.active ? 'Aktif' : 'Nonaktif'})`;
+  }
+
+  const verSelect = document.getElementById('php-cfg-version');
+  if (verSelect) {
+    const versions = (cfg.available_versions && cfg.available_versions.length > 0)
+      ? cfg.available_versions
+      : [cfg.version || '8.4'];
+    verSelect.innerHTML = versions.map(v =>
+      `<option value="${escapeHtml(v)}" ${v === cfg.version ? 'selected' : ''}>PHP ${escapeHtml(v)}</option>`
+    ).join('');
+  }
+
+  document.getElementById('php-cfg-timezone').value = cfg.timezone || 'UTC';
+  document.getElementById('php-cfg-memlimit').value = cfg.memory_limit || '256M';
+  document.getElementById('php-cfg-upload').value = cfg.upload_max_filesize || '64M';
+  document.getElementById('php-cfg-postmax').value = cfg.post_max_size || '64M';
+  document.getElementById('php-cfg-maxexec').value = (cfg.max_execution_time !== undefined) ? cfg.max_execution_time : 60;
+  document.getElementById('php-cfg-maxvars').value = cfg.max_input_vars || 3000;
+  document.getElementById('php-cfg-opcache-mem').value = cfg.opcache_memory_consumption || 128;
+  document.getElementById('php-cfg-display-errors').checked = Boolean(cfg.display_errors);
+  document.getElementById('php-cfg-opcache').checked = Boolean(cfg.opcache_enable);
+  document.getElementById('php-cfg-sync-cli').checked = (cfg.sync_cli !== undefined) ? Boolean(cfg.sync_cli) : true;
+
+  document.getElementById('php-cfg-pm').value = cfg.pm || 'dynamic';
+  document.getElementById('php-cfg-maxchildren').value = cfg.pm_max_children || 10;
+  document.getElementById('php-cfg-startservers').value = cfg.pm_start_servers || 2;
+  document.getElementById('php-cfg-minspare').value = cfg.pm_min_spare_servers || 1;
+  document.getElementById('php-cfg-maxspare').value = cfg.pm_max_spare_servers || 4;
+  document.getElementById('php-cfg-maxreq').value = (cfg.pm_max_requests !== undefined) ? cfg.pm_max_requests : 500;
+  document.getElementById('php-cfg-restart').checked = true;
+
+  togglePHPPoolDynamicFields();
+}
+
+function togglePHPPoolDynamicFields() {
+  const pm = document.getElementById('php-cfg-pm')?.value || 'dynamic';
+  const isDynamic = (pm === 'dynamic');
+  document.querySelectorAll('.php-dynamic-only').forEach((group) => {
+    group.style.display = isDynamic ? '' : 'none';
+    group.querySelectorAll('input, select').forEach((el) => {
+      el.disabled = !isDynamic;
+    });
+  });
+}
+
+async function onPHPConfigVersionChange() {
+  const ver = document.getElementById('php-cfg-version')?.value || '';
+  try {
+    const cfg = await fetchServiceConfig('php-fpm', ver);
+    if (cfg) populatePHPConfigForm(cfg);
+  } catch (err) {
+    setConfigInlineAlert('php-cfg-alert', `Gagal memuat PHP ${ver}: ${err.message}`);
+  }
+}
+
+function applyPHPPreset(preset) {
+  setConfigInlineAlert('php-cfg-alert', '');
+  if (preset === 'dev') {
+    document.getElementById('php-cfg-timezone').value = 'Asia/Jakarta';
+    document.getElementById('php-cfg-memlimit').value = '512M';
+    document.getElementById('php-cfg-upload').value = '128M';
+    document.getElementById('php-cfg-postmax').value = '128M';
+    document.getElementById('php-cfg-maxexec').value = 300;
+    document.getElementById('php-cfg-maxvars').value = 5000;
+    document.getElementById('php-cfg-display-errors').checked = true;
+    document.getElementById('php-cfg-opcache').checked = true;
+    document.getElementById('php-cfg-opcache-mem').value = 128;
+    document.getElementById('php-cfg-pm').value = 'ondemand';
+    document.getElementById('php-cfg-maxchildren').value = 10;
+    document.getElementById('php-cfg-maxreq').value = 500;
+  } else if (preset === 'prod') {
+    document.getElementById('php-cfg-timezone').value = 'Asia/Jakarta';
+    document.getElementById('php-cfg-memlimit').value = '512M';
+    document.getElementById('php-cfg-upload').value = '64M';
+    document.getElementById('php-cfg-postmax').value = '64M';
+    document.getElementById('php-cfg-maxexec').value = 120;
+    document.getElementById('php-cfg-maxvars').value = 3000;
+    document.getElementById('php-cfg-display-errors').checked = false;
+    document.getElementById('php-cfg-opcache').checked = true;
+    document.getElementById('php-cfg-opcache-mem').value = 256;
+    document.getElementById('php-cfg-pm').value = 'dynamic';
+    document.getElementById('php-cfg-maxchildren').value = 20;
+    document.getElementById('php-cfg-startservers').value = 4;
+    document.getElementById('php-cfg-minspare').value = 2;
+    document.getElementById('php-cfg-maxspare').value = 6;
+    document.getElementById('php-cfg-maxreq').value = 500;
+  }
+  togglePHPPoolDynamicFields();
+}
+
+async function submitPHPConfig(event) {
+  event.preventDefault();
+  setConfigInlineAlert('php-cfg-alert', '');
+
+  const pm = document.getElementById('php-cfg-pm').value;
+  const maxChildren = parseInt(document.getElementById('php-cfg-maxchildren').value.trim(), 10);
+  const startServers = parseInt(document.getElementById('php-cfg-startservers').value.trim(), 10) || 2;
+  const minSpare = parseInt(document.getElementById('php-cfg-minspare').value.trim(), 10) || 1;
+  const maxSpare = parseInt(document.getElementById('php-cfg-maxspare').value.trim(), 10) || 3;
+
+  if (pm === 'dynamic') {
+    if (minSpare > maxSpare || maxSpare > maxChildren || startServers < minSpare || startServers > maxSpare) {
+      setConfigInlineAlert('php-cfg-alert', `Untuk mode dynamic: pastikan min_spare (${minSpare}) <= start_servers (${startServers}) <= max_spare (${maxSpare}) <= max_children (${maxChildren}).`);
+      document.getElementById('php-cfg-startservers').focus();
+      return;
+    }
+  }
+
+  const btn = document.getElementById('btn-save-php-cfg');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Menyimpan...';
+  }
+  try {
+    const saved = await postServiceConfig('php-fpm', {
+      version: document.getElementById('php-cfg-version').value,
+      timezone: document.getElementById('php-cfg-timezone').value.trim(),
+      memory_limit: document.getElementById('php-cfg-memlimit').value.trim(),
+      upload_max_filesize: document.getElementById('php-cfg-upload').value.trim(),
+      post_max_size: document.getElementById('php-cfg-postmax').value.trim(),
+      max_execution_time: parseInt(document.getElementById('php-cfg-maxexec').value.trim(), 10),
+      max_input_vars: parseInt(document.getElementById('php-cfg-maxvars').value.trim(), 10),
+      opcache_memory_consumption: parseInt(document.getElementById('php-cfg-opcache-mem').value.trim(), 10),
+      display_errors: document.getElementById('php-cfg-display-errors').checked,
+      opcache_enable: document.getElementById('php-cfg-opcache').checked,
+      sync_cli: document.getElementById('php-cfg-sync-cli').checked,
+      pm,
+      pm_max_children: maxChildren,
+      pm_start_servers: startServers,
+      pm_min_spare_servers: minSpare,
+      pm_max_spare_servers: maxSpare,
+      pm_max_requests: parseInt(document.getElementById('php-cfg-maxreq').value.trim(), 10) || 0,
+      restart: document.getElementById('php-cfg-restart').checked
+    });
+    if (!saved) return;
+    closeServiceConfigDialog('modal-config-php');
+    loadStatus();
+    await modalAlert(`Konfigurasi PHP ${saved.version || ''} & PHP-FPM berhasil disimpan dan divalidasi.`, 'success', 'Konfigurasi PHP');
+  } catch (err) {
+    setConfigInlineAlert('php-cfg-alert', err.message || 'Gagal menyimpan konfigurasi PHP.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Simpan Konfigurasi';
+    }
+  }
+}
+
+// --- Nginx Global ---
+function populateNginxConfigForm(cfg) {
+  setConfigInlineAlert('nginx-cfg-alert', '');
+  const meta = document.getElementById('nginx-cfg-meta');
+  if (meta) {
+    meta.textContent = `${cfg.config_path || '-'} • Unit: ${cfg.service_unit || 'nginx'} (${cfg.active ? 'Aktif' : 'Nonaktif'})`;
+  }
+  document.getElementById('nginx-cfg-workers').value = cfg.worker_processes || 'auto';
+  document.getElementById('nginx-cfg-conn').value = cfg.worker_connections || 1024;
+  document.getElementById('nginx-cfg-bodysize').value = cfg.client_max_body_size || '64M';
+  document.getElementById('nginx-cfg-keepalive').value = (cfg.keepalive_timeout !== undefined) ? cfg.keepalive_timeout : 65;
+  document.getElementById('nginx-cfg-gzip').checked = Boolean(cfg.gzip);
+  document.getElementById('nginx-cfg-tokens').checked = Boolean(cfg.server_tokens);
+  document.getElementById('nginx-cfg-restart').checked = true;
+}
+
+function applyNginxPreset(preset) {
+  setConfigInlineAlert('nginx-cfg-alert', '');
+  if (preset === 'dev') {
+    document.getElementById('nginx-cfg-workers').value = 'auto';
+    document.getElementById('nginx-cfg-conn').value = 1024;
+    document.getElementById('nginx-cfg-bodysize').value = '64M';
+    document.getElementById('nginx-cfg-keepalive').value = 65;
+    document.getElementById('nginx-cfg-gzip').checked = true;
+    document.getElementById('nginx-cfg-tokens').checked = true;
+  } else if (preset === 'upload') {
+    document.getElementById('nginx-cfg-workers').value = 'auto';
+    document.getElementById('nginx-cfg-conn').value = 2048;
+    document.getElementById('nginx-cfg-bodysize').value = '256M';
+    document.getElementById('nginx-cfg-keepalive').value = 120;
+    document.getElementById('nginx-cfg-gzip').checked = true;
+    document.getElementById('nginx-cfg-tokens').checked = false;
+  } else if (preset === 'prod') {
+    document.getElementById('nginx-cfg-workers').value = 'auto';
+    document.getElementById('nginx-cfg-conn').value = 4096;
+    document.getElementById('nginx-cfg-bodysize').value = '64M';
+    document.getElementById('nginx-cfg-keepalive').value = 65;
+    document.getElementById('nginx-cfg-gzip').checked = true;
+    document.getElementById('nginx-cfg-tokens').checked = false;
+  }
+}
+
+async function submitNginxConfig(event) {
+  event.preventDefault();
+  setConfigInlineAlert('nginx-cfg-alert', '');
+
+  const btn = document.getElementById('btn-save-nginx-cfg');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Menyimpan...';
+  }
+  try {
+    const saved = await postServiceConfig('nginx', {
+      worker_processes: document.getElementById('nginx-cfg-workers').value.trim(),
+      worker_connections: parseInt(document.getElementById('nginx-cfg-conn').value.trim(), 10),
+      client_max_body_size: document.getElementById('nginx-cfg-bodysize').value.trim(),
+      keepalive_timeout: parseInt(document.getElementById('nginx-cfg-keepalive').value.trim(), 10),
+      gzip: document.getElementById('nginx-cfg-gzip').checked,
+      server_tokens: document.getElementById('nginx-cfg-tokens').checked,
+      restart: document.getElementById('nginx-cfg-restart').checked
+    });
+    if (!saved) return;
+    closeServiceConfigDialog('modal-config-nginx');
+    loadStatus();
+    await modalAlert('Konfigurasi global Nginx berhasil disimpan dan divalidasi.', 'success', 'Konfigurasi Nginx');
+  } catch (err) {
+    setConfigInlineAlert('nginx-cfg-alert', err.message || 'Gagal menyimpan konfigurasi Nginx.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Simpan Konfigurasi';
+    }
+  }
+}
+
+// --- Redis Inspector & Flush ---
+async function loadRedisInspect() {
+  setConfigInlineAlert('redis-inspect-alert', '');
+  const statsEl = document.getElementById('redis-inspect-stats');
+  const tbody = document.getElementById('redis-inspect-keyspace-body');
+  if (statsEl) statsEl.innerHTML = '<div style="color:var(--text-muted);font-size:12.5px;">Mengambil statistik Redis...</div>';
+  if (tbody) tbody.innerHTML = '';
+
+  try {
+    let resData;
+    while (true) {
+      const res = await fetch('/api/service-config/redis/inspect');
+      const data = await res.json().catch(() => ({}));
+      if (data.status === 'sudo_required') {
+        const ok = await promptAndVerifySudo(data.message);
+        if (!ok) return;
+        continue;
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      resData = data.inspect;
+      break;
+    }
+
+    if (statsEl && resData) {
+      const hitRate = (resData.hit_rate_percent || 0).toFixed(1);
+      const uptimeMin = Math.floor((resData.uptime_seconds || 0) / 60);
+      statsEl.innerHTML = `
+        <div class="inspect-stat-card">
+          <div class="inspect-stat-label">Versi / Mode</div>
+          <div class="inspect-stat-value">${escapeHtml(resData.version || '-')} (${escapeHtml(resData.mode || 'standalone')})</div>
+        </div>
+        <div class="inspect-stat-card">
+          <div class="inspect-stat-label">Memori Terpakai</div>
+          <div class="inspect-stat-value">${escapeHtml(resData.used_memory_human || '-')}</div>
+        </div>
+        <div class="inspect-stat-card">
+          <div class="inspect-stat-label">Peak / Max Memory</div>
+          <div class="inspect-stat-value">${escapeHtml(resData.peak_memory_human || '-')} / ${escapeHtml(resData.maxmemory_human || 'Unlimited')}</div>
+        </div>
+        <div class="inspect-stat-card">
+          <div class="inspect-stat-label">Klien / Uptime</div>
+          <div class="inspect-stat-value">${resData.connected_clients || 0} klien • ${uptimeMin}m</div>
+        </div>
+        <div class="inspect-stat-card">
+          <div class="inspect-stat-label">Cache Hit Rate</div>
+          <div class="inspect-stat-value">${hitRate}% (${resData.keyspace_hits || 0} / ${resData.keyspace_misses || 0})</div>
+        </div>
+        <div class="inspect-stat-card">
+          <div class="inspect-stat-label">Total Perintah</div>
+          <div class="inspect-stat-value">${resData.total_commands_processed || 0}</div>
+        </div>
+      `;
+    }
+
+    if (tbody) {
+      const ks = (resData && resData.keyspaces) || [];
+      if (ks.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:14px;">Belum ada key tersimpan di database mana pun.</td></tr>';
+      } else {
+        tbody.innerHTML = ks.map(item => `
+          <tr>
+            <td><strong>${escapeHtml(item.db)}</strong></td>
+            <td>${item.keys}</td>
+            <td>${item.expires}</td>
+            <td>${item.avg_ttl} ms</td>
+            <td><button type="button" class="btn btn-danger btn-sm" onclick="flushRedisDB(${item.index})">Flush ${escapeHtml(item.db)}</button></td>
+          </tr>
+        `).join('');
+      }
+    }
+  } catch (err) {
+    if (statsEl) statsEl.innerHTML = '';
+    setConfigInlineAlert('redis-inspect-alert', err.message || 'Gagal menginspeksi Redis.');
+  }
+}
+
+async function flushRedisDB(dbIndex) {
+  const confirmed = await modalConfirm(`Kosongkan seluruh key pada db${dbIndex}? Tindakan ini tidak dapat dibatalkan.`, {
+    title: `Flush Redis db${dbIndex}`,
+    confirmText: 'Ya, Flush DB',
+    type: 'danger'
+  });
+  if (!confirmed) return;
+
+  try {
+    const bodyPayload = { db: dbIndex };
+    while (true) {
+      const res = await fetch('/api/service-config/redis/flush', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.status === 'sudo_required' || res.status === 401) {
+        const pass = await modalPrompt('Operasi flush Redis memerlukan password sudo:', {
+          title: 'Akses Sudo Diperlukan',
+          isPassword: true
+        });
+        if (!pass) return;
+        bodyPayload.sudo_pass = pass;
+        continue;
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      break;
+    }
+    await loadRedisInspect();
+  } catch (err) {
+    setConfigInlineAlert('redis-inspect-alert', err.message || 'Gagal melakukan flush DB.');
+  }
+}
+
+// --- PostgreSQL Database, Role & Connections Inspector ---
+async function loadPostgresInspect() {
+  setConfigInlineAlert('pg-inspect-alert', '');
+  const ver = document.getElementById('pg-cfg-version')?.value || '';
+  const dbBody = document.getElementById('pg-inspect-db-body');
+  const rolesEl = document.getElementById('pg-inspect-roles');
+  const connBody = document.getElementById('pg-inspect-conn-body');
+  if (dbBody) dbBody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:12px;">Memuat database...</td></tr>';
+
+  try {
+    let info;
+    const qs = ver ? `?version=${encodeURIComponent(ver)}` : '';
+    while (true) {
+      const res = await fetch(`/api/service-config/postgresql/inspect${qs}`);
+      const data = await res.json().catch(() => ({}));
+      if (data.status === 'sudo_required') {
+        const ok = await promptAndVerifySudo(data.message);
+        if (!ok) return;
+        continue;
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      info = data.inspect;
+      break;
+    }
+
+    if (dbBody) {
+      const dbs = (info && info.databases) || [];
+      dbBody.innerHTML = dbs.length
+        ? dbs.map(d => `<tr><td><strong>${escapeHtml(d.name)}</strong></td><td>${escapeHtml(d.owner)}</td><td>${escapeHtml(d.size)}</td></tr>`).join('')
+        : '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:12px;">Tidak ada database ditemukan.</td></tr>';
+    }
+    if (rolesEl) {
+      const roles = (info && info.roles) || [];
+      rolesEl.innerHTML = roles.length
+        ? roles.map(r => `<span class="stat-badge">${escapeHtml(r.name)}${r.superuser ? ' (superuser)' : ''}${!r.can_login ? ' [nologin]' : ''}</span>`).join('')
+        : '<span style="color:var(--text-muted);font-size:12px;">Tidak ada role terdeteksi.</span>';
+    }
+    if (connBody) {
+      const conns = (info && info.connections) || [];
+      connBody.innerHTML = conns.length
+        ? conns.map(c => `<tr><td>${c.pid}</td><td>${escapeHtml(c.database || '-')}</td><td>${escapeHtml(c.user || '-')}</td><td>${escapeHtml(c.client_addr || 'local')}</td><td>${escapeHtml(c.state || '-')}</td></tr>`).join('')
+        : '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:12px;">Tidak ada koneksi aktif selain sesi inspeksi.</td></tr>';
+    }
+  } catch (err) {
+    if (dbBody) dbBody.innerHTML = '';
+    setConfigInlineAlert('pg-inspect-alert', err.message || 'Gagal memuat data PostgreSQL.');
+  }
+}
+
+async function submitCreatePostgresDB(event) {
+  event.preventDefault();
+  setConfigInlineAlert('pg-inspect-alert', '');
+
+  const version = document.getElementById('pg-cfg-version')?.value || '';
+  const database = document.getElementById('pg-new-db-name').value.trim();
+  const owner = document.getElementById('pg-new-db-owner').value.trim();
+  const password = document.getElementById('pg-new-db-pass').value;
+
+  const btn = document.getElementById('btn-pg-create-db');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Membuat...';
+  }
+  try {
+    const bodyPayload = { version, database, owner, password };
+    while (true) {
+      const res = await fetch('/api/service-config/postgresql/create-db', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.status === 'sudo_required' || res.status === 401) {
+        const pass = await modalPrompt('Membuat database PostgreSQL memerlukan password sudo:', {
+          title: 'Akses Sudo Diperlukan',
+          isPassword: true
+        });
+        if (!pass) return;
+        bodyPayload.sudo_pass = pass;
+        continue;
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      break;
+    }
+    document.getElementById('pg-new-db-name').value = '';
+    document.getElementById('pg-new-db-pass').value = '';
+    await loadPostgresInspect();
+    setConfigInlineAlert('pg-inspect-alert', `Database "${database}" berhasil dibuat.`, 'success');
+  } catch (err) {
+    setConfigInlineAlert('pg-inspect-alert', err.message || 'Gagal membuat database.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Buat Database';
+    }
+  }
+}
+
+// --- Service Log Viewer ---
+async function loadServiceConfigLogs(serviceName) {
+  const map = {
+    'redis': { title: 'redis-logs-title', out: 'redis-logs-output', verEl: null },
+    'postgresql': { title: 'pg-logs-title', out: 'pg-logs-output', verEl: 'pg-cfg-version' },
+    'php-fpm': { title: 'php-logs-title', out: 'php-logs-output', verEl: 'php-cfg-version' },
+    'nginx': { title: 'nginx-logs-title', out: 'nginx-logs-output', verEl: null }
+  };
+  const target = map[serviceName];
+  if (!target) return;
+
+  const outEl = document.getElementById(target.out);
+  const titleEl = document.getElementById(target.title);
+  if (outEl) outEl.textContent = 'Memuat log layanan...';
+
+  const ver = target.verEl ? (document.getElementById(target.verEl)?.value || '') : '';
+  const qs = ver ? `?version=${encodeURIComponent(ver)}&lines=80` : '?lines=80';
+
+  try {
+    while (true) {
+      const res = await fetch(`/api/service-config/${encodeURIComponent(serviceName)}/logs${qs}`);
+      const data = await res.json().catch(() => ({}));
+      if (data.status === 'sudo_required') {
+        const ok = await promptAndVerifySudo(data.message);
+        if (!ok) return;
+        continue;
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (titleEl && data.unit) titleEl.textContent = `Log Layanan (${data.unit})`;
+      if (outEl) {
+        outEl.textContent = data.logs || '(Log kosong)';
+        outEl.scrollTop = outEl.scrollHeight;
+      }
+      break;
+    }
+  } catch (err) {
+    if (outEl) outEl.textContent = `Gagal memuat log: ${err.message}`;
+  }
+}

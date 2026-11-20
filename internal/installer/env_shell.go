@@ -96,20 +96,28 @@ func stripLegacyPathLines(lines []string) []string {
 		if strings.Contains(trimmed, ".cargo/env") || strings.Contains(trimmed, ".cargo\\env") {
 			continue
 		}
-		// Referensi ke file profile.d yang sudah dihapus wdev.
-		if strings.Contains(trimmed, "/etc/profile.d/") &&
-			(strings.Contains(trimmed, "nodejs.sh") || strings.Contains(trimmed, "rust.sh") ||
-				strings.Contains(trimmed, "golang.sh") || strings.Contains(trimmed, "flutter.sh") ||
-				strings.Contains(trimmed, "orca-browser.sh") || strings.Contains(trimmed, "mkcert.sh")) {
-			continue
-		}
+		// Cek loop `for prof in /etc/profile.d/...` SEBELUM filter satu-baris profile.d/*.sh
+		// agar body loop dan `done` tidak tertinggal yatim di file rc.
 		if strings.HasPrefix(trimmed, "for prof in /etc/profile.d/") {
-			// Lewati loop multi-baris sampai 'done'.
 			for ; i < len(lines); i++ {
 				if strings.TrimSpace(lines[i]) == "done" {
 					break
 				}
 			}
+			continue
+		}
+		// Bersihkan sisa loop yatim akibat versi wdev lama: `[ -r "$prof" ] && . "$prof"` + `done`.
+		if strings.Contains(trimmed, `"$prof"`) && strings.Contains(trimmed, "[ -r") {
+			if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "done" {
+				i++
+			}
+			continue
+		}
+		// Referensi ke file profile.d yang sudah dihapus wdev.
+		if strings.Contains(trimmed, "/etc/profile.d/") &&
+			(strings.Contains(trimmed, "nodejs.sh") || strings.Contains(trimmed, "rust.sh") ||
+				strings.Contains(trimmed, "golang.sh") || strings.Contains(trimmed, "flutter.sh") ||
+				strings.Contains(trimmed, "orca-browser.sh") || strings.Contains(trimmed, "mkcert.sh")) {
 			continue
 		}
 		if trimmed == "# Muat environment profile dev" {

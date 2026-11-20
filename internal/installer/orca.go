@@ -11,8 +11,177 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
+
+var orcaInstalledVerCache struct {
+	mu      sync.Mutex
+	key     string
+	version string
+}
+
+func parseOrcaVersionString(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		candidate := strings.TrimPrefix(fields[len(fields)-1], "v")
+		if isSemverLike(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func isSemverLike(s string) bool {
+	parts := strings.Split(strings.SplitN(s, "-", 2)[0], ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, p := range parts[:2] {
+		if p == "" {
+			return false
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isWdevBinaryLink(path string) bool {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	base := filepath.Base(resolved)
+	return base == "wdev"
+}
+
+func runOrcaVersionProbe(ctx context.Context, user, home, bin string) string {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 && user != "" && user != "root" {
+		cmd = exec.CommandContext(probeCtx, "runuser", "-u", user, "--", bin, "--version")
+	} else {
+		cmd = exec.CommandContext(probeCtx, bin, "--version")
+	}
+	env := append(os.Environ(), "HOME="+home)
+	if user != "" {
+		env = append(env, "USER="+user, "LOGNAME="+user)
+	}
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return parseOrcaVersionString(string(out))
+}
+
+// DetectOrcaInstalledVersion mendeteksi versi Orca ADE yang terpasang pada semua distro
+// (Debian .deb ekstrak, Fedora/RHEL AppImage/RPM, maupun Headless Server tarball)
+// tanpa mengeksekusi Electron AppImage sebagai root agar tidak crash.
+func DetectOrcaInstalledVersion(ctx context.Context, user, home string) string {
+	// 1. Paket RPM resmi bila terpasang
+	if out, err := exec.CommandContext(ctx, "rpm", "-q", "--qf", "%{VERSION}", "orca-ide").Output(); err == nil {
+		if ver := parseOrcaVersionString(string(out)); ver != "" {
+			return ver
+		}
+	}
+
+	// 2. Kandidat biner / AppImage terpasang
+	var candidates []string
+	if appImg := "/usr/local/lib/orca-ide/orca.AppImage"; fileExistsLocal(appImg) {
+		candidates = append(candidates, appImg)
+	}
+	if srvBin := findOrcaServerBinary(); srvBin != "" {
+		candidates = append(candidates, srvBin)
+	}
+	if realCLI := orcaRealCLI(home); realCLI != "" {
+		candidates = append(candidates, realCLI)
+	}
+	for _, p := range []string{
+		"/opt/Orca/resources/bin/orca-ide",
+		"/opt/orca-ide/resources/bin/orca-ide",
+		"/usr/local/bin/orca",
+		filepath.Join(home, ".config", "orca", "cli", "bin", "orca"),
+	} {
+		if fileExistsLocal(p) && !isWdevBinaryLink(p) {
+			candidates = append(candidates, p)
+		}
+	}
+
+	for _, bin := range candidates {
+		fi, err := os.Stat(bin)
+		if err != nil {
+			continue
+		}
+		cacheKey := fmt.Sprintf("%s|%d|%d", bin, fi.Size(), fi.ModTime().UnixNano())
+
+		orcaInstalledVerCache.mu.Lock()
+		if orcaInstalledVerCache.key == cacheKey && orcaInstalledVerCache.version != "" {
+			cached := orcaInstalledVerCache.version
+			orcaInstalledVerCache.mu.Unlock()
+			return cached
+		}
+		orcaInstalledVerCache.mu.Unlock()
+
+		// Cek file marker versi milik wdev bila cocok
+		markerPath := filepath.Join(filepath.Dir(bin), ".wdev-version")
+		if data, mErr := os.ReadFile(markerPath); mErr == nil {
+			if ver := parseOrcaVersionString(string(data)); ver != "" {
+				orcaInstalledVerCache.mu.Lock()
+				orcaInstalledVerCache.key = cacheKey
+				orcaInstalledVerCache.version = ver
+				orcaInstalledVerCache.mu.Unlock()
+				return ver
+			}
+		}
+
+		if ver := runOrcaVersionProbe(ctx, user, home, bin); ver != "" {
+			orcaInstalledVerCache.mu.Lock()
+			orcaInstalledVerCache.key = cacheKey
+			orcaInstalledVerCache.version = ver
+			orcaInstalledVerCache.mu.Unlock()
+			return ver
+		}
+	}
+	return ""
+}
+
+func fileExistsLocal(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
+func findOrcaServerBinary() string {
+	installDir := "/usr/local/lib/orca-server"
+	if _, err := os.Stat(installDir); err != nil {
+		return ""
+	}
+	var found string
+	_ = filepath.WalkDir(installDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return nil
+		}
+		if d.Name() == "orca" {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
 
 const orcaGitHubRepo = "stablyai/orca"
 
@@ -585,20 +754,234 @@ func (inst *Installer) installOrcaDeb(ctx context.Context, cb LogCallback, mode 
 	return nil
 }
 
-// UpdateOrca memperbarui Orca ADE yang sudah terpasang (jalur .deb Debian).
+// UpdateOrca memperbarui Orca ADE yang sudah terpasang (mendukung Debian .deb
+// maupun Fedora/RHEL/Arch via RPM, AppImage, atau Headless Server tarball).
 func (inst *Installer) UpdateOrca(ctx context.Context, cb LogCallback) error {
-	if !inst.isDebian {
-		return fmt.Errorf("pembaruan Orca via .deb hanya didukung pada distro Debian/Ubuntu")
-	}
-	_, home := ResolveOrcaUser()
-	if home == "" {
-		return fmt.Errorf("tidak dapat menentukan home direktori user target")
-	}
-	if _, err := os.Stat(orcaInstallDir(home)); err != nil {
-		cb("[INFO] Instalasi Orca ADE belum ada, menjalankan pemasangan baru...")
+	if inst.isDebian {
+		_, home := ResolveOrcaUser()
+		if home == "" {
+			return fmt.Errorf("tidak dapat menentukan home direktori user target")
+		}
+		if _, err := os.Stat(orcaInstallDir(home)); err != nil {
+			cb("[INFO] Instalasi Orca ADE belum ada, menjalankan pemasangan baru...")
+			return inst.installOrcaDeb(ctx, cb, "")
+		}
 		return inst.installOrcaDeb(ctx, cb, "")
 	}
-	return inst.installOrcaDeb(ctx, cb, "")
+
+	return inst.updateOrcaNonDebian(ctx, cb)
+}
+
+func (inst *Installer) updateOrcaNonDebian(ctx context.Context, cb LogCallback) error {
+	user, home := ResolveOrcaUser()
+	mode := readOrcaMode(home)
+	if !fileExistsLocal("/usr/local/lib/orca-ide/orca.AppImage") && findOrcaServerBinary() != "" {
+		mode = "headless"
+	}
+
+	cb("==> Memeriksa pembaruan Orca ADE (rilis resmi GitHub stablyai/orca)...")
+	tag, assets, err := fetchGitHubLatestRelease(ctx, orcaGitHubRepo)
+	if err != nil {
+		return fmt.Errorf("gagal mengambil rilis Orca terbaru dari GitHub: %w", err)
+	}
+	latest := strings.TrimPrefix(strings.TrimSpace(tag), "v")
+	if latest == "" {
+		return fmt.Errorf("tag rilis Orca tidak ditemukan")
+	}
+
+	current := DetectOrcaInstalledVersion(ctx, user, home)
+	cb(fmt.Sprintf("Versi terpasang : %s", orcaVersionOrUnknown(current)))
+	cb(fmt.Sprintf("Versi terbaru   : %s", latest))
+
+	if current != "" && !hasNewerVersion(current, latest) {
+		cb("✓ Orca ADE sudah berada di versi paling mutakhir.")
+		SetOrcaVersionCache(current)
+		return nil
+	}
+
+	// 1. Jika terpasang sebagai paket RPM resmi
+	if (inst.pkgMgr == "dnf" || inst.pkgMgr == "yum") && rpmIsInstalled(ctx, "orca-ide") {
+		return inst.installOrcaRPM(ctx, cb, latest, assets)
+	}
+
+	// 2. Mode Headless Server tarball
+	if mode == "headless" {
+		return inst.installOrcaServerTarball(ctx, cb, latest, assets)
+	}
+
+	// 3. Mode Desktop AppImage (standar non-Debian wdev)
+	return inst.installOrcaAppImage(ctx, cb, latest, assets)
+}
+
+func (inst *Installer) installOrcaRPM(ctx context.Context, cb LogCallback, latest string, assets []ghReleaseAsset) error {
+	arch := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		arch = "aarch64"
+	}
+	assetName := fmt.Sprintf("orca-ide-%s.%s.rpm", latest, arch)
+	downloadURL := ""
+	for _, a := range assets {
+		if a.Name == assetName {
+			downloadURL = a.URL
+			break
+		}
+	}
+	if downloadURL == "" && latest != "" {
+		downloadURL = fmt.Sprintf("https://github.com/stablyai/orca/releases/download/v%s/%s", latest, assetName)
+	}
+	if downloadURL == "" {
+		return fmt.Errorf("URL paket RPM Orca %s tidak ditemukan", assetName)
+	}
+
+	tmpRPM := filepath.Join(os.TempDir(), assetName)
+	cb(fmt.Sprintf("==> Mengunduh paket RPM Orca: %s", downloadURL))
+	if err := downloadFileCtx(ctx, downloadURL, tmpRPM); err != nil {
+		return fmt.Errorf("gagal mengunduh paket RPM Orca: %w", err)
+	}
+	defer os.Remove(tmpRPM)
+
+	if err := inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", tmpRPM); err != nil {
+		return fmt.Errorf("gagal memasang/memperbarui paket RPM Orca: %w", err)
+	}
+	if latest != "" {
+		SetOrcaVersionCache(latest)
+	}
+	cb("✓ Pembaruan Orca ADE (RPM) berhasil diterapkan!")
+	return nil
+}
+
+func (inst *Installer) installOrcaServerTarball(ctx context.Context, cb LogCallback, latest string, assets []ghReleaseAsset) error {
+	archName := "x64"
+	if runtime.GOARCH == "arm64" {
+		archName = "arm64"
+	}
+	assetName := fmt.Sprintf("orca-server-linux-%s.tar.gz", archName)
+	downloadURL := ""
+	for _, a := range assets {
+		if a.Name == assetName {
+			downloadURL = a.URL
+			break
+		}
+	}
+	if downloadURL == "" {
+		downloadURL = fmt.Sprintf("https://github.com/stablyai/orca/releases/latest/download/%s", assetName)
+	}
+
+	tarPath := filepath.Join(os.TempDir(), assetName)
+	cb(fmt.Sprintf("==> Mengunduh Orca Server: %s", downloadURL))
+	if err := downloadFileCtx(ctx, downloadURL, tarPath); err != nil {
+		return fmt.Errorf("gagal mengunduh Orca Server: %w", err)
+	}
+	defer os.Remove(tarPath)
+
+	installDir := "/usr/local/lib/orca-server"
+	_ = inst.runCmd(ctx, cb, "systemctl", "stop", "orca.service")
+	_ = inst.runCmd(ctx, cb, "rm", "-rf", installDir)
+	_ = inst.runCmd(ctx, cb, "mkdir", "-p", installDir)
+	if err := inst.runCmd(ctx, cb, "tar", "-xzf", tarPath, "-C", installDir); err != nil {
+		return fmt.Errorf("gagal mengekstrak Orca Server: %w", err)
+	}
+
+	orcaBin := findOrcaServerBinary()
+	if orcaBin == "" {
+		return fmt.Errorf("biner 'orca' tidak ditemukan di dalam %s", installDir)
+	}
+
+	_ = inst.runCmd(ctx, cb, "chmod", "+x", orcaBin)
+	_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/orca")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", orcaBin, "/usr/local/bin/orca")
+
+	svcUser, userHome := ResolveOrcaUser()
+	if latest != "" {
+		_ = inst.writeSystemFile(ctx, cb, filepath.Join(installDir, ".wdev-version"), []byte(latest+"\n"), "644")
+		SetOrcaVersionCache(latest)
+	}
+	if userHome != "" {
+		_ = writeOrcaMode(userHome, svcUser, "headless")
+	}
+
+	dataPath := "/var/lib/orca"
+	if svcUser != "root" && userHome != "" {
+		dataPath = filepath.Join(userHome, ".config", "orca")
+	} else {
+		svcUser = "root"
+	}
+
+	cb("==> Mengonfigurasi mode Headless Server (orca.service)...")
+	serviceUnit := fmt.Sprintf(`[Unit]
+Description=Orca ADE Headless Server
+After=network.target
+
+[Service]
+Type=simple
+User=%s
+Environment=ORCA_USER_DATA_PATH=%s
+ExecStart=/usr/local/bin/orca serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`, svcUser, dataPath)
+	if err := inst.writeSystemFile(ctx, cb, "/etc/systemd/system/orca.service", []byte(serviceUnit), "644"); err != nil {
+		return err
+	}
+	_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
+	_ = inst.runCmd(ctx, cb, "systemctl", "enable", "--now", "orca.service")
+	_ = inst.runCmd(ctx, cb, "systemctl", "restart", "orca.service")
+
+	cb("✓ Orca ADE Headless Server berhasil dipasang/diperbarui!")
+	return nil
+}
+
+func (inst *Installer) installOrcaAppImage(ctx context.Context, cb LogCallback, latest string, assets []ghReleaseAsset) error {
+	assetName := "orca-linux.AppImage"
+	if runtime.GOARCH == "arm64" {
+		assetName = "orca-linux-arm64.AppImage"
+	}
+	downloadURL := ""
+	for _, a := range assets {
+		if a.Name == assetName {
+			downloadURL = a.URL
+			break
+		}
+	}
+	if downloadURL == "" {
+		downloadURL = fmt.Sprintf("https://github.com/stablyai/orca/releases/latest/download/%s", assetName)
+	}
+
+	tmpApp := filepath.Join(os.TempDir(), assetName)
+	cb(fmt.Sprintf("==> Mengunduh Orca Desktop AppImage: %s", downloadURL))
+	if err := downloadFileCtx(ctx, downloadURL, tmpApp); err != nil {
+		return fmt.Errorf("gagal mengunduh Orca AppImage: %w", err)
+	}
+	defer os.Remove(tmpApp)
+
+	orcaDir := "/usr/local/lib/orca-ide"
+	dstApp := filepath.Join(orcaDir, "orca.AppImage")
+	_ = inst.runCmd(ctx, cb, "mkdir", "-p", orcaDir)
+	if err := inst.runCmd(ctx, cb, "install", "-m", "0755", tmpApp, dstApp); err != nil {
+		return err
+	}
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", dstApp, "/usr/local/bin/orca-ide")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", dstApp, "/usr/local/bin/orca")
+
+	svcUser, userHome := ResolveOrcaUser()
+	if userHome != "" {
+		_ = writeOrcaMode(userHome, svcUser, "desktop")
+	}
+
+	ver := latest
+	if ver == "" {
+		ver = runOrcaVersionProbe(ctx, svcUser, userHome, dstApp)
+	}
+	if ver != "" {
+		_ = inst.writeSystemFile(ctx, cb, filepath.Join(orcaDir, ".wdev-version"), []byte(ver+"\n"), "644")
+		SetOrcaVersionCache(ver)
+	}
+
+	cb("✓ Orca ADE Desktop (AppImage) berhasil dipasang/diperbarui di " + dstApp)
+	return nil
 }
 
 // SetOrcaMode mengalihkan mode operasi Orca ADE (desktop/headless) untuk user target.
