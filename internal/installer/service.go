@@ -73,33 +73,7 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 	}
 
 	// 3. Buat unit systemd /etc/systemd/system/wdev.service
-	serviceUnit := fmt.Sprintf(`[Unit]
-Description=wdev Linux Developer Control Plane & Web Dashboard
-After=network.target network-online.target nginx.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/var/lib/wdev
-Environment="GOROOT=/usr/local/go"
-Environment="CARGO_HOME=/usr/local/cargo"
-Environment="RUSTUP_HOME=/usr/local/rustup"
-Environment="FLUTTER_ROOT=/usr/local/flutter"
-Environment="ANDROID_HOME=/usr/local/android-sdk"
-Environment="ANDROID_SDK_ROOT=/usr/local/android-sdk"
-Environment="NODE_HOME=/usr/local/lib/nodejs/current"
-Environment="PATH=/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/flutter/bin:/usr/local/lib/nodejs/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=/usr/local/bin/wdev serve --port %s --host %s
-Restart=always
-RestartSec=3
-StandardOutput=journal
-StandardError=journal
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-`, port, host)
+	serviceUnit := WdevServiceUnitContent(port, host)
 
 	cb(fmt.Sprintf("Menulis konfigurasi systemd service ke %s...", WdevServiceUnitPath))
 	tmpFile := "/tmp/wdev.service.tmp"

@@ -1349,8 +1349,15 @@ func (inst *Installer) RunFullInstall(ctx context.Context, cb LogCallback) error
 	cb(" MEMULAI INSTALASI LENGKAP LINGKUNGAN PENGEMBANGAN LINUX (14 LANGKAH)")
 	cb("=================================================================")
 
-	// Langkah 0: deteksi otomatis duplikat/double path sebelum instalasi.
+	// Langkah 0: deteksi otomatis duplikat/double path sebelum instalasi,
+	// sekaligus menyelaraskan unit wdev.service & permission cache Nginx.
 	inst.PreflightToolchain(ctx, cb)
+	if err := inst.EnsureWdevServiceUnit(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Penyelarasan unit wdev.service: %v", err))
+	}
+	if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Perbaikan permission cache Nginx: %v", err))
+	}
 
 	steps := []struct {
 		Name string
@@ -1413,6 +1420,12 @@ func (inst *Installer) RunUpdateAll(ctx context.Context, cb LogCallback) error {
 	}
 
 	inst.ensureWdevProfileEnv(ctx, cb)
+	if err := inst.EnsureWdevServiceUnit(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Penyelarasan unit wdev.service: %v", err))
+	}
+	if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Perbaikan permission cache Nginx: %v", err))
+	}
 	cb("✓ Pembaruan seluruh sistem selesai.")
 	return nil
 }

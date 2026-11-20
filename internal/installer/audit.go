@@ -261,6 +261,25 @@ func (inst *Installer) AuditToolchain(ctx context.Context, cb LogCallback) []Fin
 		}
 	}
 
+	// Unit systemd wdev: environment toolchain (RUSTUP_HOME dll.).
+	if data, err := os.ReadFile(WdevServiceUnitPath); err == nil {
+		missing := []string{}
+		for _, kv := range toolchainServiceEnv {
+			if !strings.Contains(string(data), kv[0]+"=") {
+				missing = append(missing, kv[0])
+			}
+		}
+		if len(missing) > 0 {
+			findings = append(findings, Finding{
+				Severity: SeverityWarning,
+				Kind:     "service-env",
+				Tool:     "wdev.service",
+				Detail:   "Environment belum lengkap: " + strings.Join(missing, ", "),
+				Fixable:  true,
+			})
+		}
+	}
+
 	// Permission cache Nginx (penyebab FastCGI/proxy menggantung).
 	for _, line := range DiagnoseNginxCache() {
 		if strings.Contains(line, "[!]") {
@@ -361,6 +380,10 @@ func (inst *Installer) RepairToolchain(ctx context.Context, cb LogCallback, find
 			removedPkgs[f.Tool] = true
 			cb("Menghapus paket distro duplikat: " + f.Tool)
 			inst.removeDistroPackagesIfInstalled(ctx, cb, f.Tool)
+		case "service-env":
+			if err := inst.EnsureWdevServiceUnit(ctx, cb); err != nil {
+				cb(fmt.Sprintf("[WARN] Gagal menyelaraskan unit wdev.service: %v", err))
+			}
 		case "nginx-cache":
 			if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
 				cb(fmt.Sprintf("[WARN] Gagal memperbaiki cache Nginx: %v", err))
