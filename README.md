@@ -360,6 +360,18 @@ Yang diprovision di VPS: PowerDNS Authoritative + SQLite3 + REST API, Nginx
 `wdev-edge-agent` (`wdev edge-agent serve`) yang mengelola reverse proxy,
 sertifikat, serta TCP stream mail.
 
+Provisioning bersifat destruktif dan **wajib konfirmasi**:
+
+```bash
+wdev edge-agent provision --help   # lihat opsi
+wdev edge-agent provision --yes    # jalankan di VPS (root)
+```
+
+`wdev pdns deploy` memanggil `--yes` secara otomatis karena sudah melalui
+konfirmasi di mesin lokal. IP publik yang dideteksi dibatasi IPv4 agar record
+DNS `A` valid. API key PowerDNS dibuat sekali, disimpan di
+`/etc/wdev-edge/api_key.secret` (0600), dan ditulis ke `edge.conf`.
+
 Agent diekspos di port `8082` (API key di `/etc/wdev-edge/api_key.secret`);
 PowerDNS API di port `8081`. Keduanya hanya dibuka untuk subnet NetBird
 `100.64.0.0/10`.

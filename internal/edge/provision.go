@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -127,9 +128,47 @@ func detectDistro() (id string, family string) {
 	return id, ""
 }
 
+// detectPublicIP hanya mengambil IPv4 agar tidak menghasilkan alamat ::1/2001:.
+// resolveAPIKey memakai kunci yang diberikan, membaca kunci lama, atau membuat baru.
+func resolveAPIKey(provided string) (string, error) {
+	return resolveAPIKeyAt(provided, APIKeyFile)
+}
+
+func resolveAPIKeyAt(provided, keyFile string) (string, error) {
+	if key := strings.TrimSpace(provided); key != "" {
+		return key, nil
+	}
+	if data, err := os.ReadFile(keyFile); err == nil {
+		if key := strings.TrimSpace(string(data)); key != "" {
+			return key, nil
+		}
+	}
+	out, err := exec.Command("openssl", "rand", "-hex", "24").Output()
+	if err != nil {
+		return "", fmt.Errorf("gagal membuat API key PowerDNS: %w", err)
+	}
+	key := strings.TrimSpace(string(out))
+	if key == "" {
+		return "", fmt.Errorf("API key PowerDNS kosong setelah digenerate")
+	}
+	if err := writeRootFile(keyFile, []byte(key), 0600); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
 func detectPublicIP(ctx context.Context) string {
-	client := &http.Client{Timeout: 5 * time.Second}
-	for _, u := range []string{"https://ifconfig.me", "https://api.ipify.org"} {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp4", addr)
+		},
+	}
+	client := &http.Client{Timeout: 6 * time.Second, Transport: transport}
+	for _, u := range []string{
+		"https://api.ipify.org",
+		"https://ipv4.icanhazip.com",
+		"https://ifconfig.me/ip",
+	} {
 		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			continue
@@ -141,7 +180,7 @@ func detectPublicIP(ctx context.Context) string {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
 		resp.Body.Close()
 		ip := strings.TrimSpace(string(body))
-		if ip != "" {
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
 			return ip
 		}
 	}
@@ -253,6 +292,11 @@ func Provision(ctx context.Context, cb func(string), opts ProvisionOptions) erro
 
 	// 5. PowerDNS.
 	cb(">>> [5/7] Mengonfigurasi PowerDNS + SQLite3...")
+	apiKey, err := resolveAPIKey(opts.APIKey)
+	if err != nil {
+		return err
+	}
+	opts.APIKey = apiKey
 	if err := provisionPowerDNS(ctx, cb, opts, hasV6); err != nil {
 		return err
 	}
@@ -264,7 +308,10 @@ func Provision(ctx context.Context, cb func(string), opts ProvisionOptions) erro
 	}
 
 	// 6.1/6.2 mail cleanup + postfix alignment.
-	_ = command(ctx, cb, "systemctl", "disable", "--now", "stalwart")
+	if exec.Command("systemctl", "cat", "stalwart.service").Run() == nil {
+		cb("Menonaktifkan Stalwart lama di VPS (tidak dipakai gateway)...")
+		_ = exec.Command("systemctl", "disable", "--now", "stalwart").Run()
+	}
 	_ = os.RemoveAll("/var/www/snappymail")
 	_ = os.Remove("/tmp/snappymail.zip")
 	alignPostfix(cb)
@@ -274,6 +321,9 @@ func Provision(ctx context.Context, cb func(string), opts ProvisionOptions) erro
 	cb("    " + ensureEdgeFirewall(opts))
 
 	// Metadata.
+	if opts.APIKey == "" {
+		return fmt.Errorf("API key PowerDNS kosong; edge.conf tidak ditulis")
+	}
 	conf := fmt.Sprintf("PUBLIC_IP=%s\nNETBIRD_IP=%s\nPDNS_API_PORT=%s\nAGENT_PORT=%s\nAPI_KEY=%s\n",
 		opts.PublicIP, opts.NetbirdIP, opts.PDNSPort, opts.AgentPort, opts.APIKey)
 	if err := writeRootFile(ConfigFile, []byte(conf), 0600); err != nil {
@@ -304,22 +354,10 @@ func provisionPowerDNS(ctx context.Context, cb func(string), opts ProvisionOptio
 	_ = exec.Command("chown", "-R", "pdns:pdns", dbDir).Run()
 
 	if opts.APIKey == "" {
-		if data, err := os.ReadFile(APIKeyFile); err == nil {
-			opts.APIKey = strings.TrimSpace(string(data))
-		} else {
-			out, err := exec.Command("openssl", "rand", "-hex", "24").Output()
-			if err != nil {
-				return fmt.Errorf("gagal membuat API key: %w", err)
-			}
-			opts.APIKey = strings.TrimSpace(string(out))
-			if err := writeRootFile(APIKeyFile, []byte(opts.APIKey), 0600); err != nil {
-				return err
-			}
-		}
-	} else {
-		if err := writeRootFile(APIKeyFile, []byte(opts.APIKey), 0600); err != nil {
-			return err
-		}
+		return fmt.Errorf("API key PowerDNS kosong")
+	}
+	if err := writeRootFile(APIKeyFile, []byte(opts.APIKey), 0600); err != nil {
+		return err
 	}
 
 	if fi, err := os.Stat(dbFile); err != nil || fi.Size() == 0 {

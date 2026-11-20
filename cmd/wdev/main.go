@@ -180,8 +180,25 @@ func main() {
 			}
 		case "provision":
 			opts := edge.ProvisionOptions{}
+			confirmed := false
 			for i := 1; i < len(args); i++ {
 				switch args[i] {
+				case "--help", "-h":
+					fmt.Println("Penggunaan: wdev edge-agent provision --yes [opsi]")
+					fmt.Println("")
+					fmt.Println("Memasang PowerDNS + Nginx + agent Go di VPS ini (butuh root).")
+					fmt.Println("Operasi ini mengubah sistem: paket, port 53, Nginx, firewall, systemd.")
+					fmt.Println("")
+					fmt.Println("Opsi:")
+					fmt.Println("  --yes              konfirmasi menjalankan provisioning (wajib)")
+					fmt.Println("  --public-ip <ip>   paksa IPv4 publik VPS")
+					fmt.Println("  --netbird-ip <ip>  paksa IP Netbird (wt0)")
+					fmt.Println("  --api-key <key>    pakai API key PowerDNS tertentu")
+					fmt.Println("  --pdns-port <n>    port REST API PowerDNS (default 8081)")
+					fmt.Println("  --agent-port <n>   port agent edge (default 8082)")
+					return
+				case "--yes", "-y":
+					confirmed = true
 				case "--public-ip":
 					if i+1 < len(args) {
 						opts.PublicIP = args[i+1]
@@ -208,6 +225,11 @@ func main() {
 						i++
 					}
 				}
+			}
+			if !confirmed {
+				fmt.Fprintln(os.Stderr, "Menolak menjalankan provisioning tanpa konfirmasi.")
+				fmt.Fprintln(os.Stderr, "Gunakan: wdev edge-agent provision --yes  (atau lewat: wdev pdns deploy <ip>)")
+				os.Exit(2)
 			}
 			if err := edge.Provision(context.Background(), cb, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)

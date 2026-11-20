@@ -1134,7 +1134,7 @@ func (m *Manager) DeployVPS(ctx context.Context, cb func(string), opts DeployOpt
 
 	// 3. Jalankan provisioning native di VPS (tanpa skrip shell).
 	cb("[3/4] Menjalankan provisioning VPS Edge Gateway (native Go)...")
-	provisionRun := "/usr/local/bin/wdev edge-agent provision"
+	provisionRun := "/usr/local/bin/wdev edge-agent provision --yes"
 	if opts.SSHUser != "root" {
 		provisionRun = "sudo " + provisionRun
 	}
