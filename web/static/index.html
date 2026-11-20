@@ -367,6 +367,29 @@
           </div>
         </div>
 
+        <!-- Zone Authoritative DNS -->
+        <div class="section-header">
+          <h3>Zone Authoritative DNS</h3>
+          <button type="button" class="btn btn-primary btn-sm" onclick="submitAddZone()" style="display:inline-flex;align-items:center;gap:6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+            <span>+ Tambah Zone</span>
+          </button>
+        </div>
+        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Zone DNS Authoritative">
+          <table>
+            <thead>
+              <tr>
+                <th>Nama Zone</th>
+                <th>Tipe</th>
+                <th>Serial</th>
+                <th>Status</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="pdns-zones-tbody"></tbody>
+          </table>
+        </div>
+
         <!-- STATUS EKSPOS PROYEK LOKAL (OVERVIEW) -->
         <div class="section-header" style="margin-top:8px;">
           <div>
@@ -377,10 +400,6 @@
             <button type="button" class="btn btn-outline btn-sm" onclick="loadPDNS()" title="Perbarui status ekspos lokal">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               <span>Perbarui Status</span>
-            </button>
-            <button type="button" class="btn btn-primary btn-sm" onclick="openPDNSExposeModal('site')" title="Ekspos vhost lokal ke domain publik">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-              <span>+ Tambah Ekspos</span>
             </button>
           </div>
         </div>
@@ -432,29 +451,7 @@
           </table>
         </div>
 
-        <!-- Zone Authoritative DNS -->
-        <div class="section-header">
-          <h3>Zone Authoritative DNS</h3>
-          <button type="button" class="btn btn-primary btn-sm" onclick="submitAddZone()" style="display:inline-flex;align-items:center;gap:6px;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-            <span>+ Tambah Zone</span>
-          </button>
-        </div>
-        <div class="table-container" tabindex="0" role="region" aria-label="Tabel Zone DNS Authoritative">
-          <table>
-            <thead>
-              <tr>
-                <th>Nama Zone</th>
-                <th>Tipe</th>
-                <th>Serial</th>
-                <th>Status</th>
-                <th>Aksi</th>
-              </tr>
-            </thead>
-            <tbody id="pdns-zones-tbody"></tbody>
-          </table>
-        </div>
-      </section>
+ </section>
 
       <!-- ========================================== -->
       <!-- TAB 7: CLOUDFLARE TUNNEL & DNS         -->
@@ -532,10 +529,6 @@
             <button type="button" class="btn btn-outline btn-sm" onclick="openMailSetupModal()" title="Setup domain email baru dan instalasi otomatis Stalwart Mail Server" aria-label="Setup Domain Mail">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
               <span>+ Setup Domain Mail</span>
-            </button>
-            <button type="button" class="btn btn-primary btn-sm" onclick="openMailAddAccountModal()" title="Buat akun email kotak pos baru" aria-label="Tambah Akun Email">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7.5" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-              <span>+ Tambah Email</span>
             </button>
           </div>
         </div>
@@ -1053,7 +1046,7 @@
       <form id="form-mail-add-account" onsubmit="submitMailAddAccount(event)">
         <div class="form-group">
           <label for="mail-new-email">Alamat Email Lengkap</label>
-          <input type="email" id="mail-new-email" class="form-control" placeholder="user@erposoft.my.id" required autocomplete="username">
+          <input type="text" id="mail-new-email" class="form-control" placeholder="user@erposoft.my.id" required autocomplete="username" inputmode="email" spellcheck="false">
           <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">Domain email harus sudah terdaftar di Stalwart (contoh: info@erposoft.my.id).</div>
         </div>
         <div class="form-group">

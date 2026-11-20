@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"wdev/internal/config"
@@ -802,6 +803,7 @@ func (m *Manager) GetStatus() (MailStatus, error) {
 	}
 
 	// 4. Kredensial admin domain (/etc/wdev/mail-admin.cred)
+	adminUsers := make(map[string]string)
 	adminCredPath := filepath.Join(m.cfg.WdevEtc, "mail-admin.cred")
 	if data, err := readRootFile(adminCredPath); err == nil {
 		var credMap map[string]struct {
@@ -811,12 +813,7 @@ func (m *Manager) GetStatus() (MailStatus, error) {
 		}
 		if err := json.Unmarshal(data, &credMap); err == nil {
 			for d, info := range credMap {
-				status.Domains = append(status.Domains, DomainSummary{
-					Domain:    d,
-					AdminURL:  m.adminURL(d),
-					Webmail:   m.webmailURL(d),
-					AdminUser: info.Email,
-				})
+				adminUsers[strings.ToLower(d)] = info.Email
 			}
 		}
 	}
@@ -871,7 +868,39 @@ func (m *Manager) GetStatus() (MailStatus, error) {
 		}
 	}
 
-	// 7. Routing efektif dari Stalwart (bukan hanya file kredensial)
+	// 7. Daftar domain aktif: gabungkan semua sumber agar domain yang baru
+	// di-setup tetap tampil walau kredensial admin lama masih dipakai.
+	seen := make(map[string]bool)
+	addDomain := func(name string) {
+		d := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+		if d == "" || seen[d] {
+			return
+		}
+		seen[d] = true
+		status.Domains = append(status.Domains, DomainSummary{
+			Domain:    d,
+			AdminURL:  m.adminURL(d),
+			Webmail:   m.webmailURL(d),
+			AdminUser: adminUsers[d],
+		})
+	}
+	for d := range adminUsers {
+		addDomain(d)
+	}
+	for d := range m.loadDomainsState() {
+		addDomain(d)
+	}
+	for d := range status.DomainRelays {
+		addDomain(d)
+	}
+	if status.StalwartActive {
+		for _, d := range m.stalwartDomainNames() {
+			addDomain(d)
+		}
+	}
+	sort.Slice(status.Domains, func(i, j int) bool { return status.Domains[i].Domain < status.Domains[j].Domain })
+
+	// 8. Routing efektif dari Stalwart (bukan hanya file kredensial)
 	if info, err := m.GetOutboundRoutes(); err == nil {
 		status.RelayOnly = info.RelayOnly
 		status.OutboundDefault = info.Default
@@ -879,6 +908,35 @@ func (m *Manager) GetStatus() (MailStatus, error) {
 	}
 
 	return status, nil
+}
+
+// stalwartDomainNames mengembalikan nama domain yang benar-benar terdaftar di
+// Stalwart, sehingga domain hasil setup selalu muncul di dashboard.
+func (m *Manager) stalwartDomainNames() []string {
+	adminEmail, adminPass, err := m.pickValidAdminCred("")
+	if err != nil {
+		return nil
+	}
+	out, err := m.runStalwartCli(adminEmail, adminPass, "query", "Domain", "--fields", "id,name", "--json")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var item struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(line), &item); err == nil && item.Name != "" {
+			names = append(names, item.Name)
+		}
+	}
+	return names
 }
 
 func (m *Manager) GetDomainAccounts(domainFilter string) ([]DomainAccounts, error) {

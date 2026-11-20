@@ -2285,6 +2285,7 @@ function appendTerminalLog(data) {
     setTimeout(loadSwitchers, 1100);
     setTimeout(loadToolchains, 1200);
     setTimeout(loadWorkspace, 1300);
+ setTimeout(loadMail, 1400);
 
   } else {
     // Regular log message
@@ -2420,6 +2421,13 @@ async function loadMailStatus() {
       if (relayDomainSelect) {
  relayDomainSelect.innerHTML = '<option value="global">Semua Domain (relay default)</option>' + data.domains.map(d => `<option value="${d.domain}">${d.domain}</option>`).join('');
       }
+ } else {
+ if (domainFilter) {
+ domainFilter.innerHTML = '<option value="">Semua Domain</option>';
+ }
+ if (relayDomainSelect) {
+ relayDomainSelect.innerHTML = '<option value="global">Semua Domain (relay default)</option>';
+ }
     }
 
     // Render Domain Relay Table
@@ -2607,7 +2615,7 @@ function openMailAddAccountModal(domain) {
   if (emailInput) {
     emailInput.value = defaultDom ? `@${defaultDom}` : '';
     if (defaultDom) {
-      emailInput.setSelectionRange(0, 0);
+      try { emailInput.setSelectionRange(0, 0); } catch (_) {}
     }
   }
   if (passInput) passInput.value = '';
@@ -2630,6 +2638,11 @@ async function submitMailAddAccount(e) {
     await modalAlert('Email dan password wajib diisi.', 'warning', 'Validasi Form');
     return;
   }
+
+ if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+ await modalAlert('Format email tidak valid. Gunakan bentuk user@domain.tld.', 'warning', 'Validasi Form');
+ return;
+ }
 
   if (submitBtn) {
     submitBtn.disabled = true;
