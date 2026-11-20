@@ -1,5 +1,19 @@
 # Changelog
 
+## [v2.2.0] - 2026-11-21
+
+### 🚀 Fitur Baru
+- feat(auth,mode): tambah security entrance aaPanel dan dual-mode server (Full VPS vs Edge) (4e5f7c9)
+- feat(ui,server): migrasi dashboard ke SvelteKit + shadcn-svelte dan upgrade API control plane (1ff7e7e)
+- feat(dashboard,installer): tambah modal config layanan, perbaikan update Orca, dan Zsh/Nerd Font (6c95c85)
+- feat(mail): hapus/perbaiki domain dan kelola DNS relay otomatis (a35116c)
+
+### 🐛 Perbaikan Bug
+- fix(mail,ui): domain mail selalu tampil, modal tambah email, dan rapikan tombol ganda (435e2e3)
+
+### 🔧 Pemeliharaan & Tooling
+- chore(dev): tambah Makefile, scripts rilis & changelog otomatis, dan workflow GitHub Actions (36bd7b9)
+
 ## v2.1.1
 
 ### Added
