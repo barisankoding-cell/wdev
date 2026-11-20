@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
 	"wdev/internal/edge"
@@ -37,6 +38,19 @@ ANTARMUKA:
     --port <port>           Tentukan port HTTP (default: 3200)
     --host <host>           Tentukan host binding (default: 0.0.0.0)
   wdev tui                  Jalankan TUI Terminal Dashboard interaktif
+
+PANEL & KEAMANAN (AAPANEL SECURITY STYLE):
+  wdev panel default, info  Tampilkan URL akses panel, security entrance, username & password
+  wdev panel password <pw>  Ubah kata sandi admin panel
+  wdev panel username <usr> Ubah username admin panel
+  wdev panel entrance <url> Atur path security entrance (contoh: wdev panel entrance secret)
+  wdev panel entrance off   Nonaktifkan security entrance (akses langsung tanpa security path)
+  wdev panel auth <on|off>  Aktifkan / nonaktifkan proteksi login
+  wdev panel reset          Reset kredensial & security entrance ke nilai acak baru
+
+MODE SERVER (DUAL MODE ARCHITECTURE):
+  wdev mode                 Tampilkan mode aktif server saat ini
+  wdev mode set <vps|edge>  Ganti mode: vps (aaPanel Style) atau edge (Hybrid Gateway)
 
 MANAJEMEN LAYANAN & SYSTEMD:
   wdev status, wdev check              Tampilkan status cepat sistem, IP, dan layanan inti
@@ -145,6 +159,7 @@ func main() {
 	cfMgr := cloudflare.New(cfg, db)
 	pdnsMgr := pdns.New(cfg, db)
 	mailMgr := mail.New(cfg, db, pdnsMgr)
+	authMgr := auth.New(cfg, db)
 
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -276,7 +291,7 @@ func main() {
 		cfg.HTTPPort = *portFlag
 		cfg.HTTPHost = *hostFlag
 
-		srv := server.New(cfg, db, runMgr, inst, siteMgr, swMgr, cfMgr, pdnsMgr, mailMgr)
+		srv := server.New(cfg, db, runMgr, inst, siteMgr, swMgr, cfMgr, pdnsMgr, mailMgr, authMgr)
 		if err := srv.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error menjalankan server: %v\n", err)
 			os.Exit(1)
@@ -1347,6 +1362,11 @@ func main() {
 		case "mail", "mail-stack":
 			taskName = "Mail Stack (Stalwart + SnappyMail)"
 			fn = inst.InstallMailStack
+		case "pdns", "powerdns":
+			taskName = "PowerDNS Authoritative & Edge Gateway"
+			fn = func(ctx context.Context, cb func(string)) error {
+				return edge.Provision(ctx, cb, edge.ProvisionOptions{})
+			}
 		case "cloudflare":
 			taskName = "Cloudflare Tunnel (cloudflared)"
 			fn = inst.InstallCloudflared
@@ -1449,6 +1469,166 @@ func main() {
 			}
 		}
 
+	case "panel":
+		if len(args) < 2 {
+			printPanelHelp()
+			return
+		}
+		sub := strings.ToLower(args[1])
+		if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" {
+			if _, err := os.Stat("/etc/wdev/wdev.db"); err == nil {
+				if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" {
+					fmt.Println("⚠️  PERHATIAN: Service sistem wdev aktif menggunakan /etc/wdev/wdev.db.")
+					fmt.Printf("   Jalankan dengan sudo agar langsung tersimpan ke layanan background:\n")
+					fmt.Printf("   sudo wdev panel %s ...\n\n", sub)
+				}
+			}
+		}
+		switch sub {
+		case "default", "info", "status":
+			activeAuth := authMgr
+			if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" {
+				if _, err := os.Stat("/etc/wdev/wdev.db"); err == nil {
+					if sysStore, err := store.New("/etc/wdev/wdev.db"); err == nil {
+						activeAuth = auth.New(cfg, sysStore)
+						defer sysStore.Close()
+					}
+				}
+			}
+			pubIP := ""
+			conf := pdnsMgr.LoadConfig()
+			if conf.VPSPublicIP != "" {
+				pubIP = conf.VPSPublicIP
+			}
+			nbIP := pdnsMgr.GetLocalNetbirdIP()
+			info := activeAuth.GetPanelAccessInfo(pubIP, nbIP)
+			printPanelInfo(info)
+		case "password", "pass":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev panel password <password_baru>")
+				return
+			}
+			newPass := args[2]
+			if err := authMgr.SetPassword(newPass); err != nil {
+				fmt.Printf("Gagal mengubah kata sandi: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✓ Kata sandi panel berhasil diubah.")
+		case "username", "user":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev panel username <username_baru>")
+				return
+			}
+			newUser := args[2]
+			if err := authMgr.SetUsername(newUser); err != nil {
+				fmt.Printf("Gagal mengubah username: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Username panel berhasil diubah menjadi '%s'.\n", newUser)
+		case "entrance", "url":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev panel entrance <path|off>")
+				return
+			}
+			path := args[2]
+			if err := authMgr.SetSecurityEntrance(path); err != nil {
+				fmt.Printf("Gagal mengubah security entrance: %v\n", err)
+				os.Exit(1)
+			}
+			ent := authMgr.GetSecurityEntrance()
+			if ent == "" {
+				fmt.Println("✓ Security Entrance dinonaktifkan (panel dapat diakses langsung).")
+			} else {
+				fmt.Printf("✓ Security Entrance berhasil diubah menjadi: /%s\n", ent)
+			}
+		case "auth":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev panel auth <on|off>")
+				return
+			}
+			mode := strings.ToLower(args[2])
+			enabled := mode == "on" || mode == "1" || mode == "true"
+			if err := authMgr.SetAuthEnabled(enabled); err != nil {
+				fmt.Printf("Gagal mengubah status autentikasi: %v\n", err)
+				os.Exit(1)
+			}
+			if enabled {
+				fmt.Println("✓ Proteksi login panel diaktifkan.")
+			} else {
+				fmt.Println("✓ PERINGATAN: Proteksi login panel dinonaktifkan!")
+			}
+		case "reset":
+			info, err := authMgr.ResetCredentials()
+			if err != nil {
+				fmt.Printf("Gagal mereset kredensial: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✓ Kredensial dan Security Entrance berhasil di-reset ke nilai acak baru:")
+			printPanelInfo(info)
+		default:
+			printPanelHelp()
+		}
+
+	case "mode":
+		if len(args) < 2 {
+			currentMode := pdnsMgr.GetMode()
+			isSet := pdnsMgr.IsModeSet()
+			fmt.Println("==================================================================")
+			fmt.Printf("  MODE SERVER SAAT INI : %s\n", strings.ToUpper(currentMode))
+			if isSet {
+				fmt.Println("  Status Konfigurasi   : Dikonfigurasi eksplisit oleh admin")
+			} else {
+				fmt.Println("  Status Konfigurasi   : Terdeteksi otomatis (default)")
+			}
+			fmt.Println("==================================================================")
+			fmt.Println("Pilihan Mode:")
+			fmt.Println("  1. vps  (Full VPS / Standalone - aaPanel Style)")
+			fmt.Println("     - PowerDNS berjalan lokal di VPS ini (127.0.0.1:8081 & port 53 UDP/TCP).")
+			fmt.Println("     - Mail server dan SnappyMail langsung melayani publik tanpa NetBird mesh.")
+			fmt.Println("     - Cocok untuk: Cloud VPS / Dedicated Server / Production Server.")
+			fmt.Println("  2. edge (Edge Gateway - Hybrid Mode)")
+			fmt.Println("     - PC Developer lokal terhubung ke VPS Edge Gateway via NetBird VPN mesh.")
+			fmt.Println("     - VHost dan data mail lokal diekspos melalui reverse proxy VPS.")
+			fmt.Println("     - Cocok untuk: Workstation lokal / Home lab di balik NAT.")
+			fmt.Println("\nUntuk mengubah mode:")
+			fmt.Println("  wdev mode set vps   -> Beralih ke Full VPS (aaPanel Style)")
+			fmt.Println("  wdev mode set edge  -> Beralih ke Edge Gateway (Hybrid)")
+			fmt.Println("==================================================================")
+			return
+		}
+		switch args[1] {
+		case "get", "status":
+			fmt.Printf("mode=%s is_set=%v\n", pdnsMgr.GetMode(), pdnsMgr.IsModeSet())
+		case "set":
+			if os.Geteuid() != 0 {
+				fmt.Fprintln(os.Stderr, "PERINGATAN: wdev service utama berjalan sebagai root (/etc/wdev/wdev.db).")
+				fmt.Fprintln(os.Stderr, "Jalankan dengan 'sudo wdev mode set ...' agar perubahan tersimpan ke service utama.")
+			}
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev mode set <vps|edge>")
+				os.Exit(1)
+			}
+			targetMode := strings.ToLower(strings.TrimSpace(args[2]))
+			if targetMode != "vps" && targetMode != "edge" {
+				fmt.Println("Mode tidak valid! Gunakan 'vps' atau 'edge'.")
+				os.Exit(1)
+			}
+			if err := pdnsMgr.SetMode(targetMode); err != nil {
+				fmt.Fprintf(os.Stderr, "Gagal mengubah mode: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Mode server berhasil diubah ke: %s\n", strings.ToUpper(targetMode))
+			if targetMode == "vps" {
+				fmt.Println("  Panel sekarang beroperasi sebagai Standalone VPS (aaPanel style).")
+				fmt.Println("  Pastikan PowerDNS terpasang: 'wdev install pdns'.")
+			} else {
+				fmt.Println("  Panel sekarang beroperasi sebagai Edge Gateway (Hybrid).")
+				fmt.Println("  Hubungkan VPS dengan: 'wdev pdns connect'.")
+			}
+		default:
+			fmt.Println("Penggunaan: wdev mode [get|set <vps|edge>]")
+		}
+
 	case "-v", "--version", "version":
 		fmt.Printf("wdev version %s\n", Version)
 
@@ -1460,4 +1640,46 @@ func main() {
 		printHelp()
 		os.Exit(1)
 	}
+}
+
+func printPanelHelp() {
+	fmt.Println(`Penggunaan wdev panel (aaPanel Security Entrance & Auth):
+  wdev panel default, info    Tampilkan URL akses, Security Entrance, username & password
+  wdev panel password <pw>    Ubah kata sandi login panel
+  wdev panel username <usr>   Ubah username login panel
+  wdev panel entrance <path>  Atur path security entrance (contoh: wdev panel entrance secret)
+  wdev panel entrance off     Nonaktifkan security entrance
+  wdev panel auth on|off      Aktifkan / nonaktifkan proteksi login
+  wdev panel reset            Reset kredensial & security entrance ke nilai acak baru`)
+}
+
+func printPanelInfo(info auth.PanelAccessInfo) {
+	fmt.Println("==================================================================")
+	fmt.Println("                  INFORMASI AKSES wdev PANEL                      ")
+	fmt.Println("                  (aaPanel Security Architecture)                 ")
+	fmt.Println("==================================================================")
+	if info.PublicURL != "" {
+		fmt.Printf("  URL Publik       : %s\n", info.PublicURL)
+	}
+	if info.NetbirdURL != "" {
+		fmt.Printf("  URL NetBird      : %s\n", info.NetbirdURL)
+	}
+	fmt.Printf("  URL Lokal        : %s\n", info.LocalURL)
+	fmt.Printf("  Username         : %s\n", info.Username)
+	fmt.Printf("  Password         : %s\n", info.Password)
+	if info.SecurityEntrance != "" {
+		fmt.Printf("  Security Entrance: %s\n", info.SecurityEntrance)
+	} else {
+		fmt.Println("  Security Entrance: (Nonaktif / Bebas Akses)")
+	}
+	if info.AuthEnabled {
+		fmt.Println("  Status Login     : Aktif (Protected)")
+	} else {
+		fmt.Println("  Status Login     : Nonaktif (Unprotected)")
+	}
+	fmt.Println("==================================================================")
+	fmt.Println("Catatan: Simpan URL dan kredensial ini baik-baik.")
+	fmt.Println("Ubah sandi via CLI   : wdev panel password <password_baru>")
+	fmt.Println("Ubah entrance via CLI: wdev panel entrance <nama_path>")
+	fmt.Println("==================================================================")
 }

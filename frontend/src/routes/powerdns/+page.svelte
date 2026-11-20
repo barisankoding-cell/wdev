@@ -17,6 +17,7 @@
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
+	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type {
 		EdgeConfig,
 		ProxyExposure,
@@ -38,6 +39,8 @@
 	import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import InfoIcon from '@lucide/svelte/icons/info';
+	import BookOpenIcon from '@lucide/svelte/icons/book-open';
+	import GlobeIcon from '@lucide/svelte/icons/globe';
 
 	let edge = $state<EdgeConfig | null>(null);
 	let zones = $state<ZoneInfo[]>([]);
@@ -45,6 +48,7 @@
 	let exposures = $state<ProxyExposure[]>([]);
 	let zonesError = $state('');
 	let exposuresError = $state('');
+	let glueGuideOpen = $state(false);
 
 	// Add Zone Dialog
 	let addZoneOpen = $state(false);
@@ -458,30 +462,65 @@
 <div class="flex flex-col gap-5 sm:gap-6">
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
-			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">PowerDNS &amp; VPS Edge Gateway</h1>
-			<p class="text-sm text-muted-foreground">
-				Authoritative DNS mandiri &amp; reverse-proxy SSL Let's Encrypt otomatis di VPS Edge via NetBird.
-			</p>
+			{#if modeStore.mode === 'vps'}
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Domain &amp; DNS Manager</h1>
+				<p class="text-sm text-muted-foreground">
+					Authoritative DNS Server &amp; Manajemen Domain Langsung di Cloud VPS (aaPanel Style).
+				</p>
+			{:else}
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">PowerDNS &amp; VPS Edge Gateway</h1>
+				<p class="text-sm text-muted-foreground">
+					Authoritative DNS mandiri &amp; reverse-proxy SSL Let's Encrypt otomatis di VPS Edge via NetBird.
+				</p>
+			{/if}
 		</div>
 		<div class="flex flex-wrap items-center gap-2">
-			{#if edge}
+			{#if modeStore.mode === 'vps'}
 				<StatusBadge
-					tone={edge.reachable ? 'success' : 'destructive'}
-					label={edge.reachable ? 'Terhubung ke Edge VPS' : 'Edge VPS Terputus'}
+					tone={edge?.reachable || edge?.has_local_pdns ? 'success' : 'destructive'}
+					label={edge?.reachable || edge?.has_local_pdns ? 'PowerDNS Lokal Aktif (127.0.0.1:8081)' : 'PowerDNS Belum Aktif'}
 				/>
+				<Button size="sm" onclick={() => (addZoneOpen = true)}>
+					<PlusIcon data-icon="inline-start" />
+					Tambah Zone
+				</Button>
+				<Button variant="outline" size="sm" onclick={() => (glueGuideOpen = !glueGuideOpen)}>
+					<BookOpenIcon data-icon="inline-start" />
+					Panduan Nameserver
+				</Button>
+			{:else}
+				{#if edge}
+					<StatusBadge
+						tone={edge.reachable ? 'success' : 'destructive'}
+						label={edge.reachable ? 'Terhubung ke Edge VPS' : 'Edge VPS Terputus'}
+					/>
+				{/if}
+				<Button variant={edge?.reachable ? 'outline' : 'default'} size="sm" onclick={() => (deployOpen = true)}>
+					<ServerIcon data-icon="inline-start" />
+					Deploy ke VPS
+				</Button>
+				<Button variant="outline" size="sm" onclick={() => (connectOpen = true)}>
+					<LinkIcon data-icon="inline-start" />
+					Hubungkan Manual
+				</Button>
 			{/if}
-			<Button variant={edge?.reachable ? 'outline' : 'default'} size="sm" onclick={() => (deployOpen = true)}>
-				<ServerIcon data-icon="inline-start" />
-				Deploy ke VPS
-			</Button>
-			<Button variant="outline" size="sm" onclick={() => (connectOpen = true)}>
-				<LinkIcon data-icon="inline-start" />
-				Hubungkan Manual
-			</Button>
 		</div>
 	</div>
 
-	{#if edge && !edge.reachable}
+	{#if modeStore.mode === 'vps' && edge && !edge.reachable && !edge.has_local_pdns}
+		<Alert.Root variant="destructive">
+			<TriangleAlertIcon />
+			<Alert.Title>PowerDNS Authoritative Belum Terpasang / Aktif</Alert.Title>
+			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+				<span>
+					PowerDNS lokal di port 53 &amp; port 8081 belum merespons. Pasang atau inisialisasi PowerDNS sekarang.
+				</span>
+				<Button size="xs" onclick={() => cp.openTerminal('wdev install pdns')}>
+					Install PowerDNS Sekarang
+				</Button>
+			</Alert.Description>
+		</Alert.Root>
+	{:else if modeStore.mode === 'edge' && edge && !edge.reachable}
 		<Alert.Root variant="destructive">
 			<TriangleAlertIcon />
 			<Alert.Title>VPS Edge Gateway Belum Terhubung</Alert.Title>
@@ -497,26 +536,75 @@
 		</Alert.Root>
 	{/if}
 
-	<div class="grid gap-3 sm:grid-cols-3">
-		<Card.Root>
-			<Card.Header>
-				<Card.Description>IP VPS (NetBird Mesh)</Card.Description>
-				<Card.Title class="truncate font-mono text-base">{edge?.vps_netbird_ip || '-'}</Card.Title>
-			</Card.Header>
-		</Card.Root>
-		<Card.Root>
-			<Card.Header>
-				<Card.Description>IP Publik Edge Gateway</Card.Description>
-				<Card.Title class="truncate font-mono text-base">{edge?.vps_public_ip || '-'}</Card.Title>
-			</Card.Header>
-		</Card.Root>
-		<Card.Root>
-			<Card.Header>
-				<Card.Description>IP NetBird Mesin Lokal (wt0)</Card.Description>
-				<Card.Title class="truncate font-mono text-base">{edge?.local_netbird_ip || '-'}</Card.Title>
-			</Card.Header>
-		</Card.Root>
-	</div>
+	{#if modeStore.mode === 'vps' && glueGuideOpen}
+		<Alert.Root class="border-primary/40 bg-primary/5">
+			<InfoIcon class="text-primary" />
+			<Alert.Title class="font-semibold text-primary">Petunjuk Integrasi Domain (aaPanel Nameserver Style)</Alert.Title>
+			<Alert.Description class="space-y-2 text-xs leading-relaxed text-muted-foreground mt-2">
+				<p>
+					Agar seluruh domain utama dan subdomain mengarah langsung ke VPS ini:
+				</p>
+				<ol class="list-decimal list-inside space-y-1">
+					<li>Buka panel registrar domain Anda (Niagahoster, Rumahweb, Namecheap, Cloudflare, dll).</li>
+					<li>Cari menu <strong>Child Nameserver / Host Records / Glue Records</strong> pada domain utama Anda.</li>
+					<li>
+						Daftarkan:
+						<br />
+						<code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">ns1.{defaultZoneName}</code> &rarr; <code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">{edge?.vps_public_ip || 'IP_PUBLIK_VPS'}</code>
+						<br />
+						<code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">ns2.{defaultZoneName}</code> &rarr; <code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">{edge?.vps_public_ip || 'IP_PUBLIK_VPS'}</code>
+					</li>
+					<li>Ubah <strong>Nameserver (DNS)</strong> domain Anda menjadi <code class="font-mono">ns1.{defaultZoneName}</code> dan <code class="font-mono">ns2.{defaultZoneName}</code>.</li>
+					<li>Tambahkan zone domain di tabel di bawah. wdev akan mengelola seluruh record (A, CNAME, MX, TXT) secara otomatis.</li>
+				</ol>
+			</Alert.Description>
+		</Alert.Root>
+	{/if}
+
+	<!-- Top Metric Cards -->
+	{#if modeStore.mode === 'vps'}
+		<div class="grid gap-3 sm:grid-cols-3">
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>IP Publik VPS (A Record Target)</Card.Description>
+					<Card.Title class="truncate font-mono text-base">{edge?.vps_public_ip || '-'}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>Primary Nameserver (NS1)</Card.Description>
+					<Card.Title class="truncate font-mono text-base">ns1.{defaultZoneName}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>Secondary Nameserver (NS2)</Card.Description>
+					<Card.Title class="truncate font-mono text-base">ns2.{defaultZoneName}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+		</div>
+	{:else}
+		<div class="grid gap-3 sm:grid-cols-3">
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>IP VPS (NetBird Mesh)</Card.Description>
+					<Card.Title class="truncate font-mono text-base">{edge?.vps_netbird_ip || '-'}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>IP Publik Edge Gateway</Card.Description>
+					<Card.Title class="truncate font-mono text-base">{edge?.vps_public_ip || '-'}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>IP NetBird Mesin Lokal (wt0)</Card.Description>
+					<Card.Title class="truncate font-mono text-base">{edge?.local_netbird_ip || '-'}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+		</div>
+	{/if}
 
 	<!-- Authoritative DNS Zones -->
 	<section class="flex flex-col gap-3">

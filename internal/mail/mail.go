@@ -718,25 +718,44 @@ func runRoot(name string, args ...string) error {
 func (m *Manager) ensureLocalMailFirewall() string {
 	results := []string{}
 	ports := []int{25, 465, 587, 993, 143, 995, 110}
+	mode := m.pdnsMgr.GetMode()
+	isVPS := mode == "vps"
+
 	if _, err := exec.LookPath("ufw"); err == nil {
 		out, _ := exec.Command("ufw", "status").Output()
 		if strings.Contains(string(out), "Status: active") {
 			for _, port := range ports {
-				_ = runRoot("ufw", "allow", "from", "100.64.0.0/10", "to", "any", "port", fmt.Sprintf("%d", port), "proto", "tcp")
+				if isVPS {
+					_ = runRoot("ufw", "allow", fmt.Sprintf("%d/tcp", port))
+				} else {
+					_ = runRoot("ufw", "allow", "from", "100.64.0.0/10", "to", "any", "port", fmt.Sprintf("%d", port), "proto", "tcp")
+				}
 			}
 			_ = runRoot("ufw", "reload")
-			results = append(results, "ufw: port mail dibuka untuk NetBird 100.64.0.0/10")
+			if isVPS {
+				results = append(results, "ufw: port mail dibuka untuk publik (0.0.0.0/0)")
+			} else {
+				results = append(results, "ufw: port mail dibuka untuk NetBird 100.64.0.0/10")
+			}
 		}
 	}
 	if _, err := exec.LookPath("firewall-cmd"); err == nil {
 		out, _ := exec.Command("firewall-cmd", "--state").Output()
 		if strings.TrimSpace(string(out)) == "running" {
 			for _, port := range ports {
-				_ = runRoot("firewall-cmd", "--permanent", "--add-rich-rule",
-					fmt.Sprintf("rule family=ipv4 source address=100.64.0.0/10 port port=%d protocol=tcp accept", port))
+				if isVPS {
+					_ = runRoot("firewall-cmd", "--permanent", fmt.Sprintf("--add-port=%d/tcp", port))
+				} else {
+					_ = runRoot("firewall-cmd", "--permanent", "--add-rich-rule",
+						fmt.Sprintf("rule family=ipv4 source address=100.64.0.0/10 port port=%d protocol=tcp accept", port))
+				}
 			}
 			_ = runRoot("firewall-cmd", "--reload")
-			results = append(results, "firewalld: port mail dibuka untuk NetBird 100.64.0.0/10")
+			if isVPS {
+				results = append(results, "firewalld: port mail dibuka untuk publik")
+			} else {
+				results = append(results, "firewalld: port mail dibuka untuk NetBird 100.64.0.0/10")
+			}
 		}
 	}
 	if len(results) == 0 {
@@ -1317,11 +1336,17 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 
 	cb(fmt.Sprintf("=== MEMULAI SETUP MAIL SERVER & DOMAIN (%s) ===", cleanDom))
 
+	mode := m.pdnsMgr.GetMode()
 	localNB := m.pdnsMgr.GetLocalNetbirdIP()
-	if localNB == "" {
-		return fmt.Errorf("IP NetBird lokal (wt0) tidak terdeteksi. Pastikan NetBird aktif: 'netbird status'")
+	if mode == "vps" {
+		localNB = "127.0.0.1"
+		cb("✓ Mode Full VPS aktif: menggunakan local loopback (127.0.0.1)")
+	} else {
+		if localNB == "" {
+			return fmt.Errorf("IP NetBird lokal (wt0) tidak terdeteksi. Pastikan NetBird aktif: 'netbird status'")
+		}
+		cb(fmt.Sprintf("✓ IP NetBird lokal terdeteksi: %s", localNB))
 	}
-	cb(fmt.Sprintf("✓ IP NetBird lokal terdeteksi: %s", localNB))
 
 	// 1. Pastikan mail stack lokal siap (Stalwart & SnappyMail)
 	cb("[1/4] Menyiapkan Mail Stack Lokal (Storage di Harddisk PC)...")
@@ -1433,32 +1458,49 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	}
 	cb("✓ DNS inbound (A, MX) & kebijakan outbound (SPF -all, DMARC) berhasil dibuat")
 
-	// 3. Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Lokal via Edge Agent
-	cb("[3/4] Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Edge Agent...")
-	agentPayload := map[string]any{
-		"domain": cleanDom, "target_ip": localNB, "ssl": opts.SSL,
-	}
-
-	agentResp, err := m.pdnsMgr.AgentPost("/api/v1/mail/setup-domain", agentPayload)
-	if err != nil {
-		cb(fmt.Sprintf("Peringatan Edge Agent VPS: %v", err))
+	if mode == "vps" {
+		cb("[3/4] Menyiapkan Virtual Host Nginx Lokal untuk Full VPS...")
+		_ = m.ensureLocalMailVhost(cleanDom)
+		_ = m.ensureWebmailFallbackVhost()
+		_ = reloadLocalNginx()
+		cb("✓ Gateway & Virtual Host Nginx lokal berhasil dikonfigurasi!")
+		adminURL := fmt.Sprintf("http://mailadmin.%s", cleanDom)
+		webmailURL := fmt.Sprintf("http://webmail.%s", cleanDom)
+		if opts.SSL {
+			adminURL = fmt.Sprintf("https://mailadmin.%s", cleanDom)
+			webmailURL = fmt.Sprintf("https://webmail.%s", cleanDom)
+		}
+		cb(fmt.Sprintf("  Panel Admin : %s", adminURL))
+		cb(fmt.Sprintf("  Webmail     : %s", webmailURL))
+		m.recordDomainState(cleanDom, opts.SSL, adminURL, webmailURL)
 	} else {
-		var respMap map[string]any
-		_ = json.Unmarshal(agentResp, &respMap)
-		cb("✓ Gateway & Reverse Proxy VPS berhasil didaftarkan!")
-		adminURL, _ := respMap["admin_url"].(string)
-		if adminURL != "" {
-			cb(fmt.Sprintf(" Panel Admin : %s", adminURL))
+		// 3. Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Lokal via Edge Agent
+		cb("[3/4] Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Edge Agent...")
+		agentPayload := map[string]any{
+			"domain": cleanDom, "target_ip": localNB, "ssl": opts.SSL,
 		}
-		webmailURL, _ := respMap["webmail_url"].(string)
-		if webmailURL != "" {
-			cb(fmt.Sprintf(" Webmail : %s", webmailURL))
+
+		agentResp, err := m.pdnsMgr.AgentPost("/api/v1/mail/setup-domain", agentPayload)
+		if err != nil {
+			cb(fmt.Sprintf("Peringatan Edge Agent VPS: %v", err))
+		} else {
+			var respMap map[string]any
+			_ = json.Unmarshal(agentResp, &respMap)
+			cb("✓ Gateway & Reverse Proxy VPS berhasil didaftarkan!")
+			adminURL, _ := respMap["admin_url"].(string)
+			if adminURL != "" {
+				cb(fmt.Sprintf("  Panel Admin : %s", adminURL))
+			}
+			webmailURL, _ := respMap["webmail_url"].(string)
+			if webmailURL != "" {
+				cb(fmt.Sprintf("  Webmail     : %s", webmailURL))
+			}
+			sslActive := opts.SSL
+			if v, ok := respMap["ssl"].(string); ok {
+				sslActive = strings.HasPrefix(v, "active")
+			}
+			m.recordDomainState(cleanDom, sslActive, adminURL, webmailURL)
 		}
-		sslActive := opts.SSL
-		if v, ok := respMap["ssl"].(string); ok {
-			sslActive = strings.HasPrefix(v, "active")
-		}
-		m.recordDomainState(cleanDom, sslActive, adminURL, webmailURL)
 	}
 
 	// 4. Konfigurasi relay outbound. Relay-only: tidak ada fallback direct.

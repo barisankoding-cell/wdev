@@ -42,9 +42,15 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 		st.SnappyMail = true
 	}
 
+	mode := m.pdnsMgr.GetMode()
+	isVPS := mode == "vps"
+
 	st.NetbirdIP = m.pdnsMgr.GetLocalNetbirdIP()
+	if isVPS && st.NetbirdIP == "" {
+		st.NetbirdIP = "127.0.0.1 (VPS Local)"
+	}
 	cfg := m.pdnsMgr.LoadConfig()
-	st.EdgeConfigured = cfg.Configured && cfg.VPSNetbirdIP != ""
+	st.EdgeConfigured = cfg.Configured && (isVPS || cfg.VPSNetbirdIP != "")
 	st.VPSPublicIP = cfg.VPSPublicIP
 
 	if st.Domain != "" && validMailDomain(st.Domain) {
@@ -65,11 +71,17 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 	if !st.StalwartCLI {
 		st.Blockers = append(st.Blockers, "stalwart-cli belum terpasang (jalankan: wdev install mail)")
 	}
-	if st.NetbirdIP == "" {
-		st.Blockers = append(st.Blockers, "IP NetBird (wt0) tidak terdeteksi; aktifkan netbird")
-	}
-	if !st.EdgeConfigured {
-		st.Blockers = append(st.Blockers, "VPS Edge Gateway belum dikonfigurasi (wdev pdns connect)")
+	if isVPS {
+		if !cfg.Reachable && !cfg.HasLocalPDNS {
+			st.Blockers = append(st.Blockers, "PowerDNS belum siap (jalankan: wdev install pdns)")
+		}
+	} else {
+		if st.NetbirdIP == "" {
+			st.Blockers = append(st.Blockers, "IP NetBird (wt0) tidak terdeteksi; aktifkan netbird")
+		}
+		if !st.EdgeConfigured {
+			st.Blockers = append(st.Blockers, "VPS Edge Gateway belum dikonfigurasi (wdev pdns connect)")
+		}
 	}
 	if st.VPSPublicIP == "" {
 		st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
@@ -80,8 +92,8 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 	if st.Domain != "" && !validMailDomain(st.Domain) {
 		st.Blockers = append(st.Blockers, "domain tidak valid")
 	}
-	if st.Domain != "" && st.DNSZone == "" && st.EdgeConfigured {
-		st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di tab PowerDNS")
+	if st.Domain != "" && st.DNSZone == "" {
+		st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")
 	}
 
 	if !st.SnappyMail {

@@ -143,6 +143,12 @@ func (s *Store) migrate() error {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		);`,
+		`CREATE TABLE IF NOT EXISTS panel_sessions (
+			token TEXT PRIMARY KEY,
+			username TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			expires_at DATETIME NOT NULL
+		);`,
 	}
 
 	for _, q := range queries {
@@ -381,3 +387,49 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 		}
 	}
 }
+
+// SaveSession menyimpan token sesi panel.
+func (s *Store) SaveSession(token, username string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`INSERT INTO panel_sessions (token, username, expires_at) VALUES (?, ?, ?)
+		ON CONFLICT(token) DO UPDATE SET username = excluded.username, expires_at = excluded.expires_at`,
+		token, username, expiresAt.Format(time.RFC3339))
+	return err
+}
+
+// GetSession mengambil data sesi jika ada.
+func (s *Store) GetSession(token string) (string, time.Time, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var username, expStr string
+	err := s.db.QueryRow(`SELECT username, expires_at FROM panel_sessions WHERE token = ?`, token).Scan(&username, &expStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", time.Time{}, nil
+		}
+		return "", time.Time{}, err
+	}
+	exp, err := time.Parse(time.RFC3339, expStr)
+	if err != nil {
+		exp, _ = time.Parse("2006-01-02 15:04:05", expStr)
+	}
+	return username, exp, nil
+}
+
+// DeleteSession menghapus sesi berdasarkan token.
+func (s *Store) DeleteSession(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM panel_sessions WHERE token = ?`, token)
+	return err
+}
+
+// DeleteExpiredSessions membersihkan sesi kedaluwarsa.
+func (s *Store) DeleteExpiredSessions() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM panel_sessions WHERE expires_at < ?`, time.Now().Format(time.RFC3339))
+	return err
+}
+

@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
+	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import { useSidebar } from '#lib/components/ui/sidebar/index.js';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
@@ -25,7 +26,7 @@
 		items: NavItem[];
 	}
 
-	const navGroups: NavGroup[] = [
+	const navGroups = $derived<NavGroup[]>([
 		{
 			title: 'Ringkasan',
 			items: [{ label: 'Status & Update', href: '/', icon: ActivityIcon }]
@@ -39,19 +40,28 @@
 				{ label: 'Workspace & ADE', href: '/workspace', icon: MonitorIcon }
 			]
 		},
-		{
-			title: 'Jaringan & Edge Gateway',
-			items: [
-				{ label: 'PowerDNS & Edge', href: '/powerdns', icon: NetworkIcon },
-				{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
-				{ label: 'Mail Server & Relay', href: '/mail', icon: MailIcon }
-			]
-		},
+		modeStore.mode === 'vps'
+			? {
+					title: 'Domain, DNS & Mail',
+					items: [
+						{ label: 'Domain & DNS Manager', href: '/powerdns', icon: GlobeIcon },
+						{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
+						{ label: 'Mail Server', href: '/mail', icon: MailIcon }
+					]
+			  }
+			: {
+					title: 'Jaringan & Edge Gateway',
+					items: [
+						{ label: 'PowerDNS & Edge', href: '/powerdns', icon: NetworkIcon },
+						{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
+						{ label: 'Mail Server & Relay', href: '/mail', icon: MailIcon }
+					]
+			  },
 		{
 			title: 'Instalasi & Setup',
 			items: [{ label: 'Setup & Komponen', href: '/setup', icon: ZapIcon }]
 		}
-	];
+	]);
 
 	const sidebar = useSidebar();
 

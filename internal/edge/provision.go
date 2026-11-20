@@ -157,6 +157,11 @@ func resolveAPIKeyAt(provided, keyFile string) (string, error) {
 	return key, nil
 }
 
+// DetectPublicIP mengekspos deteksi IP publik untuk paket internal lain.
+func DetectPublicIP(ctx context.Context) string {
+	return detectPublicIP(ctx)
+}
+
 func detectPublicIP(ctx context.Context) string {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {

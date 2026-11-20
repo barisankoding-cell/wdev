@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 	"wdev/internal/config"
+	"wdev/internal/edge"
 	"wdev/internal/store"
 )
 
@@ -51,6 +52,9 @@ type EdgeConfig struct {
 	AgentPort      string `json:"agent_port"`
 	LocalNetbirdIP string `json:"local_netbird_ip"`
 	Reachable      bool   `json:"reachable"`
+	Mode           string `json:"mode"`
+	ModeIsSet      bool   `json:"mode_is_set"`
+	HasLocalPDNS   bool   `json:"has_local_pdns"`
 }
 
 type ProxyExposure struct {
@@ -97,51 +101,207 @@ func New(cfg *config.Config, s *store.Store) *Manager {
 	return &Manager{cfg: cfg, store: s}
 }
 
+// GetMode mengembalikan mode server: "vps" (aaPanel style) atau "edge" (hybrid).
+func (m *Manager) GetMode() string {
+	val, err := m.store.GetSetting("server_mode")
+	if err == nil && val != "" {
+		return val
+	}
+	// Deteksi otomatis jika belum diset eksplisit oleh pengguna:
+	// 1. Jika edge-dns.conf mengarah ke remote NetBird IP, ini pasti mesin client Edge
+	confFile := filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")
+	if data, err := os.ReadFile(confFile); err == nil {
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "VPS_NETBIRD_IP=") {
+				v := strings.Trim(strings.TrimPrefix(line, "VPS_NETBIRD_IP="), "\"")
+				if v != "" && v != "127.0.0.1" && v != "localhost" {
+					return "edge"
+				}
+			}
+		}
+	}
+	// 2. Jika ada NetBird IP lokal (wt0) dan tidak ada konfigurasi PowerDNS lokal
+	if localNB := m.GetLocalNetbirdIP(); localNB != "" {
+		if _, err := os.Stat("/etc/powerdns/pdns.conf"); err != nil {
+			return "edge"
+		}
+	}
+	// 3. Jika ada PowerDNS lokal atau edge.conf lokal, default ke vps
+	if _, err := os.Stat("/etc/powerdns/pdns.conf"); err == nil {
+		return "vps"
+	}
+	if _, err := os.Stat("/etc/wdev-edge/edge.conf"); err == nil {
+		return "vps"
+	}
+	return "edge"
+}
+
+// IsModeSet mengecek apakah user sudah memilih mode secara eksplisit.
+func (m *Manager) IsModeSet() bool {
+	val, err := m.store.GetSetting("server_mode")
+	return err == nil && val != ""
+}
+
+// SetMode mengubah mode antara "vps" dan "edge".
+func (m *Manager) SetMode(mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "vps" && mode != "edge" {
+		return fmt.Errorf("mode tidak valid: %s (harus 'vps' atau 'edge')", mode)
+	}
+	if err := m.store.SetSetting("server_mode", mode); err != nil {
+		return err
+	}
+	if mode == "vps" {
+		m.ensureLocalVPSPDNSConfig()
+	}
+	return nil
+}
+
+func (m *Manager) ensureLocalVPSPDNSConfig() {
+	apiKey := ""
+	pubIP := ""
+	pdnsPort := "8081"
+	agentPort := "8082"
+
+	// Baca dari /etc/wdev-edge/edge.conf
+	for _, p := range []string{"/etc/wdev-edge/edge.conf", filepath.Join(m.cfg.WdevEtc, "edge.conf")} {
+		if data, err := os.ReadFile(p); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				parts := strings.SplitN(strings.TrimSpace(line), "=", 2)
+				if len(parts) == 2 {
+					k := parts[0]
+					v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+					switch k {
+					case "API_KEY":
+						apiKey = v
+					case "PUBLIC_IP":
+						pubIP = v
+					case "PDNS_API_PORT", "PDNS_PORT":
+						pdnsPort = v
+					case "AGENT_PORT":
+						agentPort = v
+					}
+				}
+			}
+			break
+		}
+	}
+
+	// Baca dari /etc/powerdns/pdns.conf jika belum ada API key
+	if apiKey == "" {
+		if data, err := os.ReadFile("/etc/powerdns/pdns.conf"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				l := strings.TrimSpace(line)
+				if strings.HasPrefix(l, "api-key=") {
+					apiKey = strings.TrimPrefix(l, "api-key=")
+				}
+				if strings.HasPrefix(l, "webserver-port=") {
+					pdnsPort = strings.TrimPrefix(l, "webserver-port=")
+				}
+			}
+		}
+	}
+
+	if pubIP == "" {
+		pubIP = edge.DetectPublicIP(context.Background())
+	}
+
+	if apiKey != "" {
+		_ = m.SaveConfig("127.0.0.1", pubIP, apiKey, pdnsPort, agentPort)
+	}
+}
+
 func (m *Manager) LoadConfig() EdgeConfig {
+	mode := m.GetMode()
+	isSet := m.IsModeSet()
+	hasLocalPDNS := false
+	if _, err := os.Stat("/etc/powerdns/pdns.conf"); err == nil {
+		hasLocalPDNS = true
+	} else if _, err := os.Stat("/etc/wdev-edge/edge.conf"); err == nil {
+		hasLocalPDNS = true
+	}
+
 	confFile := filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")
 	data, err := os.ReadFile(confFile)
 	if err != nil && m.cfg.WdevEtc != "/etc/wdev" {
 		data, err = os.ReadFile("/etc/wdev/edge-dns.conf")
 	}
-	if err != nil {
-		return EdgeConfig{
-			Configured:     false,
-			LocalNetbirdIP: m.GetLocalNetbirdIP(),
-		}
-	}
 
 	conf := EdgeConfig{
-		Configured:     true,
+		Configured:     false,
+		Mode:           mode,
+		ModeIsSet:      isSet,
+		HasLocalPDNS:   hasLocalPDNS,
 		PDNSPort:       "8081",
 		AgentPort:      "8082",
 		LocalNetbirdIP: m.GetLocalNetbirdIP(),
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
-			continue
+	if err == nil {
+		conf.Configured = true
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+				continue
+			}
+			parts := strings.SplitN(line, "=", 2)
+			k := strings.TrimSpace(parts[0])
+			v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+			switch k {
+			case "VPS_NETBIRD_IP":
+				conf.VPSNetbirdIP = v
+			case "VPS_PUBLIC_IP":
+				conf.VPSPublicIP = v
+			case "API_KEY":
+				conf.APIKey = v
+			case "PDNS_PORT":
+				conf.PDNSPort = v
+			case "AGENT_PORT":
+				conf.AgentPort = v
+			}
 		}
-		parts := strings.SplitN(line, "=", 2)
-		k := strings.TrimSpace(parts[0])
-		v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
-		switch k {
-		case "VPS_NETBIRD_IP":
-			conf.VPSNetbirdIP = v
-		case "VPS_PUBLIC_IP":
-			conf.VPSPublicIP = v
-		case "API_KEY":
-			conf.APIKey = v
-		case "PDNS_PORT":
-			conf.PDNSPort = v
-		case "AGENT_PORT":
-			conf.AgentPort = v
+	}
+
+	// Di mode VPS, pastikan target adalah 127.0.0.1
+	if mode == "vps" {
+		if (!conf.Configured || conf.APIKey == "") && hasLocalPDNS {
+			m.ensureLocalVPSPDNSConfig()
+			confFile = filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")
+			if d, e := os.ReadFile(confFile); e == nil {
+				conf.Configured = true
+				scanner := bufio.NewScanner(strings.NewReader(string(d)))
+				for scanner.Scan() {
+					line := strings.TrimSpace(scanner.Text())
+					parts := strings.SplitN(line, "=", 2)
+					if len(parts) == 2 {
+						k := strings.TrimSpace(parts[0])
+						v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+						switch k {
+						case "VPS_NETBIRD_IP":
+							conf.VPSNetbirdIP = v
+						case "VPS_PUBLIC_IP":
+							conf.VPSPublicIP = v
+						case "API_KEY":
+							conf.APIKey = v
+						case "PDNS_PORT":
+							conf.PDNSPort = v
+						case "AGENT_PORT":
+							conf.AgentPort = v
+						}
+					}
+				}
+			}
+		}
+		if conf.VPSNetbirdIP == "" || conf.VPSNetbirdIP == "-" {
+			conf.VPSNetbirdIP = "127.0.0.1"
 		}
 	}
 
 	// Check if reachable
-	if conf.VPSNetbirdIP != "" && conf.PDNSPort != "" {
+	if conf.VPSNetbirdIP != "" && conf.PDNSPort != "" && conf.APIKey != "" {
 		client := http.Client{Timeout: 1500 * time.Millisecond}
 		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s:%s/api/v1/servers/localhost", conf.VPSNetbirdIP, conf.PDNSPort), nil)
 		if err == nil {

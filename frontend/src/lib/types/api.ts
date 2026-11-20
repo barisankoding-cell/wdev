@@ -125,6 +125,15 @@ export interface TunnelStatus {
 	exposures: Exposure[];
 }
 
+export interface ModeResponse {
+	mode: 'vps' | 'edge';
+	is_set: boolean;
+	public_ip: string;
+	netbird_ip: string;
+	has_local_pdns: boolean;
+	reachable: boolean;
+}
+
 export interface EdgeConfig {
 	configured: boolean;
 	vps_netbird_ip: string;
@@ -134,6 +143,9 @@ export interface EdgeConfig {
 	agent_port: string;
 	local_netbird_ip: string;
 	reachable: boolean;
+	mode?: 'vps' | 'edge';
+	mode_is_set?: boolean;
+	has_local_pdns?: boolean;
 }
 
 export interface ZoneInfo {
@@ -483,3 +495,22 @@ export interface UpdaterStatus {
 	message?: string;
 	error?: string;
 }
+
+export interface AuthMeResponse {
+	authenticated: boolean;
+	username: string;
+	auth_enabled: boolean;
+	entrance_enabled: boolean;
+}
+
+export interface LoginPayload {
+	username: string;
+	password: string;
+}
+
+export interface ChangeCredentialsPayload {
+	old_password: string;
+	new_username?: string;
+	new_password?: string;
+}
+

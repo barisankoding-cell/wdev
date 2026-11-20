@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
 	"wdev/internal/installer"
@@ -38,6 +39,7 @@ type Server struct {
 	cfMgr       *cloudflare.Manager
 	pdnsMgr     *pdns.Manager
 	mailMgr     *mail.Manager
+	authMgr     *auth.Manager
 	svcCfgMgr   *serviceconfig.Manager
 	mux         *http.ServeMux
 }
@@ -52,7 +54,11 @@ func New(
 	cfMgr *cloudflare.Manager,
 	pdnsMgr *pdns.Manager,
 	mailMgr *mail.Manager,
+	authMgr *auth.Manager,
 ) *Server {
+	if authMgr == nil {
+		authMgr = auth.New(cfg, s)
+	}
 	srv := &Server{
 		cfg:         cfg,
 		store:       s,
@@ -63,6 +69,7 @@ func New(
 		cfMgr:       cfMgr,
 		pdnsMgr:     pdnsMgr,
 		mailMgr:     mailMgr,
+		authMgr:     authMgr,
 		svcCfgMgr:   serviceconfig.New(inst.GetSudoPassword),
 		mux:         http.NewServeMux(),
 	}
@@ -116,17 +123,304 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/env/sync", s.handleEnvSync)
 	s.mux.HandleFunc("/api/updater/status", s.handleUpdaterStatus)
 	s.mux.HandleFunc("/api/updater/apply", s.handleUpdaterApply)
+	s.mux.HandleFunc("/api/mode", s.handleMode)
+	s.mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	s.mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
+	s.mux.HandleFunc("/api/auth/me", s.handleAuthMe)
+	s.mux.HandleFunc("/api/auth/change-credentials", s.handleAuthChangeCredentials)
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
 
 	// Embedded Static UI (Svelte SPA)
 	s.mux.Handle("/", web.Handler())
 }
 
+const securityEntranceDeniedHTML = `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>404 Not Found - Security Entrance</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #090d16; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+    .card { background: #131b2e; border: 1px solid #1e293b; border-radius: 12px; padding: 36px 28px; max-width: 480px; width: 100%; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    .icon { font-size: 40px; margin-bottom: 12px; }
+    h1 { color: #f43f5e; font-size: 22px; margin: 0 0 10px 0; font-weight: 700; }
+    p { color: #94a3b8; font-size: 14px; line-height: 1.6; margin: 8px 0; }
+    .code-box { background: #090d16; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 13px; color: #38bdf8; margin: 20px 0; border: 1px solid #1e293b; user-select: all; }
+    .footer { font-size: 12px; color: #475569; margin-top: 24px; margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🛡️</div>
+    <h1>404 Not Found</h1>
+    <p>Akses ditolak. Panel ini dilindungi dengan <strong>Security Entrance URL</strong> (aaPanel security standard).</p>
+    <p>Harap gunakan URL pintu masuk yang benar untuk mengakses dasbor.</p>
+    <div class="code-box">wdev panel default</div>
+    <p class="footer">wdev Panel Security Engine</p>
+  </div>
+</body>
+</html>`
+
+func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entrance := s.authMgr.GetSecurityEntrance()
+		if entrance == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		cleanPath := strings.Trim(r.URL.Path, "/")
+
+		// 1. Jika path cocok dengan security entrance, terbitkan cookie dan redirect ke /
+		if cleanPath == entrance {
+			cookie, err := s.authMgr.GenerateEntranceCookie()
+			if err == nil {
+				http.SetCookie(w, cookie)
+			}
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+
+		// 2. Izinkan aset statis agar login page dapat memuat CSS dan JavaScript
+		if strings.HasPrefix(r.URL.Path, "/_app/") ||
+			strings.HasSuffix(r.URL.Path, ".js") ||
+			strings.HasSuffix(r.URL.Path, ".css") ||
+			strings.HasSuffix(r.URL.Path, ".png") ||
+			strings.HasSuffix(r.URL.Path, ".svg") ||
+			strings.HasSuffix(r.URL.Path, ".ico") ||
+			strings.HasSuffix(r.URL.Path, ".woff") ||
+			strings.HasSuffix(r.URL.Path, ".woff2") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 3. Periksa apakah pengunjung sudah melewati entrance atau memiliki sesi aktif
+		hasValidEntrance := false
+		if c, err := r.Cookie(auth.CookieEntranceName); err == nil && c.Value != "" {
+			hasValidEntrance = s.authMgr.ValidateEntranceCookie(c.Value)
+		}
+
+		hasValidSession := false
+		if c, err := r.Cookie(auth.CookieSessionName); err == nil && c.Value != "" {
+			_, hasValidSession = s.authMgr.ValidateSession(c.Value)
+		}
+
+		if hasValidEntrance || hasValidSession {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 4. Pengunjung belum melewati security entrance
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(securityEntranceDeniedHTML))
+	})
+}
+
+func (s *Server) wrapAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.authMgr.IsAuthEnabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Hanya amankan rute /api/ (rute web SPA diperiksa oleh klien di frontend)
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Endpoint auth terbuka
+		if r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/me" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Periksa sesi dari cookie atau header Bearer
+		token := ""
+		if c, err := r.Cookie(auth.CookieSessionName); err == nil {
+			token = c.Value
+		}
+		if token == "" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+		}
+
+		username, valid := s.authMgr.ValidateSession(token)
+		if !valid || username == "" {
+			writeError(w, http.StatusUnauthorized, "Autentikasi diperlukan. Silakan login terlebih dahulu.")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	ip := auth.ClientIP(r)
+	allowed, wait := s.authMgr.CheckRateLimit(ip)
+	if !allowed {
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Terlalu banyak percobaan login gagal. Akun dikunci sementara. Coba lagi dalam %d menit.", int(wait.Minutes())+1))
+		return
+	}
+
+	if !s.authMgr.ValidateCredentials(payload.Username, payload.Password) {
+		s.authMgr.RecordLoginAttempt(ip, false)
+		writeError(w, http.StatusUnauthorized, "Username atau kata sandi salah")
+		return
+	}
+
+	s.authMgr.RecordLoginAttempt(ip, true)
+	token, err := s.authMgr.CreateSession(payload.Username)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Gagal membuat sesi: "+err.Error())
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CookieSessionName,
+		Value:    token,
+		Path:     "/",
+		Expires:  time.Now().Add(auth.SessionDuration),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "ok",
+		"message":  "Login berhasil",
+		"username": payload.Username,
+		"token":    token,
+	})
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	if c, err := r.Cookie(auth.CookieSessionName); err == nil && c.Value != "" {
+		_ = s.authMgr.DeleteSession(c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CookieSessionName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": "Berhasil logout",
+	})
+}
+
+func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	token := ""
+	if c, err := r.Cookie(auth.CookieSessionName); err == nil {
+		token = c.Value
+	}
+	if token == "" {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+	}
+
+	username, valid := s.authMgr.ValidateSession(token)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated":    valid,
+		"username":         username,
+		"auth_enabled":     s.authMgr.IsAuthEnabled(),
+		"entrance_enabled": s.authMgr.GetSecurityEntrance() != "",
+	})
+}
+
+func (s *Server) handleAuthChangeCredentials(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload struct {
+		OldPassword string `json:"old_password"`
+		NewUsername string `json:"new_username"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	currentUsername := s.authMgr.GetUsername()
+	if !s.authMgr.ValidateCredentials(currentUsername, payload.OldPassword) {
+		writeError(w, http.StatusUnauthorized, "Kata sandi saat ini tidak cocok")
+		return
+	}
+
+	if strings.TrimSpace(payload.NewUsername) != "" {
+		if err := s.authMgr.SetUsername(payload.NewUsername); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if strings.TrimSpace(payload.NewPassword) != "" {
+		if err := s.authMgr.SetPassword(payload.NewPassword); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": "Kredensial berhasil diperbarui",
+	})
+}
+
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%s", s.cfg.HTTPHost, s.cfg.HTTPPort)
+	nbIP := ""
+	if s.pdnsMgr != nil {
+		nbIP = s.pdnsMgr.GetLocalNetbirdIP()
+	}
+	info := s.authMgr.GetPanelAccessInfo("", nbIP)
+	fmt.Println("==================================================================")
 	fmt.Printf("✓ wdev Web Dashboard aktif di: http://%s\n", addr)
-	fmt.Printf("✓ Akses lokal: http://localhost:%s\n", s.cfg.HTTPPort)
-	return http.ListenAndServe(addr, s.mux)
+	if info.NetbirdURL != "" {
+		fmt.Printf("✓ URL Akses NetBird           : %s\n", info.NetbirdURL)
+	}
+	if info.SecurityEntrance != "" {
+		fmt.Printf("✓ URL Akses Panel (Entrance)  : %s\n", info.LocalURL)
+	} else {
+		fmt.Printf("✓ URL Akses Panel             : http://localhost:%s\n", s.cfg.HTTPPort)
+	}
+	fmt.Println("✓ Info Kredensial & Security URL: jalankan 'wdev panel default'")
+	fmt.Println("==================================================================")
+
+	handler := s.wrapSecurityEntrance(s.wrapAuth(s.mux))
+	return http.ListenAndServe(addr, handler)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -885,6 +1179,47 @@ func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unexposed"})
+}
+
+func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		mode := s.pdnsMgr.GetMode()
+		isSet := s.pdnsMgr.IsModeSet()
+		cfg := s.pdnsMgr.LoadConfig()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mode":           mode,
+			"is_set":         isSet,
+			"public_ip":      cfg.VPSPublicIP,
+			"netbird_ip":     cfg.VPSNetbirdIP,
+			"has_local_pdns": cfg.HasLocalPDNS,
+			"reachable":      cfg.Reachable,
+		})
+	case http.MethodPost:
+		var payload struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "Payload JSON tidak valid")
+			return
+		}
+		target := strings.ToLower(strings.TrimSpace(payload.Mode))
+		if target != "vps" && target != "edge" {
+			writeError(w, http.StatusBadRequest, "Mode harus 'vps' atau 'edge'")
+			return
+		}
+		if err := s.pdnsMgr.SetMode(target); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "ok",
+			"mode":    target,
+			"message": fmt.Sprintf("Mode server berhasil diubah ke %s", target),
+		})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+	}
 }
 
 func (s *Server) handlePDNSStatus(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,7 @@
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
+	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type {
 		DomainAccounts,
 		MailStatus,
@@ -473,10 +474,17 @@
 <div class="flex flex-col gap-5 sm:gap-6">
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
-			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server &amp; Outbound SMTP Relay</h1>
-			<p class="text-sm text-muted-foreground">
-				Manajemen kotak pos Stalwart, webmail SnappyMail, serta outbound SMTP relay-only per domain.
-			</p>
+			{#if modeStore.mode === 'vps'}
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server &amp; Webmail</h1>
+				<p class="text-sm text-muted-foreground">
+					Mail Server Stalwart standalone &amp; Webmail SnappyMail langsung melayani publik (aaPanel Style).
+				</p>
+			{:else}
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server &amp; Outbound SMTP Relay</h1>
+				<p class="text-sm text-muted-foreground">
+					Manajemen kotak pos Stalwart, webmail SnappyMail, serta outbound SMTP relay-only per domain.
+				</p>
+			{/if}
 		</div>
 		<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
 			<Button variant="outline" size="sm" onclick={loadMail}>
@@ -1037,7 +1045,11 @@
 		<Dialog.Header>
 			<Dialog.Title>Setup Domain &amp; Mail Server Baru</Dialog.Title>
 			<Dialog.Description>
-				Mengonfigurasi otomatis Stalwart lokal, SnappyMail, DNS record (A, MX, SPF, DMARC) di VPS Edge, serta SSL Let's Encrypt.
+				{#if modeStore.mode === 'vps'}
+					Mengonfigurasi otomatis Stalwart Mail Server, SnappyMail, DNS record (A, MX, SPF, DMARC) di PowerDNS lokal, serta vhost Nginx.
+				{:else}
+					Mengonfigurasi otomatis Stalwart lokal, SnappyMail, DNS record (A, MX, SPF, DMARC) di VPS Edge, serta SSL Let's Encrypt.
+				{/if}
 			</Dialog.Description>
 		</Dialog.Header>
 

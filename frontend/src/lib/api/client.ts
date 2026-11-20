@@ -1,11 +1,15 @@
 import type {
+	AuthMeResponse,
+	ChangeCredentialsPayload,
 	CreateSitePayload,
 	DomainAccounts,
 	DomainActionReport,
 	EdgeConfig,
 	EnvStatusResponse,
+	LoginPayload,
 	MailStatus,
 	ManagedRelayRecord,
+	ModeResponse,
 	NginxConfig,
 	PDNSExposePayload,
 	PHPConfig,
@@ -63,6 +67,11 @@ export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 		}
 	}
 	if (!res.ok) {
+		if (res.status === 401 && !url.includes('/api/auth/login') && !url.includes('/api/auth/me')) {
+			if (typeof window !== 'undefined') {
+				window.dispatchEvent(new CustomEvent('wdev:unauthorized'));
+			}
+		}
 		const errMsg =
 			typeof data === 'object' && data !== null && 'error' in data && typeof (data as { error?: unknown }).error === 'string'
 				? (data as { error: string }).error
@@ -319,5 +328,30 @@ export const api = {
 		apiFetch<{ status: string; task_id: number }>('/api/mail/domain/repair', {
 			method: 'POST',
 			body: JSON.stringify({ domain })
+		}),
+
+	// Panel Auth & Security
+	getAuthMe: () => apiFetch<AuthMeResponse>('/api/auth/me'),
+	login: (payload: LoginPayload) =>
+		apiFetch<{ status: string; message: string; username: string; token: string }>('/api/auth/login', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+	logout: () =>
+		apiFetch<{ status: string; message: string }>('/api/auth/logout', {
+			method: 'POST'
+		}),
+	changeCredentials: (payload: ChangeCredentialsPayload) =>
+		apiFetch<{ status: string; message: string }>('/api/auth/change-credentials', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+
+	// Server Mode (aaPanel Full VPS vs Hybrid Edge)
+	getMode: () => apiFetch<ModeResponse>('/api/mode'),
+	setMode: (mode: 'vps' | 'edge') =>
+		apiFetch<{ status: string; mode: string; message: string }>('/api/mode', {
+			method: 'POST',
+			body: JSON.stringify({ mode })
 		})
 };
