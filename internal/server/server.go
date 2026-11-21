@@ -872,7 +872,24 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "created"})
+
+		cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(opts.Domain), "."))
+		resp := map[string]any{"status": "created"}
+		if s.pdnsMgr != nil && s.pdnsMgr.GetMode() == "vps" {
+			conf := s.pdnsMgr.LoadConfig()
+			if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
+				if zone, zErr := s.pdnsMgr.FindMatchingZone(cleanDom); zErr == nil && zone != "" {
+					if existing, lErr := s.pdnsMgr.LookupRecords(zone, cleanDom, "A"); lErr == nil && len(existing) == 0 {
+						if addErr := s.pdnsMgr.AddRecord(zone, cleanDom, "A", conf.VPSPublicIP, 300); addErr == nil {
+							resp["dns_synced"] = true
+							resp["dns_zone"] = strings.TrimSuffix(zone, ".")
+							resp["dns_message"] = fmt.Sprintf("Record DNS A %s -> %s ditambahkan ke PowerDNS", cleanDom, conf.VPSPublicIP)
+						}
+					}
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")

@@ -17,7 +17,7 @@
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
-	import type { SiteRecord } from '#lib/types/api.js';
+	import type { SiteRecord, ZoneInfo } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
 	import PlusIcon from '@lucide/svelte/icons/plus';
@@ -29,6 +29,7 @@
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 
 	let sites = $state<SiteRecord[]>([]);
+	let zones = $state<ZoneInfo[]>([]);
 	let loading = $state(true);
 	let searchQuery = $state('');
 	let siteDeleting = $state<Record<string, boolean>>({});
@@ -36,7 +37,10 @@
 
 	let createOpen = $state(false);
 	let creating = $state(false);
+	let domainMode = $state<'custom' | 'subdomain'>('custom');
 	let domain = $state('');
+	let subdomainPrefix = $state('');
+	let parentDomain = $state('');
 	let domainTouched = $state(false);
 	let framework = $state('laravel');
 	let phpVersion = $state('8.4');
@@ -60,7 +64,42 @@
 	const isStatic = $derived(framework === 'static');
 	const isVPS = $derived(modeStore.mode === 'vps');
 	const isEdge = $derived(modeStore.mode === 'edge');
-	const domainInvalid = $derived(domainTouched && domain.trim().length === 0);
+
+	const parentDomains = $derived.by(() => {
+		const fromZones = Array.from(
+			new Set(
+				zones
+					.map((z) => (z.name || '').replace(/\.$/, '').trim().toLowerCase())
+					.filter((name) => Boolean(name) && !name.endsWith('.arpa'))
+			)
+		).sort();
+		const seen = new Set(fromZones);
+		const fromSites = Array.from(
+			new Set(
+				sites
+					.map((s) => (s.domain || '').replace(/\.$/, '').trim().toLowerCase())
+					.filter((name) => Boolean(name) && !name.startsWith('www.') && !seen.has(name))
+			)
+		).sort();
+		return [...fromZones, ...fromSites];
+	});
+
+	const cleanSubPrefix = $derived(
+		subdomainPrefix.trim().replace(/^\.+|\.+$/g, '').toLowerCase()
+	);
+	const effectiveDomain = $derived(
+		domainMode === 'subdomain'
+			? cleanSubPrefix && parentDomain
+				? `${cleanSubPrefix}.${parentDomain}`
+				: ''
+			: domain.trim().replace(/^\.+|\.+$/g, '').toLowerCase()
+	);
+	const domainInvalid = $derived(
+		domainTouched &&
+			(domainMode === 'subdomain'
+				? cleanSubPrefix.length === 0 || !parentDomain
+				: effectiveDomain.length === 0)
+	);
 
 	const filteredSites = $derived.by(() => {
 		const q = searchQuery.trim().toLowerCase();
@@ -74,12 +113,33 @@
 		);
 	});
 
+	async function refreshZonesQuiet() {
+		try {
+			zones = (await api.listPDNSZones()) ?? [];
+			if (!parentDomain && parentDomains.length > 0) {
+				parentDomain = parentDomains[0];
+			}
+		} catch {
+			// PowerDNS opsional di mode lokal / belum terhubung
+		}
+	}
+
 	async function loadSites() {
 		loading = true;
 		try {
-			sites = (await api.listSites()) ?? [];
-		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat daftar virtual host');
+			const [siteRes, zoneRes] = await Promise.allSettled([api.listSites(), api.listPDNSZones()]);
+			if (siteRes.status === 'fulfilled') {
+				sites = siteRes.value ?? [];
+			} else {
+				toast.error(
+					siteRes.reason instanceof Error
+						? siteRes.reason.message
+						: 'Gagal memuat daftar virtual host'
+				);
+			}
+			if (zoneRes.status === 'fulfilled') {
+				zones = zoneRes.value ?? [];
+			}
 		} finally {
 			loading = false;
 		}
@@ -91,8 +151,17 @@
 		if (cp.refreshTick > 0) loadSites();
 	});
 
+	$effect(() => {
+		if (parentDomains.length > 0 && (!parentDomain || !parentDomains.includes(parentDomain))) {
+			parentDomain = parentDomains[0];
+		}
+	});
+
 	function openCreate() {
+		domainMode = 'custom';
 		domain = '';
+		subdomainPrefix = '';
+		parentDomain = parentDomains[0] ?? '';
 		domainTouched = false;
 		framework = 'laravel';
 		phpVersion = '8.4';
@@ -100,6 +169,7 @@
 		proxyPortStr = '3000';
 		sslEnabled = !isVPS;
 		createOpen = true;
+		void refreshZonesQuiet();
 	}
 
 	async function triggerLetsEncrypt(siteDomain: string, skipConfirm = false) {
@@ -138,7 +208,18 @@
 	async function submitCreate(e: SubmitEvent) {
 		e.preventDefault();
 		domainTouched = true;
-		const cleanDomain = domain.trim().replace(/\.$/, '').toLowerCase();
+		if (domainMode === 'subdomain') {
+			if (!parentDomain) {
+				toast.warning('Pilih domain induk terlebih dahulu atau gunakan mode Domain Utama / Manual.');
+				return;
+			}
+			if (!cleanSubPrefix) return;
+			if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(cleanSubPrefix)) {
+				toast.warning('Nama subdomain hanya boleh berisi huruf, angka, tanda hubung (-), atau titik.');
+				return;
+			}
+		}
+		const cleanDomain = effectiveDomain;
 		if (!cleanDomain) return;
 		const proxyPort = parseInt(proxyPortStr, 10) || 0;
 		if (isProxy && (proxyPort < 1 || proxyPort > 65535)) {
@@ -149,7 +230,7 @@
 		const wantVPSLetsEncrypt = isVPS && sslEnabled;
 		creating = true;
 		try {
-			await api.createSite({
+			const res = await api.createSite({
 				domain: cleanDomain,
 				framework,
 				php_version: isProxy || isStatic ? '' : phpVersion,
@@ -157,7 +238,11 @@
 				proxy_port: proxyPort,
 				ssl_enabled: wantVPSLetsEncrypt ? false : sslEnabled
 			});
-			toast.success(`Virtual host ${cleanDomain} berhasil dibuat!`);
+			toast.success(
+				res?.dns_synced && res?.dns_message
+					? `Virtual host ${cleanDomain} berhasil dibuat (${res.dns_message}).`
+					: `Virtual host ${cleanDomain} berhasil dibuat!`
+			);
 			createOpen = false;
 			await loadSites();
 			if (wantVPSLetsEncrypt) {
@@ -455,31 +540,131 @@
 		<form onsubmit={submitCreate} class="flex flex-col gap-4">
 			<Field.FieldGroup>
 				<Field.Field data-invalid={domainInvalid ? 'true' : undefined}>
-					<Field.FieldLabel for="site-domain">{isVPS ? 'Domain' : 'Domain Lokal'}</Field.FieldLabel>
-					<Input
-						id="site-domain"
-						name="domain"
-						placeholder={isVPS ? 'domainanda.com' : 'proyekanda.test'}
-						autocorrect="off"
-						autocapitalize="none"
-						spellcheck={false}
-						aria-invalid={domainInvalid ? 'true' : undefined}
-						bind:value={domain}
-						onblur={() => (domainTouched = true)}
-						oninput={() => {
-							if (domain.trim()) domainTouched = false;
-						}}
-						required
-					/>
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<Field.FieldLabel for={domainMode === 'subdomain' ? 'site-sub-prefix' : 'site-domain'}>
+							{isVPS ? 'Domain' : 'Domain Lokal'}
+						</Field.FieldLabel>
+						<div class="inline-flex rounded-lg border bg-muted p-0.5 text-xs" role="group" aria-label="Mode input domain">
+							<button
+								type="button"
+								class={domainMode === 'custom'
+									? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
+									: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
+								onclick={() => {
+									domainMode = 'custom';
+									domainTouched = false;
+								}}
+							>
+								Domain Utama
+							</button>
+							<button
+								type="button"
+								class={domainMode === 'subdomain'
+									? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
+									: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
+								onclick={() => {
+									domainMode = 'subdomain';
+									domainTouched = false;
+									if (!parentDomain && parentDomains.length > 0) {
+										parentDomain = parentDomains[0];
+									}
+									void refreshZonesQuiet();
+								}}
+							>
+								Subdomain ({parentDomains.length})
+							</button>
+						</div>
+					</div>
+
+					{#if domainMode === 'subdomain'}
+						{#if parentDomains.length === 0}
+							<div class="rounded-md border border-dashed bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+								Belum ada domain atau zone PowerDNS yang tersedia sebagai induk subdomain. Tambahkan domain utama terlebih dahulu atau pilih <strong>Domain Utama</strong>.
+							</div>
+						{:else}
+							<div class="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+								<InputGroup.Root>
+									<InputGroup.Input
+										id="site-sub-prefix"
+										name="subdomain_prefix"
+										placeholder="app / api / admin"
+										autocorrect="off"
+										autocapitalize="none"
+										spellcheck={false}
+										aria-invalid={domainInvalid ? 'true' : undefined}
+										bind:value={subdomainPrefix}
+										onblur={() => (domainTouched = true)}
+										oninput={() => {
+											if (subdomainPrefix.trim()) domainTouched = false;
+										}}
+										required
+									/>
+									<InputGroup.Addon align="inline-end">
+										<InputGroup.Text>.</InputGroup.Text>
+									</InputGroup.Addon>
+								</InputGroup.Root>
+
+								<Select.Root
+									type="single"
+									value={parentDomain}
+									onValueChange={(v) => {
+										if (v) parentDomain = v;
+									}}
+								>
+									<Select.Trigger id="site-parent-domain" class="w-full" aria-label="Pilih domain induk">
+										{parentDomain || 'Pilih domain induk'}
+									</Select.Trigger>
+									<Select.Content>
+										<Select.Group>
+											{#each parentDomains as pd (pd)}
+												<Select.Item value={pd}>{pd}</Select.Item>
+											{/each}
+										</Select.Group>
+									</Select.Content>
+								</Select.Root>
+							</div>
+							<div class="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+								<span>Domain hasil:</span>
+								<code class="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
+									{effectiveDomain || `<subdomain>.${parentDomain}`}
+								</code>
+							</div>
+						{/if}
+					{:else}
+						<Input
+							id="site-domain"
+							name="domain"
+							placeholder={isVPS ? 'domainanda.com' : 'proyekanda.test'}
+							autocorrect="off"
+							autocapitalize="none"
+							spellcheck={false}
+							aria-invalid={domainInvalid ? 'true' : undefined}
+							bind:value={domain}
+							onblur={() => (domainTouched = true)}
+							oninput={() => {
+								if (domain.trim()) domainTouched = false;
+							}}
+							required
+						/>
+					{/if}
+
 					<Field.FieldDescription>
-						{#if isVPS}
+						{#if domainMode === 'subdomain'}
+							{#if isVPS}
+								Pilih domain induk dan isi awalan subdomain. Record DNS A otomatis dibuat bila zone dikelola PowerDNS lokal.
+							{:else}
+								Pilih domain induk dan isi awalan subdomain (misal <code>app</code> atau <code>api</code>).
+							{/if}
+						{:else if isVPS}
 							Masukkan domain FQDN yang mengarah ke IP publik VPS ini.
 						{:else}
 							Akhiran <code>.test</code> disarankan untuk pengembangan lokal.
 						{/if}
 					</Field.FieldDescription>
 					{#if domainInvalid}
-						<Field.FieldError errors={[{ message: 'Domain wajib diisi.' }]} />
+						<Field.FieldError
+							errors={[{ message: domainMode === 'subdomain' ? 'Awalan subdomain dan domain induk wajib diisi.' : 'Domain wajib diisi.' }]}
+						/>
 					{/if}
 				</Field.Field>
 
@@ -535,7 +720,7 @@
 						<Input
 							id="site-root-path"
 							name="root_path"
-							placeholder={isVPS ? '/var/www/domainanda.com' : '/var/www/proyekanda.test'}
+							placeholder={effectiveDomain ? `/var/www/${effectiveDomain}` : (isVPS ? '/var/www/domainanda.com' : '/var/www/proyekanda.test')}
 							autocorrect="off"
 							autocapitalize="none"
 							spellcheck={false}

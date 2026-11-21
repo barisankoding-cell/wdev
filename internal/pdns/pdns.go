@@ -1029,7 +1029,7 @@ func normalizeRecordName(name, zone string) string {
 	}
 	name = strings.TrimSuffix(name, ".")
 	zClean := strings.TrimSuffix(zone, ".")
-	if strings.HasSuffix(name, zClean) {
+	if name == zClean || strings.HasSuffix(name, "."+zClean) {
 		return name + "."
 	}
 	return name + "." + zone

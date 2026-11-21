@@ -156,7 +156,7 @@ export const api = {
 	// Sites
 	listSites: () => apiFetch<SiteRecord[]>('/api/sites'),
 	createSite: (payload: CreateSitePayload) =>
-		apiFetch<{ status: string }>('/api/sites', {
+		apiFetch<{ status: string; dns_synced?: boolean; dns_zone?: string; dns_message?: string }>('/api/sites', {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),

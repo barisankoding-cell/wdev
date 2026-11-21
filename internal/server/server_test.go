@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -711,5 +712,86 @@ func TestHandleSiteSSLValidationAndStartTask(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+func TestHandleSitesPostAutoAddsSubdomainARecordInVPSMode(t *testing.T) {
+	var patchedBody string
+	pdnsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones":
+			_ = json.NewEncoder(w).Encode([]pdns.ZoneInfo{{ID: "nikaget.my.id.", Name: "nikaget.my.id."}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones/nikaget.my.id.":
+			_ = json.NewEncoder(w).Encode(pdns.ZoneInfo{
+				ID:   "nikaget.my.id.",
+				Name: "nikaget.my.id.",
+				RRsets: []pdns.RRSet{
+					{Name: "nikaget.my.id.", Type: "A", TTL: 300, Records: []pdns.Record{{Content: "103.171.85.72"}}},
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/servers/localhost/zones/nikaget.my.id.":
+			b, _ := io.ReadAll(r.Body)
+			patchedBody = string(b)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer pdnsSrv.Close()
+	u, _ := url.Parse(pdnsSrv.URL)
+
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "wdev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          etcDir,
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+	}
+	pdnsMgr := pdns.New(cfg, db)
+	_ = pdnsMgr.SetMode("vps")
+	confData := "VPS_NETBIRD_IP=\"" + u.Hostname() + "\"\n" +
+		"VPS_PUBLIC_IP=\"103.171.85.72\"\n" +
+		"API_KEY=\"secret-test-key\"\n" +
+		"PDNS_PORT=\"" + u.Port() + "\"\n" +
+		"AGENT_PORT=\"8082\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(confData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), inst, siteMgr, nil, nil, pdnsMgr, nil, authMgr)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sites", strings.NewReader(`{"domain":"app.nikaget.my.id","framework":"static"}`))
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/sites code = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status    string `json:"status"`
+		DNSSynced bool   `json:"dns_synced"`
+		DNSZone   string `json:"dns_zone"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "created" || !resp.DNSSynced || resp.DNSZone != "nikaget.my.id" {
+		t.Fatalf("unexpected POST /api/sites response: %+v", resp)
+	}
+	if !strings.Contains(patchedBody, `"app.nikaget.my.id."`) || !strings.Contains(patchedBody, `"103.171.85.72"`) {
+		t.Fatalf("expected PowerDNS PATCH with A record for app.nikaget.my.id., got: %s", patchedBody)
 	}
 }
