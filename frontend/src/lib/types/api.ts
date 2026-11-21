@@ -69,6 +69,29 @@ export interface CreateSitePayload {
 	framework: string;
 	proxy_port: number;
 	ssl_enabled: boolean;
+	skip_hosts?: boolean;
+	add_hosts?: boolean;
+	expose_edge?: boolean;
+	edge_domain?: string;
+	edge_ssl?: boolean;
+}
+
+export interface CreateSiteResponse {
+	status: string;
+	dns_synced?: boolean;
+	dns_zone?: string;
+	dns_message?: string;
+	edge_exposed?: boolean;
+	edge_domain?: string;
+	edge_ssl?: boolean;
+	edge_error?: string;
+}
+
+export interface DeleteSiteResponse {
+	status: string;
+	unexposed?: boolean;
+	unexpose_error?: string;
+	dns_deleted?: boolean;
 }
 
 export interface RuntimeInfo {

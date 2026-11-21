@@ -1517,3 +1517,173 @@ func TestHandleMailRelayDNSSyncEndpointValidation(t *testing.T) {
 		t.Fatalf("expected 200 for non-Resend provider sync report, got %d (%s)", recLocal.Code, recLocal.Body.String())
 	}
 }
+
+func TestHandleSitesEdgeModeAutoExposesAndDeletesCleanly(t *testing.T) {
+	restoreNB := pdns.SetLocalNetbirdIPFn(func() string { return "100.64.0.22" })
+	defer restoreNB()
+
+	var pdnsPatches []string
+	var proxyCreateBody string
+	var proxyDeletedPath string
+
+	pdnsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones":
+			_ = json.NewEncoder(w).Encode([]pdns.ZoneInfo{{ID: "nikaget.my.id.", Name: "nikaget.my.id."}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones/nikaget.my.id.":
+			_ = json.NewEncoder(w).Encode(pdns.ZoneInfo{
+				ID:   "nikaget.my.id.",
+				Name: "nikaget.my.id.",
+				RRsets: []pdns.RRSet{
+					{Name: "nikaget.my.id.", Type: "A", TTL: 300, Records: []pdns.Record{{Content: "174.128.205.124"}}},
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/servers/localhost/zones/nikaget.my.id.":
+			b, _ := io.ReadAll(r.Body)
+			pdnsPatches = append(pdnsPatches, string(b))
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/proxies":
+			b, _ := io.ReadAll(r.Body)
+			proxyCreateBody = string(b)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/proxies/"):
+			proxyDeletedPath = r.URL.Path
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"deleted"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer pdnsSrv.Close()
+	u, _ := url.Parse(pdnsSrv.URL)
+
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "edge-sites.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	hostsPath := filepath.Join(tmp, "hosts")
+	_ = os.WriteFile(hostsPath, []byte("127.0.0.1 localhost\n"), 0644)
+
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          etcDir,
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        hostsPath,
+	}
+	pdnsMgr := pdns.New(cfg, db)
+	_ = pdnsMgr.SetMode("edge")
+	confData := "VPS_NETBIRD_IP=\"" + u.Hostname() + "\"\n" +
+		"VPS_PUBLIC_IP=\"174.128.205.124\"\n" +
+		"API_KEY=\"edge-test-key\"\n" +
+		"PDNS_PORT=\"" + u.Port() + "\"\n" +
+		"AGENT_PORT=\"" + u.Port() + "\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(confData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	inst := installer.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), inst, siteMgr, nil, nil, pdnsMgr, nil, auth.New(cfg, db))
+
+	// 1. Create public site in edge mode with expose_edge=true & edge_ssl=true
+	reqCreate := httptest.NewRequest(
+		http.MethodPost,
+		"/api/sites",
+		strings.NewReader(`{"domain":"web.nikaget.my.id","framework":"static","ssl_enabled":true,"expose_edge":true,"edge_domain":"web.nikaget.my.id","edge_ssl":true}`),
+	)
+	recCreate := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recCreate, reqCreate)
+	if recCreate.Code != http.StatusOK {
+		t.Fatalf("POST /api/sites (edge) = %d, body=%s", recCreate.Code, recCreate.Body.String())
+	}
+
+	var createResp struct {
+		Status      string `json:"status"`
+		EdgeExposed bool   `json:"edge_exposed"`
+		EdgeDomain  string `json:"edge_domain"`
+		EdgeSSL     bool   `json:"edge_ssl"`
+		DNSSynced   bool   `json:"dns_synced"`
+		EdgeError   string `json:"edge_error"`
+	}
+	if err := json.Unmarshal(recCreate.Body.Bytes(), &createResp); err != nil {
+		t.Fatal(err)
+	}
+	if createResp.Status != "created" || !createResp.EdgeExposed || createResp.EdgeDomain != "web.nikaget.my.id" || !createResp.EdgeSSL || !createResp.DNSSynced {
+		t.Fatalf("unexpected edge POST /api/sites response: %+v", createResp)
+	}
+	if !strings.Contains(proxyCreateBody, `"target_ip":"100.64.0.22"`) || !strings.Contains(proxyCreateBody, `"target_port":80`) || !strings.Contains(proxyCreateBody, `"ssl":true`) {
+		t.Fatalf("unexpected edge proxy payload: %s", proxyCreateBody)
+	}
+	hostsBytes, _ := os.ReadFile(hostsPath)
+	if strings.Contains(string(hostsBytes), "web.nikaget.my.id") {
+		t.Fatalf("public domain in edge mode should skip /etc/hosts by default, got: %s", string(hostsBytes))
+	}
+
+	stored, ok := siteMgr.GetSite("web.nikaget.my.id")
+	if !ok || stored.ExposedTo != "web.nikaget.my.id" || stored.SSLEnabled {
+		t.Fatalf("unexpected stored site in edge mode: ok=%v rec=%+v", ok, stored)
+	}
+
+	// 2. Delete site with unexpose=1&delete_dns=1
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/sites/web.nikaget.my.id?unexpose=1&delete_dns=1", nil)
+	recDel := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recDel, reqDel)
+	if recDel.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/sites (edge) = %d, body=%s", recDel.Code, recDel.Body.String())
+	}
+	var delResp struct {
+		Status     string `json:"status"`
+		Unexposed  bool   `json:"unexposed"`
+		DNSDeleted bool   `json:"dns_deleted"`
+	}
+	if err := json.Unmarshal(recDel.Body.Bytes(), &delResp); err != nil {
+		t.Fatal(err)
+	}
+	if delResp.Status != "deleted" || !delResp.Unexposed || !delResp.DNSDeleted {
+		t.Fatalf("unexpected DELETE /api/sites response: %+v", delResp)
+	}
+	if proxyDeletedPath != "/api/v1/proxies/web.nikaget.my.id" {
+		t.Fatalf("expected DELETE proxy path /api/v1/proxies/web.nikaget.my.id, got %q", proxyDeletedPath)
+	}
+	if len(pdnsPatches) < 2 || !strings.Contains(pdnsPatches[1], `"changetype":"DELETE"`) {
+		t.Fatalf("expected PowerDNS PATCH DELETE for subdomain A record, got patches=%+v", pdnsPatches)
+	}
+
+	// 3. Omitting expose_edge in edge mode with a public domain defaults to exposing via VPS Edge Tunnel
+	proxyCreateBody = ""
+	reqDefaultExpose := httptest.NewRequest(
+		http.MethodPost,
+		"/api/sites",
+		strings.NewReader(`{"domain":"api.nikaget.my.id","framework":"static"}`),
+	)
+	recDefaultExpose := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recDefaultExpose, reqDefaultExpose)
+	if recDefaultExpose.Code != http.StatusOK {
+		t.Fatalf("POST /api/sites default edge = %d, body=%s", recDefaultExpose.Code, recDefaultExpose.Body.String())
+	}
+	var defaultResp struct {
+		Status      string `json:"status"`
+		EdgeExposed bool   `json:"edge_exposed"`
+		EdgeDomain  string `json:"edge_domain"`
+		EdgeSSL     bool   `json:"edge_ssl"`
+	}
+	if err := json.Unmarshal(recDefaultExpose.Body.Bytes(), &defaultResp); err != nil {
+		t.Fatal(err)
+	}
+	if defaultResp.Status != "created" || !defaultResp.EdgeExposed || defaultResp.EdgeDomain != "api.nikaget.my.id" || !defaultResp.EdgeSSL {
+		t.Fatalf("expected public domain in edge mode to default-expose, got: %+v", defaultResp)
+	}
+	if !strings.Contains(proxyCreateBody, `"domain":"api.nikaget.my.id"`) || !strings.Contains(proxyCreateBody, `"ssl":true`) {
+		t.Fatalf("unexpected default edge proxy payload: %s", proxyCreateBody)
+	}
+}

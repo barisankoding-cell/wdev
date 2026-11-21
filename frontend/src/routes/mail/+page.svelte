@@ -690,6 +690,21 @@
 		</div>
 	</div>
 
+	{#if modeStore.mode === 'local'}
+		<Alert.Root class="border-muted-foreground/30 bg-muted/40">
+			<InfoIcon />
+			<Alert.Title>Mode Lokal Standalone Aktif</Alert.Title>
+			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+				<span>
+					Di mode <strong>Lokal Standalone</strong>, menu Mail Server disembunyikan dari sidebar utama. Anda tetap bisa menguji Mail Server lokal di halaman ini atau beralih ke mode Edge Gateway / Full VPS.
+				</span>
+				<Button size="xs" variant="outline" class="shrink-0" onclick={() => modeStore.openModal()}>
+					Ganti Mode Server
+				</Button>
+			</Alert.Description>
+		</Alert.Root>
+	{/if}
+
 	{#if mailStatus && (!mailStatus.stalwart_active || !mailStatus.snappymail_active || mailStatus.domains.length === 0)}
 		<Alert.Root>
 			<InfoIcon />

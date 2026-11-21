@@ -940,19 +940,57 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, sites)
 
 	case http.MethodPost:
-		var opts site.CreateOptions
-		if err := json.NewDecoder(r.Body).Decode(&opts); err != nil {
+		var req struct {
+			site.CreateOptions
+			ExposeEdge *bool  `json:"expose_edge,omitempty"`
+			EdgeDomain string `json:"edge_domain,omitempty"`
+			EdgeSSL    *bool  `json:"edge_ssl,omitempty"`
+			AddHosts   *bool  `json:"add_hosts,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "Payload tidak valid")
 			return
 		}
-		if err := s.siteMgr.CreateSite(opts); err != nil {
+
+		cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(req.Domain), "."))
+		isPublic := site.ValidateLetsEncryptDomain(cleanDom) == nil
+		mode := "local"
+		if s.pdnsMgr != nil {
+			mode = s.pdnsMgr.GetMode()
+		}
+
+		if !req.SkipHosts {
+			if req.AddHosts != nil {
+				req.SkipHosts = !*req.AddHosts
+			} else if (mode == "vps" || mode == "edge") && isPublic {
+				// Domain publik di mode VPS/Edge diselesaikan lewat PowerDNS/DNS publik, bukan /etc/hosts lokal.
+				req.SkipHosts = true
+			}
+		}
+
+		wantExpose := false
+		if mode == "edge" {
+			if req.ExposeEdge != nil {
+				wantExpose = *req.ExposeEdge
+			} else if isPublic && s.pdnsMgr != nil {
+				conf := s.pdnsMgr.LoadConfig()
+				if conf.Configured && conf.VPSNetbirdIP != "" {
+					wantExpose = true
+				}
+			}
+		}
+		if wantExpose {
+			// SSL Let's Encrypt diterbitkan di VPS Edge Gateway; vhost lokal melayani HTTP port 80 lewat tunnel NetBird.
+			req.SSLEnabled = false
+		}
+
+		if err := s.siteMgr.CreateSite(req.CreateOptions); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(opts.Domain), "."))
 		resp := map[string]any{"status": "created"}
-		if s.pdnsMgr != nil && s.pdnsMgr.GetMode() == "vps" {
+		if mode == "vps" && s.pdnsMgr != nil {
 			conf := s.pdnsMgr.LoadConfig()
 			if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
 				if zone, zErr := s.pdnsMgr.FindMatchingZone(cleanDom); zErr == nil && zone != "" {
@@ -962,6 +1000,31 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 							resp["dns_zone"] = strings.TrimSuffix(zone, ".")
 							resp["dns_message"] = fmt.Sprintf("Record DNS A %s -> %s ditambahkan ke PowerDNS", cleanDom, conf.VPSPublicIP)
 						}
+					}
+				}
+			}
+		} else if wantExpose && s.pdnsMgr != nil {
+			pubDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(req.EdgeDomain), "."))
+			if pubDom == "" {
+				pubDom = cleanDom
+			}
+			useSSL := true
+			if req.EdgeSSL != nil {
+				useSSL = *req.EdgeSSL
+			}
+			if expErr := s.pdnsMgr.ExposeSite(cleanDom, pubDom, useSSL); expErr != nil {
+				resp["edge_exposed"] = false
+				resp["edge_domain"] = pubDom
+				resp["edge_error"] = expErr.Error()
+			} else {
+				resp["edge_exposed"] = true
+				resp["edge_domain"] = pubDom
+				resp["edge_ssl"] = useSSL
+				if conf := s.pdnsMgr.LoadConfig(); conf.VPSPublicIP != "" {
+					if zone, zErr := s.pdnsMgr.FindMatchingZone(pubDom); zErr == nil && zone != "" {
+						resp["dns_synced"] = true
+						resp["dns_zone"] = strings.TrimSuffix(zone, ".")
+						resp["dns_message"] = fmt.Sprintf("Record A %s -> %s & tunnel VPS Edge aktif", pubDom, conf.VPSPublicIP)
 					}
 				}
 			}
@@ -978,17 +1041,51 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 		return
 	}
-	domain := strings.TrimPrefix(r.URL.Path, "/api/sites/")
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/sites/")), "."))
 	if domain == "" {
 		writeError(w, http.StatusBadRequest, "Domain tidak valid")
 		return
+	}
+
+	unexpose := r.URL.Query().Get("unexpose") == "1" || r.URL.Query().Get("unexpose") == "true"
+	deleteDNS := r.URL.Query().Get("delete_dns") == "1" || r.URL.Query().Get("delete_dns") == "true"
+
+	var existingExposed string
+	if existing, ok := s.siteMgr.GetSite(domain); ok {
+		existingExposed = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(existing.ExposedTo), "."))
 	}
 
 	if err := s.siteMgr.DeleteSite(domain); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+
+	resp := map[string]any{"status": "deleted"}
+	mode := "local"
+	if s.pdnsMgr != nil {
+		mode = s.pdnsMgr.GetMode()
+	}
+
+	if mode == "edge" && unexpose && existingExposed != "" && s.pdnsMgr != nil {
+		if err := s.pdnsMgr.Unexpose(existingExposed, !deleteDNS); err != nil {
+			resp["unexposed"] = false
+			resp["unexpose_error"] = err.Error()
+		} else {
+			resp["unexposed"] = true
+			resp["dns_deleted"] = deleteDNS
+		}
+	} else if mode == "vps" && deleteDNS && s.pdnsMgr != nil {
+		if zone, err := s.pdnsMgr.FindMatchingZone(domain); err == nil && zone != "" {
+			cleanZone := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zone), "."))
+			if domain != cleanZone {
+				if delErr := s.pdnsMgr.DeleteRecord(zone, domain, "A"); delErr == nil {
+					resp["dns_deleted"] = true
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSiteSSL(w http.ResponseWriter, r *http.Request) {

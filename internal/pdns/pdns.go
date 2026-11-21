@@ -654,6 +654,15 @@ func (m *Manager) GetLocalNetbirdIP() string {
 	return detectLocalNetbirdIPFn()
 }
 
+// SetLocalNetbirdIPFn mengganti detektor IP NetBird lokal (untuk pengujian) dan mengembalikan fungsi pemulih.
+func SetLocalNetbirdIPFn(fn func() string) func() {
+	prev := detectLocalNetbirdIPFn
+	detectLocalNetbirdIPFn = fn
+	return func() {
+		detectLocalNetbirdIPFn = prev
+	}
+}
+
 func detectLocalNetbirdIP() string {
 	// 1. Try wt0 interface
 	if iface, err := net.InterfaceByName("wt0"); err == nil {

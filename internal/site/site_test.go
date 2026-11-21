@@ -351,3 +351,34 @@ func TestListSitesParsesSSLExpirationFromCertificate(t *testing.T) {
 		t.Fatalf("expected negative SSLDaysLeft for expired cert, got %+v", sites[1])
 	}
 }
+
+func TestCreateSiteSkipHostsPreservesHostsFile(t *testing.T) {
+	mgr, cfg, _ := newTestSiteManager(t)
+
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:    "app.nikaget.my.id",
+		Framework: "static",
+		SkipHosts: true,
+	}); err != nil {
+		t.Fatalf("CreateSite with SkipHosts failed: %v", err)
+	}
+	hostsBytes, err := os.ReadFile(cfg.HostsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(hostsBytes), "app.nikaget.my.id") {
+		t.Fatalf("expected hosts file untouched when SkipHosts=true, got: %s", string(hostsBytes))
+	}
+
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:    "lokal.test",
+		Framework: "static",
+		SkipHosts: false,
+	}); err != nil {
+		t.Fatalf("CreateSite local failed: %v", err)
+	}
+	hostsBytes, _ = os.ReadFile(cfg.HostsFile)
+	if !strings.Contains(string(hostsBytes), "127.0.0.1 lokal.test") {
+		t.Fatalf("expected lokal.test in hosts file when SkipHosts=false, got: %s", string(hostsBytes))
+	}
+}

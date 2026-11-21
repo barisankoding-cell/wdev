@@ -58,14 +58,19 @@
 						{ label: 'Mail Server & Relay', href: '/mail', icon: MailIcon }
 					]
 			  }
-			: {
-					title: 'Domain, DNS & Mail',
-					items: [
-						{ label: 'Domain & DNS Manager', href: '/powerdns', icon: GlobeIcon },
-						{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
-						{ label: 'Mail Server', href: '/mail', icon: MailIcon }
-					]
-			  },
+			: modeStore.mode === 'vps'
+				? {
+						title: 'Domain, DNS & Mail',
+						items: [
+							{ label: 'Domain & DNS Manager', href: '/powerdns', icon: GlobeIcon },
+							{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
+							{ label: 'Mail Server', href: '/mail', icon: MailIcon }
+						]
+				  }
+				: {
+						title: 'Ekspos Opsional',
+						items: [{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon }]
+				  },
 		{
 			title: 'Instalasi & Setup',
 			items: [{ label: 'Setup & Komponen', href: '/setup', icon: ZapIcon }]

@@ -75,6 +75,7 @@ type CreateOptions struct {
 	Framework     string   `json:"framework"`
 	ProxyPort     int      `json:"proxy_port"`
 	SSLEnabled    bool     `json:"ssl_enabled"`
+	SkipHosts     bool     `json:"skip_hosts,omitempty"`
 }
 
 type StaticVHostResult struct {
@@ -390,8 +391,8 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 		_ = m.reloadOrStartNginx()
 	}
 
-	// Update /etc/hosts
-	if m.cfg != nil && m.cfg.HostsFile != "" {
+	// Update /etc/hosts kecuali diminta skip (mis. domain publik di VPS / Edge Gateway)
+	if !opts.SkipHosts && m.cfg != nil && m.cfg.HostsFile != "" {
 		m.addHostsEntries(append([]string{opts.Domain}, cleanAliases...)...)
 	}
 

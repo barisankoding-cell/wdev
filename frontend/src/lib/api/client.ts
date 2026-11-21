@@ -190,7 +190,16 @@ export const api = {
 	// Sites
 	listSites: () => apiFetch<SiteRecord[]>('/api/sites'),
 	createSite: (payload: CreateSitePayload) =>
-		apiFetch<{ status: string; dns_synced?: boolean; dns_zone?: string; dns_message?: string }>('/api/sites', {
+		apiFetch<{
+			status: string;
+			dns_synced?: boolean;
+			dns_zone?: string;
+			dns_message?: string;
+			edge_exposed?: boolean;
+			edge_domain?: string;
+			edge_ssl?: boolean;
+			edge_error?: string;
+		}>('/api/sites', {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
@@ -203,10 +212,20 @@ export const api = {
 				...(sudoPass ? { sudo_pass: sudoPass } : {})
 			})
 		}),
-	deleteSite: (domain: string) =>
-		apiFetch<{ status: string }>(`/api/sites/${encodeURIComponent(domain)}`, {
+	deleteSite: (domain: string, opts?: { unexpose?: boolean; delete_dns?: boolean }) => {
+		const params = new URLSearchParams();
+		if (opts?.unexpose) params.set('unexpose', '1');
+		if (opts?.delete_dns) params.set('delete_dns', '1');
+		const qs = params.toString();
+		return apiFetch<{
+			status: string;
+			unexposed?: boolean;
+			unexpose_error?: string;
+			dns_deleted?: boolean;
+		}>(`/api/sites/${encodeURIComponent(domain)}${qs ? `?${qs}` : ''}`, {
 			method: 'DELETE'
-		}),
+		});
+	},
 
 	// Switchers
 	getSwitchers: () => apiFetch<SwitchersMap>('/api/switchers'),

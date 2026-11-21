@@ -637,6 +637,21 @@
 		</div>
 	</div>
 
+	{#if modeStore.mode === 'local'}
+		<Alert.Root class="border-muted-foreground/30 bg-muted/40">
+			<InfoIcon />
+			<Alert.Title>Mode Lokal Standalone Aktif</Alert.Title>
+			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+				<span>
+					Di mode <strong>Lokal Standalone</strong>, PowerDNS disembunyikan dari menu sidebar karena pengembangan lokal umumnya memakai <code>/etc/hosts</code>. Anda tetap dapat menggunakannya secara lokal atau beralih ke mode VPS / Edge Gateway.
+				</span>
+				<Button size="xs" variant="outline" class="shrink-0" onclick={() => modeStore.openModal()}>
+					Ganti Mode Server
+				</Button>
+			</Alert.Description>
+		</Alert.Root>
+	{/if}
+
 	{#if modeStore.mode !== 'edge' && edge && !edge.reachable}
 		<Alert.Root variant="destructive">
 			<TriangleAlertIcon />
