@@ -4,11 +4,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"wdev/internal/pdns"
 )
 
 // PreflightStatus adalah ringkasan kesiapan prasyarat mail sebelum setup domain.
 // Nilai false berarti setup tidak akan berjalan penuh.
 type PreflightStatus struct {
+	Mode            string   `json:"mode"`
+	LocalPDNS       bool     `json:"local_pdns"`
 	Domain          string   `json:"domain"`
 	StalwartBinary  bool     `json:"stalwart_binary"`
 	StalwartCLI     bool     `json:"stalwart_cli"`
@@ -43,15 +46,33 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 	}
 
 	mode := m.pdnsMgr.GetMode()
-	isVPS := mode == "vps"
+	st.Mode = mode
+	cfg := m.pdnsMgr.LoadConfig()
+	st.LocalPDNS = cfg.HasLocalPDNS
 
 	st.NetbirdIP = m.pdnsMgr.GetLocalNetbirdIP()
-	if isVPS && st.NetbirdIP == "" {
-		st.NetbirdIP = "127.0.0.1 (VPS Local)"
+	switch mode {
+	case "vps":
+		if st.NetbirdIP == "" {
+			st.NetbirdIP = "127.0.0.1 (VPS Standalone)"
+		}
+		st.EdgeConfigured = cfg.Configured || cfg.HasLocalPDNS
+	case "local":
+		if st.NetbirdIP == "" {
+			st.NetbirdIP = "127.0.0.1 (Mode Lokal)"
+		}
+		st.EdgeConfigured = true
+	default:
+		st.EdgeConfigured = cfg.Configured && cfg.VPSNetbirdIP != ""
 	}
-	cfg := m.pdnsMgr.LoadConfig()
-	st.EdgeConfigured = cfg.Configured && (isVPS || cfg.VPSNetbirdIP != "")
 	st.VPSPublicIP = cfg.VPSPublicIP
+	if st.VPSPublicIP == "" && mode == "local" {
+		if lan := pdns.DetectLocalLANIP(); lan != "" {
+			st.VPSPublicIP = lan
+		} else {
+			st.VPSPublicIP = "127.0.0.1"
+		}
+	}
 
 	if st.Domain != "" && validMailDomain(st.Domain) {
 		if zone, err := m.pdnsMgr.FindMatchingZone(st.Domain); err == nil {
@@ -61,7 +82,7 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 
 	_, st.RelayConfigured = m.loadGlobalRelayCred()
 
-	if st.VPSPublicIP != "" {
+	if st.VPSPublicIP != "" && mode != "local" {
 		st.PTR, st.PTRMatch = ptrMatches(m.pdnsMgr, st.VPSPublicIP, "mail."+st.Domain)
 	}
 
@@ -71,35 +92,56 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 	if !st.StalwartCLI {
 		st.Blockers = append(st.Blockers, "stalwart-cli belum terpasang (jalankan: wdev install mail)")
 	}
-	if isVPS {
+	if st.Domain != "" && !validMailDomain(st.Domain) {
+		st.Blockers = append(st.Blockers, "domain tidak valid")
+	}
+
+	switch mode {
+	case "local":
+		// Mode Lokal standalone: NetBird, PowerDNS zone, maupun relay tidak menjadi blocker.
 		if !cfg.Reachable && !cfg.HasLocalPDNS {
-			st.Blockers = append(st.Blockers, "PowerDNS belum siap (jalankan: wdev install pdns)")
+			st.Warnings = append(st.Warnings, "PowerDNS lokal belum terpasang; domain webmail/admin lokal tetap berjalan via /etc/hosts")
+		} else if st.Domain != "" && st.DNSZone == "" {
+			st.Warnings = append(st.Warnings, "Zone DNS "+st.Domain+" belum ada di PowerDNS; record DNS dilewati dan memakai /etc/hosts lokal")
 		}
-	} else {
+		if !st.RelayConfigured {
+			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email tetap berfungsi lokal atau atur relay nanti di tab Relay")
+		}
+	case "vps":
+		if !cfg.Reachable && !cfg.HasLocalPDNS {
+			st.Blockers = append(st.Blockers, "PowerDNS lokal belum siap (jalankan: wdev install pdns)")
+		}
+		if st.VPSPublicIP == "" {
+			st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
+		}
+		if !st.RelayConfigured {
+			st.Blockers = append(st.Blockers, "relay outbound default belum disetel; mode relay-only menolak setup")
+		}
+		if st.Domain != "" && st.DNSZone == "" {
+			st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")
+		}
+	default: // "edge"
 		if st.NetbirdIP == "" {
 			st.Blockers = append(st.Blockers, "IP NetBird (wt0) tidak terdeteksi; aktifkan netbird")
 		}
 		if !st.EdgeConfigured {
 			st.Blockers = append(st.Blockers, "VPS Edge Gateway belum dikonfigurasi (wdev pdns connect)")
 		}
-	}
-	if st.VPSPublicIP == "" {
-		st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
-	}
-	if !st.RelayConfigured {
-		st.Blockers = append(st.Blockers, "relay outbound default belum disetel; mode relay-only menolak setup")
-	}
-	if st.Domain != "" && !validMailDomain(st.Domain) {
-		st.Blockers = append(st.Blockers, "domain tidak valid")
-	}
-	if st.Domain != "" && st.DNSZone == "" {
-		st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")
+		if st.VPSPublicIP == "" {
+			st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
+		}
+		if !st.RelayConfigured {
+			st.Blockers = append(st.Blockers, "relay outbound default belum disetel; mode relay-only menolak setup")
+		}
+		if st.Domain != "" && st.DNSZone == "" {
+			st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")
+		}
 	}
 
 	if !st.SnappyMail {
 		st.Warnings = append(st.Warnings, "SnappyMail belum terpasang; webmail tidak akan aktif")
 	}
-	if st.VPSPublicIP != "" && !st.PTRMatch {
+	if mode != "local" && st.VPSPublicIP != "" && !st.PTRMatch {
 		st.Warnings = append(st.Warnings, "PTR/rDNS IP publik belum menunjuk mail."+st.Domain+"; banyak penerima akan menolak email masuk")
 	}
 	return st

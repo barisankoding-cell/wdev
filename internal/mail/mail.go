@@ -48,6 +48,7 @@ func (m *Manager) LastRelayDNSReport() RelayDNSReport {
 }
 
 type MailStatus struct {
+	Mode             string                 `json:"mode"`
 	StalwartActive   bool                   `json:"stalwart_active"`
 	SnappyMailActive bool                   `json:"snappymail_active"`
 	RelayOnly        bool                   `json:"relay_only"`
@@ -139,6 +140,11 @@ func readRootFile(path string) ([]byte, error) {
 
 func writeRootFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err == nil {
+		if err := os.WriteFile(path, data, perm); err == nil {
+			return os.Chmod(path, perm)
+		}
+	}
 	if os.Geteuid() == 0 {
 		_ = os.MkdirAll(dir, 0755)
 		if err := os.WriteFile(path, data, perm); err != nil {
@@ -557,13 +563,19 @@ func (m *Manager) ensureSnappyMailDomain(domain string) error {
 	_ = m.ensureWebmailFallbackVhost()
 	_ = m.ensureLocalMailVhost(domain)
 	_ = reloadLocalNginx()
+	return m.writeSnappyMailDomainConfig(domain)
+}
 
+func (m *Manager) writeSnappyMailDomainConfig(domain string) error {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
 	snapRoot := "/var/www/snappymail"
 	if _, err := os.Stat(snapRoot); err != nil {
 		return nil
 	}
 	snapDomDir := filepath.Join(snapRoot, "data", "_data_", "_default_", "domains")
-	_ = os.MkdirAll(snapDomDir, 0700)
+	if err := os.MkdirAll(snapDomDir, 0700); err != nil {
+		_ = runRoot("mkdir", "-p", snapDomDir)
+	}
 
 	cfgContent := fmt.Sprintf(`{
     "IMAP": {
@@ -620,7 +632,11 @@ func (m *Manager) ensureSnappyMailDomain(domain string) error {
 }`)
 	targetFile := filepath.Join(snapDomDir, domain+".json")
 	_ = writeRootFile(targetFile, []byte(cfgContent), 0600)
-	_ = exec.Command("chown", "www-data:www-data", snapDomDir, targetFile).Run()
+	webOwner := "www-data:www-data"
+	if data, err := os.ReadFile("/etc/passwd"); err == nil && !strings.Contains(string(data), "www-data:") && strings.Contains(string(data), "nginx:") {
+		webOwner = "nginx:nginx"
+	}
+	_ = runRoot("chown", webOwner, snapDomDir, targetFile)
 	return nil
 }
 
@@ -695,14 +711,269 @@ server {
 `, domain, phpSock)
 }
 
+func (m *Manager) nginxMailPaths(domain string) (available, enabled string) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	availDir := "/etc/nginx/sites-available"
+	enableDir := "/etc/nginx/sites-enabled"
+	if m.cfg != nil {
+		if m.cfg.NginxSitesAvail != "" {
+			availDir = m.cfg.NginxSitesAvail
+		}
+		if m.cfg.NginxSitesEnable != "" {
+			enableDir = m.cfg.NginxSitesEnable
+		}
+	}
+	name := "wdev_mail_" + domain + ".conf"
+	return filepath.Join(availDir, name), filepath.Join(enableDir, name)
+}
+
+func (m *Manager) hostsFilePath() string {
+	if m.cfg != nil && m.cfg.HostsFile != "" {
+		return m.cfg.HostsFile
+	}
+	return "/etc/hosts"
+}
+
+func (m *Manager) mailSSLDir(domain string) string {
+	etcDir := "/etc/wdev"
+	if m.cfg != nil && m.cfg.WdevEtc != "" {
+		etcDir = m.cfg.WdevEtc
+	}
+	return filepath.Join(etcDir, "ssl", "mail", domain)
+}
+
+func (m *Manager) ensureMailHostsEntries(domain, ip string) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if !validMailDomain(domain) {
+		return
+	}
+	if strings.TrimSpace(ip) == "" {
+		ip = "127.0.0.1"
+	}
+	hostsPath := m.hostsFilePath()
+	content, err := readRootFile(hostsPath)
+	if err != nil {
+		return
+	}
+	marker := "# wdev-mail-" + domain
+	var kept []string
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.Contains(line, marker) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	entry := fmt.Sprintf("%s webmail.%s mailadmin.%s mail.%s mx.%s %s", ip, domain, domain, domain, domain, marker)
+	for len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
+		kept = kept[:len(kept)-1]
+	}
+	kept = append(kept, entry, "")
+	_ = writeRootFile(hostsPath, []byte(strings.Join(kept, "\n")), 0644)
+}
+
+func (m *Manager) removeMailHostsEntries(domain string) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" {
+		return
+	}
+	hostsPath := m.hostsFilePath()
+	content, err := readRootFile(hostsPath)
+	if err != nil {
+		return
+	}
+	marker := "# wdev-mail-" + domain
+	changed := false
+	var kept []string
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.Contains(line, marker) {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if changed {
+		_ = writeRootFile(hostsPath, []byte(strings.Join(kept, "\n")), 0644)
+	}
+}
+
+func localMailSSLVhostBlock(domain, phpSock, certFile, keyFile string) string {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	return fmt.Sprintf(`# Managed by wdev (mail vhost SSL %[1]s)
+server {
+	listen 80;
+	server_name webmail.%[1]s mailadmin.%[1]s mail.%[1]s;
+	return 301 https://$host$request_uri;
+}
+
+server {
+	listen 443 ssl;
+	server_name webmail.%[1]s;
+
+	ssl_certificate %[3]s;
+	ssl_certificate_key %[4]s;
+
+	root /var/www/snappymail;
+	index index.php index.html;
+	client_max_body_size 50M;
+
+	location / {
+		try_files $uri $uri/ /index.php?$query_string;
+	}
+
+	location ~ \.php$ {
+		include fastcgi_params;
+		fastcgi_pass unix:%[2]s;
+		fastcgi_index index.php;
+		fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+	}
+
+	location ~ ^/(data|config)/ {
+		deny all;
+		return 404;
+	}
+}
+
+server {
+	listen 443 ssl;
+	server_name mailadmin.%[1]s;
+
+	ssl_certificate %[3]s;
+	ssl_certificate_key %[4]s;
+
+	location / {
+		proxy_pass http://127.0.0.1:8080;
+		proxy_http_version 1.1;
+		proxy_set_header Host $host;
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_read_timeout 300s;
+	}
+}
+
+server {
+	listen 443 ssl;
+	server_name mail.%[1]s;
+
+	ssl_certificate %[3]s;
+	ssl_certificate_key %[4]s;
+
+	location / { return 200 "mail server host ok\n"; }
+}
+`, domain, phpSock, certFile, keyFile)
+}
+
+func (m *Manager) issueLocalMailSSLVhost(domain string) (bool, error) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if !validMailDomain(domain) {
+		return false, fmt.Errorf("domain vhost tidak valid: %q", domain)
+	}
+	sslDir := m.mailSSLDir(domain)
+	if err := os.MkdirAll(sslDir, 0755); err != nil {
+		_ = runRoot("mkdir", "-p", sslDir)
+	}
+	certFile := filepath.Join(sslDir, "fullchain.pem")
+	keyFile := filepath.Join(sslDir, "privkey.pem")
+
+	tmpDir, err := os.MkdirTemp("", "wdev-mail-ssl-*")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpCert := filepath.Join(tmpDir, "cert.pem")
+	tmpKey := filepath.Join(tmpDir, "key.pem")
+
+	hosts := []string{"webmail." + domain, "mailadmin." + domain, "mail." + domain, "mx." + domain}
+	issued := false
+	if mkcertBin, err := exec.LookPath("mkcert"); err == nil {
+		args := append([]string{"-cert-file", tmpCert, "-key-file", tmpKey, "--"}, hosts...)
+		if exec.Command(mkcertBin, args...).Run() == nil {
+			issued = true
+		}
+	}
+	if !issued {
+		san := "subjectAltName=DNS:" + strings.Join(hosts, ",DNS:")
+		if err := exec.Command("openssl", "req", "-x509", "-nodes", "-days", "365",
+			"-newkey", "rsa:2048",
+			"-keyout", tmpKey,
+			"-out", tmpCert,
+			"-subj", "/CN=webmail."+domain,
+			"-addext", san).Run(); err != nil {
+			return false, fmt.Errorf("gagal membuat sertifikat SSL lokal: %w", err)
+		}
+	}
+	certBytes, err := os.ReadFile(tmpCert)
+	if err != nil {
+		return false, err
+	}
+	keyBytes, err := os.ReadFile(tmpKey)
+	if err != nil {
+		return false, err
+	}
+	if err := writeRootFile(certFile, certBytes, 0644); err != nil {
+		return false, err
+	}
+	if err := writeRootFile(keyFile, keyBytes, 0600); err != nil {
+		return false, err
+	}
+
+	available, enabled := m.nginxMailPaths(domain)
+	if err := writeRootFile(available, []byte(localMailSSLVhostBlock(domain, phpFPMsock(), certFile, keyFile)), 0644); err != nil {
+		return false, err
+	}
+	if err := ensureSymlink(available, enabled); err != nil {
+		return false, err
+	}
+	if err := reloadLocalNginx(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *Manager) issueVPSLetsEncrypt(domain string, cb func(string)) bool {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if !validMailDomain(domain) {
+		return false
+	}
+	if _, err := exec.LookPath("certbot"); err != nil {
+		if cb != nil {
+			cb(" ! certbot belum terpasang; SSL Let's Encrypt dilewati (pakai HTTP sementara)")
+		}
+		return false
+	}
+	args := []string{
+		"--nginx",
+		"--cert-name", "wdev-mail-" + domain,
+		"-d", "webmail." + domain,
+		"-d", "mailadmin." + domain,
+		"-d", "mail." + domain,
+		"--non-interactive", "--agree-tos", "--register-unsafely-without-email",
+		"--redirect", "--deploy-hook", "systemctl reload nginx",
+	}
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		cmd = exec.Command("certbot", args...)
+	} else {
+		cmd = exec.Command("sudo", append([]string{"-n", "certbot"}, args...)...)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if cb != nil {
+			cb(fmt.Sprintf(" ! certbot gagal untuk %s (%v): %s", domain, err, strings.TrimSpace(string(out))))
+		}
+		return false
+	}
+	if cb != nil {
+		cb(fmt.Sprintf(" ✓ Sertifikat SSL Let's Encrypt aktif untuk webmail/mailadmin/mail.%s", domain))
+	}
+	return true
+}
+
 func (m *Manager) ensureLocalMailVhost(domain string) error {
 	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
 	if !validMailDomain(domain) {
 		return fmt.Errorf("domain vhost tidak valid: %q", domain)
 	}
-	name := "wdev_mail_" + domain + ".conf"
-	available := filepath.Join(m.cfg.NginxSitesAvail, name)
-	enabled := filepath.Join(m.cfg.NginxSitesEnable, name)
+	available, enabled := m.nginxMailPaths(domain)
 	if err := writeRootFile(available, []byte(localMailVhostBlock(domain, phpFPMsock())), 0644); err != nil {
 		return err
 	}
@@ -717,10 +988,14 @@ func ensureSymlink(target, link string) error {
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
-		_ = os.Remove(link)
+		if rmErr := os.Remove(link); rmErr != nil {
+			_ = runRoot("rm", "-f", link)
+		}
 	}
 	if err := os.Symlink(target, link); err != nil && !os.IsExist(err) {
-		return err
+		if runErr := runRoot("ln", "-sf", target, link); runErr != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -737,22 +1012,29 @@ func (m *Manager) ensureLocalMailFirewall() string {
 	results := []string{}
 	ports := []int{25, 465, 587, 993, 143, 995, 110}
 	mode := m.pdnsMgr.GetMode()
-	isVPS := mode == "vps"
 
 	if _, err := exec.LookPath("ufw"); err == nil {
 		out, _ := exec.Command("ufw", "status").Output()
 		if strings.Contains(string(out), "Status: active") {
 			for _, port := range ports {
-				if isVPS {
+				switch mode {
+				case "vps":
 					_ = runRoot("ufw", "allow", fmt.Sprintf("%d/tcp", port))
-				} else {
+				case "local":
+					for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+						_ = runRoot("ufw", "allow", "from", cidr, "to", "any", "port", fmt.Sprintf("%d", port), "proto", "tcp")
+					}
+				default:
 					_ = runRoot("ufw", "allow", "from", "100.64.0.0/10", "to", "any", "port", fmt.Sprintf("%d", port), "proto", "tcp")
 				}
 			}
 			_ = runRoot("ufw", "reload")
-			if isVPS {
+			switch mode {
+			case "vps":
 				results = append(results, "ufw: port mail dibuka untuk publik (0.0.0.0/0)")
-			} else {
+			case "local":
+				results = append(results, "ufw: port mail dibuka untuk jaringan lokal LAN")
+			default:
 				results = append(results, "ufw: port mail dibuka untuk NetBird 100.64.0.0/10")
 			}
 		}
@@ -761,17 +1043,26 @@ func (m *Manager) ensureLocalMailFirewall() string {
 		out, _ := exec.Command("firewall-cmd", "--state").Output()
 		if strings.TrimSpace(string(out)) == "running" {
 			for _, port := range ports {
-				if isVPS {
+				switch mode {
+				case "vps":
 					_ = runRoot("firewall-cmd", "--permanent", fmt.Sprintf("--add-port=%d/tcp", port))
-				} else {
+				case "local":
+					for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+						_ = runRoot("firewall-cmd", "--permanent", "--add-rich-rule",
+							fmt.Sprintf("rule family=ipv4 source address=%s port port=%d protocol=tcp accept", cidr, port))
+					}
+				default:
 					_ = runRoot("firewall-cmd", "--permanent", "--add-rich-rule",
 						fmt.Sprintf("rule family=ipv4 source address=100.64.0.0/10 port port=%d protocol=tcp accept", port))
 				}
 			}
 			_ = runRoot("firewall-cmd", "--reload")
-			if isVPS {
+			switch mode {
+			case "vps":
 				results = append(results, "firewalld: port mail dibuka untuk publik")
-			} else {
+			case "local":
+				results = append(results, "firewalld: port mail dibuka untuk jaringan lokal LAN")
+			default:
 				results = append(results, "firewalld: port mail dibuka untuk NetBird 100.64.0.0/10")
 			}
 		}
@@ -834,6 +1125,7 @@ server {
 
 func (m *Manager) GetStatus() (MailStatus, error) {
 	status := MailStatus{
+		Mode:         m.pdnsMgr.GetMode(),
 		DomainRelays: make(map[string]RelayConfig),
 		Domains:      make([]DomainSummary, 0),
 	}
@@ -1183,7 +1475,7 @@ func (m *Manager) AddAccount(email, password string) error {
 		}
 	}
 
-	_ = m.ensureSnappyMailDomain(domainPart)
+	_ = m.writeSnappyMailDomainConfig(domainPart)
 	return nil
 }
 
@@ -1370,10 +1662,13 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 
 	mode := m.pdnsMgr.GetMode()
 	localNB := m.pdnsMgr.GetLocalNetbirdIP()
-	if mode == "vps" {
+	switch mode {
+	case "local":
+		cb("✓ Mode Lokal Standalone aktif: berjalan mandiri tanpa NetBird / Edge Gateway")
+	case "vps":
 		localNB = "127.0.0.1"
-		cb("✓ Mode Full VPS aktif: menggunakan local loopback (127.0.0.1)")
-	} else {
+		cb("✓ Mode Full VPS Standalone aktif: menggunakan loopback lokal (127.0.0.1) tanpa NetBird")
+	default:
 		if localNB == "" {
 			return fmt.Errorf("IP NetBird lokal (wt0) tidak terdeteksi. Pastikan NetBird aktif: 'netbird status'")
 		}
@@ -1381,7 +1676,7 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	}
 
 	// 1. Pastikan mail stack lokal siap (Stalwart & SnappyMail)
-	cb("[1/4] Menyiapkan Mail Stack Lokal (Storage di Harddisk PC)...")
+	cb("[1/4] Menyiapkan Mail Stack Lokal (Stalwart + SnappyMail)...")
 	if err := m.ensureLocalMailStack(); err != nil {
 		cb(fmt.Sprintf("  Peringatan stack lokal: %v", err))
 	}
@@ -1392,7 +1687,11 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	envPath := "/etc/stalwart/stalwart.env"
 	envData, _ := readRootFile(envPath)
 	if !strings.Contains(string(envData), "STALWART_PUBLIC_URL=") {
-		pubURL := fmt.Sprintf("https://mailadmin.%s", cleanDom)
+		scheme := "https"
+		if mode != "edge" && !opts.SSL {
+			scheme = "http"
+		}
+		pubURL := fmt.Sprintf("%s://mailadmin.%s", scheme, cleanDom)
 		_ = setStalwartEnv("STALWART_PUBLIC_URL", pubURL)
 		_ = restartStalwart()
 	}
@@ -1406,107 +1705,158 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	}
 
 	// Prekonfigurasi domain di SnappyMail
-	_ = m.ensureSnappyMailDomain(cleanDom)
+	_ = m.writeSnappyMailDomainConfig(cleanDom)
 
 	relayProv := strings.ToLower(strings.TrimSpace(opts.RelayProv))
 	if relayProv == "direct" || relayProv == "mx" {
 		relayProv = ""
 	}
-	if relayProv == "" {
+	if relayProv == "" && mode != "local" {
 		if err := m.ensureRelayReady(cleanDom, adminUser, adminPass); err != nil {
 			return err
 		}
 	}
 
-	// 2. Standarisasi DNS Record di PowerDNS VPS (inbound only)
-	zone, err := m.pdnsMgr.FindMatchingZone(cleanDom)
-	if err != nil {
-		return fmt.Errorf("gagal menemukan zone DNS yang cocok untuk %s: %w", cleanDom, err)
-	}
+	// 2. Standarisasi DNS Record di PowerDNS (wajib untuk Edge/VPS; opsional + /etc/hosts di mode Lokal)
 	edgeCfg := m.pdnsMgr.LoadConfig()
-	if edgeCfg.VPSPublicIP == "" {
-		return fmt.Errorf("IP publik VPS Edge belum dikonfigurasi; jalankan 'wdev pdns connect' terlebih dahulu")
-	}
-	cb(fmt.Sprintf("[2/4] Membuat DNS Record inbound di PowerDNS VPS (Zone: %s, IP: %s)...", zone, edgeCfg.VPSPublicIP))
-
-	type dnsRec struct {
-		name        string
-		rtype       string
-		content     string
-		keep        bool
-		skipOnExist bool
-	}
-	records := []dnsRec{
-		{name: "mail." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
-		{name: "mx." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
-		{name: "webmail." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
-		{name: "mailadmin." + cleanDom, rtype: "A", content: edgeCfg.VPSPublicIP},
-		{name: "@", rtype: "MX", content: "10 mail." + cleanDom + ".", skipOnExist: true},
-		{name: "@", rtype: "TXT", content: "\"v=spf1 -all\"", keep: true, skipOnExist: true},
-		{name: "_dmarc", rtype: "TXT", content: fmt.Sprintf("\"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s\"", cleanDom), skipOnExist: true},
-	}
-
-	var dnsFailed []string
-	for _, rec := range records {
-		existing, err := m.pdnsMgr.LookupRecords(zone, rec.name, rec.rtype)
-		if err != nil {
-			dnsFailed = append(dnsFailed, fmt.Sprintf("%s %s: %v", rec.rtype, rec.name, err))
-			cb(fmt.Sprintf("    gagal membaca record: %v", err))
-			continue
-		}
-		if rec.skipOnExist && len(existing) > 0 {
-			if rec.rtype == "TXT" && containsSPF(existing) {
-				cb(fmt.Sprintf(" -> %s %s: SPF sudah ada, tidak ditimpa", rec.rtype, rec.name))
-				continue
-			}
-			if !rec.keep && !recordContentExists(existing, rec.content) {
-				msg := fmt.Sprintf("%s %s sudah ada dan berbeda (%s); tidak ditimpa", rec.rtype, rec.name, strings.Join(existing, ", "))
-				if rec.rtype == "MX" {
-					dnsFailed = append(dnsFailed, msg)
-				}
-				cb(" -> " + msg)
-				continue
-			}
-		}
-		cb(fmt.Sprintf(" -> %s %s -> %s", rec.rtype, rec.name, rec.content))
-		var addErr error
-		if rec.keep {
-			addErr = m.pdnsMgr.AddRecordKeep(zone, rec.name, rec.rtype, rec.content, 300)
+	dnsIP := strings.TrimSpace(edgeCfg.VPSPublicIP)
+	if dnsIP == "" && mode == "local" {
+		if lan := pdns.DetectLocalLANIP(); lan != "" {
+			dnsIP = lan
 		} else {
-			addErr = m.pdnsMgr.AddRecord(zone, rec.name, rec.rtype, rec.content, 300)
-		}
-		if addErr != nil {
-			dnsFailed = append(dnsFailed, fmt.Sprintf("%s %s: %v", rec.rtype, rec.name, addErr))
-			cb(fmt.Sprintf("    gagal: %v", addErr))
+			dnsIP = "127.0.0.1"
 		}
 	}
-	if len(dnsFailed) > 0 {
-		return fmt.Errorf("DNS inbound gagal dibuat: %s", strings.Join(dnsFailed, "; "))
+	zone, zoneErr := m.pdnsMgr.FindMatchingZone(cleanDom)
+	if mode == "local" {
+		m.ensureMailHostsEntries(cleanDom, "127.0.0.1")
+		cb(fmt.Sprintf("✓ Entri /etc/hosts lokal ditambahkan untuk webmail.%s & mailadmin.%s", cleanDom, cleanDom))
 	}
-	if ptrName, ok := ptrMatches(m.pdnsMgr, edgeCfg.VPSPublicIP, "mail."+cleanDom); !ok {
-		cb(fmt.Sprintf(" ! PTR/rDNS IP %s belum/tidak cocok ke mail.%s (terbaca: %s). Set PTR di panel VPS.", edgeCfg.VPSPublicIP, cleanDom, ptrName))
-	} else {
-		cb(" ✓ PTR/rDNS VPS cocok dengan mail." + cleanDom)
-	}
-	cb("✓ DNS inbound (A, MX) & kebijakan outbound (SPF -all, DMARC) berhasil dibuat")
 
-	if mode == "vps" {
+	if zoneErr != nil || !edgeCfg.Configured || dnsIP == "" {
+		if mode != "local" {
+			if zoneErr != nil {
+				return fmt.Errorf("gagal menemukan zone DNS yang cocok untuk %s: %w", cleanDom, zoneErr)
+			}
+			return fmt.Errorf("IP publik VPS belum dikonfigurasi; atur VPS_PUBLIC_IP atau jalankan 'wdev pdns connect'")
+		}
+		cb(fmt.Sprintf("[2/4] PowerDNS / zone %s belum tersedia; lewati record PowerDNS (memakai /etc/hosts lokal).", cleanDom))
+	} else {
+		cb(fmt.Sprintf("[2/4] Membuat DNS Record di PowerDNS (Zone: %s, IP: %s)...", zone, dnsIP))
+
+		type dnsRec struct {
+			name        string
+			rtype       string
+			content     string
+			keep        bool
+			skipOnExist bool
+		}
+		records := []dnsRec{
+			{name: "mail." + cleanDom, rtype: "A", content: dnsIP},
+			{name: "mx." + cleanDom, rtype: "A", content: dnsIP},
+			{name: "webmail." + cleanDom, rtype: "A", content: dnsIP},
+			{name: "mailadmin." + cleanDom, rtype: "A", content: dnsIP},
+			{name: "@", rtype: "MX", content: "10 mail." + cleanDom + ".", skipOnExist: true},
+			{name: "@", rtype: "TXT", content: "\"v=spf1 -all\"", keep: true, skipOnExist: true},
+			{name: "_dmarc", rtype: "TXT", content: fmt.Sprintf("\"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s\"", cleanDom), skipOnExist: true},
+		}
+
+		var dnsFailed []string
+		for _, rec := range records {
+			existing, err := m.pdnsMgr.LookupRecords(zone, rec.name, rec.rtype)
+			if err != nil {
+				dnsFailed = append(dnsFailed, fmt.Sprintf("%s %s: %v", rec.rtype, rec.name, err))
+				cb(fmt.Sprintf("    gagal membaca record: %v", err))
+				continue
+			}
+			if rec.skipOnExist && len(existing) > 0 {
+				if rec.rtype == "TXT" && containsSPF(existing) {
+					cb(fmt.Sprintf(" -> %s %s: SPF sudah ada, tidak ditimpa", rec.rtype, rec.name))
+					continue
+				}
+				if !rec.keep && !recordContentExists(existing, rec.content) {
+					msg := fmt.Sprintf("%s %s sudah ada dan berbeda (%s); tidak ditimpa", rec.rtype, rec.name, strings.Join(existing, ", "))
+					if rec.rtype == "MX" {
+						dnsFailed = append(dnsFailed, msg)
+					}
+					cb(" -> " + msg)
+					continue
+				}
+			}
+			cb(fmt.Sprintf(" -> %s %s -> %s", rec.rtype, rec.name, rec.content))
+			var addErr error
+			if rec.keep {
+				addErr = m.pdnsMgr.AddRecordKeep(zone, rec.name, rec.rtype, rec.content, 300)
+			} else {
+				addErr = m.pdnsMgr.AddRecord(zone, rec.name, rec.rtype, rec.content, 300)
+			}
+			if addErr != nil {
+				dnsFailed = append(dnsFailed, fmt.Sprintf("%s %s: %v", rec.rtype, rec.name, addErr))
+				cb(fmt.Sprintf("    gagal: %v", addErr))
+			}
+		}
+		if len(dnsFailed) > 0 && mode != "local" {
+			return fmt.Errorf("DNS inbound gagal dibuat: %s", strings.Join(dnsFailed, "; "))
+		}
+		if mode != "local" {
+			if ptrName, ok := ptrMatches(m.pdnsMgr, dnsIP, "mail."+cleanDom); !ok {
+				cb(fmt.Sprintf(" ! PTR/rDNS IP %s belum/tidak cocok ke mail.%s (terbaca: %s). Set PTR di panel VPS.", dnsIP, cleanDom, ptrName))
+			} else {
+				cb(" ✓ PTR/rDNS VPS cocok dengan mail." + cleanDom)
+			}
+		}
+		cb("✓ DNS inbound (A, MX) & kebijakan outbound (SPF -all, DMARC) disinkronkan")
+	}
+
+	switch mode {
+	case "local":
+		cb("[3/4] Menyiapkan Virtual Host Nginx Lokal (Mode Lokal Standalone)...")
+		_ = m.ensureLocalMailFirewall()
+		_ = m.ensureWebmailFallbackVhost()
+		_ = m.ensureLocalMailVhost(cleanDom)
+		_ = reloadLocalNginx()
+		sslActive := false
+		if opts.SSL {
+			ok, sslErr := m.issueLocalMailSSLVhost(cleanDom)
+			if sslErr != nil {
+				cb(fmt.Sprintf("  ! Sertifikat SSL lokal gagal dibuat (%v); memakai HTTP", sslErr))
+			} else if ok {
+				sslActive = true
+				cb("  ✓ Sertifikat SSL lokal (mkcert/OpenSSL) + HTTPS vhost aktif!")
+			}
+		}
+		scheme := "http"
+		if sslActive {
+			scheme = "https"
+		}
+		adminURL := fmt.Sprintf("%s://mailadmin.%s", scheme, cleanDom)
+		webmailURL := fmt.Sprintf("%s://webmail.%s", scheme, cleanDom)
+		cb(fmt.Sprintf("  Panel Admin : %s", adminURL))
+		cb(fmt.Sprintf("  Webmail     : %s", webmailURL))
+		m.recordDomainState(cleanDom, sslActive, adminURL, webmailURL)
+
+	case "vps":
 		cb("[3/4] Menyiapkan Virtual Host Nginx Lokal untuk Full VPS...")
+		_ = m.ensureLocalMailFirewall()
 		_ = m.ensureLocalMailVhost(cleanDom)
 		_ = m.ensureWebmailFallbackVhost()
 		_ = reloadLocalNginx()
-		cb("✓ Gateway & Virtual Host Nginx lokal berhasil dikonfigurasi!")
-		adminURL := fmt.Sprintf("http://mailadmin.%s", cleanDom)
-		webmailURL := fmt.Sprintf("http://webmail.%s", cleanDom)
+		sslActive := false
 		if opts.SSL {
-			adminURL = fmt.Sprintf("https://mailadmin.%s", cleanDom)
-			webmailURL = fmt.Sprintf("https://webmail.%s", cleanDom)
+			sslActive = m.issueVPSLetsEncrypt(cleanDom, cb)
 		}
+		scheme := "http"
+		if sslActive {
+			scheme = "https"
+		}
+		adminURL := fmt.Sprintf("%s://mailadmin.%s", scheme, cleanDom)
+		webmailURL := fmt.Sprintf("%s://webmail.%s", scheme, cleanDom)
+		cb("✓ Gateway & Virtual Host Nginx lokal berhasil dikonfigurasi!")
 		cb(fmt.Sprintf("  Panel Admin : %s", adminURL))
 		cb(fmt.Sprintf("  Webmail     : %s", webmailURL))
-		m.recordDomainState(cleanDom, opts.SSL, adminURL, webmailURL)
-	} else {
-		// 3. Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Lokal via Edge Agent
+		m.recordDomainState(cleanDom, sslActive, adminURL, webmailURL)
+
+	default: // "edge"
 		cb("[3/4] Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Edge Agent...")
 		agentPayload := map[string]any{
 			"domain": cleanDom, "target_ip": localNB, "ssl": opts.SSL,
@@ -1535,7 +1885,7 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 		}
 	}
 
-	// 4. Konfigurasi relay outbound. Relay-only: tidak ada fallback direct.
+	// 4. Konfigurasi relay outbound.
 	switch {
 	case relayProv != "":
 		cb(fmt.Sprintf("Mengonfigurasi relay outbound (%s)...", relayProv))
@@ -1551,25 +1901,37 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 		}
 	default:
 		if _, err := m.ensureDefaultRelay(adminUser, adminPass); err != nil {
-			return fmt.Errorf("relay default tidak siap: %w", err)
-		}
-		cb(" ✓ Domain memakai relay default yang sudah ada")
-		if cred, ok := m.loadGlobalRelayCred(); ok {
-			for _, line := range relayDNSPlan(cred.Provider, cleanDom) {
-				cb("   " + line)
+			if mode == "local" {
+				cb(" [INFO] Mode Lokal: belum ada relay outbound; email tetap berjalan lokal atau konfigurasi relay nanti di tab Relay")
+			} else {
+				return fmt.Errorf("relay default tidak siap: %w", err)
+			}
+		} else {
+			cb(" ✓ Domain memakai relay default yang sudah ada")
+			if cred, ok := m.loadGlobalRelayCred(); ok {
+				for _, line := range relayDNSPlan(cred.Provider, cleanDom) {
+					cb("   " + line)
+				}
 			}
 		}
 	}
 
+	modeBanner := "HYBRID EDGE"
+	switch mode {
+	case "local":
+		modeBanner = "LOKAL STANDALONE"
+	case "vps":
+		modeBanner = "VPS STANDALONE"
+	}
 	cb("================================================================================")
-	cb("✓ EMAIL SERVER & WEBMAIL (HYBRID LOCAL STORAGE) BERHASIL AKTIF!")
+	cb(fmt.Sprintf("✓ EMAIL SERVER & WEBMAIL (%s) BERHASIL AKTIF!", modeBanner))
 	cb("================================================================================")
 	cb(fmt.Sprintf("  Domain Email        : %s", cleanDom))
-	cb(fmt.Sprintf("  Webmail Klien : %s", m.webmailURL(cleanDom)))
-	cb(fmt.Sprintf(" Panel Admin (WebUI) : %s", m.adminURL(cleanDom)))
+	cb(fmt.Sprintf("  Webmail Klien       : %s", m.webmailURL(cleanDom)))
+	cb(fmt.Sprintf("  Panel Admin (WebUI) : %s", m.adminURL(cleanDom)))
 	if adminUser != "" && adminPass != "" {
 		cb(fmt.Sprintf("  Username Admin      : %s", adminUser))
-		cb(" Password Admin : tersimpan di /etc/wdev/mail-admin.cred (jalankan: wdev mail admin-cred <domain>)")
+		cb("  Password Admin      : tersimpan di /etc/wdev/mail-admin.cred (jalankan: wdev mail admin-cred <domain>)")
 	}
 	return nil
 }

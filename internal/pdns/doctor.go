@@ -94,8 +94,12 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 	conf := m.LoadConfig()
 	if !conf.Configured || conf.VPSNetbirdIP == "" {
 		report.OK = false
-		report.add("Edge Gateway", CheckFail, "VPS Edge Gateway belum dikonfigurasi")
-		return report, fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+		msg := "VPS Edge Gateway belum dikonfigurasi"
+		if conf.Mode != "edge" {
+			msg = "PowerDNS lokal belum terpasang atau belum dikonfigurasi (jalankan: wdev install pdns)"
+		}
+		report.add("PowerDNS API", CheckFail, msg)
+		return report, fmt.Errorf("%s", msg)
 	}
 
 	info, err := m.GetZone(zone)
@@ -166,35 +170,39 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	res := publicResolver()
-
-	publicNS, err := res.LookupNS(ctx, zone)
-	if err != nil {
-		report.add("Delegasi publik (NS)", CheckWarn, "belum terbaca dari 1.1.1.1: "+err.Error())
+	if conf.Mode == "local" {
+		report.add("Delegasi publik (NS)", CheckOK, "mode lokal standalone: delegasi registrar publik tidak wajib")
 	} else {
-		got := make([]string, 0, len(publicNS))
-		for _, ns := range publicNS {
-			got = append(got, ns.Host)
-		}
-		if sameSet(nameserverSet(got), expected) {
-			report.add("Delegasi publik (NS)", CheckOK, "registrar sudah mengarah ke ns1/ns2")
-		} else {
-			report.add("Delegasi publik (NS)", CheckWarn, fmt.Sprintf("diharapkan %s, terbaca %s (propagasi/registrar)", formatSet(expected), formatSet(nameserverSet(got))))
-		}
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		res := publicResolver()
 
-	for _, host := range report.Nameservers {
-		ips, err := res.LookupIP(ctx, "ip4", host)
-		if err != nil || len(ips) == 0 {
-			report.add("Glue publik "+host, CheckWarn, "belum resolve dari publik")
-			continue
+		publicNS, err := res.LookupNS(ctx, zone)
+		if err != nil {
+			report.add("Delegasi publik (NS)", CheckWarn, "belum terbaca dari 1.1.1.1: "+err.Error())
+		} else {
+			got := make([]string, 0, len(publicNS))
+			for _, ns := range publicNS {
+				got = append(got, ns.Host)
+			}
+			if sameSet(nameserverSet(got), expected) {
+				report.add("Delegasi publik (NS)", CheckOK, "registrar sudah mengarah ke ns1/ns2")
+			} else {
+				report.add("Delegasi publik (NS)", CheckWarn, fmt.Sprintf("diharapkan %s, terbaca %s (propagasi/registrar)", formatSet(expected), formatSet(nameserverSet(got))))
+			}
 		}
-		if publicIP != "" && ips[0].String() == publicIP {
-			report.add("Glue publik "+host, CheckOK, ips[0].String())
-		} else if publicIP != "" {
-			report.add("Glue publik "+host, CheckWarn, fmt.Sprintf("terbaca %s, diharapkan %s", ips[0], publicIP))
+
+		for _, host := range report.Nameservers {
+			ips, err := res.LookupIP(ctx, "ip4", host)
+			if err != nil || len(ips) == 0 {
+				report.add("Glue publik "+host, CheckWarn, "belum resolve dari publik")
+				continue
+			}
+			if publicIP != "" && ips[0].String() == publicIP {
+				report.add("Glue publik "+host, CheckOK, ips[0].String())
+			} else if publicIP != "" {
+				report.add("Glue publik "+host, CheckWarn, fmt.Sprintf("terbaca %s, diharapkan %s", ips[0], publicIP))
+			}
 		}
 	}
 

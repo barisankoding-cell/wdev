@@ -125,8 +125,10 @@ export interface TunnelStatus {
 	exposures: Exposure[];
 }
 
+export type ServerMode = 'local' | 'edge' | 'vps';
+
 export interface ModeResponse {
-	mode: 'vps' | 'edge';
+	mode: ServerMode;
 	is_set: boolean;
 	public_ip: string;
 	netbird_ip: string;
@@ -135,6 +137,7 @@ export interface ModeResponse {
 }
 
 export interface EdgeConfig {
+	mode?: ServerMode;
 	configured: boolean;
 	vps_netbird_ip: string;
 	vps_public_ip: string;
@@ -143,7 +146,6 @@ export interface EdgeConfig {
 	agent_port: string;
 	local_netbird_ip: string;
 	reachable: boolean;
-	mode?: 'vps' | 'edge';
 	mode_is_set?: boolean;
 	has_local_pdns?: boolean;
 }
@@ -238,6 +240,7 @@ export interface RelayConfig {
 }
 
 export interface MailStatus {
+	mode?: ServerMode;
 	stalwart_active: boolean;
 	snappymail_active: boolean;
 	relay_only: boolean;
@@ -267,6 +270,8 @@ export interface DomainAccounts {
 }
 
 export interface PreflightStatus {
+	mode?: ServerMode;
+	local_pdns?: boolean;
 	domain: string;
 	stalwart_binary: boolean;
 	stalwart_cli: boolean;

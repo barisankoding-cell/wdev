@@ -13,15 +13,24 @@ import (
 // InstallMailStack memasang Stalwart Mail Server, stalwart-cli, dan SnappyMail
 // tanpa skrip shell. Setup domain (DNS, relay, vhost) dijalankan terpisah oleh
 // `wdev mail` / Web UI setelah komponen ini terpasang.
+func hasPHPFPMBinary() bool {
+	if findTool("php-fpm") != "" {
+		return true
+	}
+	matches, _ := filepath.Glob("/usr/sbin/php-fpm*")
+	return len(matches) > 0
+}
+
 func (inst *Installer) InstallMailStack(ctx context.Context, cb LogCallback) error {
 	cb("=== Memasang Mail Stack (Stalwart + SnappyMail) ===")
 	// Prasyarat: nginx (vhost/webmail/admin) dan PHP-FPM (SnappyMail).
-	if _, err := exec.LookPath("nginx"); err != nil {
+	_, sbinErr := os.Stat("/usr/sbin/nginx")
+	if findTool("nginx") == "" && sbinErr != nil {
 		if err := inst.InstallNginx(ctx, cb); err != nil {
 			cb(fmt.Sprintf("[WARN] Nginx gagal dipasang: %v", err))
 		}
 	}
-	if _, err := exec.LookPath("php-fpm"); err != nil {
+	if !hasPHPFPMBinary() {
 		if err := inst.InstallPHP(ctx, cb, "8.4"); err != nil {
 			cb(fmt.Sprintf("[WARN] PHP-FPM gagal dipasang: %v", err))
 		}
@@ -108,9 +117,9 @@ func (inst *Installer) installStalwart(ctx context.Context, cb LogCallback) erro
 		}
 	}
 	if _, err := os.Stat("/etc/stalwart/stalwart.env"); err != nil {
-		_ = os.WriteFile("/etc/stalwart/stalwart.env", []byte("# Stalwart environment (dikelola wdev)\n"), 0640)
+		_ = inst.writeSystemFile(ctx, cb, "/etc/stalwart/stalwart.env", []byte("# Stalwart environment (dikelola wdev)\n"), "0640")
 	}
-	_, _ = inst.runCmdOutput(ctx, "chown", "-R", "stalwart:stalwart", "/etc/stalwart", "/var/lib/stalwart", "/var/log/stalwart")
+	_ = inst.runCmd(ctx, cb, "chown", "-R", "stalwart:stalwart", "/etc/stalwart", "/var/lib/stalwart", "/var/log/stalwart")
 
 	unitPath := "/etc/systemd/system/stalwart.service"
 	if _, err := os.Stat(unitPath); err != nil {
@@ -139,10 +148,10 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 `
-		if err := os.WriteFile(unitPath, []byte(unit), 0644); err != nil {
+		if err := inst.writeSystemFile(ctx, cb, unitPath, []byte(unit), "0644"); err != nil {
 			return err
 		}
-		_, _ = inst.runCmdOutput(ctx, "systemctl", "daemon-reload")
+		_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
 	}
 	if err := inst.runCmd(ctx, cb, "systemctl", "enable", "stalwart"); err != nil {
 		cb(fmt.Sprintf("[WARN] gagal enable stalwart: %v", err))
@@ -243,10 +252,14 @@ func (inst *Installer) installSnappyMail(ctx context.Context, cb LogCallback) er
 	if err := inst.runCmd(ctx, cb, "cp", "-a", root+"/.", dst+"/"); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(dst, "data"), 0755); err != nil {
+	if err := inst.runCmd(ctx, cb, "mkdir", "-p", filepath.Join(dst, "data")); err != nil {
 		return err
 	}
-	_ = inst.runCmd(ctx, cb, "chown", "-R", "www-data:www-data", dst)
+	webOwner := "www-data:www-data"
+	if data, err := os.ReadFile("/etc/passwd"); err == nil && !strings.Contains(string(data), "www-data:") && strings.Contains(string(data), "nginx:") {
+		webOwner = "nginx:nginx"
+	}
+	_ = inst.runCmd(ctx, cb, "chown", "-R", webOwner, dst)
 	cb("✓ SnappyMail terpasang di " + dst)
 	return nil
 }

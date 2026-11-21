@@ -172,8 +172,9 @@
 				},
 				{
 					component: 'pdns',
-					label: 'PowerDNS Edge Check',
-					description: 'Verifikasi status gateway DNS dan node VPS edge.'
+					label: 'PowerDNS Authoritative Server',
+					description:
+						'Server DNS authoritative mandiri (SQLite3 + API lokal 127.0.0.1:8081) tanpa NetBird.'
 				},
 				{
 					component: 'zsh',
@@ -197,6 +198,22 @@
 	];
 
 	const installPresets: InstallPreset[] = [
+		{
+			id: 'hosting-complete',
+			title: 'Hosting Lengkap (Web + DB + DNS + Mail)',
+			badge: 'Standalone Penuh',
+			description:
+				'Web stack Nginx/PHP, PostgreSQL, Redis, PowerDNS Authoritative, dan Mail Server standalone tanpa NetBird.',
+			components: ['base', 'nginx', 'php', 'composer', 'ssl', 'postgres', 'redis', 'pdns', 'mail']
+		},
+		{
+			id: 'dns-mail',
+			title: 'DNS & Mail Server Standalone',
+			badge: 'PowerDNS + Mail',
+			description:
+				'Pasang PowerDNS Authoritative lokal dan Mail Server (Stalwart + SnappyMail) secara mandiri tanpa NetBird.',
+			components: ['base', 'pdns', 'mail']
+		},
 		{
 			id: 'hosting',
 			title: 'Hanya Hosting (Web + DB)',

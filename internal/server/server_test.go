@@ -182,6 +182,13 @@ func TestResolveInstallTaskNetbirdIndependent(t *testing.T) {
 	if !ok || mailFn == nil || mailName == "" {
 		t.Fatalf("expected mail component to resolve to an install task")
 	}
+
+	for _, comp := range []string{"pdns", "powerdns"} {
+		pdnsName, pdnsFn, ok := srv.resolveInstallTask(comp, "")
+		if !ok || pdnsFn == nil || pdnsName != "PowerDNS Authoritative Server" {
+			t.Fatalf("expected %q to resolve to PowerDNS Authoritative Server, got (%q, %v)", comp, pdnsName, ok)
+		}
+	}
 }
 
 func TestBatchInstallValidationAndOrdering(t *testing.T) {
@@ -214,13 +221,24 @@ func TestBatchInstallValidationAndOrdering(t *testing.T) {
 		}
 	}
 
-	// 2. Non-privileged only batch must not force sudo
+	// 2. Non-privileged only batch must not force sudo, while pdns requires sudo & runs before mail
 	nonPrivSteps, nonPrivSudo, errMsg := srv.resolveInstallSteps([]installItemPayload{
-		{Component: "pdns"},
+		{Component: "check-updates"},
 		{Component: "cf-doctor"},
 	})
 	if errMsg != "" || len(nonPrivSteps) != 2 || nonPrivSudo {
 		t.Fatalf("unexpected non-priv batch result: steps=%d sudo=%v err=%q", len(nonPrivSteps), nonPrivSudo, errMsg)
+	}
+
+	dnsMailSteps, dnsMailSudo, errMsg := srv.resolveInstallSteps([]installItemPayload{
+		{Component: "mail"},
+		{Component: "powerdns"},
+	})
+	if errMsg != "" || !dnsMailSudo || len(dnsMailSteps) != 2 {
+		t.Fatalf("expected pdns+mail batch to require sudo, got steps=%d sudo=%v err=%q", len(dnsMailSteps), dnsMailSudo, errMsg)
+	}
+	if dnsMailSteps[0].canonical != "pdns" || dnsMailSteps[1].canonical != "mail" {
+		t.Fatalf("expected pdns ordered before mail, got %s then %s", dnsMailSteps[0].canonical, dnsMailSteps[1].canonical)
 	}
 
 	// 3. Batch label dan single-item label fallback
@@ -445,5 +463,41 @@ func TestSecurityHardeningMiddlewaresAndEndpoints(t *testing.T) {
 	handler.ServeHTTP(recZsh, reqZsh)
 	if recZsh.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for malicious zsh theme, got %d (%s)", recZsh.Code, recZsh.Body.String())
+	}
+}
+
+func TestHandleModeSupportsLocalEdgeVPS(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "wdev.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: dir}
+	pdnsMgr := pdns.New(cfg, db)
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), inst, nil, nil, nil, pdnsMgr, nil, authMgr)
+
+	for _, tc := range []struct {
+		in   string
+		want string
+		code int
+	}{
+		{"local", "local", http.StatusOK},
+		{"edge", "edge", http.StatusOK},
+		{"vps", "vps", http.StatusOK},
+		{"invalid", "", http.StatusBadRequest},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"`+tc.in+`"}`))
+		rec := httptest.NewRecorder()
+		srv.handleMode(rec, req)
+		if rec.Code != tc.code {
+			t.Fatalf("POST /api/mode (%s) code = %d, want %d (body=%s)", tc.in, rec.Code, tc.code, rec.Body.String())
+		}
+		if tc.want != "" && pdnsMgr.GetMode() != tc.want {
+			t.Fatalf("after POST %s, GetMode() = %q, want %q", tc.in, pdnsMgr.GetMode(), tc.want)
+		}
 	}
 }

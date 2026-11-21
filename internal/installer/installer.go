@@ -109,8 +109,14 @@ func needsSudo(name string, args ...string) bool {
 		return true
 	}
 	switch base {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot":
 		return true
+	case "sqlite3":
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "/var") || strings.HasPrefix(arg, "/etc") {
+				return true
+			}
+		}
 	case "cp", "mv", "rm", "rmdir", "mkdir", "chmod", "chown", "tar", "ln", "tee", "unzip", "install":
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "/usr/local") ||
@@ -1924,7 +1930,7 @@ func (inst *Installer) RunSelfCheck(ctx context.Context, cb LogCallback) error {
 		}
 	}
 
-	bins := []string{"git", "curl", "node", "npm", "go", "rustc", "cargo", "mold", "java", "flutter", "psql", "redis-cli", "nginx", "php", "composer", "mkcert", "zsh", "cloudflared", "netbird", "orca"}
+	bins := []string{"git", "curl", "node", "npm", "go", "rustc", "cargo", "mold", "java", "flutter", "psql", "redis-cli", "nginx", "php", "composer", "mkcert", "zsh", "cloudflared", "netbird", "orca", "pdns_server", "stalwart", "stalwart-cli"}
 	for _, b := range bins {
 		checkBin(b)
 	}

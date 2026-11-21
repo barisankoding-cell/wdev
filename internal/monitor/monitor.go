@@ -1204,7 +1204,7 @@ func getPDNSServiceStatus() ServiceStatus {
 		}
 	}
 
-	// 2. Check Edge VPS Gateway via NetBird
+	// 2. Check configured PowerDNS API (loopback local atau Edge VPS via NetBird)
 	vpsIP, apiKey, port := loadEdgeDNSConf()
 	if vpsIP != "" {
 		if port == "" {
@@ -1226,28 +1226,18 @@ func getPDNSServiceStatus() ServiceStatus {
 					if verStr != "" && !strings.HasPrefix(verStr, "v") {
 						verStr = "v" + verStr
 					}
-					return ServiceStatus{
-						Name:        "pdns",
-						DisplayName: "PowerDNS Authoritative (VPS Edge)",
-						Category:    "DNS & Mail",
-						Active:      true,
-						StatusText:  "Online",
-						Version:     verStr,
-						Port:        fmt.Sprintf("NetBird %s:%s", vpsIP, port),
-						IsRemote:    true,
+					if verStr == "" && isLoopbackHost(vpsIP) {
+						verStr = getLocalPDNSVersion()
 					}
+					return buildPDNSStatusFromEdgeConf(vpsIP, port, verStr, true)
 				}
 			}
 		}
-		return ServiceStatus{
-			Name:        "pdns",
-			DisplayName: "PowerDNS Authoritative (VPS Edge)",
-			Category:    "DNS & Mail",
-			Active:      false,
-			StatusText:  "Unreachable (VPS Offline)",
-			Port:        fmt.Sprintf("NetBird %s:%s", vpsIP, port),
-			IsRemote:    true,
+		ver := ""
+		if isLoopbackHost(vpsIP) {
+			ver = getLocalPDNSVersion()
 		}
+		return buildPDNSStatusFromEdgeConf(vpsIP, port, ver, false)
 	}
 
 	return ServiceStatus{
@@ -1259,6 +1249,58 @@ func getPDNSServiceStatus() ServiceStatus {
 		Version:     getLocalPDNSVersion(),
 		Port:        "53, 8081",
 		IsRemote:    false,
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildPDNSStatusFromEdgeConf(vpsIP, port, version string, reachable bool) ServiceStatus {
+	if port == "" {
+		port = "8081"
+	}
+	if isLoopbackHost(vpsIP) {
+		stText := "Stopped (Local)"
+		if reachable {
+			stText = "Running (Local API)"
+		}
+		return ServiceStatus{
+			Name:        "pdns",
+			DisplayName: "PowerDNS Authoritative",
+			Category:    "DNS & Mail",
+			Active:      reachable,
+			StatusText:  stText,
+			Version:     version,
+			Port:        "53, " + port,
+			IsRemote:    false,
+		}
+	}
+	if reachable {
+		return ServiceStatus{
+			Name:        "pdns",
+			DisplayName: "PowerDNS Authoritative (VPS Edge)",
+			Category:    "DNS & Mail",
+			Active:      true,
+			StatusText:  "Online",
+			Version:     version,
+			Port:        fmt.Sprintf("NetBird %s:%s", vpsIP, port),
+			IsRemote:    true,
+		}
+	}
+	return ServiceStatus{
+		Name:        "pdns",
+		DisplayName: "PowerDNS Authoritative (VPS Edge)",
+		Category:    "DNS & Mail",
+		Active:      false,
+		StatusText:  "Unreachable (VPS Offline)",
+		Port:        fmt.Sprintf("NetBird %s:%s", vpsIP, port),
+		IsRemote:    true,
 	}
 }
 
@@ -1414,7 +1456,7 @@ func ControlService(serviceName, action string) error {
 
 	if serviceName == "pdns" && !isSystemdServiceActive("pdns") {
 		vpsIP, apiKey, port := loadEdgeDNSConf()
-		if vpsIP != "" {
+		if vpsIP != "" && !isLoopbackHost(vpsIP) {
 			client := http.Client{Timeout: 2 * time.Second}
 			req, err := http.NewRequest("GET", fmt.Sprintf("http://%s:%s/api/v1/servers/localhost", vpsIP, port), nil)
 			if err == nil {

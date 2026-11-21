@@ -87,8 +87,19 @@ func (m *Manager) RepairZone(domain string) (ZoneDoctorReport, error) {
 		return report, err
 	}
 	conf := m.LoadConfig()
-	if conf.VPSPublicIP == "" {
-		return report, fmt.Errorf("IP publik VPS belum tercatat; jalankan 'wdev pdns connect'")
+	targetIP := strings.TrimSpace(conf.VPSPublicIP)
+	if targetIP == "" {
+		switch conf.Mode {
+		case "local":
+			targetIP = DetectLocalLANIP()
+			if targetIP == "" {
+				targetIP = "127.0.0.1"
+			}
+		case "vps":
+			targetIP = "127.0.0.1"
+		default:
+			return report, fmt.Errorf("IP publik VPS belum tercatat; jalankan 'wdev pdns connect'")
+		}
 	}
 
 	info, err := m.GetZone(zone)
@@ -123,10 +134,10 @@ func (m *Manager) RepairZone(domain string) (ZoneDoctorReport, error) {
 	if err := m.patchRecords(zone, "@", "NS", []string{ns1 + ".", ns2 + "."}, 3600); err != nil {
 		return report, fmt.Errorf("gagal memperbaiki NS: %w", err)
 	}
-	if err := m.patchRecords(zone, ns1, "A", []string{conf.VPSPublicIP}, 300); err != nil {
+	if err := m.patchRecords(zone, ns1, "A", []string{targetIP}, 300); err != nil {
 		return report, fmt.Errorf("gagal memperbaiki glue %s: %w", ns1, err)
 	}
-	if err := m.patchRecords(zone, ns2, "A", []string{conf.VPSPublicIP}, 300); err != nil {
+	if err := m.patchRecords(zone, ns2, "A", []string{targetIP}, 300); err != nil {
 		return report, fmt.Errorf("gagal memperbaiki glue %s: %w", ns2, err)
 	}
 	if err := m.setZoneMetadata(zone, "SOA-EDIT", []string{"INCEPTION-INCREMENT"}); err != nil {

@@ -21,6 +21,7 @@
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import NetworkIcon from '@lucide/svelte/icons/network';
+	import LaptopIcon from '@lucide/svelte/icons/laptop';
 
 	const PAGE_TITLES = $derived<Record<string, string>>({
 		'/': 'Status & Pembaruan Sistem',
@@ -28,9 +29,13 @@
 		'/switchers': 'Pengelola Multi-Versi Runtime',
 		'/toolchains': 'Toolchains, Compilers & SDKs',
 		'/workspace': 'Workspace, ADE & Shell',
-		'/powerdns': modeStore.mode === 'vps' ? 'Domain & DNS Manager' : 'PowerDNS & VPS Edge Gateway',
+		'/powerdns':
+			modeStore.mode === 'edge' ? 'PowerDNS & VPS Edge Gateway' : 'Domain & DNS Manager',
 		'/cloudflare': 'Cloudflare Tunnel & DNS',
-		'/mail': modeStore.mode === 'vps' ? 'Mail Server' : 'Mail Server & Outbound Relay',
+		'/mail':
+			modeStore.mode === 'edge'
+				? 'Mail Server & Outbound Relay'
+				: 'Mail Server Standalone',
 		'/setup': 'Instalasi, Modular & Riwayat Tugas'
 	});
 
@@ -64,6 +69,10 @@
 				<ServerIcon class="size-3.5 text-primary" />
 				<span class="hidden sm:inline">Mode:</span>
 				<span class="font-semibold text-primary">Full VPS</span>
+			{:else if modeStore.mode === 'local'}
+				<LaptopIcon class="size-3.5 text-primary" />
+				<span class="hidden sm:inline">Mode:</span>
+				<span class="font-semibold text-primary">Lokal</span>
 			{:else}
 				<NetworkIcon class="size-3.5 text-primary" />
 				<span class="hidden sm:inline">Mode:</span>

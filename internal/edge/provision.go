@@ -313,10 +313,19 @@ func Provision(ctx context.Context, cb func(string), opts ProvisionOptions) erro
 	}
 
 	// 6.1/6.2 mail cleanup + postfix alignment.
-	// Jangan mematikan mail stack lokal bila mesin ini juga menjalankan wdev mail.
+	// Jangan mematikan mail stack lokal bila mesin ini juga menjalankan wdev mail
+	// atau sudah memasang Stalwart/SnappyMail.
 	localMailHost := false
-	if _, err := os.Stat("/etc/wdev/mail-admin.cred"); err == nil {
-		localMailHost = true
+	for _, p := range []string{
+		"/etc/wdev/mail-admin.cred",
+		"/etc/stalwart/stalwart.toml",
+		"/usr/local/bin/stalwart",
+		"/var/www/snappymail",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			localMailHost = true
+			break
+		}
 	}
 	if !localMailHost {
 		if exec.Command("systemctl", "cat", "stalwart.service").Run() == nil {

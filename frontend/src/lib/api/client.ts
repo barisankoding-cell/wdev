@@ -22,6 +22,7 @@ import type {
 	RedisInspectResult,
 	RelayDNSReport,
 	RRSet,
+	ServerMode,
 	ServiceConfigKey,
 	SetRelayPayload,
 	SetupMailPayload,
@@ -360,9 +361,9 @@ export const api = {
 			body: JSON.stringify(payload)
 		}),
 
-	// Server Mode (aaPanel Full VPS vs Hybrid Edge)
+	// Server Mode (Lokal Standalone vs Hybrid Edge vs aaPanel Full VPS)
 	getMode: () => apiFetch<ModeResponse>('/api/mode'),
-	setMode: (mode: 'vps' | 'edge') =>
+	setMode: (mode: ServerMode) =>
 		apiFetch<{ status: string; mode: string; message: string }>('/api/mode', {
 			method: 'POST',
 			body: JSON.stringify({ mode })

@@ -40,21 +40,21 @@
 				{ label: 'Workspace & ADE', href: '/workspace', icon: MonitorIcon }
 			]
 		},
-		modeStore.mode === 'vps'
+		modeStore.mode === 'edge'
 			? {
-					title: 'Domain, DNS & Mail',
-					items: [
-						{ label: 'Domain & DNS Manager', href: '/powerdns', icon: GlobeIcon },
-						{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
-						{ label: 'Mail Server', href: '/mail', icon: MailIcon }
-					]
-			  }
-			: {
 					title: 'Jaringan & Edge Gateway',
 					items: [
 						{ label: 'PowerDNS & Edge', href: '/powerdns', icon: NetworkIcon },
 						{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
 						{ label: 'Mail Server & Relay', href: '/mail', icon: MailIcon }
+					]
+			  }
+			: {
+					title: 'Domain, DNS & Mail',
+					items: [
+						{ label: 'Domain & DNS Manager', href: '/powerdns', icon: GlobeIcon },
+						{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
+						{ label: 'Mail Server', href: '/mail', icon: MailIcon }
 					]
 			  },
 		{

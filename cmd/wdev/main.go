@@ -48,9 +48,9 @@ PANEL & KEAMANAN (AAPANEL SECURITY STYLE):
   wdev panel auth <on|off>  Aktifkan / nonaktifkan proteksi login
   wdev panel reset          Reset kredensial & security entrance ke nilai acak baru
 
-MODE SERVER (DUAL MODE ARCHITECTURE):
-  wdev mode                 Tampilkan mode aktif server saat ini
-  wdev mode set <vps|edge>  Ganti mode: vps (aaPanel Style) atau edge (Hybrid Gateway)
+MODE SERVER (3-MODE ARCHITECTURE):
+  wdev mode                     Tampilkan mode aktif server saat ini
+  wdev mode set <local|edge|vps> Ganti mode: local (Lokal Standalone), edge (Hybrid NetBird), vps (aaPanel Style)
 
 MANAJEMEN LAYANAN & SYSTEMD:
   wdev status, wdev check              Tampilkan status cepat sistem, IP, dan layanan inti
@@ -1002,6 +1002,7 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Println("=== Status Mail Server & Relay ===")
+			fmt.Printf("Mode Server:          %s\n", strings.ToUpper(st.Mode))
 			fmt.Printf("Stalwart Mail Server: %v\n", st.StalwartActive)
 			fmt.Printf("SnappyMail Webmail:   %v\n", st.SnappyMailActive)
 			fmt.Printf("Free Storage:         %s\n", st.StorageFree)
@@ -1367,10 +1368,8 @@ func main() {
 			taskName = "Mail Stack (Stalwart + SnappyMail)"
 			fn = inst.InstallMailStack
 		case "pdns", "powerdns":
-			taskName = "PowerDNS Authoritative & Edge Gateway"
-			fn = func(ctx context.Context, cb func(string)) error {
-				return edge.Provision(ctx, cb, edge.ProvisionOptions{})
-			}
+			taskName = "PowerDNS Authoritative Server"
+			fn = inst.InstallPowerDNS
 		case "cloudflare":
 			taskName = "Cloudflare Tunnel (cloudflared)"
 			fn = inst.InstallCloudflared
@@ -1585,21 +1584,23 @@ func main() {
 			if isSet {
 				fmt.Println("  Status Konfigurasi   : Dikonfigurasi eksplisit oleh admin")
 			} else {
-				fmt.Println("  Status Konfigurasi   : Terdeteksi otomatis (default)")
+				fmt.Println("  Status Konfigurasi   : Terdeteksi otomatis")
 			}
 			fmt.Println("==================================================================")
 			fmt.Println("Pilihan Mode:")
-			fmt.Println("  1. vps  (Full VPS / Standalone - aaPanel Style)")
-			fmt.Println("     - PowerDNS berjalan lokal di VPS ini (127.0.0.1:8081 & port 53 UDP/TCP).")
-			fmt.Println("     - Mail server dan SnappyMail langsung melayani publik tanpa NetBird mesh.")
-			fmt.Println("     - Cocok untuk: Cloud VPS / Dedicated Server / Production Server.")
-			fmt.Println("  2. edge (Edge Gateway - Hybrid Mode)")
+			fmt.Println("  1. local (Lokal Standalone - Tanpa NetBird / Edge Gateway)")
+			fmt.Println("     - PowerDNS lokal (127.0.0.1:8081) & Mail Server memakai /etc/hosts / LAN.")
+			fmt.Println("     - SSL lokal via mkcert / self-signed; relay outbound opsional.")
+			fmt.Println("  2. edge  (Edge Gateway - Hybrid Mode via NetBird)")
 			fmt.Println("     - PC Developer lokal terhubung ke VPS Edge Gateway via NetBird VPN mesh.")
-			fmt.Println("     - VHost dan data mail lokal diekspos melalui reverse proxy VPS.")
-			fmt.Println("     - Cocok untuk: Workstation lokal / Home lab di balik NAT.")
+			fmt.Println("     - VHost, DNS & inbound mail diekspos lewat reverse proxy VPS.")
+			fmt.Println("  3. vps   (Full VPS / Standalone - aaPanel Style)")
+			fmt.Println("     - PowerDNS & Mail Server berjalan langsung di VPS publik tanpa NetBird.")
+			fmt.Println("     - SSL publik Let's Encrypt otomatis via certbot.")
 			fmt.Println("\nUntuk mengubah mode:")
-			fmt.Println("  wdev mode set vps   -> Beralih ke Full VPS (aaPanel Style)")
+			fmt.Println("  wdev mode set local -> Beralih ke Mode Lokal Standalone")
 			fmt.Println("  wdev mode set edge  -> Beralih ke Edge Gateway (Hybrid)")
+			fmt.Println("  wdev mode set vps   -> Beralih ke Full VPS (aaPanel Style)")
 			fmt.Println("==================================================================")
 			return
 		}
@@ -1612,12 +1613,12 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Jalankan dengan 'sudo wdev mode set ...' agar perubahan tersimpan ke service utama.")
 			}
 			if len(args) < 3 {
-				fmt.Println("Penggunaan: wdev mode set <vps|edge>")
+				fmt.Println("Penggunaan: wdev mode set <local|edge|vps>")
 				os.Exit(1)
 			}
-			targetMode := strings.ToLower(strings.TrimSpace(args[2]))
-			if targetMode != "vps" && targetMode != "edge" {
-				fmt.Println("Mode tidak valid! Gunakan 'vps' atau 'edge'.")
+			targetMode, ok := pdns.NormalizeMode(args[2])
+			if !ok {
+				fmt.Println("Mode tidak valid! Gunakan 'local', 'edge', atau 'vps'.")
 				os.Exit(1)
 			}
 			if err := pdnsMgr.SetMode(targetMode); err != nil {
@@ -1625,15 +1626,19 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Printf("✓ Mode server berhasil diubah ke: %s\n", strings.ToUpper(targetMode))
-			if targetMode == "vps" {
+			switch targetMode {
+			case "local":
+				fmt.Println("  Panel sekarang beroperasi dalam Mode Lokal Standalone (tanpa NetBird).")
+				fmt.Println("  Pasang PowerDNS lokal bila diperlukan: 'wdev install pdns'.")
+			case "vps":
 				fmt.Println("  Panel sekarang beroperasi sebagai Standalone VPS (aaPanel style).")
 				fmt.Println("  Pastikan PowerDNS terpasang: 'wdev install pdns'.")
-			} else {
+			default:
 				fmt.Println("  Panel sekarang beroperasi sebagai Edge Gateway (Hybrid).")
 				fmt.Println("  Hubungkan VPS dengan: 'wdev pdns connect'.")
 			}
 		default:
-			fmt.Println("Penggunaan: wdev mode [get|set <vps|edge>]")
+			fmt.Println("Penggunaan: wdev mode [get|set <local|edge|vps>]")
 		}
 
 	case "-v", "--version", "version":

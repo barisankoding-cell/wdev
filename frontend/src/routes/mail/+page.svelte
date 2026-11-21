@@ -479,6 +479,11 @@
 				<p class="text-sm text-muted-foreground">
 					Mail Server Stalwart standalone &amp; Webmail SnappyMail langsung melayani publik (aaPanel Style).
 				</p>
+			{:else if modeStore.mode === 'local'}
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server Standalone (Lokal)</h1>
+				<p class="text-sm text-muted-foreground">
+					Stalwart Mail Server &amp; Webmail SnappyMail mandiri tanpa NetBird via /etc/hosts atau PowerDNS lokal.
+				</p>
 			{:else}
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server &amp; Outbound SMTP Relay</h1>
 				<p class="text-sm text-muted-foreground">
@@ -508,7 +513,11 @@
 			<Alert.Title>Setup Domain &amp; Mail Server</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<span>
-					Inisialisasi engine Stalwart Mail Server lokal, Webmail SnappyMail, record DNS (MX, SPF, DMARC), dan SSL Let's Encrypt.
+					{#if modeStore.mode === 'local'}
+						Inisialisasi engine Stalwart lokal, Webmail SnappyMail, entri /etc/hosts, serta SSL lokal (mkcert/OpenSSL) tanpa NetBird.
+					{:else}
+						Inisialisasi engine Stalwart Mail Server, Webmail SnappyMail, record DNS (MX, SPF, DMARC), dan SSL Let's Encrypt.
+					{/if}
 				</span>
 				<Button size="xs" onclick={openSetupModal}>Mulai Setup Domain</Button>
 			</Alert.Description>
@@ -1046,7 +1055,9 @@
 			<Dialog.Title>Setup Domain &amp; Mail Server Baru</Dialog.Title>
 			<Dialog.Description>
 				{#if modeStore.mode === 'vps'}
-					Mengonfigurasi otomatis Stalwart Mail Server, SnappyMail, DNS record (A, MX, SPF, DMARC) di PowerDNS lokal, serta vhost Nginx.
+					Mengonfigurasi otomatis Stalwart Mail Server, SnappyMail, DNS record (A, MX, SPF, DMARC) di PowerDNS lokal, Nginx, dan SSL Let's Encrypt.
+				{:else if modeStore.mode === 'local'}
+					Mengonfigurasi otomatis Stalwart, SnappyMail, vhost Nginx, /etc/hosts lokal, DNS (bila PowerDNS tersedia), serta SSL lokal tanpa NetBird.
 				{:else}
 					Mengonfigurasi otomatis Stalwart lokal, SnappyMail, DNS record (A, MX, SPF, DMARC) di VPS Edge, serta SSL Let's Encrypt.
 				{/if}
@@ -1083,7 +1094,13 @@
 					<Alert.Root>
 						<Alert.Title>Prasyarat Lengkap</Alert.Title>
 						<Alert.Description>
-							Stalwart, CLI, NetBird, Edge Gateway, dan relay default siap digunakan.
+							{#if (preflight.mode || modeStore.mode) === 'local'}
+								Stalwart dan stalwart-cli siap digunakan dalam Mode Lokal Standalone (tanpa NetBird).
+							{:else if (preflight.mode || modeStore.mode) === 'vps'}
+								Stalwart, CLI, PowerDNS lokal, dan relay default siap digunakan (Mode VPS Standalone tanpa NetBird).
+							{:else}
+								Stalwart, CLI, NetBird, Edge Gateway, dan relay default siap digunakan.
+							{/if}
 						</Alert.Description>
 					</Alert.Root>
 				{/if}
@@ -1091,7 +1108,9 @@
 
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldLabel for="mail-setup-domain-select">Domain Publik (PowerDNS Edge)</Field.FieldLabel>
+					<Field.FieldLabel for="mail-setup-domain-select">
+						Domain Mail {modeStore.mode === 'edge' ? '(PowerDNS Edge)' : modeStore.mode === 'vps' ? '(PowerDNS VPS)' : '(Lokal / PowerDNS)'}
+					</Field.FieldLabel>
 					<Select.Root
 						type="single"
 						value={setupDomainChoice}
@@ -1136,7 +1155,11 @@
 				<Field.Field orientation="horizontal">
 					<Checkbox id="mail-setup-ssl" bind:checked={setupSSL} />
 					<Field.FieldLabel for="mail-setup-ssl" class="font-normal">
-						Aktifkan SSL Let's Encrypt Otomatis (webmail &amp; mailadmin)
+						{#if modeStore.mode === 'local'}
+							Aktifkan SSL Lokal Otomatis (mkcert / self-signed untuk webmail &amp; mailadmin)
+						{:else}
+							Aktifkan SSL Let's Encrypt Otomatis (webmail &amp; mailadmin)
+						{/if}
 					</Field.FieldLabel>
 				</Field.Field>
 
@@ -1162,7 +1185,11 @@
 						</Select.Content>
 					</Select.Root>
 					<Field.FieldDescription>
-						Mode relay-only: email keluar tidak pernah dikirim langsung via port 25.
+						{#if modeStore.mode === 'local'}
+							Mode Lokal: relay outbound bersifat opsional untuk uji coba lokal, atau pilih Resend/Brevo/Custom SMTP untuk pengiriman ke internet.
+						{:else}
+							Mode relay-only: email keluar tidak pernah dikirim langsung via port 25.
+						{/if}
 					</Field.FieldDescription>
 				</Field.Field>
 

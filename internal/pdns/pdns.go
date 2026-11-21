@@ -103,71 +103,246 @@ func New(cfg *config.Config, s *store.Store) *Manager {
 	return &Manager{cfg: cfg, store: s}
 }
 
-// GetMode mengembalikan mode server: "vps" (aaPanel style) atau "edge" (hybrid).
-func (m *Manager) GetMode() string {
-	val, err := m.store.GetSetting("server_mode")
-	if err == nil && val != "" {
-		return val
+// NormalizeMode menormalkan nama mode operasional server ("local", "edge", "vps").
+func NormalizeMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "local", "lokal", "standalone":
+		return "local", true
+	case "edge", "hybrid":
+		return "edge", true
+	case "vps", "aapanel":
+		return "vps", true
+	default:
+		return "", false
 	}
-	// Deteksi otomatis jika belum diset eksplisit oleh pengguna:
-	// 1. Jika edge-dns.conf mengarah ke remote NetBird IP, ini pasti mesin client Edge
-	confFile := filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")
-	if data, err := os.ReadFile(confFile); err == nil {
+}
+
+func isVirtualOrTunnelIface(name string) bool {
+	low := strings.ToLower(name)
+	return low == "lo" ||
+		low == "wt0" ||
+		strings.HasPrefix(low, "wg") ||
+		strings.HasPrefix(low, "tun") ||
+		strings.HasPrefix(low, "tap") ||
+		strings.HasPrefix(low, "docker") ||
+		strings.HasPrefix(low, "br-") ||
+		strings.HasPrefix(low, "veth") ||
+		strings.HasPrefix(low, "virbr") ||
+		strings.HasPrefix(low, "cni") ||
+		strings.HasPrefix(low, "flannel")
+}
+
+func isCGNATIPv4(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	return ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127
+}
+
+// HasPublicInterfaceIP memeriksa apakah mesin ini memiliki IPv4 publik langsung
+// pada interface jaringan host (ciri khas VPS publik tanpa NAT).
+func HasPublicInterfaceIP() bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 || isVirtualOrTunnelIface(ifi.Name) {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil {
+				continue
+			}
+			if !ip4.IsLoopback() && !ip4.IsPrivate() && !ip4.IsLinkLocalUnicast() && !ip4.IsMulticast() && !ip4.IsUnspecified() && !isCGNATIPv4(ip4) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// DetectLocalLANIP mengembalikan IPv4 LAN/host utama (bukan loopback dan bukan NetBird).
+func DetectLocalLANIP() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	fallback := ""
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 || isVirtualOrTunnelIface(ifi.Name) {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() || isCGNATIPv4(ip4) {
+				continue
+			}
+			if ip4.IsPrivate() {
+				return ip4.String()
+			}
+			if fallback == "" {
+				fallback = ip4.String()
+			}
+		}
+	}
+	return fallback
+}
+
+type modeSignals struct {
+	explicitMode    string
+	remoteEdgeHost  string
+	hasLocalPDNS    bool
+	hasEdgeAgentCfg bool
+	localNetbirdIP  string
+	hasPublicNIC    bool
+}
+
+func detectModeFromSignals(sig modeSignals) string {
+	if norm, ok := NormalizeMode(sig.explicitMode); ok {
+		return norm
+	}
+	// 1. Jika ada edge.conf VPS atau PowerDNS lokal, gunakan VPS atau Lokal.
+	if sig.hasEdgeAgentCfg {
+		return "vps"
+	}
+	if sig.hasLocalPDNS {
+		if sig.hasPublicNIC {
+			return "vps"
+		}
+		return "local"
+	}
+	// 2. Jika edge-dns.conf mengarah ke host remote (bukan loopback), ini client Edge.
+	if sig.remoteEdgeHost != "" {
+		return "edge"
+	}
+	// 3. Jika NetBird aktif tanpa PowerDNS lokal, arahkan ke Edge.
+	if sig.localNetbirdIP != "" {
+		return "edge"
+	}
+	// 4. Jika NIC memiliki IP publik langsung tanpa NetBird, ini VPS standalone.
+	if sig.hasPublicNIC {
+		return "vps"
+	}
+	// 5. Default aman tanpa NetBird & tanpa IP publik: mode Lokal standalone.
+	return "local"
+}
+
+func (m *Manager) readRemoteEdgeHost() string {
+	candidates := []string{filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")}
+	if m.cfg.WdevEtc != "/etc/wdev" {
+		candidates = append(candidates, "/etc/wdev/edge-dns.conf")
+	}
+	for _, confFile := range candidates {
+		data, err := os.ReadFile(confFile)
+		if err != nil {
+			continue
+		}
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if strings.HasPrefix(line, "VPS_NETBIRD_IP=") {
 				v := strings.Trim(strings.TrimPrefix(line, "VPS_NETBIRD_IP="), "\"")
-				if v != "" && v != "127.0.0.1" && v != "localhost" {
-					return "edge"
+				if v != "" && v != "127.0.0.1" && v != "localhost" && v != "::1" && v != "0.0.0.0" {
+					return v
 				}
 			}
 		}
 	}
-	// 2. Jika ada NetBird IP lokal (wt0) dan tidak ada konfigurasi PowerDNS lokal
-	if localNB := m.GetLocalNetbirdIP(); localNB != "" {
-		if _, err := os.Stat("/etc/powerdns/pdns.conf"); err != nil {
-			return "edge"
+	return ""
+}
+
+// GetMode mengembalikan mode server: "local" (standalone lokal), "edge" (hybrid NetBird), atau "vps" (aaPanel style).
+func (m *Manager) GetMode() string {
+	explicit := ""
+	if m.store != nil {
+		if val, err := m.store.GetSetting("server_mode"); err == nil {
+			explicit = val
 		}
 	}
-	// 3. Jika ada PowerDNS lokal atau edge.conf lokal, default ke vps
-	if _, err := os.Stat("/etc/powerdns/pdns.conf"); err == nil {
-		return "vps"
-	}
-	if _, err := os.Stat("/etc/wdev-edge/edge.conf"); err == nil {
-		return "vps"
-	}
-	return "edge"
+	_, pdnsConfErr := os.Stat("/etc/powerdns/pdns.conf")
+	_, edgeConfErr := os.Stat("/etc/wdev-edge/edge.conf")
+	return detectModeFromSignals(modeSignals{
+		explicitMode:    explicit,
+		remoteEdgeHost:  m.readRemoteEdgeHost(),
+		hasLocalPDNS:    pdnsConfErr == nil,
+		hasEdgeAgentCfg: edgeConfErr == nil,
+		localNetbirdIP:  m.GetLocalNetbirdIP(),
+		hasPublicNIC:    HasPublicInterfaceIP(),
+	})
 }
 
 // IsModeSet mengecek apakah user sudah memilih mode secara eksplisit.
 func (m *Manager) IsModeSet() bool {
+	if m.store == nil {
+		return false
+	}
 	val, err := m.store.GetSetting("server_mode")
-	return err == nil && val != ""
+	if err != nil {
+		return false
+	}
+	_, ok := NormalizeMode(val)
+	return ok
 }
 
-// SetMode mengubah mode antara "vps" dan "edge".
+// SetMode mengubah mode antara "local", "edge", dan "vps".
 func (m *Manager) SetMode(mode string) error {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode != "vps" && mode != "edge" {
-		return fmt.Errorf("mode tidak valid: %s (harus 'vps' atau 'edge')", mode)
+	norm, ok := NormalizeMode(mode)
+	if !ok {
+		return fmt.Errorf("mode tidak valid: %s (harus 'local', 'edge', atau 'vps')", mode)
 	}
-	if err := m.store.SetSetting("server_mode", mode); err != nil {
+	if err := m.store.SetSetting("server_mode", norm); err != nil {
 		return err
 	}
-	if mode == "vps" {
-		m.ensureLocalVPSPDNSConfig()
+	if norm == "vps" || norm == "local" {
+		m.ensureLocalPDNSConfig(norm)
 	}
 	return nil
 }
 
-func (m *Manager) ensureLocalVPSPDNSConfig() {
+func (m *Manager) readLocalPDNSFileSettings() (apiKey, pdnsPort string) {
+	pdnsPort = "8081"
+	if data, err := os.ReadFile("/etc/powerdns/pdns.conf"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			l := strings.TrimSpace(line)
+			if strings.HasPrefix(l, "api-key=") {
+				apiKey = strings.TrimSpace(strings.TrimPrefix(l, "api-key="))
+			}
+			if strings.HasPrefix(l, "webserver-port=") {
+				if p := strings.TrimSpace(strings.TrimPrefix(l, "webserver-port=")); p != "" {
+					pdnsPort = p
+				}
+			}
+		}
+	}
+	return apiKey, pdnsPort
+}
+
+func (m *Manager) ensureLocalPDNSConfig(mode string) {
 	apiKey := ""
 	pubIP := ""
 	pdnsPort := "8081"
 	agentPort := "8082"
 
-	// Baca dari /etc/wdev-edge/edge.conf
+	// Baca dari /etc/wdev-edge/edge.conf jika ada
 	for _, p := range []string{"/etc/wdev-edge/edge.conf", filepath.Join(m.cfg.WdevEtc, "edge.conf")} {
 		if data, err := os.ReadFile(p); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
@@ -181,9 +356,13 @@ func (m *Manager) ensureLocalVPSPDNSConfig() {
 					case "PUBLIC_IP":
 						pubIP = v
 					case "PDNS_API_PORT", "PDNS_PORT":
-						pdnsPort = v
+						if v != "" {
+							pdnsPort = v
+						}
 					case "AGENT_PORT":
-						agentPort = v
+						if v != "" {
+							agentPort = v
+						}
 					}
 				}
 			}
@@ -193,21 +372,23 @@ func (m *Manager) ensureLocalVPSPDNSConfig() {
 
 	// Baca dari /etc/powerdns/pdns.conf jika belum ada API key
 	if apiKey == "" {
-		if data, err := os.ReadFile("/etc/powerdns/pdns.conf"); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				l := strings.TrimSpace(line)
-				if strings.HasPrefix(l, "api-key=") {
-					apiKey = strings.TrimPrefix(l, "api-key=")
-				}
-				if strings.HasPrefix(l, "webserver-port=") {
-					pdnsPort = strings.TrimPrefix(l, "webserver-port=")
-				}
-			}
+		k, p := m.readLocalPDNSFileSettings()
+		apiKey = k
+		if p != "" {
+			pdnsPort = p
 		}
 	}
 
 	if pubIP == "" {
-		pubIP = edge.DetectPublicIP(context.Background())
+		if mode == "vps" {
+			pubIP = edge.DetectPublicIP(context.Background())
+		}
+		if pubIP == "" {
+			pubIP = DetectLocalLANIP()
+		}
+		if pubIP == "" && mode == "local" {
+			pubIP = "127.0.0.1"
+		}
 	}
 
 	if apiKey != "" {
@@ -241,9 +422,8 @@ func (m *Manager) LoadConfig() EdgeConfig {
 		LocalNetbirdIP: m.GetLocalNetbirdIP(),
 	}
 
-	if err == nil {
-		conf.Configured = true
-		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	parseConf := func(raw []byte) {
+		scanner := bufio.NewScanner(strings.NewReader(string(raw)))
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
@@ -260,45 +440,57 @@ func (m *Manager) LoadConfig() EdgeConfig {
 			case "API_KEY":
 				conf.APIKey = v
 			case "PDNS_PORT":
-				conf.PDNSPort = v
+				if v != "" {
+					conf.PDNSPort = v
+				}
 			case "AGENT_PORT":
-				conf.AgentPort = v
+				if v != "" {
+					conf.AgentPort = v
+				}
 			}
 		}
 	}
 
-	// Di mode VPS, pastikan target adalah 127.0.0.1
-	if mode == "vps" {
-		if (!conf.Configured || conf.APIKey == "") && hasLocalPDNS {
-			m.ensureLocalVPSPDNSConfig()
-			confFile = filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")
+	if err == nil {
+		conf.Configured = true
+		parseConf(data)
+	}
+
+	// Pada mode VPS atau Lokal dengan PowerDNS lokal, target API selalu 127.0.0.1 tanpa NetBird.
+	if mode == "vps" || (mode == "local" && hasLocalPDNS) {
+		if hasLocalPDNS && (!conf.Configured || conf.APIKey == "" || (conf.VPSNetbirdIP != "127.0.0.1" && conf.VPSNetbirdIP != "localhost")) {
+			m.ensureLocalPDNSConfig(mode)
 			if d, e := os.ReadFile(confFile); e == nil {
 				conf.Configured = true
-				scanner := bufio.NewScanner(strings.NewReader(string(d)))
-				for scanner.Scan() {
-					line := strings.TrimSpace(scanner.Text())
-					parts := strings.SplitN(line, "=", 2)
-					if len(parts) == 2 {
-						k := strings.TrimSpace(parts[0])
-						v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
-						switch k {
-						case "VPS_NETBIRD_IP":
-							conf.VPSNetbirdIP = v
-						case "VPS_PUBLIC_IP":
-							conf.VPSPublicIP = v
-						case "API_KEY":
-							conf.APIKey = v
-						case "PDNS_PORT":
-							conf.PDNSPort = v
-						case "AGENT_PORT":
-							conf.AgentPort = v
-						}
-					}
+				parseConf(d)
+			} else if m.cfg.WdevEtc != "/etc/wdev" {
+				if d, e := os.ReadFile("/etc/wdev/edge-dns.conf"); e == nil {
+					conf.Configured = true
+					parseConf(d)
 				}
 			}
 		}
-		if conf.VPSNetbirdIP == "" || conf.VPSNetbirdIP == "-" {
-			conf.VPSNetbirdIP = "127.0.0.1"
+		if hasLocalPDNS && conf.APIKey == "" {
+			if k, p := m.readLocalPDNSFileSettings(); k != "" {
+				conf.APIKey = k
+				conf.PDNSPort = p
+				conf.Configured = true
+			}
+		}
+		if hasLocalPDNS || mode == "vps" {
+			if conf.VPSNetbirdIP == "" || conf.VPSNetbirdIP == "-" || conf.VPSNetbirdIP == "0.0.0.0" || hasLocalPDNS {
+				conf.VPSNetbirdIP = "127.0.0.1"
+			}
+		}
+		if mode == "local" && hasLocalPDNS && conf.VPSPublicIP == "" {
+			if lan := DetectLocalLANIP(); lan != "" {
+				conf.VPSPublicIP = lan
+			} else {
+				conf.VPSPublicIP = "127.0.0.1"
+			}
+		}
+		if conf.APIKey != "" && conf.VPSNetbirdIP != "" {
+			conf.Configured = true
 		}
 	}
 
@@ -369,10 +561,21 @@ func (m *Manager) GetLocalNetbirdIP() string {
 	return ""
 }
 
-func (m *Manager) ListZones() ([]ZoneInfo, error) {
+func (m *Manager) requirePDNSConfig() (EdgeConfig, error) {
 	conf := m.LoadConfig()
 	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return nil, fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+		if conf.Mode == "edge" {
+			return conf, fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+		}
+		return conf, fmt.Errorf("PowerDNS belum terpasang atau belum dikonfigurasi")
+	}
+	return conf, nil
+}
+
+func (m *Manager) ListZones() ([]ZoneInfo, error) {
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return nil, err
 	}
 
 	client := http.Client{Timeout: 4 * time.Second}
@@ -403,9 +606,9 @@ func (m *Manager) ListZones() ([]ZoneInfo, error) {
 }
 
 func (m *Manager) GetZone(zoneName string) (*ZoneInfo, error) {
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return nil, fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return nil, err
 	}
 
 	zoneName = strings.TrimSuffix(strings.TrimSpace(zoneName), ".") + "."
@@ -462,16 +665,33 @@ func NormalizeZoneName(zoneName string) (string, error) {
 // AddZone membuat zone Native lengkap dengan NS, glue A, dan SOA-EDIT-API
 // agar zone langsung valid dan serial otomatis naik saat record berubah.
 func (m *Manager) AddZone(zoneName string) error {
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return err
 	}
 	zone, err := NormalizeZoneName(zoneName)
 	if err != nil {
 		return err
 	}
-	if conf.VPSPublicIP == "" {
-		return fmt.Errorf("IP publik VPS belum tercatat; jalankan 'wdev pdns connect' agar NS/glue zone valid")
+	zoneIP := strings.TrimSpace(conf.VPSPublicIP)
+	if zoneIP == "" {
+		switch conf.Mode {
+		case "local":
+			zoneIP = DetectLocalLANIP()
+			if zoneIP == "" {
+				zoneIP = "127.0.0.1"
+			}
+		case "vps":
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			zoneIP = edge.DetectPublicIP(ctx)
+			cancel()
+			if zoneIP == "" {
+				zoneIP = DetectLocalLANIP()
+			}
+		}
+	}
+	if zoneIP == "" {
+		return fmt.Errorf("IP server untuk NS/glue zone belum tercatat; atur VPS_PUBLIC_IP atau jalankan 'wdev pdns connect'")
 	}
 
 	ns1 := "ns1." + zone
@@ -520,11 +740,11 @@ func (m *Manager) AddZone(zoneName string) error {
 	}
 
 	// Glue A untuk nameserver in-zone agar delegasi bisa di-resolve.
-	if err := m.patchRecords(zone, ns1, "A", []string{conf.VPSPublicIP}, 300); err != nil {
+	if err := m.patchRecords(zone, ns1, "A", []string{zoneIP}, 300); err != nil {
 		rollback()
 		return fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns1, err)
 	}
-	if err := m.patchRecords(zone, ns2, "A", []string{conf.VPSPublicIP}, 300); err != nil {
+	if err := m.patchRecords(zone, ns2, "A", []string{zoneIP}, 300); err != nil {
 		rollback()
 		return fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns2, err)
 	}
@@ -562,9 +782,9 @@ func (m *Manager) AddZone(zoneName string) error {
 }
 
 func (m *Manager) DeleteZone(zoneName string) error {
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return err
 	}
 
 	zoneName = strings.TrimSuffix(strings.TrimSpace(zoneName), ".") + "."
@@ -662,9 +882,9 @@ func mergeRecordContents(existing []string, content string) []string {
 }
 
 func (m *Manager) patchRecords(zone, name, rtype string, contents []string, ttl int) error {
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return err
 	}
 
 	zone = strings.TrimSuffix(strings.TrimSpace(zone), ".") + "."
@@ -722,9 +942,9 @@ func (m *Manager) patchRecords(zone, name, rtype string, contents []string, ttl 
 }
 
 func (m *Manager) DeleteRecord(zone, name, rtype string) error {
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return err
 	}
 
 	zone = strings.TrimSuffix(strings.TrimSpace(zone), ".") + "."
@@ -766,14 +986,24 @@ func (m *Manager) DeleteRecord(zone, name, rtype string) error {
 }
 
 func (m *Manager) ListExposures() ([]ProxyExposure, error) {
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return nil, fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		if conf.Mode != "edge" {
+			return []ProxyExposure{}, nil
+		}
+		return nil, err
 	}
 
 	agentPort := conf.AgentPort
 	if agentPort == "" {
 		agentPort = "8082"
+	}
+	if conf.Mode != "edge" {
+		conn, dialErr := net.DialTimeout("tcp", net.JoinHostPort(conf.VPSNetbirdIP, agentPort), 500*time.Millisecond)
+		if dialErr != nil {
+			return []ProxyExposure{}, nil
+		}
+		_ = conn.Close()
 	}
 
 	client := http.Client{Timeout: 4 * time.Second}

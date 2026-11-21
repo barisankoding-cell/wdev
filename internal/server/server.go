@@ -1314,9 +1314,9 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Payload JSON tidak valid")
 			return
 		}
-		target := strings.ToLower(strings.TrimSpace(payload.Mode))
-		if target != "vps" && target != "edge" {
-			writeError(w, http.StatusBadRequest, "Mode harus 'vps' atau 'edge'")
+		target, ok := pdns.NormalizeMode(payload.Mode)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "Mode harus 'local', 'edge', atau 'vps'")
 			return
 		}
 		if err := s.pdnsMgr.SetMode(target); err != nil {
@@ -1689,7 +1689,6 @@ var nonPrivilegedInstallComponents = map[string]bool{
 	"orca-ai":       true,
 	"cf-doctor":     true,
 	"doctor":        true,
-	"pdns":          true,
 }
 
 func canonicalInstallComponent(component string) string {
@@ -1700,6 +1699,8 @@ func canonicalInstallComponent(component string) string {
 		return "ssl"
 	case "mail-stack":
 		return "mail"
+	case "powerdns":
+		return "pdns"
 	case "zsh-p10k", "zsh-agnoster", "zsh-robbyrussell":
 		return "zsh"
 	case "orca":
@@ -1749,14 +1750,14 @@ func installComponentOrder(canonical string) int {
 		return 130
 	case "php-stack":
 		return 140
+	case "pdns":
+		return 145
 	case "mail":
 		return 150
 	case "cloudflare":
 		return 160
 	case "netbird":
 		return 170
-	case "pdns":
-		return 180
 	case "zsh":
 		return 190
 	case "orca-desktop":
@@ -2223,21 +2224,9 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 			cb("✓ Diagnostik Cloudflare selesai.")
 			return nil
 		}
-	case "pdns":
-		taskName = "PowerDNS & Edge Gateway Status"
-		fn = func(ctx context.Context, cb func(string)) error {
-			cb("=== STATUS POWERDNS & VPS EDGE GATEWAY ===")
-			conf := s.pdnsMgr.LoadConfig()
-			cb(fmt.Sprintf("  Terkonfigurasi : %v", conf.Configured))
-			cb(fmt.Sprintf("  VPS NetBird IP : %s", conf.VPSNetbirdIP))
-			cb(fmt.Sprintf("  VPS Public IP  : %s", conf.VPSPublicIP))
-			if conf.Reachable {
-				cb("  Koneksi API    : [OK] Terhubung ke PowerDNS Authoritative")
-			} else {
-				cb("  Koneksi API    : [FAIL] Tidak dapat menjangkau PowerDNS API")
-			}
-			return nil
-		}
+	case "pdns", "powerdns":
+		taskName = "PowerDNS Authoritative Server"
+		fn = s.installer.InstallPowerDNS
 	default:
 		return "", nil, false
 	}

@@ -1,8 +1,16 @@
 import { api, ApiError } from '#lib/api/client.js';
 import { toast } from 'svelte-sonner';
 
+export type ServerMode = 'local' | 'edge' | 'vps';
+
+export const MODE_LABELS: Record<ServerMode, string> = {
+	local: 'Lokal Standalone',
+	edge: 'Edge Gateway',
+	vps: 'Full VPS'
+};
+
 class ModeStore {
-	mode = $state<'vps' | 'edge'>('edge');
+	mode = $state<ServerMode>('local');
 	isSet = $state(false);
 	modalOpen = $state(false);
 	loading = $state(false);
@@ -27,14 +35,14 @@ class ModeStore {
 		}
 	}
 
-	async switchMode(target: 'vps' | 'edge') {
+	async switchMode(target: ServerMode) {
 		this.loading = true;
 		try {
 			await api.setMode(target);
 			this.mode = target;
 			this.isSet = true;
 			toast.success('Mode Server Berhasil Diubah', {
-				description: `Mode operasional panel beralih ke: ${target === 'vps' ? 'Full VPS (aaPanel Style)' : 'Edge Gateway (Hybrid)'}.`
+				description: `Mode operasional panel beralih ke: ${MODE_LABELS[target]}.`
 			});
 			this.modalOpen = false;
 			await this.fetchMode();

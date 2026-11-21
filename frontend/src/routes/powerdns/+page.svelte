@@ -120,7 +120,11 @@
 			toast.error(err instanceof Error ? err.message : 'Gagal memuat status PowerDNS');
 		}
 
-		await Promise.all([loadZones(), loadExposures(), loadLocalSites()]);
+		await Promise.all([
+			loadZones(),
+			modeStore.mode === 'edge' ? loadExposures() : Promise.resolve((exposures = [])),
+			modeStore.mode === 'edge' ? loadLocalSites() : Promise.resolve()
+		]);
 	}
 
 	async function loadZones() {
@@ -467,6 +471,11 @@
 				<p class="text-sm text-muted-foreground">
 					Authoritative DNS Server &amp; Manajemen Domain Langsung di Cloud VPS (aaPanel Style).
 				</p>
+			{:else if modeStore.mode === 'local'}
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Domain &amp; DNS Manager (Lokal)</h1>
+				<p class="text-sm text-muted-foreground">
+					PowerDNS Authoritative mandiri di 127.0.0.1:8081 &amp; port 53 tanpa NetBird maupun VPS Edge.
+				</p>
 			{:else}
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">PowerDNS &amp; VPS Edge Gateway</h1>
 				<p class="text-sm text-muted-foreground">
@@ -475,19 +484,30 @@
 			{/if}
 		</div>
 		<div class="flex flex-wrap items-center gap-2">
-			{#if modeStore.mode === 'vps'}
+			{#if modeStore.mode !== 'edge'}
 				<StatusBadge
-					tone={edge?.reachable || edge?.has_local_pdns ? 'success' : 'destructive'}
-					label={edge?.reachable || edge?.has_local_pdns ? 'PowerDNS Lokal Aktif (127.0.0.1:8081)' : 'PowerDNS Belum Aktif'}
+					tone={edge?.reachable ? 'success' : edge?.has_local_pdns ? 'warning' : 'destructive'}
+					label={edge?.reachable
+						? 'PowerDNS Lokal Aktif (127.0.0.1:8081)'
+						: edge?.has_local_pdns
+							? 'PowerDNS Terpasang (Nonaktif)'
+							: 'PowerDNS Belum Terpasang'}
 				/>
-				<Button size="sm" onclick={() => (addZoneOpen = true)}>
+				{#if !edge?.reachable && !edge?.has_local_pdns}
+					<Button size="sm" onclick={() => cp.triggerInstall('pdns')}>
+						Install PowerDNS
+					</Button>
+				{/if}
+				<Button size="sm" variant={edge?.reachable ? 'default' : 'outline'} onclick={() => (addZoneOpen = true)}>
 					<PlusIcon data-icon="inline-start" />
 					Tambah Zone
 				</Button>
-				<Button variant="outline" size="sm" onclick={() => (glueGuideOpen = !glueGuideOpen)}>
-					<BookOpenIcon data-icon="inline-start" />
-					Panduan Nameserver
-				</Button>
+				{#if modeStore.mode === 'vps'}
+					<Button variant="outline" size="sm" onclick={() => (glueGuideOpen = !glueGuideOpen)}>
+						<BookOpenIcon data-icon="inline-start" />
+						Panduan Nameserver
+					</Button>
+				{/if}
 			{:else}
 				{#if edge}
 					<StatusBadge
@@ -507,17 +527,41 @@
 		</div>
 	</div>
 
-	{#if modeStore.mode === 'vps' && edge && !edge.reachable && !edge.has_local_pdns}
+	{#if modeStore.mode !== 'edge' && edge && !edge.reachable}
 		<Alert.Root variant="destructive">
 			<TriangleAlertIcon />
-			<Alert.Title>PowerDNS Authoritative Belum Terpasang / Aktif</Alert.Title>
+			<Alert.Title>
+				{edge.has_local_pdns
+					? 'Layanan PowerDNS Lokal Belum Aktif'
+					: 'PowerDNS Authoritative Belum Terpasang'}
+			</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<span>
-					PowerDNS lokal di port 53 &amp; port 8081 belum merespons. Pasang atau inisialisasi PowerDNS sekarang.
+					{edge.has_local_pdns
+						? 'Konfigurasi /etc/powerdns/pdns.conf sudah tersedia tetapi API 127.0.0.1:8081 tidak merespons. Jalankan ulang instalasi atau nyalakan service pdns.'
+						: 'PowerDNS lokal di port 53 & port 8081 belum terpasang. Pasang PowerDNS standalone sekarang tanpa NetBird.'}
 				</span>
-				<Button size="xs" onclick={() => cp.openTerminal('wdev install pdns')}>
-					Install PowerDNS Sekarang
-				</Button>
+				<div class="flex flex-wrap gap-2">
+					{#if edge.has_local_pdns}
+						<Button
+							size="xs"
+							onclick={async () => {
+								try {
+									await api.controlService('pdns', 'restart');
+									toast.success('Layanan PowerDNS dijalankan.');
+								} catch (err) {
+									toast.error(err instanceof Error ? err.message : 'Gagal menjalankan PowerDNS');
+								}
+								await loadAll();
+							}}
+						>
+							Nyalakan PowerDNS
+						</Button>
+					{/if}
+					<Button size="xs" variant={edge.has_local_pdns ? 'outline' : 'default'} onclick={() => cp.triggerInstall('pdns')}>
+						{edge.has_local_pdns ? 'Konfigurasi Ulang PowerDNS' : 'Install PowerDNS Sekarang'}
+					</Button>
+				</div>
 			</Alert.Description>
 		</Alert.Root>
 	{:else if modeStore.mode === 'edge' && edge && !edge.reachable}
@@ -580,6 +624,29 @@
 				<Card.Header>
 					<Card.Description>Secondary Nameserver (NS2)</Card.Description>
 					<Card.Title class="truncate font-mono text-base">ns2.{defaultZoneName}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+		</div>
+	{:else if modeStore.mode === 'local'}
+		<div class="grid gap-3 sm:grid-cols-3">
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>Endpoint PowerDNS API (Lokal)</Card.Description>
+					<Card.Title class="truncate font-mono text-base">
+						{edge?.vps_netbird_ip || '127.0.0.1'}:{edge?.pdns_port || '8081'}
+					</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>IP Host / LAN (Target Record A)</Card.Description>
+					<Card.Title class="truncate font-mono text-base">{edge?.vps_public_ip || '127.0.0.1'}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root>
+				<Card.Header>
+					<Card.Description>Mode Operasional DNS</Card.Description>
+					<Card.Title class="truncate text-base">Lokal Standalone (Tanpa NetBird)</Card.Title>
 				</Card.Header>
 			</Card.Root>
 		</div>
@@ -677,6 +744,7 @@
 		</ResponsiveTableWrapper>
 	</section>
 
+	{#if modeStore.mode === 'edge'}
 	<!-- Local Virtual Hosts Exposure Status -->
 	<section class="flex flex-col gap-3">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -876,6 +944,7 @@
 			</Table.Root>
 		</ResponsiveTableWrapper>
 	</section>
+	{/if}
 </div>
 
 <!-- Add Zone Dialog -->

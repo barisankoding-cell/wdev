@@ -572,29 +572,32 @@ func (t *TUI) menuCloudflare() {
 	}
 }
 
-// 7. POWERDNS & VPS EDGE GATEWAY
+// 7. POWERDNS AUTHORITATIVE & EDGE GATEWAY
 func (t *TUI) menuPowerDNS() {
 	for {
 		t.Clear()
-		fmt.Printf("%s%s=== [7] POWERDNS & VPS EDGE GATEWAY (NETBIRD) ===%s\n\n", Bold, Blue, Reset)
-		fmt.Printf("  %s[1]%s 📊 Status Edge Gateway & PowerDNS API\n", Bold, Reset)
+		conf := t.pdnsMgr.LoadConfig()
+		fmt.Printf("%s%s=== [7] POWERDNS AUTHORITATIVE (%s) ===%s\n\n", Bold, Blue, strings.ToUpper(conf.Mode), Reset)
+		fmt.Printf("  %s[1]%s 📊 Status PowerDNS & API\n", Bold, Reset)
 		fmt.Printf("  %s[2]%s 📋 Daftar Zone Domain DNS\n", Bold, Reset)
 		fmt.Printf("  %s[3]%s ➕ Tambah Zone Domain Baru\n", Bold, Reset)
+		fmt.Printf("  %s[4]%s 📦 Pasang PowerDNS Lokal Standalone (Tanpa NetBird)\n", Bold, Reset)
 		fmt.Printf("  %s[0]%s Kembali ke Menu Utama\n\n", Bold, Reset)
 
-		c := t.prompt("Pilih opsi [0-3]: ")
+		c := t.prompt("Pilih opsi [0-4]: ")
 		switch c {
 		case "1":
 			t.Clear()
 			conf := t.pdnsMgr.LoadConfig()
-			reachStr := fmt.Sprintf("%sONLINE (v4.9.18)%s", Green, Reset)
+			reachStr := fmt.Sprintf("%sONLINE%s", Green, Reset)
 			if !conf.Reachable {
 				reachStr = fmt.Sprintf("%sOFFLINE%s", Red, Reset)
 			}
-			fmt.Println("=== Status PowerDNS VPS Edge Gateway ===")
+			fmt.Println("=== Status PowerDNS ===")
+			fmt.Printf("  Mode Server    : %s\n", strings.ToUpper(conf.Mode))
 			fmt.Printf("  Terkonfigurasi : %v\n", conf.Configured)
-			fmt.Printf("  VPS NetBird IP : %s\n", conf.VPSNetbirdIP)
-			fmt.Printf("  VPS Public IP  : %s\n", conf.VPSPublicIP)
+			fmt.Printf("  Target API     : %s:%s\n", conf.VPSNetbirdIP, conf.PDNSPort)
+			fmt.Printf("  Public/Host IP : %s\n", conf.VPSPublicIP)
 			fmt.Printf("  Status API     : %s\n", reachStr)
 			t.waitEnter()
 		case "2":
@@ -620,6 +623,8 @@ func (t *TUI) menuPowerDNS() {
 				}
 				t.waitEnter()
 			}
+		case "4":
+			t.runTask("PowerDNS Authoritative Server", t.inst.InstallPowerDNS)
 		case "0", "q", "Q":
 			return
 		}
@@ -681,14 +686,15 @@ func (t *TUI) menuModularInstall() {
 		fmt.Printf("  %s[14]%s Full PHP Web Stack (Nginx + PHP + Composer + SSL)\n", Cyan, Reset)
 		fmt.Printf("  %s[15]%s Cloudflare Tunnel & DNS (cloudflared via wdev cf)\n", Cyan, Reset)
 		fmt.Printf("  %s[16]%s NetBird Mesh VPN (Install / Update Mandiri)\n", Cyan, Reset)
-		fmt.Printf("  %s[17]%s PowerDNS & VPS Edge Gateway\n", Cyan, Reset)
+		fmt.Printf("  %s[17]%s PowerDNS Authoritative Server (Standalone)\n", Cyan, Reset)
+		fmt.Printf("  %s[18]%s Mail Server Stack (Stalwart + SnappyMail)\n", Cyan, Reset)
 		fmt.Printf("%sWorkspace, IDE & Shell:%s\n", Bold, Reset)
-		fmt.Printf("  %s[18]%s Oh My Zsh (Plugin & Tema Populer)\n", Cyan, Reset)
-		fmt.Printf("  %s[19]%s Orca ADE - Desktop GUI (Aplikasi Desktop)\n", Cyan, Reset)
-		fmt.Printf("  %s[20]%s Orca ADE - Headless Server (Service 24/7)\n", Cyan, Reset)
+		fmt.Printf("  %s[19]%s Oh My Zsh (Plugin & Tema Populer)\n", Cyan, Reset)
+		fmt.Printf("  %s[20]%s Orca ADE - Desktop GUI (Aplikasi Desktop)\n", Cyan, Reset)
+		fmt.Printf("  %s[21]%s Orca ADE - Headless Server (Service 24/7)\n", Cyan, Reset)
 		fmt.Printf("  %s[0]%s  Kembali ke Menu Utama\n\n", Yellow, Reset)
 
-		c := t.prompt("Pilih komponen [0-20]: ")
+		c := t.prompt("Pilih komponen [0-21]: ")
 		switch c {
 		case "1":
 			t.runTask("Dependensi Dasar Sistem", t.inst.InstallBase)
@@ -731,16 +737,18 @@ func (t *TUI) menuModularInstall() {
 		case "16":
 			t.runTask("NetBird Mesh VPN", t.inst.InstallNetbird)
 		case "17":
-			t.menuPowerDNS()
+			t.runTask("PowerDNS Authoritative Server", t.inst.InstallPowerDNS)
 		case "18":
+			t.runTask("Mail Server Stack", t.inst.InstallMailStack)
+		case "19":
 			t.runTask("Oh My Zsh", func(ctx context.Context, cb installer.LogCallback) error {
 				return t.inst.InstallZsh(ctx, cb, "powerlevel10k")
 			})
-		case "19":
+		case "20":
 			t.runTask("Orca ADE (Desktop GUI)", func(ctx context.Context, cb installer.LogCallback) error {
 				return t.inst.InstallOrca(ctx, cb, "desktop")
 			})
-		case "20":
+		case "21":
 			t.runTask("Orca ADE (Headless Server)", func(ctx context.Context, cb installer.LogCallback) error {
 				return t.inst.InstallOrca(ctx, cb, "headless")
 			})

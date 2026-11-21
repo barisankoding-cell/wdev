@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"wdev/internal/pdns"
 )
 
 const (
@@ -280,16 +282,40 @@ func (m *Manager) DeleteDomain(domain string, deleteDNS bool) (DomainActionRepor
 	}
 	rep.add("State lokal", actionOK, "kredensial admin, relay, dan state domain dibersihkan")
 
-	if _, err := m.pdnsMgr.AgentPost("/api/v1/mail/remove-domain", map[string]any{"domain": domain}); err != nil {
-		rep.add("VPS Edge Gateway", actionWarn, "gagal membersihkan vhost/stream/proxy di VPS: "+err.Error())
+	mode := m.pdnsMgr.GetMode()
+	if mode == "edge" {
+		if _, err := m.pdnsMgr.AgentPost("/api/v1/mail/remove-domain", map[string]any{"domain": domain}); err != nil {
+			rep.add("VPS Edge Gateway", actionWarn, "gagal membersihkan vhost/stream/proxy di VPS: "+err.Error())
+		} else {
+			rep.add("VPS Edge Gateway", actionOK, "vhost webmail/admin, postfix relay, dan stream mail dibersihkan di VPS")
+		}
 	} else {
-		rep.add("VPS Edge Gateway", actionOK, "vhost webmail/admin, postfix relay, dan stream mail dibersihkan di VPS")
+		available, enabled := m.nginxMailPaths(domain)
+		if err := os.Remove(enabled); err != nil && !os.IsNotExist(err) {
+			_ = runRoot("rm", "-f", enabled)
+		}
+		if err := os.Remove(available); err != nil && !os.IsNotExist(err) {
+			_ = runRoot("rm", "-f", available)
+		}
+		_ = reloadLocalNginx()
+		if mode == "local" {
+			m.removeMailHostsEntries(domain)
+			sslDir := m.mailSSLDir(domain)
+			if err := os.RemoveAll(sslDir); err != nil {
+				_ = runRoot("rm", "-rf", sslDir)
+			}
+		}
+		rep.add("Vhost Nginx Lokal", actionOK, "vhost webmail/admin lokal & entri akses dibersihkan (mode "+mode+")")
 	}
 
 	if deleteDNS {
 		zone, err := m.pdnsMgr.FindMatchingZone(domain)
 		if err != nil {
-			rep.add("DNS", actionWarn, err.Error())
+			if mode == "local" {
+				rep.add("DNS", actionOK, "PowerDNS / zone tidak terkonfigurasi; dilewati")
+			} else {
+				rep.add("DNS", actionWarn, err.Error())
+			}
 		} else {
 			rep.Zone = zone
 			m.deleteMailDNS(zone, domain, &rep)
@@ -317,29 +343,35 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 		return rep, fmt.Errorf("domain tidak valid: %s", domain)
 	}
 
+	mode := m.pdnsMgr.GetMode()
 	zone, err := m.pdnsMgr.FindMatchingZone(domain)
 	if err != nil {
-		rep.add("Zone DNS", actionFail, err.Error())
-		return rep, err
-	}
-	rep.Zone = zone
-	cb(fmt.Sprintf("Zone DNS: %s", zone))
-
-	// 1. Perbaiki NS/SOA/glue di level zone (idempoten).
-	zoneReport, zoneErr := m.pdnsMgr.RepairZone(zone)
-	if zoneErr != nil {
-		rep.add("NS & SOA zone", actionFail, zoneErr.Error())
-	} else {
-		for _, c := range zoneReport.Checks {
-			if strings.Contains(strings.ToLower(c.Name), "ns") || strings.Contains(strings.ToLower(c.Name), "soa") {
-				status := actionOK
-				if c.Status != "ok" {
-					status = actionWarn
-				}
-				rep.add("NS & SOA zone · "+c.Name, status, c.Detail)
-			}
+		if mode != "local" {
+			rep.add("Zone DNS", actionFail, err.Error())
+			return rep, err
 		}
-		rep.add("NS & SOA zone", actionOK, "NS, SOA primary/serial, dan glue A diperiksa ulang")
+		rep.add("Zone DNS", actionWarn, "zone DNS belum tersedia di PowerDNS; perbaikan lokal dilanjutkan via /etc/hosts")
+		zone = ""
+	} else {
+		rep.Zone = zone
+		cb(fmt.Sprintf("Zone DNS: %s", zone))
+
+		// 1. Perbaiki NS/SOA/glue di level zone (idempoten).
+		zoneReport, zoneErr := m.pdnsMgr.RepairZone(zone)
+		if zoneErr != nil {
+			rep.add("NS & SOA zone", actionFail, zoneErr.Error())
+		} else {
+			for _, c := range zoneReport.Checks {
+				if strings.Contains(strings.ToLower(c.Name), "ns") || strings.Contains(strings.ToLower(c.Name), "soa") {
+					status := actionOK
+					if c.Status != "ok" {
+						status = actionWarn
+					}
+					rep.add("NS & SOA zone · "+c.Name, status, c.Detail)
+				}
+			}
+			rep.add("NS & SOA zone", actionOK, "NS, SOA primary/serial, dan glue A diperiksa ulang")
+		}
 	}
 
 	// 2. Pastikan domain & admin Stalwart siap.
@@ -350,29 +382,66 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 		rep.add("Domain Stalwart", actionOK, "domain & akun admin siap ("+adminUser+")")
 	}
 
-	// 3. Sinkronkan record DNS inbound/outbound.
-	m.syncMailDNS(zone, domain, &rep, cb)
+	// 3. Sinkronkan record DNS inbound/outbound bila zone tersedia.
+	if zone != "" {
+		m.syncMailDNS(zone, domain, &rep, cb)
+	}
 
-	// 4. Daftarkan ulang edge gateway (vhost, postfix, stream, TLS) bila agent tersedia.
-	if localNB := m.pdnsMgr.GetLocalNetbirdIP(); localNB == "" {
-		rep.add("Edge Gateway", actionWarn, "IP NetBird lokal (wt0) tidak terdeteksi; vhost VPS tidak bisa disegarkan")
-	} else {
-		ssl := true
-		if st, ok := m.loadDomainsState()[domain]; ok && !st.SSL {
-			ssl = false
-		}
-		payload := map[string]any{"domain": domain, "target_ip": localNB, "ssl": ssl}
-		resp, agentErr := m.pdnsMgr.AgentPost("/api/v1/mail/setup-domain", payload)
-		if agentErr != nil {
-			rep.add("Edge Gateway", actionWarn, "gagal menyegarkan vhost/proxy VPS: "+agentErr.Error())
+	// 4. Segarkan gateway / vhost sesuai mode server.
+	switch mode {
+	case "edge":
+		if localNB := m.pdnsMgr.GetLocalNetbirdIP(); localNB == "" {
+			rep.add("Edge Gateway", actionWarn, "IP NetBird lokal (wt0) tidak terdeteksi; vhost VPS tidak bisa disegarkan")
 		} else {
-			var respMap map[string]any
-			_ = json.Unmarshal(resp, &respMap)
-			adminURL, _ := respMap["admin_url"].(string)
-			webmailURL, _ := respMap["webmail_url"].(string)
-			m.recordDomainState(domain, ssl, adminURL, webmailURL)
-			rep.add("Edge Gateway", actionOK, "vhost webmail/admin, postfix relay, dan stream mail disegarkan")
+			ssl := true
+			if st, ok := m.loadDomainsState()[domain]; ok && !st.SSL {
+				ssl = false
+			}
+			payload := map[string]any{"domain": domain, "target_ip": localNB, "ssl": ssl}
+			resp, agentErr := m.pdnsMgr.AgentPost("/api/v1/mail/setup-domain", payload)
+			if agentErr != nil {
+				rep.add("Edge Gateway", actionWarn, "gagal menyegarkan vhost/proxy VPS: "+agentErr.Error())
+			} else {
+				var respMap map[string]any
+				_ = json.Unmarshal(resp, &respMap)
+				adminURL, _ := respMap["admin_url"].(string)
+				webmailURL, _ := respMap["webmail_url"].(string)
+				m.recordDomainState(domain, ssl, adminURL, webmailURL)
+				rep.add("Edge Gateway", actionOK, "vhost webmail/admin, postfix relay, dan stream mail disegarkan")
+			}
 		}
+	default: // "vps" atau "local"
+		wantSSL := mode == "vps"
+		if st, ok := m.loadDomainsState()[domain]; ok {
+			wantSSL = st.SSL
+		}
+		_ = m.ensureLocalMailFirewall()
+		_ = m.ensureLocalMailVhost(domain)
+		_ = m.ensureWebmailFallbackVhost()
+		_ = reloadLocalNginx()
+		sslActive := false
+		if wantSSL {
+			if mode == "local" {
+				if ok, sslErr := m.issueLocalMailSSLVhost(domain); ok {
+					sslActive = true
+				} else if sslErr != nil {
+					rep.add("SSL Lokal", actionWarn, sslErr.Error())
+				}
+			} else {
+				sslActive = m.issueVPSLetsEncrypt(domain, cb)
+			}
+		}
+		if mode == "local" {
+			m.ensureMailHostsEntries(domain, "127.0.0.1")
+		}
+		scheme := "http"
+		if sslActive {
+			scheme = "https"
+		}
+		adminURL := fmt.Sprintf("%s://mailadmin.%s", scheme, domain)
+		webmailURL := fmt.Sprintf("%s://webmail.%s", scheme, domain)
+		m.recordDomainState(domain, sslActive, adminURL, webmailURL)
+		rep.add("Vhost Nginx Lokal", actionOK, "vhost webmail/admin lokal & entri akses disegarkan (mode "+mode+")")
 	}
 
 	// 5. Pastikan routing relay outbound konsisten.
@@ -404,8 +473,15 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb func(string)) {
 	conf := m.pdnsMgr.LoadConfig()
 	publicIP := strings.TrimSpace(conf.VPSPublicIP)
+	if publicIP == "" && conf.Mode == "local" {
+		if lan := pdns.DetectLocalLANIP(); lan != "" {
+			publicIP = lan
+		} else {
+			publicIP = "127.0.0.1"
+		}
+	}
 	if publicIP == "" {
-		rep.add("Record A", actionFail, "IP publik VPS belum tercatat; jalankan 'wdev pdns connect'")
+		rep.add("Record A", actionFail, "IP server belum tercatat; atur VPS_PUBLIC_IP atau jalankan 'wdev pdns connect'")
 		return
 	}
 
