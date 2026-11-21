@@ -1128,3 +1128,203 @@ func TestTerminalInfoAndWebSocketPTY(t *testing.T) {
 		t.Fatalf("expected 403 after lock, got %+v err=%v", respAfterLock, err)
 	}
 }
+
+func TestPanelDomainBindingSSLAndBlockIP(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "panel-dom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	hostsFile := filepath.Join(tmp, "hosts")
+	_ = os.WriteFile(hostsFile, []byte("127.0.0.1 localhost\n"), 0644)
+
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          filepath.Join(tmp, "etc"),
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        hostsFile,
+	}
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	certbotShouldFail := false
+	siteMgr.SetCertbotExecFn(func(ctx context.Context, cb func(string), bin string, args []string) error {
+		if certbotShouldFail {
+			return io.ErrUnexpectedEOF
+		}
+		return nil
+	})
+
+	// Buat satu situs reguler agar domain konflik terdeteksi & daftar available_domains terisi
+	if _, err := siteMgr.EnsureDomainStaticVhost("appsone.id"); err != nil {
+		t.Fatal(err)
+	}
+
+	run := runner.New(db)
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, run, inst, siteMgr, nil, nil, nil, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	// 1. GET /api/panel/domain awal -> kosong, available_domains berisi appsone.id
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqGet.Host = "103.171.85.72:3200"
+	reqGet.AddCookie(sessCookie)
+	recGet := httptest.NewRecorder()
+	handler.ServeHTTP(recGet, reqGet)
+	if recGet.Code != http.StatusOK || !strings.Contains(recGet.Body.String(), `"appsone.id"`) {
+		t.Fatalf("GET /api/panel/domain = %d, body=%s", recGet.Code, recGet.Body.String())
+	}
+
+	// 2. Reject mengikat domain yang sudah dipakai VHost website reguler
+	reqConflict := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"appsone.id","ssl_mode":"letsencrypt"}`))
+	reqConflict.Host = "103.171.85.72:3200"
+	reqConflict.Header.Set("Origin", "http://103.171.85.72:3200")
+	reqConflict.AddCookie(sessCookie)
+	recConflict := httptest.NewRecorder()
+	handler.ServeHTTP(recConflict, reqConflict)
+	if recConflict.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for existing non-panel vhost, got %d (%s)", recConflict.Code, recConflict.Body.String())
+	}
+
+	// 2b. Jika bukan root tanpa sudo, endpoint mengembalikan status sudo_required
+	if reqSudo, _ := inst.CheckSudoRequired(); reqSudo {
+		reqSudoResp := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel.appsone.id","ssl_mode":"letsencrypt"}`))
+		reqSudoResp.Host = "103.171.85.72:3200"
+		reqSudoResp.Header.Set("Origin", "http://103.171.85.72:3200")
+		reqSudoResp.AddCookie(sessCookie)
+		recSudoResp := httptest.NewRecorder()
+		handler.ServeHTTP(recSudoResp, reqSudoResp)
+		if recSudoResp.Code != http.StatusOK || !strings.Contains(recSudoResp.Body.String(), `"sudo_required"`) {
+			t.Fatalf("expected sudo_required when non-root, got %d (%s)", recSudoResp.Code, recSudoResp.Body.String())
+		}
+	}
+
+	// Nonaktifkan sudo gate installer agar unit test mengeksekusi task Let's Encrypt mock & binding secara deterministik
+	srv.installer = nil
+
+	// 3. Jika Let's Encrypt gagal, binding & block IP TIDAK boleh aktif (anti lockout)
+	certbotShouldFail = true
+	reqFailLE := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel.appsone.id","ssl_mode":"letsencrypt","block_direct_ip":true}`))
+	reqFailLE.Host = "103.171.85.72:3200"
+	reqFailLE.Header.Set("Origin", "http://103.171.85.72:3200")
+	reqFailLE.AddCookie(sessCookie)
+	recFailLE := httptest.NewRecorder()
+	handler.ServeHTTP(recFailLE, reqFailLE)
+	if recFailLE.Code != http.StatusOK || !strings.Contains(recFailLE.Body.String(), `"started"`) {
+		t.Fatalf("expected task start 200, got %d (%s)", recFailLE.Code, recFailLE.Body.String())
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if run.GetActiveTask() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if authMgr.GetPanelDomain() != "" || authMgr.IsBlockDirectIP() {
+		t.Fatalf("panel domain & block IP must stay disabled if certbot failed")
+	}
+
+	// 4. Sukses bind subdomain panel.appsone.id dengan HTTPS + Block Direct IP
+	certbotShouldFail = false
+	reqBind := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel.appsone.id","ssl_mode":"letsencrypt","block_direct_ip":true}`))
+	reqBind.Host = "103.171.85.72:3200"
+	reqBind.Header.Set("Origin", "http://103.171.85.72:3200")
+	reqBind.AddCookie(sessCookie)
+	recBind := httptest.NewRecorder()
+	handler.ServeHTTP(recBind, reqBind)
+	if recBind.Code != http.StatusOK || !strings.Contains(recBind.Body.String(), `"started"`) {
+		t.Fatalf("POST /api/panel/domain = %d, body=%s", recBind.Code, recBind.Body.String())
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if run.GetActiveTask() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	dom, sslOn, blockIP := authMgr.PanelDomainConfig()
+	if dom != "panel.appsone.id" || !sslOn || !blockIP {
+		t.Fatalf("unexpected PanelDomainConfig: dom=%q ssl=%v blockIP=%v", dom, sslOn, blockIP)
+	}
+
+	// Pastikan config Nginx proxy terbentuk dengan upload limit 260m
+	confBytes, err := os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "panel.appsone.id"))
+	if err != nil || !strings.Contains(string(confBytes), "proxy_pass http://127.0.0.1:3200") || !strings.Contains(string(confBytes), "client_max_body_size 260m") {
+		t.Fatalf("unexpected nginx proxy vhost conf: err=%v body=%s", err, string(confBytes))
+	}
+
+	// 5. Setelah domain terikat, akses via nomor IP WAJIB diblokir (403) tanpa membocorkan nama domain
+	for _, hostHeader := range []string{"103.171.85.72:3200", "127.0.0.1:3200"} {
+		reqIPWeb := httptest.NewRequest(http.MethodGet, "/", nil)
+		reqIPWeb.Host = hostHeader
+		recIPWeb := httptest.NewRecorder()
+		handler.ServeHTTP(recIPWeb, reqIPWeb)
+		if recIPWeb.Code != http.StatusForbidden || strings.Contains(recIPWeb.Body.String(), "panel.appsone.id") {
+			t.Fatalf("direct IP web access (%s) = %d body=%s", hostHeader, recIPWeb.Code, recIPWeb.Body.String())
+		}
+
+		reqIPAPI := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+		reqIPAPI.Host = hostHeader
+		reqIPAPI.AddCookie(sessCookie)
+		recIPAPI := httptest.NewRecorder()
+		handler.ServeHTTP(recIPAPI, reqIPAPI)
+		if recIPAPI.Code != http.StatusForbidden || !strings.Contains(recIPAPI.Body.String(), "panel_domain_required") {
+			t.Fatalf("direct IP API access (%s) = %d body=%s", hostHeader, recIPAPI.Code, recIPAPI.Body.String())
+		}
+	}
+
+	// 6. Akses HTTP biasa ke domain (tanpa X-Forwarded-Proto: https) di-redirect 308 ke HTTPS
+	reqHTTPDom := httptest.NewRequest(http.MethodGet, "/files", nil)
+	reqHTTPDom.Host = "panel.appsone.id:3200"
+	reqHTTPDom.RemoteAddr = "103.171.85.72:54321"
+	recHTTPDom := httptest.NewRecorder()
+	handler.ServeHTTP(recHTTPDom, reqHTTPDom)
+	if recHTTPDom.Code != http.StatusPermanentRedirect || recHTTPDom.Header().Get("Location") != "https://panel.appsone.id/files" {
+		t.Fatalf("expected 308 redirect to https://panel.appsone.id/files, got %d loc=%q", recHTTPDom.Code, recHTTPDom.Header().Get("Location"))
+	}
+
+	// 7. Akses lewat proxy HTTPS Nginx (peer 127.0.0.1 + X-Forwarded-Proto: https + Host: panel.appsone.id) diizinkan
+	reqHTTPSDom := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqHTTPSDom.Host = "panel.appsone.id"
+	reqHTTPSDom.RemoteAddr = "127.0.0.1:45678"
+	reqHTTPSDom.Header.Set("X-Forwarded-Proto", "https")
+	reqHTTPSDom.AddCookie(sessCookie)
+	recHTTPSDom := httptest.NewRecorder()
+	handler.ServeHTTP(recHTTPSDom, reqHTTPSDom)
+	if recHTTPSDom.Code != http.StatusOK {
+		t.Fatalf("HTTPS domain proxied access = %d, body=%s", recHTTPSDom.Code, recHTTPSDom.Body.String())
+	}
+
+	// 8. Unbind domain memulihkan akses via IP
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/panel/domain", strings.NewReader(`{"remove_vhost":true}`))
+	reqDel.Host = "panel.appsone.id"
+	reqDel.RemoteAddr = "127.0.0.1:45678"
+	reqDel.Header.Set("X-Forwarded-Proto", "https")
+	reqDel.Header.Set("Origin", "https://panel.appsone.id")
+	reqDel.AddCookie(sessCookie)
+	recDel := httptest.NewRecorder()
+	handler.ServeHTTP(recDel, reqDel)
+	if recDel.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/panel/domain = %d, body=%s", recDel.Code, recDel.Body.String())
+	}
+
+	reqIPAfter := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqIPAfter.Host = "103.171.85.72:3200"
+	reqIPAfter.AddCookie(sessCookie)
+	recIPAfter := httptest.NewRecorder()
+	handler.ServeHTTP(recIPAfter, reqIPAfter)
+	if recIPAfter.Code != http.StatusOK {
+		t.Fatalf("expected IP access restored after unbind, got %d", recIPAfter.Code)
+	}
+}

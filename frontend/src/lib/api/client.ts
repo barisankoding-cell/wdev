@@ -1,6 +1,8 @@
 import type {
 	AddPDNSZoneResponse,
 	AuthMeResponse,
+	BindPanelDomainPayload,
+	BindPanelDomainResponse,
 	ChangeCredentialsPayload,
 	CreateSitePayload,
 	DomainAccounts,
@@ -16,6 +18,7 @@ import type {
 	ManagedRelayRecord,
 	ModeResponse,
 	NginxConfig,
+	PanelDomainStatus,
 	PDNSExposePayload,
 	PHPConfig,
 	PostgresConfig,
@@ -82,6 +85,15 @@ export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 			if (typeof window !== 'undefined') {
 				window.dispatchEvent(new CustomEvent('wdev:unauthorized'));
 			}
+		}
+		if (
+			res.status === 403 &&
+			typeof data === 'object' &&
+			data !== null &&
+			(data as { code?: unknown }).code === 'panel_domain_required' &&
+			typeof window !== 'undefined'
+		) {
+			window.dispatchEvent(new CustomEvent('wdev:domain_required'));
 		}
 		const errMsg =
 			typeof data === 'object' && data !== null && 'error' in data && typeof (data as { error?: unknown }).error === 'string'
@@ -395,6 +407,22 @@ export const api = {
 		apiFetch<{ status: string; message: string }>('/api/auth/change-credentials', {
 			method: 'POST',
 			body: JSON.stringify(payload)
+		}),
+	getPanelDomain: () => apiFetch<PanelDomainStatus>('/api/panel/domain'),
+	bindPanelDomain: (payload: BindPanelDomainPayload) =>
+		apiFetch<BindPanelDomainResponse>('/api/panel/domain', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+	setPanelBlockIP: (block: boolean) =>
+		apiFetch<{ status: string; domain: string; block_direct_ip: boolean }>('/api/panel/domain/block-ip', {
+			method: 'POST',
+			body: JSON.stringify({ block })
+		}),
+	unbindPanelDomain: (remove_vhost = true) =>
+		apiFetch<{ status: string; message: string }>('/api/panel/domain', {
+			method: 'DELETE',
+			body: JSON.stringify({ remove_vhost })
 		}),
 
 	// Server Mode (Lokal Standalone vs Hybrid Edge vs aaPanel Full VPS)

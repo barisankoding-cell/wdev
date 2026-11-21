@@ -27,6 +27,9 @@ const (
 	SettingPasswordHash     = "panel_password_hash"
 	SettingInitialPassword  = "panel_initial_password"
 	SettingEntranceSecret   = "panel_entrance_secret"
+	SettingPanelDomain      = "panel_domain"
+	SettingPanelDomainSSL   = "panel_domain_ssl"
+	SettingBlockDirectIP    = "panel_block_direct_ip"
 
 	DefaultIterations = 210000
 	SaltLength        = 16
@@ -63,6 +66,10 @@ type PanelAccessInfo struct {
 	PublicURL        string `json:"public_url"`
 	NetbirdURL       string `json:"netbird_url"`
 	LocalURL         string `json:"local_url"`
+	PanelDomain      string `json:"panel_domain,omitempty"`
+	PanelDomainURL   string `json:"panel_domain_url,omitempty"`
+	PanelDomainSSL   bool   `json:"panel_domain_ssl"`
+	BlockDirectIP    bool   `json:"block_direct_ip"`
 	PublicIP         string `json:"public_ip"`
 	NetbirdIP        string `json:"netbird_ip"`
 	Port             string `json:"port"`
@@ -268,6 +275,95 @@ func (m *Manager) SetSecurityEntrance(path string) error {
 		clean = ""
 	}
 	return m.store.SetSetting(SettingSecurityEntrance, clean)
+}
+
+// GetPanelDomain mengembalikan nama domain yang diikat ke panel wdev (atau kosong jika tidak diikat).
+func (m *Manager) GetPanelDomain() string {
+	if m == nil || m.store == nil {
+		return ""
+	}
+	val, _ := m.store.GetSetting(SettingPanelDomain)
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(val), "."))
+}
+
+// IsPanelDomainSSL mengembalikan true bila domain panel aktif memakai HTTPS/SSL.
+func (m *Manager) IsPanelDomainSSL() bool {
+	if m == nil || m.store == nil {
+		return false
+	}
+	val, _ := m.store.GetSetting(SettingPanelDomainSSL)
+	return val == "1" || strings.EqualFold(val, "true")
+}
+
+// IsBlockDirectIP mengembalikan true bila akses panel langsung lewat nomor IP diblokir.
+func (m *Manager) IsBlockDirectIP() bool {
+	if m == nil || m.store == nil {
+		return false
+	}
+	if m.GetPanelDomain() == "" {
+		return false
+	}
+	val, _ := m.store.GetSetting(SettingBlockDirectIP)
+	return val == "1" || strings.EqualFold(val, "true")
+}
+
+// PanelDomainConfig mengembalikan konfigurasi domain panel aktif secara atomik.
+func (m *Manager) PanelDomainConfig() (domain string, sslEnabled bool, blockDirectIP bool) {
+	domain = m.GetPanelDomain()
+	if domain == "" {
+		return "", false, false
+	}
+	return domain, m.IsPanelDomainSSL(), m.IsBlockDirectIP()
+}
+
+// BindPanelDomain menyimpan domain panel, status HTTPS, dan kebijakan blokir IP.
+func (m *Manager) BindPanelDomain(domain string, sslEnabled, blockDirectIP bool) error {
+	if m == nil || m.store == nil {
+		return errors.New("penyimpanan tidak tersedia")
+	}
+	clean := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if clean == "" {
+		return m.UnbindPanelDomain()
+	}
+	if err := m.store.SetSetting(SettingPanelDomain, clean); err != nil {
+		return err
+	}
+	sslVal := "0"
+	if sslEnabled {
+		sslVal = "1"
+	}
+	if err := m.store.SetSetting(SettingPanelDomainSSL, sslVal); err != nil {
+		return err
+	}
+	blockVal := "0"
+	if blockDirectIP {
+		blockVal = "1"
+	}
+	return m.store.SetSetting(SettingBlockDirectIP, blockVal)
+}
+
+// SetBlockDirectIP mengaktifkan atau menonaktifkan pemblokiran akses langsung menggunakan IP.
+func (m *Manager) SetBlockDirectIP(block bool) error {
+	if m == nil || m.store == nil {
+		return errors.New("penyimpanan tidak tersedia")
+	}
+	val := "0"
+	if block {
+		val = "1"
+	}
+	return m.store.SetSetting(SettingBlockDirectIP, val)
+}
+
+// UnbindPanelDomain melepas binding domain panel dan mengaktifkan kembali akses lewat IP.
+func (m *Manager) UnbindPanelDomain() error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	if err := m.store.SetSetting(SettingPanelDomain, ""); err != nil {
+		return err
+	}
+	_ = m.store.SetSetting(SettingPanelDomainSSL, "0")
+	return m.store.SetSetting(SettingBlockDirectIP, "0")
 }
 
 // GetUsername mengambil username panel.
@@ -563,10 +659,24 @@ func (m *Manager) GetPanelAccessInfo(publicIP, netbirdIP string) PanelAccessInfo
 		netbirdURL = fmt.Sprintf("http://%s:%s%s", netbirdIP, port, entrancePath)
 	}
 
+	panelDomain, panelSSL, blockDirectIP := m.PanelDomainConfig()
+	panelDomainURL := ""
+	if panelDomain != "" {
+		domScheme := "http"
+		if panelSSL {
+			domScheme = "https"
+		}
+		panelDomainURL = fmt.Sprintf("%s://%s%s", domScheme, panelDomain, entrancePath)
+	}
+
 	return PanelAccessInfo{
 		PublicURL:        pubURL,
 		NetbirdURL:       netbirdURL,
 		LocalURL:         localURL,
+		PanelDomain:      panelDomain,
+		PanelDomainURL:   panelDomainURL,
+		PanelDomainSSL:   panelSSL,
+		BlockDirectIP:    blockDirectIP,
 		PublicIP:         publicIP,
 		NetbirdIP:        netbirdIP,
 		Port:             port,

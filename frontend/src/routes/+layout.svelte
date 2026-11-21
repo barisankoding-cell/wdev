@@ -11,6 +11,7 @@
 	import ConfirmDialog from '#lib/components/modals/ConfirmDialog.svelte';
 	import ServiceConfigModal from '#lib/components/modals/ServiceConfigModal.svelte';
 	import ChangeCredsModal from '#lib/components/modals/ChangeCredsModal.svelte';
+	import PanelDomainModal from '#lib/components/modals/PanelDomainModal.svelte';
 	import ModeSwitchModal from '#lib/components/modals/ModeSwitchModal.svelte';
 	import Login from '#lib/components/auth/Login.svelte';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
@@ -81,6 +82,7 @@
 	<TerminalDialog />
 	<ServiceConfigModal />
 	<ChangeCredsModal />
+	<PanelDomainModal />
 	<ModeSwitchModal />
 	<SudoDialog />
 	<ConfirmDialog />

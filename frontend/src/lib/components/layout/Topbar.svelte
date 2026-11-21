@@ -22,6 +22,7 @@
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import NetworkIcon from '@lucide/svelte/icons/network';
 	import LaptopIcon from '@lucide/svelte/icons/laptop';
+	import GlobeIcon from '@lucide/svelte/icons/globe';
 
 	const PAGE_TITLES = $derived<Record<string, string>>({
 		'/': 'Status & Pembaruan Sistem',
@@ -101,6 +102,17 @@
 		<Button
 			variant="outline"
 			size="sm"
+			onclick={() => authStore.openPanelDomain()}
+			class="hidden sm:inline-flex gap-1.5"
+			title="Ikat Domain Panel, Forward HTTPS & Blokir IP"
+		>
+			<GlobeIcon class="size-3.5 text-primary" />
+			<span class="hidden md:inline">Domain Panel</span>
+		</Button>
+
+		<Button
+			variant="outline"
+			size="sm"
 			onclick={() => cp.openTerminal()}
 			class="relative"
 			aria-label="Buka Live Terminal Console"
@@ -169,6 +181,10 @@
 						<DropdownMenu.Item onclick={() => authStore.openChangeCreds()}>
 							<KeyRoundIcon class="size-4" />
 							<span>Ubah Kredensial</span>
+						</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={() => authStore.openPanelDomain()}>
+							<GlobeIcon class="size-4" />
+							<span>Domain &amp; HTTPS Panel</span>
 						</DropdownMenu.Item>
 						<DropdownMenu.Separator />
 						<DropdownMenu.Item onclick={() => authStore.logout()} class="text-destructive focus:text-destructive">

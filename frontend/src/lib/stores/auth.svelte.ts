@@ -8,6 +8,7 @@ class AuthStore {
 	entranceEnabled = $state(false);
 	username = $state('admin');
 	changeCredsOpen = $state(false);
+	panelDomainOpen = $state(false);
 	loading = $state(false);
 
 	constructor() {
@@ -19,6 +20,11 @@ class AuthStore {
 						description: 'Sesi login Anda telah berakhir. Silakan login kembali.'
 					});
 				}
+			});
+			window.addEventListener('wdev:domain_required', () => {
+				toast.error('Akses via IP Diblokir', {
+					description: 'Panel telah diikat ke domain resmi HTTPS. Silakan akses memakai URL domain panel.'
+				});
 			});
 		}
 	}
@@ -73,6 +79,14 @@ class AuthStore {
 
 	closeChangeCreds() {
 		this.changeCredsOpen = false;
+	}
+
+	openPanelDomain() {
+		this.panelDomainOpen = true;
+	}
+
+	closePanelDomain() {
+		this.panelDomainOpen = false;
 	}
 }
 

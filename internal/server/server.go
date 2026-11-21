@@ -148,6 +148,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	s.mux.HandleFunc("/api/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("/api/auth/change-credentials", s.handleAuthChangeCredentials)
+	s.mux.HandleFunc("/api/panel/domain", s.handlePanelDomain)
+	s.mux.HandleFunc("/api/panel/domain/block-ip", s.handlePanelDomainBlockIP)
 	s.registerFileManagerRoutes()
 	s.registerTerminalRoutes()
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
@@ -537,6 +539,12 @@ func (s *Server) Start() error {
 	info := s.authMgr.GetPanelAccessInfo("", nbIP)
 	fmt.Println("==================================================================")
 	fmt.Printf("✓ wdev Web Dashboard aktif di: %s://%s\n", scheme, addr)
+	if info.PanelDomainURL != "" {
+		fmt.Printf("✓ Domain Resmi Panel (HTTPS)  : %s\n", info.PanelDomainURL)
+		if info.BlockDirectIP {
+			fmt.Println("✓ Akses Langsung via IP       : DIBLOKIR (Mode Bind Domain aaPanel)")
+		}
+	}
 	if info.NetbirdURL != "" {
 		fmt.Printf("✓ URL Akses NetBird           : %s\n", strings.Replace(info.NetbirdURL, "http://", scheme+"://", 1))
 	}
@@ -551,7 +559,7 @@ func (s *Server) Start() error {
 	fmt.Println("✓ Info Kredensial & Security URL: jalankan 'wdev panel default'")
 	fmt.Println("==================================================================")
 
-	handler := s.wrapSecurityHeaders(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.mux))))
+	handler := s.wrapSecurityHeaders(s.wrapPanelDomain(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.mux)))))
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,

@@ -140,6 +140,24 @@ func (m *Manager) HasSite(domain string) bool {
 	return exists
 }
 
+// GetSite mengambil metadata vhost terdaftar (beserta masa berlaku SSL jika aktif) berdasarkan domain.
+func (m *Manager) GetSite(domain string) (store.SiteRecord, bool) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" {
+		return store.SiteRecord{}, false
+	}
+	sites, err := m.ListSites()
+	if err != nil {
+		return store.SiteRecord{}, false
+	}
+	for _, s := range sites {
+		if strings.EqualFold(strings.TrimSpace(s.Domain), domain) {
+			return s, true
+		}
+	}
+	return store.SiteRecord{}, false
+}
+
 func (m *Manager) sitesAvailDir() string {
 	if m.cfg != nil && strings.TrimSpace(m.cfg.NginxSitesAvail) != "" {
 		return strings.TrimSpace(m.cfg.NginxSitesAvail)

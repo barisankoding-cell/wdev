@@ -30,6 +30,7 @@
 		TableHeader,
 		TableRow
 	} from '#lib/components/ui/table/index.js';
+	import { authStore } from '#lib/stores/auth.svelte.js';
 	import type { TerminalAuditRecord, TerminalInfo, TerminalTargetUser } from '#lib/types/api.js';
 	import ClipboardIcon from '@lucide/svelte/icons/clipboard';
 	import CopyIcon from '@lucide/svelte/icons/copy';
@@ -418,9 +419,14 @@
 		<Alert variant="destructive">
 			<TriangleAlertIcon class="size-4" />
 			<AlertTitle>Peringatan Keamanan: Akses HTTP Tanpa Enkripsi TLS</AlertTitle>
-			<AlertDescription class="text-xs">
-				Daemon berjalan sebagai <strong>root</strong> dan saat ini Anda mengakses panel lewat HTTP biasa (<code class="font-mono">http://</code>).
-				Untuk mencegah penyadapan sesi &amp; ketikan terminal root di VPS publik, gunakan domain <strong>HTTPS (<code class="font-mono">wss://</code>)</strong> atau akses melalui VPN pribadi (NetBird).
+			<AlertDescription class="flex flex-wrap items-center justify-between gap-2 text-xs">
+				<span>
+					Daemon berjalan sebagai <strong>root</strong> dan saat ini Anda mengakses panel lewat HTTP biasa (<code class="font-mono">http://</code>).
+					Ikat panel ke domain HTTPS atau akses via NetBird VPN untuk mencegah penyadapan sesi &amp; ketikan terminal.
+				</span>
+				<Button variant="outline" size="sm" class="h-7 shrink-0 text-xs" onclick={() => authStore.openPanelDomain()}>
+					Ikat Domain &amp; HTTPS
+				</Button>
 			</AlertDescription>
 		</Alert>
 	{/if}

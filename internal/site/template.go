@@ -25,9 +25,15 @@ server {
     {{end}}
 
     {{if eq .Framework "proxy"}}
+    client_max_body_size 260m;
+
     location / {
         proxy_pass http://127.0.0.1:{{.ProxyPort}};
         proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;

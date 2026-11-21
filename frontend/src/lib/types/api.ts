@@ -692,3 +692,36 @@ export interface TerminalAuditRecord {
 	ended_at?: string;
 }
 
+export interface PanelDomainStatus {
+	domain: string;
+	domain_url?: string;
+	ssl_enabled: boolean;
+	block_direct_ip: boolean;
+	ssl_provider?: string;
+	ssl_expires_at?: string;
+	ssl_days_left?: number;
+	panel_port: number;
+	entrance_path: string;
+	public_ip?: string;
+	server_mode: string;
+	available_domains: string[];
+}
+
+export interface BindPanelDomainPayload {
+	domain: string;
+	ssl_mode: 'letsencrypt' | 'local' | 'external' | 'none';
+	email?: string;
+	block_direct_ip?: boolean;
+	sync_dns?: boolean;
+	sudo_pass?: string;
+}
+
+export interface BindPanelDomainResponse {
+	status: 'started' | 'bound' | 'sudo_required' | string;
+	task_id?: number;
+	domain?: string;
+	target_url?: string;
+	block_direct_ip?: boolean;
+	message?: string;
+}
+

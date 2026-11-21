@@ -41,7 +41,9 @@ ANTARMUKA:
   wdev tui                  Jalankan TUI Terminal Dashboard interaktif
 
 PANEL & KEAMANAN (AAPANEL SECURITY STYLE):
-  wdev panel default, info  Tampilkan URL akses panel, security entrance, username & password
+  wdev panel default, info  Tampilkan URL akses panel, domain, security entrance, username & password
+  wdev panel domain <d|off> Ikat & forward domain HTTPS ke panel (dan blokir akses langsung IP)
+  wdev panel block-ip <on|off> Aktifkan / nonaktifkan pemblokiran akses via nomor IP
   wdev panel password <pw>  Ubah kata sandi admin panel
   wdev panel username <usr> Ubah username admin panel
   wdev panel entrance <url> Atur path security entrance (contoh: wdev panel entrance secret)
@@ -1592,7 +1594,7 @@ func main() {
 		_, etcStatErr := os.Stat("/etc/wdev/wdev.db")
 		etcDBActive := etcStatErr == nil || os.IsPermission(etcStatErr) || exec.Command("systemctl", "is-active", "--quiet", "wdev").Run() == nil
 		if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" && etcDBActive {
-			if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" {
+			if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" || sub == "domain" || sub == "block-ip" {
 				fmt.Fprintf(os.Stderr, "⚠️  Service sistem wdev aktif menggunakan /etc/wdev/wdev.db.\n")
 				fmt.Fprintf(os.Stderr, "   Jalankan dengan sudo agar perubahan berlaku ke panel aktif: sudo wdev panel %s ...\n", sub)
 				os.Exit(1)
@@ -1681,6 +1683,114 @@ func main() {
 			}
 			fmt.Println("✓ Kredensial dan Security Entrance berhasil di-reset ke nilai acak baru:")
 			printPanelInfo(info)
+		case "domain":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev panel domain <domain|off> [--ssl letsencrypt|local|external|none] [--email <email>] [--allow-ip]")
+				return
+			}
+			targetDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(args[2]), "."))
+			if targetDom == "off" || targetDom == "none" || targetDom == "unbind" {
+				oldDom := authMgr.GetPanelDomain()
+				if err := authMgr.UnbindPanelDomain(); err != nil {
+					fmt.Fprintf(os.Stderr, "Gagal melepas domain panel: %v\n", err)
+					os.Exit(1)
+				}
+				if oldDom != "" {
+					if rec, ok := siteMgr.GetSite(oldDom); ok && rec.Framework == "proxy" && strconv.Itoa(rec.ProxyPort) == cfg.HTTPPort {
+						_ = siteMgr.DeleteSite(oldDom)
+					}
+				}
+				fmt.Println("✓ Binding domain panel dilepas; akses via IP kembali diaktifkan.")
+				return
+			}
+			sslMode := "letsencrypt"
+			sslEmail := ""
+			blockIP := true
+			for i := 3; i < len(args); i++ {
+				switch args[i] {
+				case "--ssl":
+					if i+1 < len(args) {
+						sslMode = strings.ToLower(strings.TrimSpace(args[i+1]))
+						i++
+					}
+				case "--email":
+					if i+1 < len(args) {
+						sslEmail = strings.TrimSpace(args[i+1])
+						i++
+					}
+				case "--allow-ip":
+					blockIP = false
+				}
+			}
+			if err := site.ValidateDomain(targetDom); err != nil {
+				fmt.Fprintf(os.Stderr, "Error domain: %v\n", err)
+				os.Exit(1)
+			}
+			if sslMode == "letsencrypt" {
+				if err := site.ValidateLetsEncryptDomain(targetDom); err != nil {
+					fmt.Fprintf(os.Stderr, "Error domain Let's Encrypt: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			panelPortNum, _ := strconv.Atoi(cfg.HTTPPort)
+			if panelPortNum <= 0 {
+				panelPortNum = 3200
+			}
+			if existing, ok := siteMgr.GetSite(targetDom); ok && sslMode != "external" {
+				if !(existing.Framework == "proxy" && existing.ProxyPort == panelPortNum) {
+					fmt.Fprintf(os.Stderr, "Error: domain %q sudah digunakan Virtual Host lain. Pakai subdomain baru misalnya panel.%s\n", targetDom, targetDom)
+					os.Exit(1)
+				}
+			}
+			if sslMode != "external" {
+				if pdnsMgr != nil && pdnsMgr.GetMode() == "vps" {
+					conf := pdnsMgr.LoadConfig()
+					if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
+						if zone, zErr := pdnsMgr.FindMatchingZone(targetDom); zErr == nil && zone != "" {
+							_ = pdnsMgr.AddRecord(zone, targetDom, "A", conf.VPSPublicIP, 300)
+						}
+					}
+				}
+				if err := siteMgr.CreateSite(site.CreateOptions{
+					Domain:     targetDom,
+					Framework:  "proxy",
+					ProxyPort:  panelPortNum,
+					SSLEnabled: sslMode == "local",
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Gagal menyiapkan proxy Nginx: %v\n", err)
+					os.Exit(1)
+				}
+				if sslMode == "letsencrypt" {
+					if err := siteMgr.EnableLetsEncrypt(context.Background(), func(line string) { fmt.Println(line) }, targetDom, sslEmail); err != nil {
+						fmt.Fprintf(os.Stderr, "Gagal menerbitkan Let's Encrypt: %v\n", err)
+						os.Exit(1)
+					}
+				}
+			}
+			if err := authMgr.BindPanelDomain(targetDom, sslMode != "none", blockIP); err != nil {
+				fmt.Fprintf(os.Stderr, "Gagal menyimpan binding domain: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Domain panel diikat ke: %s (SSL=%s, BlockIP=%v)\n", targetDom, sslMode, blockIP)
+		case "block-ip":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev panel block-ip <on|off>")
+				return
+			}
+			if authMgr.GetPanelDomain() == "" {
+				fmt.Fprintln(os.Stderr, "Error: belum ada domain panel yang diikat. Gunakan 'wdev panel domain <domain>' terlebih dahulu.")
+				os.Exit(1)
+			}
+			on := strings.ToLower(args[2]) == "on" || args[2] == "1" || strings.ToLower(args[2]) == "true"
+			if err := authMgr.SetBlockDirectIP(on); err != nil {
+				fmt.Fprintf(os.Stderr, "Gagal mengubah kebijakan blokir IP: %v\n", err)
+				os.Exit(1)
+			}
+			if on {
+				fmt.Println("✓ Akses panel langsung memakai IP kini DIBLOKIR (hanya via domain).")
+			} else {
+				fmt.Println("✓ Akses panel via IP kembali diizinkan.")
+			}
 		default:
 			printPanelHelp()
 		}
@@ -1765,8 +1875,10 @@ func main() {
 }
 
 func printPanelHelp() {
-	fmt.Println(`Penggunaan wdev panel (aaPanel Security Entrance & Auth):
-  wdev panel default, info    Tampilkan URL akses, Security Entrance, username & password
+	fmt.Println(`Penggunaan wdev panel (aaPanel Security Entrance, Domain Binding & Auth):
+  wdev panel default, info    Tampilkan URL akses, Domain Panel, Security Entrance, username & password
+  wdev panel domain <dom|off> Ikat & forward domain HTTPS ke panel (dan blokir akses langsung IP)
+  wdev panel block-ip on|off  Aktifkan / nonaktifkan pemblokiran akses IP saat domain diikat
   wdev panel password <pw>    Ubah kata sandi login panel
   wdev panel username <usr>   Ubah username login panel
   wdev panel entrance <path>  Atur path security entrance (contoh: wdev panel entrance secret)
@@ -1780,6 +1892,12 @@ func printPanelInfo(info auth.PanelAccessInfo) {
 	fmt.Println("                  INFORMASI AKSES wdev PANEL                      ")
 	fmt.Println("                  (aaPanel Security Architecture)                 ")
 	fmt.Println("==================================================================")
+	if info.PanelDomainURL != "" {
+		fmt.Printf("  Domain Panel     : %s\n", info.PanelDomainURL)
+		if info.BlockDirectIP {
+			fmt.Println("  Akses via IP     : DIBLOKIR (hanya lewat domain resmi)")
+		}
+	}
 	if info.PublicURL != "" {
 		fmt.Printf("  URL Publik       : %s\n", info.PublicURL)
 	}
