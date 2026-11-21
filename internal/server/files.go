@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"wdev/internal/filemanager"
@@ -34,6 +35,7 @@ func (s *Server) registerFileManagerRoutes() {
 	s.mux.HandleFunc("/api/files/delete", s.handleFilesDelete)
 	s.mux.HandleFunc("/api/files/chmod", s.handleFilesChmod)
 	s.mux.HandleFunc("/api/files/upload", s.handleFilesUpload)
+	s.mux.HandleFunc("/api/files/fetch-url", s.handleFilesFetchURL)
 	s.mux.HandleFunc("/api/files/compress", s.handleFilesCompress)
 	s.mux.HandleFunc("/api/files/extract", s.handleFilesExtract)
 }
@@ -277,23 +279,71 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "Total ukuran upload melebihi batas 256 MiB")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "Gagal memproses upload multipart: "+err.Error())
 		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
 	destDir := r.FormValue("dir")
+	overwrite := r.FormValue("overwrite") != "false"
+	relPaths := r.MultipartForm.Value["rel_paths"]
 	var files = r.MultipartForm.File["files"]
 	if len(files) == 0 {
 		files = r.MultipartForm.File["file"]
 	}
-	entries, err := s.ensureFileManager().SaveUploaded(destDir, files)
+	entries, skipped, err := s.ensureFileManager().SaveUploadedDetailed(destDir, files, filemanager.UploadOptions{
+		RelPaths:  relPaths,
+		Overwrite: overwrite,
+	})
 	if err != nil {
 		writeFileMgrError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "uploaded",
-		"count":   len(entries),
-		"entries": entries,
+		"status":        "uploaded",
+		"count":         len(entries),
+		"skipped_count": len(skipped),
+		"skipped":       skipped,
+		"entries":       entries,
+	})
+}
+
+func (s *Server) handleFilesFetchURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		URL       string `json:"url"`
+		Dir       string `json:"dir"`
+		Filename  string `json:"filename"`
+		Overwrite *bool  `json:"overwrite"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload JSON tidak valid")
+		return
+	}
+	overwrite := true
+	if payload.Overwrite != nil {
+		overwrite = *payload.Overwrite
+	}
+	entry, err := s.ensureFileManager().FetchFromURL(r.Context(), payload.URL, payload.Dir, payload.Filename, overwrite)
+	if err != nil {
+		writeFileMgrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "downloaded",
+		"entry":  entry,
 	})
 }
 

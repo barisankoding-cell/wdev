@@ -2,9 +2,11 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,6 +23,8 @@ import (
 	"wdev/internal/serviceconfig"
 	"wdev/internal/site"
 	"wdev/internal/store"
+
+	"github.com/gorilla/websocket"
 )
 
 func newTestServer() *Server {
@@ -873,9 +877,145 @@ func TestFileManagerEndpointsSecurityAndCRUD(t *testing.T) {
 	if recForbidden.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for outside root, got %d (%s)", recForbidden.Code, recForbidden.Body.String())
 	}
+
+	// 4. Multipart Upload preserving rel_paths + Download single file + FetchURL SSRF protection
+	var upBuf bytes.Buffer
+	mw := multipart.NewWriter(&upBuf)
+	_ = mw.WriteField("dir", rootDir)
+	_ = mw.WriteField("overwrite", "true")
+	_ = mw.WriteField("rel_paths", "assets/app.js")
+	pw, _ := mw.CreateFormFile("files", "app.js")
+	_, _ = pw.Write([]byte("console.log('wdev');"))
+	_ = mw.Close()
+
+	reqUp := httptest.NewRequest(http.MethodPost, "/api/files/upload", &upBuf)
+	reqUp.Header.Set("Content-Type", mw.FormDataContentType())
+	recUp := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recUp, reqUp)
+	if recUp.Code != http.StatusOK || !strings.Contains(recUp.Body.String(), `"count":1`) {
+		t.Fatalf("POST /api/files/upload = %d, body=%s", recUp.Code, recUp.Body.String())
+	}
+
+	uploadedFile := filepath.Join(rootDir, "assets", "app.js")
+	recDL := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recDL, httptest.NewRequest(http.MethodGet, "/api/files/download?paths="+url.QueryEscape(uploadedFile), nil))
+	if recDL.Code != http.StatusOK || recDL.Body.String() != "console.log('wdev');" {
+		t.Fatalf("GET /api/files/download = %d, body=%q", recDL.Code, recDL.Body.String())
+	}
+
+	reqFetchBad := httptest.NewRequest(http.MethodPost, "/api/files/fetch-url", strings.NewReader(`{"url":"http://127.0.0.1:8080/x","dir":`+strconvQuote(rootDir)+`}`))
+	recFetchBad := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recFetchBad, reqFetchBad)
+	if recFetchBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for loopback fetch-url, got %d (%s)", recFetchBad.Code, recFetchBad.Body.String())
+	}
 }
 
 func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func TestTerminalInfoAndWebSocketPTY(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "term.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: filepath.Join(tmp, "etc"), WebRootBase: tmp}
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	_ = authMgr.SetSecurityEntrance("secret-term")
+	srv := New(cfg, db, runner.New(db), inst, nil, nil, nil, nil, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux))))
+
+	// 1. Unauthenticated / without entrance must be blocked with 404
+	recUnauth := httptest.NewRecorder()
+	handler.ServeHTTP(recUnauth, httptest.NewRequest(http.MethodGet, "/api/terminal/info", nil))
+	if recUnauth.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 without entrance cookie, got %d", recUnauth.Code)
+	}
+
+	// Create valid session cookie
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	// 2. Authenticated GET /api/terminal/info returns system info & shells
+	reqInfo := httptest.NewRequest(http.MethodGet, "/api/terminal/info", nil)
+	reqInfo.AddCookie(sessionCookie)
+	recInfo := httptest.NewRecorder()
+	handler.ServeHTTP(recInfo, reqInfo)
+	if recInfo.Code != http.StatusOK {
+		t.Fatalf("GET /api/terminal/info = %d, body=%s", recInfo.Code, recInfo.Body.String())
+	}
+	if !strings.Contains(recInfo.Body.String(), `"available_shells"`) {
+		t.Fatalf("expected available_shells in /api/terminal/info, got %s", recInfo.Body.String())
+	}
+
+	// 3. Spin up HTTP test server to verify real WebSocket PTY upgrade + CSWSH protection
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/terminal/ws?shell=" + url.QueryEscape("/bin/sh") + "&cwd=" + url.QueryEscape(tmp)
+	tsURL, _ := url.Parse(ts.URL)
+
+	// Cross-origin upgrade must fail
+	badHeaders := http.Header{}
+	badHeaders.Set("Cookie", sessionCookie.String())
+	badHeaders.Set("Origin", "https://evil.example.net")
+	if cBad, respBad, err := websocket.DefaultDialer.Dial(wsURL, badHeaders); err == nil {
+		_ = cBad.Close()
+		t.Fatalf("expected cross-origin WebSocket dial to fail")
+	} else if respBad != nil && respBad.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for cross-origin WebSocket, got %d", respBad.StatusCode)
+	}
+
+	// Same-origin authenticated upgrade must succeed
+	okHeaders := http.Header{}
+	okHeaders.Set("Cookie", sessionCookie.String())
+	okHeaders.Set("Origin", "http://"+tsURL.Host)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, okHeaders)
+	if err != nil {
+		t.Fatalf("authenticated same-origin WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// Read ready control JSON
+	msgType, rawReady, err := conn.ReadMessage()
+	if err != nil || msgType != websocket.TextMessage || !strings.Contains(string(rawReady), `"type":"ready"`) {
+		t.Fatalf("expected ready text frame, got type=%d payload=%q err=%v", msgType, string(rawReady), err)
+	}
+
+	// Send resize JSON frame + shell command over binary frame
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","cols":120,"rows":35}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("pwd && echo __WS_PTY_PASS__ && exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	var combined strings.Builder
+	seenExit := false
+	for i := 0; i < 64; i++ {
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		mt, data, rerr := conn.ReadMessage()
+		if rerr != nil {
+			break
+		}
+		if mt == websocket.BinaryMessage {
+			combined.Write(data)
+		} else if mt == websocket.TextMessage && strings.Contains(string(data), `"type":"exit"`) {
+			seenExit = true
+			break
+		}
+	}
+
+	if !strings.Contains(combined.String(), "__WS_PTY_PASS__") || !seenExit {
+		t.Fatalf("expected __WS_PTY_PASS__ and exit event, seenExit=%v output=%q", seenExit, combined.String())
+	}
 }

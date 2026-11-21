@@ -32,6 +32,7 @@ import type {
 	ServerMode,
 	ServiceConfigKey,
 	SetRelayPayload,
+	TerminalInfo,
 	SetupMailPayload,
 	SiteRecord,
 	SwitchersMap,
@@ -453,17 +454,101 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ paths, mode, recursive, web_owner })
 		}),
-	uploadFiles: (dir: string, files: FileList | File[]) => {
+	uploadFiles: (
+		dir: string,
+		items: FileList | File[] | Array<{ file: File; relativePath?: string }>,
+		options?: {
+			overwrite?: boolean;
+			onProgress?: (info: { loaded: number; total: number; percent: number }) => void;
+			signal?: AbortSignal;
+		}
+	): Promise<{ status: string; count: number; skipped_count?: number; skipped?: string[]; entries: FileEntry[] }> => {
 		const form = new FormData();
 		form.append('dir', dir);
-		for (const f of Array.from(files)) {
-			form.append('files', f, f.name);
+		form.append('overwrite', options?.overwrite === false ? 'false' : 'true');
+
+		const list = Array.from(items as ArrayLike<File | { file: File; relativePath?: string }>);
+		for (const item of list) {
+			if (item instanceof File) {
+				const rel = (item as File & { webkitRelativePath?: string }).webkitRelativePath || item.name;
+				form.append('files', item, item.name);
+				form.append('rel_paths', rel);
+			} else {
+				const rel = item.relativePath || item.file.name;
+				form.append('files', item.file, item.file.name);
+				form.append('rel_paths', rel);
+			}
 		}
-		return apiFetch<{ status: string; count: number; entries: FileEntry[] }>('/api/files/upload', {
-			method: 'POST',
-			body: form
+
+		return new Promise((resolve, reject) => {
+			const xhr = new XMLHttpRequest();
+			xhr.open('POST', '/api/files/upload');
+			xhr.withCredentials = true;
+
+			if (options?.signal) {
+				if (options.signal.aborted) {
+					reject(new ApiError('Unggahan dibatalkan', 0));
+					return;
+				}
+				const onAbort = () => xhr.abort();
+				options.signal.addEventListener('abort', onAbort, { once: true });
+			}
+
+			xhr.upload.onprogress = (ev) => {
+				if (!options?.onProgress || !ev.lengthComputable || ev.total <= 0) return;
+				const percent = Math.min(100, Math.round((ev.loaded / ev.total) * 100));
+				options.onProgress({ loaded: ev.loaded, total: ev.total, percent });
+			};
+
+			xhr.onabort = () => {
+				reject(new ApiError('Unggahan dibatalkan', 0));
+			};
+
+			xhr.onerror = () => {
+				reject(new ApiError('Gagal terhubung ke server saat mengunggah berkas', 0));
+			};
+
+			xhr.onload = () => {
+				let parsed: Record<string, unknown> = {};
+				if (xhr.responseText) {
+					try {
+						parsed = JSON.parse(xhr.responseText) as Record<string, unknown>;
+					} catch {
+						parsed = { error: xhr.responseText };
+					}
+				}
+				if (xhr.status >= 200 && xhr.status < 300) {
+					resolve(
+						parsed as {
+							status: string;
+							count: number;
+							skipped_count?: number;
+							skipped?: string[];
+							entries: FileEntry[];
+						}
+					);
+					return;
+				}
+				if (xhr.status === 401 && typeof window !== 'undefined') {
+					window.dispatchEvent(new CustomEvent('wdev:unauthorized'));
+				}
+				const msg =
+					typeof parsed.error === 'string' && parsed.error
+						? parsed.error
+						: typeof parsed.message === 'string' && parsed.message
+							? parsed.message
+							: `Upload gagal (HTTP ${xhr.status})`;
+				reject(new ApiError(msg, xhr.status, parsed));
+			};
+
+			xhr.send(form);
 		});
 	},
+	fetchFileFromURL: (dir: string, url: string, filename = '', overwrite = true) =>
+		apiFetch<{ status: string; entry: FileEntry }>('/api/files/fetch-url', {
+			method: 'POST',
+			body: JSON.stringify({ dir, url, filename, overwrite })
+		}),
 	compressFiles: (paths: string[], output_path = '') =>
 		apiFetch<{ status: string; entry: FileEntry }>('/api/files/compress', {
 			method: 'POST',
@@ -479,5 +564,18 @@ export const api = {
 		const params = new URLSearchParams();
 		for (const p of paths) params.append('paths', p);
 		return `/api/files/download?${params.toString()}`;
+	},
+
+	// Interactive PTY Terminal
+	getTerminalInfo: () => apiFetch<TerminalInfo>('/api/terminal/info'),
+	terminalWsUrl: (opts: { cwd?: string; shell?: string; cols?: number; rows?: number } = {}) => {
+		const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+		const params = new URLSearchParams();
+		if (opts.cwd) params.set('cwd', opts.cwd);
+		if (opts.shell) params.set('shell', opts.shell);
+		if (opts.cols) params.set('cols', String(opts.cols));
+		if (opts.rows) params.set('rows', String(opts.rows));
+		const qs = params.toString();
+		return `${proto}//${window.location.host}/api/terminal/ws${qs ? `?${qs}` : ''}`;
 	}
 };

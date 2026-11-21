@@ -5,6 +5,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,5 +178,112 @@ func TestCompressExtractAndZipSlipProtection(t *testing.T) {
 	_ = os.WriteFile(evilTar, tarBuf.Bytes(), 0644)
 	if _, err := mgr.Extract(evilTar, extractDest); err == nil || !strings.Contains(err.Error(), "tidak aman") {
 		t.Fatalf("expected tar slip rejection, got err=%v", err)
+	}
+}
+
+func makeMultipartHeaders(t *testing.T, files map[string]string) []*multipart.FileHeader {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	for name, content := range files {
+		pw, err := mw.CreateFormFile("files", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = pw.Write([]byte(content))
+	}
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if err := req.ParseMultipartForm(8 << 20); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if req.MultipartForm != nil {
+			_ = req.MultipartForm.RemoveAll()
+		}
+	})
+	return req.MultipartForm.File["files"]
+}
+
+func TestUploadFoldersOverwriteAndRemoteFetchDownload(t *testing.T) {
+	mgr, allowed, _ := newTestFM(t)
+
+	// 1. Folder upload preserving relative subfolder structure & overwrite=false skip
+	headers := makeMultipartHeaders(t, map[string]string{
+		"index.html": "<h1>home</h1>",
+		"style.css":  "body{color:red}",
+	})
+	saved, skipped, err := mgr.SaveUploadedDetailed(allowed, headers, UploadOptions{
+		RelPaths:  []string{"site/index.html", "site/assets/style.css"},
+		Overwrite: false,
+	})
+	if err != nil || len(saved) != 2 || len(skipped) != 0 {
+		t.Fatalf("expected 2 uploaded files, got saved=%d skipped=%d err=%v", len(saved), len(skipped), err)
+	}
+	if _, err := os.Stat(filepath.Join(allowed, "site", "assets", "style.css")); err != nil {
+		t.Fatalf("expected nested folder file to exist: %v", err)
+	}
+
+	// Re-upload same paths with Overwrite=false should skip both
+	headers2 := makeMultipartHeaders(t, map[string]string{
+		"index.html": "<h1>updated</h1>",
+		"style.css":  "body{color:blue}",
+	})
+	saved2, skipped2, err := mgr.SaveUploadedDetailed(allowed, headers2, UploadOptions{
+		RelPaths:  []string{"site/index.html", "site/assets/style.css"},
+		Overwrite: false,
+	})
+	if err != nil || len(saved2) != 0 || len(skipped2) != 2 {
+		t.Fatalf("expected 2 skipped when overwrite=false, got saved=%d skipped=%d err=%v", len(saved2), len(skipped2), err)
+	}
+
+	// Traversal rel_path must be rejected
+	headersBad := makeMultipartHeaders(t, map[string]string{"evil.txt": "x"})
+	if _, _, err := mgr.SaveUploadedDetailed(allowed, headersBad, UploadOptions{
+		RelPaths:  []string{"../escape.txt"},
+		Overwrite: true,
+	}); err == nil {
+		t.Fatal("expected rel_path traversal to fail")
+	}
+
+	// 2. Remote URL download via injected test server
+	remoteSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="remote-pack.txt"`)
+		_, _ = w.Write([]byte("remote payload ok"))
+	}))
+	defer remoteSrv.Close()
+
+	mgr.SetRemoteHTTPClient(remoteSrv.Client())
+	entry, err := mgr.FetchFromURL(context.Background(), remoteSrv.URL+"/download", allowed, "", true)
+	if err != nil {
+		t.Fatalf("FetchFromURL failed: %v", err)
+	}
+	if entry.Name != "remote-pack.txt" || entry.Size != int64(len("remote payload ok")) {
+		t.Fatalf("unexpected fetched entry: %+v", entry)
+	}
+
+	// Without SetRemoteHTTPClient, loopback URL must be blocked by validatePublicURL
+	mgr.SetRemoteHTTPClient(nil)
+	if _, err := mgr.FetchFromURL(context.Background(), "http://127.0.0.1:9999/secret", allowed, "", true); err == nil {
+		t.Fatal("expected loopback URL to be rejected by SSRF validation")
+	}
+
+	// 3. StreamDownload folder produces valid zip
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/files/download", nil)
+	if err := mgr.StreamDownload(rec, req, []string{filepath.Join(allowed, "site")}); err != nil {
+		t.Fatalf("StreamDownload folder failed: %v", err)
+	}
+	if rec.Header().Get("Content-Type") != "application/zip" {
+		t.Fatalf("expected application/zip Content-Type, got %q", rec.Header().Get("Content-Type"))
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatalf("downloaded folder zip is invalid: %v", err)
+	}
+	if len(zr.File) < 3 {
+		t.Fatalf("expected directory & file entries in downloaded zip, got %d", len(zr.File))
 	}
 }

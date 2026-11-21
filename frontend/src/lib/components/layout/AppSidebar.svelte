@@ -13,6 +13,7 @@
 	import CloudIcon from '@lucide/svelte/icons/cloud';
 	import MailIcon from '@lucide/svelte/icons/mail';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
+	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import type { Component } from 'svelte';
 
@@ -43,7 +44,10 @@
 		},
 		{
 			title: 'Sistem & Berkas',
-			items: [{ label: 'File Manager', href: '/files', icon: FolderOpenIcon }]
+			items: [
+				{ label: 'File Manager', href: '/files', icon: FolderOpenIcon },
+				{ label: 'Terminal SSH (PTY)', href: '/terminal', icon: SquareTerminalIcon }
+			]
 		},
 		modeStore.mode === 'edge'
 			? {

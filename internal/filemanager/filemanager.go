@@ -98,6 +98,7 @@ type Manager struct {
 	cfg           *config.Config
 	store         *store.Store
 	overrideRoots []string
+	remoteClient  *http.Client
 }
 
 // New membuat instance File Manager yang terikat ke root web & vhost wdev.
@@ -949,42 +950,96 @@ func (m *Manager) Chmod(paths []string, modeStr string, recursive bool, webOwner
 	return nil
 }
 
+// UploadOptions mengatur perilaku penyimpanan upload berkas maupun folder bertingkat.
+type UploadOptions struct {
+	RelPaths  []string
+	Overwrite bool
+}
+
+func sanitizeUploadRelPath(rawRel string) (string, error) {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(rawRel, "\\", "/"))
+	cleaned = strings.Trim(cleaned, "/")
+	if cleaned == "" {
+		return "", fmt.Errorf("path berkas upload kosong")
+	}
+	parts := strings.Split(cleaned, "/")
+	validParts := make([]string, 0, len(parts))
+	for _, seg := range parts {
+		cleanSeg, err := validateBaseName(seg)
+		if err != nil {
+			return "", err
+		}
+		validParts = append(validParts, cleanSeg)
+	}
+	return filepath.Join(validParts...), nil
+}
+
 // SaveUploaded menyimpan daftar berkas multipart upload ke direktori tujuan secara aman.
 func (m *Manager) SaveUploaded(destDir string, files []*multipart.FileHeader) ([]FileEntry, error) {
+	entries, _, err := m.SaveUploadedDetailed(destDir, files, UploadOptions{Overwrite: true})
+	return entries, err
+}
+
+// SaveUploadedDetailed menyimpan berkas upload dengan dukungan struktur subfolder (rel_paths) dan kontrol overwrite.
+func (m *Manager) SaveUploadedDetailed(destDir string, files []*multipart.FileHeader, opts UploadOptions) ([]FileEntry, []string, error) {
 	if len(files) == 0 {
-		return nil, fmt.Errorf("tidak ada berkas yang diunggah")
+		return nil, nil, fmt.Errorf("tidak ada berkas yang diunggah")
 	}
 	resolvedDir, err := m.ResolvePath(destDir, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	info, err := os.Stat(resolvedDir)
 	if err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("direktori tujuan tidak valid")
+		return nil, nil, fmt.Errorf("direktori tujuan tidak valid")
 	}
 
 	uidResolver := newUIDGidResolver()
 	saved := make([]FileEntry, 0, len(files))
+	var skipped []string
 
-	for _, fh := range files {
-		cleanName, err := validateBaseName(filepath.Base(strings.ReplaceAll(fh.Filename, "\\", "/")))
-		if err != nil {
-			return saved, fmt.Errorf("nama berkas upload tidak valid (%s): %w", fh.Filename, err)
+	for idx, fh := range files {
+		rawRel := ""
+		if idx < len(opts.RelPaths) {
+			rawRel = opts.RelPaths[idx]
 		}
-		dstPath, err := m.ResolvePath(filepath.Join(resolvedDir, cleanName), false)
-		if err != nil {
-			return saved, err
+		if strings.TrimSpace(rawRel) == "" {
+			rawRel = filepath.Base(strings.ReplaceAll(fh.Filename, "\\", "/"))
 		}
+		relPath, err := sanitizeUploadRelPath(rawRel)
+		if err != nil {
+			return saved, skipped, fmt.Errorf("nama berkas upload tidak valid (%s): %w", fh.Filename, err)
+		}
+
+		dstPath, err := m.ResolvePath(filepath.Join(resolvedDir, relPath), false)
+		if err != nil {
+			return saved, skipped, err
+		}
+		if !isWithinRoot(dstPath, resolvedDir) || dstPath == resolvedDir {
+			return saved, skipped, fmt.Errorf("tujuan upload keluar dari direktori target")
+		}
+		if !opts.Overwrite {
+			if _, statErr := os.Lstat(dstPath); statErr == nil {
+				skipped = append(skipped, filepath.ToSlash(relPath))
+				continue
+			}
+		}
+
+		parentDir := filepath.Dir(dstPath)
+		if mkErr := os.MkdirAll(parentDir, 0755); mkErr != nil {
+			return saved, skipped, fmt.Errorf("gagal membuat subfolder '%s': %w", filepath.Dir(relPath), mkErr)
+		}
+		inheritParentNonRootOwnership(parentDir)
 
 		srcFile, err := fh.Open()
 		if err != nil {
-			return saved, fmt.Errorf("gagal membuka stream upload '%s': %w", cleanName, err)
+			return saved, skipped, fmt.Errorf("gagal membuka stream upload '%s': %w", relPath, err)
 		}
 
 		outFile, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			_ = srcFile.Close()
-			return saved, fmt.Errorf("gagal menulis '%s': %w", cleanName, err)
+			return saved, skipped, fmt.Errorf("gagal menulis '%s': %w", relPath, err)
 		}
 
 		_, copyErr := io.Copy(outFile, srcFile)
@@ -992,10 +1047,10 @@ func (m *Manager) SaveUploaded(destDir string, files []*multipart.FileHeader) ([
 		closeErr := outFile.Close()
 		if copyErr != nil {
 			_ = os.Remove(dstPath)
-			return saved, fmt.Errorf("gagal menyimpan '%s': %w", cleanName, copyErr)
+			return saved, skipped, fmt.Errorf("gagal menyimpan '%s': %w", relPath, copyErr)
 		}
 		if closeErr != nil {
-			return saved, fmt.Errorf("gagal menutup '%s': %w", cleanName, closeErr)
+			return saved, skipped, fmt.Errorf("gagal menutup '%s': %w", relPath, closeErr)
 		}
 		inheritParentNonRootOwnership(dstPath)
 
@@ -1003,7 +1058,7 @@ func (m *Manager) SaveUploaded(destDir string, files []*multipart.FileHeader) ([
 			saved = append(saved, m.buildEntry(dstPath, st, uidResolver))
 		}
 	}
-	return saved, nil
+	return saved, skipped, nil
 }
 
 // ServeRaw mengirimkan berkas statis (misal gambar) secara aman dengan header isolasi CSP.

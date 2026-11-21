@@ -29,6 +29,8 @@
 		'/switchers': 'Pengelola Multi-Versi Runtime',
 		'/toolchains': 'Toolchains, Compilers & SDKs',
 		'/workspace': 'Workspace, ADE & Shell',
+		'/files': 'File Manager',
+		'/terminal': 'Terminal SSH (PTY)',
 		'/powerdns':
 			modeStore.mode === 'edge' ? 'PowerDNS & VPS Edge Gateway' : 'Domain & DNS Manager',
 		'/cloudflare': 'Cloudflare Tunnel & DNS',

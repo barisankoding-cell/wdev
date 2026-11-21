@@ -30,6 +30,7 @@ import (
 	"wdev/internal/site"
 	"wdev/internal/store"
 	"wdev/internal/switcher"
+	"wdev/internal/terminal"
 	"wdev/internal/updater"
 	"wdev/internal/version"
 	"wdev/web"
@@ -48,6 +49,7 @@ type Server struct {
 	authMgr     *auth.Manager
 	svcCfgMgr   *serviceconfig.Manager
 	fileMgr     *filemanager.Manager
+	termMgr     *terminal.Manager
 	mux         *http.ServeMux
 }
 
@@ -85,6 +87,7 @@ func New(
 		authMgr:     authMgr,
 		svcCfgMgr:   serviceconfig.New(inst.GetSudoPassword),
 		fileMgr:     filemanager.New(cfg, s),
+		termMgr:     terminal.New(cfg, s),
 		mux:         http.NewServeMux(),
 	}
 	srv.routes()
@@ -145,6 +148,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("/api/auth/change-credentials", s.handleAuthChangeCredentials)
 	s.registerFileManagerRoutes()
+	s.registerTerminalRoutes()
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
 
 	// Embedded Static UI (Svelte SPA)
@@ -176,7 +180,7 @@ func (s *Server) wrapSecurityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		if auth.IsHTTPS(r) {
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}

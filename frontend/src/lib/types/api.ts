@@ -639,3 +639,15 @@ export interface FileContentResult {
 	mod_time: string;
 }
 
+export interface TerminalInfo {
+	hostname: string;
+	os_name: string;
+	user: string;
+	shell: string;
+	available_shells: string[];
+	home_dir: string;
+	server_mode?: string;
+	active_sessions: number;
+	max_sessions: number;
+}
+

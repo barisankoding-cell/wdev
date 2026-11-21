@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,19 +389,20 @@ func (m *Manager) StreamDownload(w http.ResponseWriter, r *http.Request, paths [
 				return err
 			}
 			defer f.Close()
-			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeHeaderFilename(filepath.Base(resolved[0]))))
+			baseName := filepath.Base(resolved[0])
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, sanitizeHeaderFilename(baseName), url.PathEscape(baseName)))
 			w.Header().Set("X-Content-Type-Options", "nosniff")
-			http.ServeContent(w, r, filepath.Base(resolved[0]), info.ModTime(), f)
+			http.ServeContent(w, r, baseName, info.ModTime(), f)
 			return nil
 		}
 	}
 
 	zipName := fmt.Sprintf("wdev-files-%s.zip", time.Now().Format("20060102-150405"))
 	if len(resolved) == 1 {
-		zipName = sanitizeHeaderFilename(filepath.Base(resolved[0])) + ".zip"
+		zipName = filepath.Base(resolved[0]) + ".zip"
 	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, zipName))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, sanitizeHeaderFilename(zipName), url.PathEscape(zipName)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	zw := zip.NewWriter(w)

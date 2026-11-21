@@ -26,6 +26,7 @@
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import { Field, FieldDescription, FieldLabel } from '#lib/components/ui/field/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
+	import { Progress } from '#lib/components/ui/progress/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import {
@@ -36,6 +37,7 @@
 		TableHeader,
 		TableRow
 	} from '#lib/components/ui/table/index.js';
+	import * as Tabs from '#lib/components/ui/tabs/index.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { FileEntry, FileListResult, FileRootInfo } from '#lib/types/api.js';
 	import ArrowDownIcon from '@lucide/svelte/icons/arrow-down';
@@ -57,6 +59,7 @@
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import FolderPlusIcon from '@lucide/svelte/icons/folder-plus';
 	import FolderSymlinkIcon from '@lucide/svelte/icons/folder-symlink';
+	import GlobeIcon from '@lucide/svelte/icons/globe';
 	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 	import HomeIcon from '@lucide/svelte/icons/home';
 	import ImageIcon from '@lucide/svelte/icons/image';
@@ -65,6 +68,7 @@
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import ScissorsIcon from '@lucide/svelte/icons/scissors';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import UploadIcon from '@lucide/svelte/icons/upload';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -82,6 +86,12 @@
 		mode: 'copy' | 'move';
 		paths: string[];
 		sourceDir: string;
+	}
+
+	interface ContextMenuState {
+		x: number;
+		y: number;
+		entry: FileEntry | null;
 	}
 
 	const CODE_EXTS = new Set([
@@ -175,10 +185,30 @@
 	let newFolderName = $state('');
 	let newFolderBusy = $state(false);
 
-	// Dialog: Upload
+	// Dialog: Upload & Remote Fetch URL
+	interface UploadQueueItem {
+		file: File;
+		relativePath: string;
+	}
+
 	let uploadOpen = $state(false);
-	let uploadPickedFiles = $state<File[]>([]);
-	let uploadInputRef = $state<HTMLInputElement | null>(null);
+	let uploadTab = $state<'device' | 'url'>('device');
+	let uploadQueue = $state<UploadQueueItem[]>([]);
+	let uploadOverwrite = $state(true);
+	let uploadProgress = $state<{ loaded: number; total: number; percent: number }>({
+		loaded: 0,
+		total: 0,
+		percent: 0
+	});
+	let uploadAbortCtrl = $state<AbortController | null>(null);
+	let uploadDropDragOver = $state(false);
+	let uploadFileInputRef = $state<HTMLInputElement | null>(null);
+	let uploadFolderInputRef = $state<HTMLInputElement | null>(null);
+
+	let fetchUrl = $state('');
+	let fetchFilename = $state('');
+	let fetchOverwrite = $state(true);
+	let fetchingUrl = $state(false);
 
 	// Dialog: Rename
 	let renameOpen = $state(false);
@@ -609,31 +639,188 @@
 		}
 	}
 
-	// Upload
-	function openUploadDialog() {
-		uploadPickedFiles = [];
+	// Upload & Remote URL Download
+	interface WebkitEntryLike {
+		isFile: boolean;
+		isDirectory: boolean;
+		name: string;
+		fullPath?: string;
+		file?: (cb: (f: File) => void, err?: (e: unknown) => void) => void;
+		createReader?: () => {
+			readEntries: (cb: (entries: WebkitEntryLike[]) => void, err?: (e: unknown) => void) => void;
+		};
+	}
+
+	function setDirectoryAttr(node: HTMLInputElement) {
+		node.webkitdirectory = true;
+	}
+
+	const uploadTotalBytes = $derived(uploadQueue.reduce((sum, item) => sum + item.file.size, 0));
+
+	async function readWebkitEntryTree(entry: WebkitEntryLike, prefix = ''): Promise<UploadQueueItem[]> {
+		if (entry.isFile && entry.file) {
+			const file = await new Promise<File>((resolve, reject) => {
+				entry.file!(resolve, reject);
+			});
+			return [{ file, relativePath: prefix ? `${prefix}/${entry.name}` : entry.name }];
+		}
+		if (entry.isDirectory && entry.createReader) {
+			const reader = entry.createReader();
+			const allChildren: WebkitEntryLike[] = [];
+			while (true) {
+				const batch = await new Promise<WebkitEntryLike[]>((resolve, reject) => {
+					reader.readEntries(resolve, reject);
+				});
+				if (batch.length === 0) break;
+				allChildren.push(...batch);
+			}
+			const nextPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+			const nested: UploadQueueItem[] = [];
+			for (const child of allChildren) {
+				nested.push(...(await readWebkitEntryTree(child, nextPrefix)));
+			}
+			return nested;
+		}
+		return [];
+	}
+
+	async function collectDroppedItems(dt: DataTransfer | null): Promise<UploadQueueItem[]> {
+		if (!dt) return [];
+		const rawItems = dt.items ? Array.from(dt.items) : [];
+		const entryGetters = rawItems
+			.map((it) => {
+				const withEntry = it as unknown as { webkitGetAsEntry?: () => WebkitEntryLike | null };
+				return withEntry.webkitGetAsEntry ? withEntry.webkitGetAsEntry() : null;
+			})
+			.filter((e): e is WebkitEntryLike => e !== null);
+
+		if (entryGetters.length > 0) {
+			const collected: UploadQueueItem[] = [];
+			for (const entry of entryGetters) {
+				collected.push(...(await readWebkitEntryTree(entry, '')));
+			}
+			return collected;
+		}
+		return Array.from(dt.files ?? []).map((file) => ({ file, relativePath: file.name }));
+	}
+
+	function addFilesToQueue(list: FileList | null) {
+		if (!list || list.length === 0) return;
+		const nextItems: UploadQueueItem[] = Array.from(list).map((file) => {
+			const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+			return { file, relativePath: rel };
+		});
+		mergeQueueItems(nextItems);
+	}
+
+	function mergeQueueItems(nextItems: UploadQueueItem[]) {
+		const map = new Map<string, UploadQueueItem>();
+		for (const item of uploadQueue) {
+			map.set(item.relativePath, item);
+		}
+		for (const item of nextItems) {
+			map.set(item.relativePath, item);
+		}
+		uploadQueue = Array.from(map.values());
+	}
+
+	function removeUploadQueueIndex(idx: number) {
+		uploadQueue = uploadQueue.filter((_, i) => i !== idx);
+	}
+
+	function openUploadDialog(initialTab: 'device' | 'url' = 'device') {
+		uploadTab = initialTab;
+		if (!uploading) {
+			uploadQueue = [];
+			uploadProgress = { loaded: 0, total: 0, percent: 0 };
+		}
+		fetchUrl = '';
+		fetchFilename = '';
 		uploadOpen = true;
 	}
 
 	function handleUploadFileChange(e: Event) {
 		const target = e.currentTarget as HTMLInputElement;
-		uploadPickedFiles = target.files ? Array.from(target.files) : [];
+		addFilesToQueue(target.files);
+		target.value = '';
 	}
 
-	async function performUpload(files: File[]) {
-		if (!currentPath || files.length === 0 || uploading) return;
+	function handleUploadDropzoneDragOver(e: DragEvent) {
+		if (!e.dataTransfer?.types?.includes('Files')) return;
+		e.preventDefault();
+		e.stopPropagation();
+		uploadDropDragOver = true;
+	}
+
+	function handleUploadDropzoneDragLeave(e: DragEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		uploadDropDragOver = false;
+	}
+
+	async function handleUploadDropzoneDrop(e: DragEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		uploadDropDragOver = false;
+		const items = await collectDroppedItems(e.dataTransfer);
+		if (items.length > 0) {
+			mergeQueueItems(items);
+		}
+	}
+
+	function cancelUpload() {
+		uploadAbortCtrl?.abort();
+	}
+
+	async function performUpload(items: UploadQueueItem[], overwrite = uploadOverwrite) {
+		if (!currentPath || items.length === 0 || uploading) return;
 		uploading = true;
+		const totalEst = items.reduce((sum, i) => sum + i.file.size, 0);
+		uploadProgress = { loaded: 0, total: totalEst, percent: 0 };
+		const ctrl = new AbortController();
+		uploadAbortCtrl = ctrl;
+
 		try {
-			const res = await api.uploadFiles(currentPath, files);
+			const res = await api.uploadFiles(currentPath, items, {
+				overwrite,
+				signal: ctrl.signal,
+				onProgress: (info) => {
+					uploadProgress = info;
+				}
+			});
 			uploadOpen = false;
-			uploadPickedFiles = [];
-			if (uploadInputRef) uploadInputRef.value = '';
-			toast.success(`${res.count} berkas berhasil diunggah ke ${currentPath}.`);
+			uploadQueue = [];
+			if (uploadFileInputRef) uploadFileInputRef.value = '';
+			if (uploadFolderInputRef) uploadFolderInputRef.value = '';
+			const skippedCount = res.skipped_count ?? 0;
+			if (skippedCount > 0) {
+				toast.success(`${res.count} berkas diunggah (${skippedCount} dilewati karena sudah ada).`);
+			} else {
+				toast.success(`${res.count} berkas berhasil diunggah ke ${currentPath}.`);
+			}
 			await refreshCurrent();
 		} catch (err) {
 			toast.error(formatErr(err, 'Gagal mengunggah berkas'));
 		} finally {
 			uploading = false;
+			uploadAbortCtrl = null;
+		}
+	}
+
+	async function submitFetchURL(e: SubmitEvent) {
+		e.preventDefault();
+		const targetURL = fetchUrl.trim();
+		if (!currentPath || !targetURL || fetchingUrl) return;
+		fetchingUrl = true;
+		try {
+			const res = await api.fetchFileFromURL(currentPath, targetURL, fetchFilename.trim(), fetchOverwrite);
+			uploadOpen = false;
+			toast.success(`"${res.entry.name}" (${formatBytes(res.entry.size)}) berhasil diunduh ke ${currentPath}.`);
+			await refreshCurrent();
+		} catch (err) {
+			toast.error(formatErr(err, 'Gagal mengunduh berkas dari URL'));
+		} finally {
+			fetchingUrl = false;
 		}
 	}
 
@@ -658,13 +845,13 @@
 		}
 	}
 
-	function handleWorkspaceDrop(e: DragEvent) {
+	async function handleWorkspaceDrop(e: DragEvent) {
 		e.preventDefault();
 		dragCounter = 0;
 		dragOver = false;
-		const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
-		if (files.length > 0 && currentPath && !isSearchMode) {
-			void performUpload(files);
+		const items = await collectDroppedItems(e.dataTransfer);
+		if (items.length > 0 && currentPath && !isSearchMode) {
+			await performUpload(items, true);
 		}
 	}
 
@@ -787,6 +974,30 @@
 		}
 	}
 
+	let contextMenu = $state<ContextMenuState | null>(null);
+
+	function openContextMenu(e: MouseEvent, entry: FileEntry | null) {
+		if (!currentPath) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
+		const vh = typeof window !== 'undefined' ? window.innerHeight : 768;
+		const x = Math.max(8, Math.min(e.clientX, vw - 240));
+		const y = Math.max(8, Math.min(e.clientY, vh - 360));
+		contextMenu = { x, y, entry };
+	}
+
+	function closeContextMenu() {
+		contextMenu = null;
+	}
+
+	function openTerminalAt(targetPath: string) {
+		closeContextMenu();
+		const clean = targetPath.trim();
+		const url = clean ? `/terminal?cwd=${encodeURIComponent(clean)}` : '/terminal';
+		void goto(url);
+	}
+
 	function isCodeFile(entry: FileEntry): boolean {
 		return CODE_EXTS.has((entry.ext || '').toLowerCase());
 	}
@@ -813,6 +1024,10 @@
 		</div>
 
 		<div class="flex flex-wrap items-center gap-2">
+			<Button variant="outline" size="sm" onclick={() => openTerminalAt(currentPath)} disabled={!currentPath}>
+				<SquareTerminalIcon class="size-4" />
+				Open Terminal
+			</Button>
 			<Button variant="outline" size="sm" onclick={openNewFileDialog} disabled={!currentPath || isSearchMode}>
 				<FilePlusIcon class="size-4" />
 				File Baru
@@ -821,13 +1036,23 @@
 				<FolderPlusIcon class="size-4" />
 				Folder Baru
 			</Button>
-			<Button size="sm" onclick={openUploadDialog} disabled={!currentPath || isSearchMode || uploading}>
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={!currentPath}
+				onclick={() => triggerDownload(selectedPaths.length > 0 ? selectedPaths : [currentPath])}
+			>
+				<DownloadIcon class="size-4" />
+				{selectedPaths.length > 0 ? `Download (${selectedPaths.length})` : 'Download Folder'}
+			</Button>
+			<Button size="sm" onclick={() => openUploadDialog('device')} disabled={!currentPath || isSearchMode}>
 				{#if uploading}
 					<Spinner class="size-4" />
+					Upload {uploadProgress.percent}%
 				{:else}
 					<UploadIcon class="size-4" />
+					Upload
 				{/if}
-				Upload
 			</Button>
 		</div>
 	</div>
@@ -862,6 +1087,7 @@
 		ondragover={handleWorkspaceDragOver}
 		ondragleave={handleWorkspaceDragLeave}
 		ondrop={handleWorkspaceDrop}
+		oncontextmenu={(e) => openContextMenu(e, null)}
 	>
 		{#if dragOver}
 			<div class="bg-background/85 pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-primary backdrop-blur-[1px]">
@@ -1076,7 +1302,7 @@
 						</Button>
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => triggerDownload(selectedPaths)}>
 							<DownloadIcon class="size-3.5" />
-							Unduh ZIP
+							Download ZIP
 						</Button>
 						<Button
 							variant="outline"
@@ -1105,6 +1331,27 @@
 				</div>
 			{/if}
 
+			<!-- Active Upload Progress Banner (for drag-and-drop uploads too) -->
+			{#if uploading}
+				<div class="bg-primary/5 border-primary/25 space-y-2 rounded-lg border px-3 py-2.5 text-xs">
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<div class="flex items-center gap-2 font-medium">
+							<Spinner class="size-3.5" />
+							<span>Mengunggah ke <code class="font-mono">{currentPath}</code>...</span>
+						</div>
+						<div class="flex items-center gap-2">
+							<span class="font-mono text-[11px]">
+								{uploadProgress.percent}% ({formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)})
+							</span>
+							<Button variant="ghost" size="sm" class="h-6 px-2 text-xs" onclick={cancelUpload}>
+								Batal
+							</Button>
+						</div>
+					</div>
+					<Progress value={uploadProgress.percent} class="h-1.5" />
+				</div>
+			{/if}
+
 			<!-- Status Summary / Search Banner -->
 			<div class="flex flex-wrap items-center justify-between gap-2">
 				{#if isSearchMode}
@@ -1114,7 +1361,7 @@
 				{:else if listing}
 					<CardDescription class="text-xs">
 						{listing.total_dirs} folder, {listing.total_files} file • Total ukuran file: {formatBytes(listing.total_size)}
-						• Tips: seret & lepas (drag & drop) file ke area tabel ini untuk mengunggah.
+						• Tips: klik kanan baris untuk Open Terminal &amp; aksi cepat, atau seret file ke tabel untuk mengunggah.
 					</CardDescription>
 				{/if}
 			</div>
@@ -1161,7 +1408,7 @@
 								<FilePlusIcon class="size-4" />
 								Buat File Baru
 							</Button>
-							<Button size="sm" onclick={openUploadDialog}>
+							<Button size="sm" onclick={() => openUploadDialog('device')}>
 								<UploadIcon class="size-4" />
 								Upload Berkas
 							</Button>
@@ -1243,7 +1490,10 @@
 						<TableBody>
 							{#each visibleEntries as entry (entry.path)}
 								{@const checked = selectedSet.has(entry.path)}
-								<TableRow class={checked ? 'bg-muted/40' : undefined}>
+								<TableRow
+									class={`${checked ? 'bg-muted/40' : ''} ${contextMenu?.entry?.path === entry.path ? 'ring-primary/50 ring-1' : ''}`}
+									oncontextmenu={(e) => openContextMenu(e, entry)}
+								>
 									<TableCell data-label="Pilih">
 										<Checkbox
 											{checked}
@@ -1339,12 +1589,14 @@
 												</Button>
 											{/if}
 											<Button
-												variant="ghost"
-												size="icon-sm"
-												title="Unduh"
+												variant="outline"
+												size="sm"
+												class="h-7 gap-1 px-2 text-xs"
+												title={entry.is_dir ? 'Download folder sebagai ZIP' : 'Download berkas'}
 												onclick={() => triggerDownload([entry.path])}
 											>
-												<DownloadIcon class="size-3.5" />
+												<DownloadIcon class="size-3" />
+												<span class="hidden md:inline">Download</span>
 											</Button>
 											<Button
 												variant="ghost"
@@ -1452,59 +1704,206 @@
 	</DialogContent>
 </Dialog>
 
-<!-- Upload Dialog -->
+<!-- Upload & Remote URL Download Dialog -->
 <Dialog bind:open={uploadOpen}>
-	<DialogContent class="sm:max-w-lg">
+	<DialogContent class="sm:max-w-xl">
 		<DialogHeader>
-			<DialogTitle>Upload Berkas</DialogTitle>
+			<DialogTitle>Upload &amp; Download Berkas</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">
 				Folder tujuan: {currentPath}
 			</DialogDescription>
 		</DialogHeader>
-		<div class="space-y-4">
-			<Field>
-				<FieldLabel for="fm-upload-input">Pilih Satu atau Beberapa Berkas</FieldLabel>
+
+		<Tabs.Root bind:value={uploadTab} class="space-y-4">
+			<Tabs.List class="grid w-full grid-cols-2">
+				<Tabs.Trigger value="device" disabled={fetchingUrl}>Upload File / Folder</Tabs.Trigger>
+				<Tabs.Trigger value="url" disabled={uploading}>Download dari URL</Tabs.Trigger>
+			</Tabs.List>
+
+			<Tabs.Content value="device" class="space-y-4">
+				<!-- Hidden file & folder pickers -->
 				<input
-					bind:this={uploadInputRef}
-					id="fm-upload-input"
+					bind:this={uploadFileInputRef}
 					type="file"
 					multiple
 					onchange={handleUploadFileChange}
-					class="border-input bg-background file:bg-muted file:text-foreground block w-full cursor-pointer rounded-md border px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:px-2.5 file:py-1 file:text-xs file:font-medium"
+					class="hidden"
 				/>
-				<FieldDescription>Maksimum 256 MB per unggahan. File bernama sama akan menimpa file yang ada.</FieldDescription>
-			</Field>
+				<input
+					bind:this={uploadFolderInputRef}
+					use:setDirectoryAttr
+					type="file"
+					multiple
+					onchange={handleUploadFileChange}
+					class="hidden"
+				/>
 
-			{#if uploadPickedFiles.length > 0}
-				<div class="bg-muted/40 max-h-44 space-y-1 overflow-y-auto rounded-md border p-2.5 text-xs">
-					{#each uploadPickedFiles as file, idx (`${file.name}-${idx}`)}
-						<div class="flex items-center justify-between gap-2">
-							<span class="truncate font-mono">{file.name}</span>
-							<span class="text-muted-foreground shrink-0 font-mono">{formatBytes(file.size)}</span>
-						</div>
-					{/each}
-				</div>
-			{/if}
-
-			<DialogFooter>
-				<Button type="button" variant="outline" onclick={() => (uploadOpen = false)} disabled={uploading}>
-					Batal
-				</Button>
-				<Button
-					type="button"
-					disabled={uploading || uploadPickedFiles.length === 0}
-					onclick={() => performUpload(uploadPickedFiles)}
+				<!-- Interactive Dropzone inside modal -->
+				<div
+					role="region"
+					aria-label="Area unggah seret dan lepas"
+					ondragover={handleUploadDropzoneDragOver}
+					ondragleave={handleUploadDropzoneDragLeave}
+					ondrop={handleUploadDropzoneDrop}
+					class={`flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed p-5 text-center transition-colors ${
+						uploadDropDragOver ? 'border-primary bg-primary/5' : 'border-muted-foreground/30 bg-muted/20'
+					}`}
 				>
+					<UploadIcon class="text-muted-foreground size-7" />
+					<div class="space-y-1">
+						<p class="text-sm font-medium">Seret file atau folder ke sini</p>
+						<p class="text-muted-foreground text-xs">
+							Atau pilih langsung dari komputer Anda (maks. 256 MB per unggahan, struktur subfolder dipertahankan).
+						</p>
+					</div>
+					<div class="flex flex-wrap items-center justify-center gap-2">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={uploading}
+							onclick={() => uploadFileInputRef?.click()}
+						>
+							<FilePlusIcon class="size-3.5" />
+							Pilih File
+						</Button>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={uploading}
+							onclick={() => uploadFolderInputRef?.click()}
+						>
+							<FolderPlusIcon class="size-3.5" />
+							Pilih Folder
+						</Button>
+					</div>
+				</div>
+
+				{#if uploadQueue.length > 0}
+					<div class="space-y-2">
+						<div class="flex items-center justify-between text-xs">
+							<span class="font-medium">
+								{uploadQueue.length} berkas antre ({formatBytes(uploadTotalBytes)})
+							</span>
+							{#if !uploading}
+								<button
+									type="button"
+									class="text-muted-foreground hover:text-foreground underline"
+									onclick={() => (uploadQueue = [])}
+								>
+									Bersihkan Antrean
+								</button>
+							{/if}
+						</div>
+						<div class="bg-muted/40 max-h-40 space-y-1 overflow-y-auto rounded-md border p-2 text-xs">
+							{#each uploadQueue as item, idx (`${item.relativePath}-${idx}`)}
+								<div class="flex items-center justify-between gap-2 rounded px-1 py-0.5 hover:bg-muted/60">
+									<span class="min-w-0 flex-1 truncate font-mono">{item.relativePath}</span>
+									<span class="text-muted-foreground shrink-0 font-mono">{formatBytes(item.file.size)}</span>
+									{#if !uploading}
+										<button
+											type="button"
+											class="text-muted-foreground hover:text-destructive rounded p-0.5"
+											title="Hapus dari antrean"
+											onclick={() => removeUploadQueueIndex(idx)}
+										>
+											<XIcon class="size-3" />
+										</button>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<label class="flex items-center gap-2 text-xs">
+					<Checkbox bind:checked={uploadOverwrite} disabled={uploading} />
+					<span>Timpa berkas yang bernama sama (Overwrite)</span>
+				</label>
+
+				{#if uploading}
+					<div class="space-y-1.5 rounded-md border p-2.5 text-xs">
+						<div class="flex items-center justify-between">
+							<span class="font-medium">Mengunggah berkas...</span>
+							<span class="font-mono">
+								{uploadProgress.percent}% ({formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)})
+							</span>
+						</div>
+						<Progress value={uploadProgress.percent} class="h-1.5" />
+					</div>
+				{/if}
+
+				<DialogFooter>
 					{#if uploading}
-						<Spinner class="size-4" />
-						Mengunggah...
+						<Button type="button" variant="destructive" onclick={cancelUpload}>
+							Batalkan Upload
+						</Button>
 					{:else}
-						<UploadIcon class="size-4" />
-						Unggah ({uploadPickedFiles.length})
+						<Button type="button" variant="outline" onclick={() => (uploadOpen = false)}>
+							Tutup
+						</Button>
+						<Button
+							type="button"
+							disabled={uploadQueue.length === 0}
+							onclick={() => performUpload(uploadQueue)}
+						>
+							<UploadIcon class="size-4" />
+							Mulai Upload ({uploadQueue.length})
+						</Button>
 					{/if}
-				</Button>
-			</DialogFooter>
-		</div>
+				</DialogFooter>
+			</Tabs.Content>
+
+			<Tabs.Content value="url">
+				<form onsubmit={submitFetchURL} class="space-y-4">
+					<Field>
+						<FieldLabel for="fm-fetch-url">URL Berkas / Arsip Publik</FieldLabel>
+						<Input
+							id="fm-fetch-url"
+							type="url"
+							bind:value={fetchUrl}
+							placeholder="https://wordpress.org/latest.zip"
+							class="font-mono text-xs"
+							required
+						/>
+						<FieldDescription>
+							Server akan langsung mengunduh berkas HTTP/HTTPS ini ke folder aktif (maks. 256 MB).
+						</FieldDescription>
+					</Field>
+
+					<Field>
+						<FieldLabel for="fm-fetch-filename">Simpan Sebagai (opsional)</FieldLabel>
+						<Input
+							id="fm-fetch-filename"
+							bind:value={fetchFilename}
+							placeholder="Kosongkan untuk otomatis dari URL"
+							class="font-mono text-xs"
+						/>
+					</Field>
+
+					<label class="flex items-center gap-2 text-xs">
+						<Checkbox bind:checked={fetchOverwrite} disabled={fetchingUrl} />
+						<span>Timpa berkas jika namanya sudah ada</span>
+					</label>
+
+					<DialogFooter>
+						<Button type="button" variant="outline" onclick={() => (uploadOpen = false)} disabled={fetchingUrl}>
+							Batal
+						</Button>
+						<Button type="submit" disabled={fetchingUrl || !fetchUrl.trim()}>
+							{#if fetchingUrl}
+								<Spinner class="size-4" />
+								Mengunduh ke Server...
+							{:else}
+								<GlobeIcon class="size-4" />
+								Download ke Folder Ini
+							{/if}
+						</Button>
+					</DialogFooter>
+				</form>
+			</Tabs.Content>
+		</Tabs.Root>
 	</DialogContent>
 </Dialog>
 
@@ -1676,3 +2075,285 @@
 		</form>
 	</DialogContent>
 </Dialog>
+
+<svelte:window
+	onclick={closeContextMenu}
+	onkeydown={(e) => {
+		if (e.key === 'Escape') closeContextMenu();
+	}}
+/>
+
+<!-- Floating Right-Click Context Menu -->
+{#if contextMenu}
+	{@const targetEntry = contextMenu.entry}
+	{@const terminalDir = targetEntry
+		? targetEntry.is_dir
+			? targetEntry.path
+			: getParentPath(targetEntry.path)
+		: currentPath}
+	<div
+		role="menu"
+		tabindex="-1"
+		aria-label="Menu Konteks File Manager"
+		style={`left: ${contextMenu.x}px; top: ${contextMenu.y}px;`}
+		class="bg-popover text-popover-foreground ring-foreground/10 fixed z-50 w-56 rounded-lg border p-1 shadow-lg ring-1"
+		onclick={(e) => e.stopPropagation()}
+		onkeydown={(e) => {
+			if (e.key === 'Escape') closeContextMenu();
+		}}
+		oncontextmenu={(e) => e.preventDefault()}
+	>
+		<div class="text-muted-foreground border-b px-2 py-1.5 text-[11px] font-medium">
+			<span class="block truncate font-mono">
+				{targetEntry ? targetEntry.name : currentPath}
+			</span>
+		</div>
+
+		{#if targetEntry}
+			{#if targetEntry.is_dir}
+				<button
+					type="button"
+					role="menuitem"
+					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+					onclick={() => {
+						closeContextMenu();
+						void navigateTo(targetEntry.path);
+					}}
+				>
+					<FolderOpenIcon class="size-3.5 text-amber-500" />
+					Buka Folder
+				</button>
+			{:else if targetEntry.editable || targetEntry.is_image}
+				<button
+					type="button"
+					role="menuitem"
+					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+					onclick={() => {
+						closeContextMenu();
+						openEditor(targetEntry);
+					}}
+				>
+					<EyeIcon class="size-3.5 text-sky-500" />
+					{targetEntry.editable ? 'Edit File' : 'Lihat Gambar'}
+				</button>
+			{/if}
+
+			{#if targetEntry.is_archive}
+				<button
+					type="button"
+					role="menuitem"
+					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+					onclick={() => {
+						closeContextMenu();
+						openExtractDialog(targetEntry);
+					}}
+				>
+					<FileArchiveIcon class="size-3.5 text-orange-500" />
+					Ekstrak Arsip
+				</button>
+			{/if}
+
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground text-primary flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs font-medium"
+				onclick={() => openTerminalAt(terminalDir)}
+			>
+				<SquareTerminalIcon class="size-3.5" />
+				{targetEntry.is_dir ? 'Open Terminal di Sini' : 'Open Terminal di Folder Induk'}
+			</button>
+
+			<div class="bg-border my-1 h-px"></div>
+
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					triggerDownload([targetEntry.path]);
+				}}
+			>
+				<DownloadIcon class="size-3.5" />
+				{targetEntry.is_dir ? 'Download (.zip)' : 'Download'}
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					setClipboard('copy', [targetEntry.path]);
+				}}
+			>
+				<CopyIcon class="size-3.5" />
+				Salin (Copy)
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					setClipboard('move', [targetEntry.path]);
+				}}
+			>
+				<ScissorsIcon class="size-3.5" />
+				Pindah (Cut)
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					openRenameDialog(targetEntry);
+				}}
+			>
+				<PencilIcon class="size-3.5" />
+				Ubah Nama
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					openChmodDialog([targetEntry]);
+				}}
+			>
+				<LockIcon class="size-3.5" />
+				Permission (Chmod)
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					openCompressDialog([targetEntry.path]);
+				}}
+			>
+				<FileArchiveIcon class="size-3.5" />
+				Kompres ke ZIP
+			</button>
+
+			<div class="bg-border my-1 h-px"></div>
+
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-destructive/10 text-destructive flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					void confirmDelete([targetEntry.path]);
+				}}
+			>
+				<Trash2Icon class="size-3.5" />
+				Hapus
+			</button>
+		{:else}
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground text-primary flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs font-medium"
+				onclick={() => openTerminalAt(currentPath)}
+			>
+				<SquareTerminalIcon class="size-3.5" />
+				Open Terminal di Sini
+			</button>
+			{#if clipboard}
+				<button
+					type="button"
+					role="menuitem"
+					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+					disabled={bulkBusy || isSearchMode}
+					onclick={() => {
+						closeContextMenu();
+						void pasteClipboard();
+					}}
+				>
+					<ClipboardPasteIcon class="size-3.5" />
+					Tempel ({clipboard.paths.length} item)
+				</button>
+			{/if}
+			<div class="bg-border my-1 h-px"></div>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				disabled={isSearchMode}
+				onclick={() => {
+					closeContextMenu();
+					openNewFileDialog();
+				}}
+			>
+				<FilePlusIcon class="size-3.5" />
+				File Baru
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				disabled={isSearchMode}
+				onclick={() => {
+					closeContextMenu();
+					openNewFolderDialog();
+				}}
+			>
+				<FolderPlusIcon class="size-3.5" />
+				Folder Baru
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				disabled={isSearchMode}
+				onclick={() => {
+					closeContextMenu();
+					openUploadDialog('device');
+				}}
+			>
+				<UploadIcon class="size-3.5" />
+				Upload File / Folder
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				disabled={isSearchMode}
+				onclick={() => {
+					closeContextMenu();
+					openUploadDialog('url');
+				}}
+			>
+				<GlobeIcon class="size-3.5" />
+				Download dari URL (Remote)
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					triggerDownload([currentPath]);
+				}}
+			>
+				<DownloadIcon class="size-3.5" />
+				Download Folder Ini (.zip)
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
+				onclick={() => {
+					closeContextMenu();
+					void refreshCurrent();
+				}}
+			>
+				<RefreshCwIcon class="size-3.5" />
+				Segarkan
+			</button>
+		{/if}
+	</div>
+{/if}
