@@ -1,6 +1,8 @@
 package site
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,5 +198,68 @@ func TestEnsureDomainStaticVhostPreservesExistingIndexAndVhost(t *testing.T) {
 	hostsBytes, _ := os.ReadFile(cfg.HostsFile)
 	if strings.Contains(string(hostsBytes), "custom.test") {
 		t.Fatalf("expected custom.test removed from hosts, got: %s", string(hostsBytes))
+	}
+}
+
+func TestEnableLetsEncryptValidationAndFallbackRetry(t *testing.T) {
+	mgr, cfg, db := newTestSiteManager(t)
+
+	// 1. Tolak domain lokal .test / .local
+	if err := mgr.EnableLetsEncrypt(context.Background(), nil, "myapp.test", ""); err == nil {
+		t.Fatal("expected EnableLetsEncrypt to reject .test domain")
+	}
+
+	// 2. Tolak domain yang belum memiliki vhost
+	if err := mgr.EnableLetsEncrypt(context.Background(), nil, "missing.my.id", ""); err == nil {
+		t.Fatal("expected EnableLetsEncrypt to fail when vhost missing")
+	}
+
+	// 3. Buat static vhost (punya server_name nikaget.my.id www.nikaget.my.id)
+	if _, err := mgr.EnsureDomainStaticVhost("nikaget.my.id"); err != nil {
+		t.Fatalf("EnsureDomainStaticVhost failed: %v", err)
+	}
+
+	var calls [][]string
+	mgr.SetCertbotExecFn(func(ctx context.Context, cb func(string), bin string, args []string) error {
+		calls = append(calls, append([]string{}, args...))
+		// Simulasikan panggilan pertama (dengan -d nikaget.my.id -d www.nikaget.my.id) gagal karena www belum diarahkan,
+		// lalu retry khusus nikaget.my.id sukses dan menulis ssl_certificate Let's Encrypt ke vhost.
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "www.nikaget.my.id") {
+			return fmt.Errorf("DNS problem for www.nikaget.my.id")
+		}
+		confPath := filepath.Join(cfg.NginxSitesAvail, "nikaget.my.id")
+		data, _ := os.ReadFile(confPath)
+		updated := string(data) + "\n# managed by Certbot\nssl_certificate /etc/letsencrypt/live/nikaget.my.id/fullchain.pem;\n"
+		return os.WriteFile(confPath, []byte(updated), 0644)
+	})
+
+	if err := mgr.EnableLetsEncrypt(context.Background(), nil, "nikaget.my.id", "admin@nikaget.my.id"); err != nil {
+		t.Fatalf("EnableLetsEncrypt failed: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 certbot invocations (with alias then fallback), got %d: %+v", len(calls), calls)
+	}
+	firstArgs := strings.Join(calls[0], " ")
+	if !strings.Contains(firstArgs, "-d nikaget.my.id -d www.nikaget.my.id") || !strings.Contains(firstArgs, "--email admin@nikaget.my.id") {
+		t.Fatalf("unexpected first certbot args: %s", firstArgs)
+	}
+	secondArgs := strings.Join(calls[1], " ")
+	if !strings.Contains(secondArgs, "-d nikaget.my.id") || strings.Contains(secondArgs, "www.nikaget.my.id") {
+		t.Fatalf("unexpected fallback certbot args: %s", secondArgs)
+	}
+
+	sites, err := db.ListSites()
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("expected 1 site in store, got %+v err=%v", sites, err)
+	}
+	if !sites[0].SSLEnabled || sites[0].SSLProvider != "letsencrypt" {
+		t.Fatalf("expected DB SSLProvider=letsencrypt, got %+v", sites[0])
+	}
+
+	listed, err := mgr.ListSites()
+	if err != nil || len(listed) != 1 || !listed[0].SSLEnabled || listed[0].SSLProvider != "letsencrypt" {
+		t.Fatalf("unexpected mgr.ListSites result: %+v err=%v", listed, err)
 	}
 }

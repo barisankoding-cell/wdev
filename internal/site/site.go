@@ -2,6 +2,7 @@ package site
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,6 +64,7 @@ type Manager struct {
 	store         *store.Store
 	sudoPassFn    func() string
 	skipNginxExec bool
+	certbotExecFn func(ctx context.Context, cb func(string), bin string, args []string) error
 }
 
 type CreateOptions struct {
@@ -123,6 +125,21 @@ func (m *Manager) SetSkipNginxExec(skip bool) {
 	m.skipNginxExec = skip
 }
 
+// SetCertbotExecFn mengganti eksekutor certbot (dipakai di unit test terisolasi).
+func (m *Manager) SetCertbotExecFn(fn func(ctx context.Context, cb func(string), bin string, args []string) error) {
+	m.certbotExecFn = fn
+}
+
+// HasSite memeriksa apakah virtual host untuk domain sudah terdaftar di disk atau store.
+func (m *Manager) HasSite(domain string) bool {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" {
+		return false
+	}
+	_, exists := m.findExistingSite(domain)
+	return exists
+}
+
 func (m *Manager) sitesAvailDir() string {
 	if m.cfg != nil && strings.TrimSpace(m.cfg.NginxSitesAvail) != "" {
 		return strings.TrimSpace(m.cfg.NginxSitesAvail)
@@ -166,7 +183,21 @@ func (m *Manager) ListSites() ([]store.SiteRecord, error) {
 	if m.store == nil {
 		return []store.SiteRecord{}, nil
 	}
-	return m.store.ListSites()
+	sites, err := m.store.ListSites()
+	if err != nil {
+		return nil, err
+	}
+	for i := range sites {
+		if confPath, ok := m.findVHostConfigPath(sites[i].Domain); ok {
+			if data, readErr := m.readFile(confPath); readErr == nil {
+				if enabled, provider := DetectSSLProviderFromConfig(string(data)); enabled {
+					sites[i].SSLEnabled = true
+					sites[i].SSLProvider = provider
+				}
+			}
+		}
+	}
+	return sites, nil
 }
 
 func (m *Manager) CreateSite(opts CreateOptions) error {
@@ -343,14 +374,19 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 
 	// Save to DB
 	if m.store != nil {
+		sslProvider := ""
+		if opts.SSLEnabled {
+			sslProvider = "local"
+		}
 		record := store.SiteRecord{
-			Domain:     opts.Domain,
-			RootPath:   opts.RootPath,
-			PHPVersion: opts.PHPVersion,
-			Framework:  opts.Framework,
-			ProxyPort:  opts.ProxyPort,
-			SSLEnabled: opts.SSLEnabled,
-			CreatedAt:  time.Now(),
+			Domain:      opts.Domain,
+			RootPath:    opts.RootPath,
+			PHPVersion:  opts.PHPVersion,
+			Framework:   opts.Framework,
+			ProxyPort:   opts.ProxyPort,
+			SSLEnabled:  opts.SSLEnabled,
+			SSLProvider: sslProvider,
+			CreatedAt:   time.Now(),
 		}
 		_ = m.store.SaveSite(record)
 	}
@@ -767,4 +803,19 @@ func (m *Manager) pathExists(path string) bool {
 	}
 	_, err := m.runPrivileged("test", "-e", path)
 	return err == nil
+}
+
+func (m *Manager) readFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, nil
+	}
+	if !os.IsPermission(err) || os.Geteuid() == 0 {
+		return nil, err
+	}
+	out, runErr := m.runPrivileged("cat", path)
+	if runErr != nil {
+		return nil, fmt.Errorf("%w (%s)", runErr, out)
+	}
+	return []byte(out), nil
 }

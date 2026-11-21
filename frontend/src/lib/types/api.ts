@@ -55,6 +55,7 @@ export interface SiteRecord {
 	framework: string;
 	proxy_port: number;
 	ssl_enabled: boolean;
+	ssl_provider?: string;
 	exposed_to: string;
 	created_at: string;
 }

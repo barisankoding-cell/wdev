@@ -160,6 +160,15 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
+	enableSiteSSL: (domain: string, email = '', sudoPass?: string) =>
+		apiFetch<{ status: string; task_id?: number; domain?: string; message?: string }>('/api/sites/ssl', {
+			method: 'POST',
+			body: JSON.stringify({
+				domain,
+				...(email ? { email } : {}),
+				...(sudoPass ? { sudo_pass: sudoPass } : {})
+			})
+		}),
 	deleteSite: (domain: string) =>
 		apiFetch<{ status: string }>(`/api/sites/${encodeURIComponent(domain)}`, {
 			method: 'DELETE'

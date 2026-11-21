@@ -90,6 +90,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/service/", s.handleServiceControl)
 	s.mux.HandleFunc("/api/service-config/", s.handleServiceConfig)
 	s.mux.HandleFunc("/api/sites", s.handleSites)
+	s.mux.HandleFunc("/api/sites/ssl", s.handleSiteSSL)
 	s.mux.HandleFunc("/api/sites/", s.handleSiteDelete)
 	s.mux.HandleFunc("/api/switchers", s.handleSwitchers)
 	s.mux.HandleFunc("/api/switchers/", s.handleSwitchersAction)
@@ -882,6 +883,61 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleSiteSSL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		Domain   string `json:"domain"`
+		Email    string `json:"email"`
+		SudoPass string `json:"sudo_pass"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload JSON tidak valid")
+		return
+	}
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(payload.Domain), "."))
+	if err := site.ValidateLetsEncryptDomain(domain); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.siteMgr == nil || !s.siteMgr.HasSite(domain) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Virtual host untuk %s tidak ditemukan", domain))
+		return
+	}
+	if payload.SudoPass != "" && s.installer != nil {
+		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
+			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+			return
+		}
+	}
+	if s.installer != nil {
+		if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "sudo_required",
+				"message": "Penerbitan sertifikat SSL Let's Encrypt memerlukan hak akses administrator (sudo).",
+			})
+			return
+		}
+	}
+
+	taskName := fmt.Sprintf("SSL Let's Encrypt (%s)", domain)
+	taskID, err := s.runner.StartNativeTask(taskName, func(ctx context.Context, cb func(string)) error {
+		return s.siteMgr.EnableLetsEncrypt(ctx, cb, domain, payload.Email)
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "started",
+		"task_id": taskID,
+		"domain":  domain,
+	})
 }
 
 func (s *Server) handleSwitchers(w http.ResponseWriter, r *http.Request) {

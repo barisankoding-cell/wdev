@@ -16,6 +16,7 @@
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
+	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type { SiteRecord } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
@@ -25,11 +26,13 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload';
+	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 
 	let sites = $state<SiteRecord[]>([]);
 	let loading = $state(true);
 	let searchQuery = $state('');
 	let siteDeleting = $state<Record<string, boolean>>({});
+	let sslPending = $state<Record<string, boolean>>({});
 
 	let createOpen = $state(false);
 	let creating = $state(false);
@@ -55,6 +58,8 @@
 	const phpVersions = ['8.4', '8.3', '8.2', '8.1'];
 	const isProxy = $derived(framework === 'proxy');
 	const isStatic = $derived(framework === 'static');
+	const isVPS = $derived(modeStore.mode === 'vps');
+	const isEdge = $derived(modeStore.mode === 'edge');
 	const domainInvalid = $derived(domainTouched && domain.trim().length === 0);
 
 	const filteredSites = $derived.by(() => {
@@ -93,33 +98,71 @@
 		phpVersion = '8.4';
 		rootPath = '';
 		proxyPortStr = '3000';
-		sslEnabled = true;
+		sslEnabled = !isVPS;
 		createOpen = true;
+	}
+
+	async function triggerLetsEncrypt(siteDomain: string, skipConfirm = false) {
+		const clean = siteDomain.trim().replace(/\.$/, '').toLowerCase();
+		if (/\.(test|local|localhost|internal|invalid)$/i.test(clean)) {
+			toast.warning(`Domain lokal (${clean}) tidak dapat diterbitkan sertifikat Let's Encrypt.`);
+			return;
+		}
+		if (!skipConfirm) {
+			const confirmed = await cp.confirm({
+				title: "Generate SSL Let's Encrypt",
+				description: `Terbitkan dan pasang sertifikat HTTPS Let's Encrypt (certbot) untuk ${clean}? Pastikan DNS domain sudah mengarah ke IP publik VPS dan port 80/443 terbuka.`,
+				confirmText: 'Generate SSL'
+			});
+			if (!confirmed) return;
+		}
+
+		sslPending = { ...sslPending, [clean]: true };
+		try {
+			const res = await cp.runWithSudoRetry(
+				`Penerbitan sertifikat Let's Encrypt untuk ${clean} memerlukan hak akses administrator (sudo).`,
+				(sudoPass) => api.enableSiteSSL(clean, '', sudoPass)
+			);
+			if (res) {
+				cp.openTerminal(`SSL Let's Encrypt: ${clean}`);
+			}
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : "Gagal memulai penerbitan SSL Let's Encrypt");
+		} finally {
+			const next = { ...sslPending };
+			delete next[clean];
+			sslPending = next;
+		}
 	}
 
 	async function submitCreate(e: SubmitEvent) {
 		e.preventDefault();
 		domainTouched = true;
-		if (!domain.trim()) return;
+		const cleanDomain = domain.trim().replace(/\.$/, '').toLowerCase();
+		if (!cleanDomain) return;
 		const proxyPort = parseInt(proxyPortStr, 10) || 0;
 		if (isProxy && (proxyPort < 1 || proxyPort > 65535)) {
 			toast.error('Port aplikasi proxy harus antara 1 sampai 65535.');
 			return;
 		}
 
+		const wantVPSLetsEncrypt = isVPS && sslEnabled;
 		creating = true;
 		try {
 			await api.createSite({
-				domain: domain.trim(),
+				domain: cleanDomain,
 				framework,
 				php_version: isProxy || isStatic ? '' : phpVersion,
 				root_path: rootPath.trim(),
 				proxy_port: proxyPort,
-				ssl_enabled: sslEnabled
+				ssl_enabled: wantVPSLetsEncrypt ? false : sslEnabled
 			});
-			toast.success(`Virtual host ${domain.trim()} berhasil dibuat!`);
+			toast.success(`Virtual host ${cleanDomain} berhasil dibuat!`);
 			createOpen = false;
 			await loadSites();
+			if (wantVPSLetsEncrypt) {
+				await triggerLetsEncrypt(cleanDomain, true);
+			}
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal membuat virtual host');
 		} finally {
@@ -154,9 +197,17 @@
 <div class="flex flex-col gap-5 sm:gap-6">
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
-			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Web Stack &amp; Domain Lokal</h1>
+			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">
+				{isVPS ? 'Web Stack & Virtual Host' : 'Web Stack & Domain Lokal'}
+			</h1>
 			<p class="text-sm text-muted-foreground">
-				Kelola virtual host Nginx (<code>wdev site</code>), sertifikat SSL lokal (<code>mkcert</code>), dan eksposur VPS Edge.
+				{#if isVPS}
+					Kelola virtual host Nginx (<code>wdev site</code>), document root, dan sertifikat SSL Let's Encrypt langsung di VPS.
+				{:else if isEdge}
+					Kelola virtual host Nginx (<code>wdev site</code>), sertifikat SSL lokal (<code>mkcert</code>), dan eksposur VPS Edge.
+				{:else}
+					Kelola virtual host Nginx (<code>wdev site</code>) dan sertifikat SSL lokal (<code>mkcert</code>).
+				{/if}
 			</p>
 		</div>
 		<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
@@ -202,7 +253,7 @@
 				</Empty.Title>
 				<Empty.Description>
 					{sites.length === 0
-						? 'Buat virtual host lokal pertama untuk proyek Laravel, WordPress, atau reverse proxy.'
+						? 'Buat virtual host pertama untuk situs statis, Laravel, WordPress, atau reverse proxy.'
 						: 'Ubah kata kunci pencarian untuk menampilkan virtual host lainnya.'}
 				</Empty.Description>
 			</Empty.Header>
@@ -216,22 +267,25 @@
 			{/if}
 		</Empty.Root>
 	{:else}
-		<ResponsiveTableWrapper label="Daftar Virtual Host Lokal">
+		<ResponsiveTableWrapper label="Daftar Virtual Host">
 			<Table.Root>
 				<Table.Header>
 					<Table.Row>
-						<Table.Head>Domain Lokal</Table.Head>
+						<Table.Head>{isVPS ? 'Domain' : 'Domain Lokal'}</Table.Head>
 						<Table.Head>Framework</Table.Head>
 						<Table.Head>Target Runtime</Table.Head>
 						<Table.Head>Document Root</Table.Head>
 						<Table.Head>SSL</Table.Head>
-						<Table.Head>Ekspos VPS</Table.Head>
+						{#if isEdge}
+							<Table.Head>Ekspos VPS</Table.Head>
+						{/if}
 						<Table.Head class="text-right">Aksi</Table.Head>
 					</Table.Row>
 				</Table.Header>
 				<Table.Body>
 					{#each filteredSites as site (site.domain)}
 						{@const proto = site.ssl_enabled ? 'https://' : 'http://'}
+						{@const hasLetsEncrypt = site.ssl_enabled && site.ssl_provider === 'letsencrypt'}
 						<Table.Row>
 							<Table.Cell data-label="Domain">
 								<a
@@ -261,47 +315,73 @@
 							</Table.Cell>
 							<Table.Cell data-label="SSL">
 								{#if site.ssl_enabled}
-									<StatusBadge tone="success" label="HTTPS" />
+									{#if site.ssl_provider === 'letsencrypt'}
+										<StatusBadge tone="success" label="Let's Encrypt" />
+									{:else if isVPS && site.ssl_provider === 'local'}
+										<StatusBadge tone="warning" label="SSL Lokal" />
+									{:else}
+										<StatusBadge tone="success" label="HTTPS" />
+									{/if}
 								{:else}
 									<StatusBadge tone="neutral" label="HTTP" showIcon={false} />
 								{/if}
 							</Table.Cell>
-							<Table.Cell data-label="Ekspos VPS">
-								{#if site.exposed_to}
-									<a
-										href={`https://${site.exposed_to}`}
-										target="_blank"
-										rel="noopener noreferrer"
-										class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-									>
-										<StatusBadge tone="success" label={site.exposed_to} />
-									</a>
-								{:else}
-									<Button
-										variant="outline"
-										size="xs"
-										href={`/powerdns?expose=${encodeURIComponent(site.domain)}`}
-									>
-										<CloudUploadIcon data-icon="inline-start" />
-										Ekspos VPS
-									</Button>
-								{/if}
-							</Table.Cell>
-							<Table.Cell data-label="Aksi" class="text-right">
-								<Button
-									variant="destructive"
-									size="xs"
-									disabled={Boolean(siteDeleting[site.domain])}
-									onclick={() => deleteSite(site.domain)}
-								>
-									{#if siteDeleting[site.domain]}
-										<Spinner data-icon="inline-start" />
-										Menghapus...
+							{#if isEdge}
+								<Table.Cell data-label="Ekspos VPS">
+									{#if site.exposed_to}
+										<a
+											href={`https://${site.exposed_to}`}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+										>
+											<StatusBadge tone="success" label={site.exposed_to} />
+										</a>
 									{:else}
-										<Trash2Icon data-icon="inline-start" />
-										Hapus
+										<Button
+											variant="outline"
+											size="xs"
+											href={`/powerdns?expose=${encodeURIComponent(site.domain)}`}
+										>
+											<CloudUploadIcon data-icon="inline-start" />
+											Ekspos VPS
+										</Button>
 									{/if}
-								</Button>
+								</Table.Cell>
+							{/if}
+							<Table.Cell data-label="Aksi" class="text-right">
+								<div class="flex flex-wrap justify-end gap-1.5">
+									{#if isVPS}
+										<Button
+											variant={hasLetsEncrypt ? 'outline' : 'default'}
+											size="xs"
+											disabled={Boolean(sslPending[site.domain]) || Boolean(siteDeleting[site.domain])}
+											onclick={() => triggerLetsEncrypt(site.domain)}
+										>
+											{#if sslPending[site.domain]}
+												<Spinner data-icon="inline-start" />
+												Memproses...
+											{:else}
+												<ShieldCheckIcon data-icon="inline-start" />
+												{hasLetsEncrypt ? 'Perbarui SSL' : "Generate Let's Encrypt"}
+											{/if}
+										</Button>
+									{/if}
+									<Button
+										variant="destructive"
+										size="xs"
+										disabled={Boolean(siteDeleting[site.domain]) || Boolean(sslPending[site.domain])}
+										onclick={() => deleteSite(site.domain)}
+									>
+										{#if siteDeleting[site.domain]}
+											<Spinner data-icon="inline-start" />
+											Menghapus...
+										{:else}
+											<Trash2Icon data-icon="inline-start" />
+											Hapus
+										{/if}
+									</Button>
+								</div>
 							</Table.Cell>
 						</Table.Row>
 					{/each}
@@ -316,18 +396,22 @@
 		<Dialog.Header>
 			<Dialog.Title>Buat Virtual Host Baru</Dialog.Title>
 			<Dialog.Description>
-				Membuat konfigurasi Nginx (<code>wdev site create</code>), entri <code>/etc/hosts</code>, dan sertifikat SSL lokal.
+				{#if isVPS}
+					Membuat konfigurasi Nginx (<code>wdev site create</code>) langsung aktif di VPS publik.
+				{:else}
+					Membuat konfigurasi Nginx (<code>wdev site create</code>), entri <code>/etc/hosts</code>, dan sertifikat SSL lokal.
+				{/if}
 			</Dialog.Description>
 		</Dialog.Header>
 
 		<form onsubmit={submitCreate} class="flex flex-col gap-4">
 			<Field.FieldGroup>
 				<Field.Field data-invalid={domainInvalid ? 'true' : undefined}>
-					<Field.FieldLabel for="site-domain">Domain Lokal</Field.FieldLabel>
+					<Field.FieldLabel for="site-domain">{isVPS ? 'Domain' : 'Domain Lokal'}</Field.FieldLabel>
 					<Input
 						id="site-domain"
 						name="domain"
-						placeholder="proyekanda.test"
+						placeholder={isVPS ? 'domainanda.com' : 'proyekanda.test'}
 						autocorrect="off"
 						autocapitalize="none"
 						spellcheck={false}
@@ -339,9 +423,15 @@
 						}}
 						required
 					/>
-					<Field.FieldDescription>Akhiran <code>.test</code> disarankan untuk pengembangan lokal.</Field.FieldDescription>
+					<Field.FieldDescription>
+						{#if isVPS}
+							Masukkan domain FQDN yang mengarah ke IP publik VPS ini.
+						{:else}
+							Akhiran <code>.test</code> disarankan untuk pengembangan lokal.
+						{/if}
+					</Field.FieldDescription>
 					{#if domainInvalid}
-						<Field.FieldError errors={[{ message: 'Domain lokal wajib diisi.' }]} />
+						<Field.FieldError errors={[{ message: 'Domain wajib diisi.' }]} />
 					{/if}
 				</Field.Field>
 
@@ -397,7 +487,7 @@
 						<Input
 							id="site-root-path"
 							name="root_path"
-							placeholder="/var/www/proyekanda.test"
+							placeholder={isVPS ? '/var/www/domainanda.com' : '/var/www/proyekanda.test'}
 							autocorrect="off"
 							autocapitalize="none"
 							spellcheck={false}
@@ -410,7 +500,9 @@
 				<Field.Field orientation="horizontal">
 					<Checkbox id="site-ssl" bind:checked={sslEnabled} />
 					<Field.FieldLabel for="site-ssl" class="font-normal">
-						Aktifkan Sertifikat SSL Otomatis (HTTPS mkcert)
+						{isVPS
+							? "Terbitkan SSL Let's Encrypt (HTTPS) setelah virtual host dibuat"
+							: 'Aktifkan Sertifikat SSL Otomatis (HTTPS mkcert)'}
 					</Field.FieldLabel>
 				</Field.Field>
 			</Field.FieldGroup>

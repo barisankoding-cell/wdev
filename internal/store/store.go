@@ -18,14 +18,15 @@ type Store struct {
 }
 
 type SiteRecord struct {
-	Domain     string    `json:"domain"`
-	RootPath   string    `json:"root_path"`
-	PHPVersion string    `json:"php_version"`
-	Framework  string    `json:"framework"`
-	ProxyPort  int       `json:"proxy_port"`
-	SSLEnabled bool      `json:"ssl_enabled"`
-	ExposedTo  string    `json:"exposed_to"`
-	CreatedAt  time.Time `json:"created_at"`
+	Domain      string    `json:"domain"`
+	RootPath    string    `json:"root_path"`
+	PHPVersion  string    `json:"php_version"`
+	Framework   string    `json:"framework"`
+	ProxyPort   int       `json:"proxy_port"`
+	SSLEnabled  bool      `json:"ssl_enabled"`
+	SSLProvider string    `json:"ssl_provider,omitempty"`
+	ExposedTo   string    `json:"exposed_to"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type CFProfile struct {
@@ -163,7 +164,33 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if err := s.ensureColumn("sites", "ssl_provider", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) ensureColumn(table, column, colDef string) error {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s);", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(name, column) {
+			return nil
+		}
+	}
+	_, err = s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s;", table, column, colDef))
+	return err
 }
 
 // Sites CRUD
@@ -171,14 +198,15 @@ func (s *Store) SaveSite(site SiteRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	query := `INSERT INTO sites (domain, root_path, php_version, framework, proxy_port, ssl_enabled, exposed_to, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	query := `INSERT INTO sites (domain, root_path, php_version, framework, proxy_port, ssl_enabled, ssl_provider, exposed_to, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(domain) DO UPDATE SET
 			root_path=excluded.root_path,
 			php_version=excluded.php_version,
 			framework=excluded.framework,
 			proxy_port=excluded.proxy_port,
 			ssl_enabled=excluded.ssl_enabled,
+			ssl_provider=excluded.ssl_provider,
 			exposed_to=excluded.exposed_to;`
 
 	createdAt := site.CreatedAt
@@ -191,7 +219,7 @@ func (s *Store) SaveSite(site SiteRecord) error {
 		sslInt = 1
 	}
 
-	_, err := s.db.Exec(query, site.Domain, site.RootPath, site.PHPVersion, site.Framework, site.ProxyPort, sslInt, site.ExposedTo, createdAt)
+	_, err := s.db.Exec(query, site.Domain, site.RootPath, site.PHPVersion, site.Framework, site.ProxyPort, sslInt, site.SSLProvider, site.ExposedTo, createdAt)
 	return err
 }
 
@@ -199,7 +227,7 @@ func (s *Store) ListSites() ([]SiteRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT domain, root_path, php_version, framework, proxy_port, ssl_enabled, exposed_to, created_at FROM sites ORDER BY domain ASC`)
+	rows, err := s.db.Query(`SELECT domain, root_path, php_version, framework, proxy_port, ssl_enabled, ssl_provider, exposed_to, created_at FROM sites ORDER BY domain ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -209,13 +237,25 @@ func (s *Store) ListSites() ([]SiteRecord, error) {
 	for rows.Next() {
 		var r SiteRecord
 		var sslInt int
-		if err := rows.Scan(&r.Domain, &r.RootPath, &r.PHPVersion, &r.Framework, &r.ProxyPort, &sslInt, &r.ExposedTo, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.Domain, &r.RootPath, &r.PHPVersion, &r.Framework, &r.ProxyPort, &sslInt, &r.SSLProvider, &r.ExposedTo, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		r.SSLEnabled = (sslInt == 1)
 		result = append(result, r)
 	}
 	return result, nil
+}
+
+func (s *Store) SetSiteSSL(domain string, enabled bool, provider string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), ".conf"))
+	sslInt := 0
+	if enabled {
+		sslInt = 1
+	}
+	_, err := s.db.Exec(`UPDATE sites SET ssl_enabled = ?, ssl_provider = ? WHERE domain = ? OR domain = ?`, sslInt, provider, cleanDom, cleanDom+".conf")
+	return err
 }
 
 func (s *Store) DeleteSite(domain string) error {
@@ -335,6 +375,12 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 			rootPath := ""
 			proxyPort := 0
 			sslEnabled := strings.Contains(confStr, "ssl_certificate")
+			sslProvider := ""
+			if strings.Contains(confStr, "/etc/letsencrypt/") {
+				sslProvider = "letsencrypt"
+			} else if sslEnabled {
+				sslProvider = "local"
+			}
 			exposedTo := ""
 
 			if strings.Contains(confStr, "laravel") {
@@ -376,14 +422,15 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 			}
 
 			_ = s.SaveSite(SiteRecord{
-				Domain:     domain,
-				RootPath:   rootPath,
-				PHPVersion: phpVer,
-				Framework:  framework,
-				ProxyPort:  proxyPort,
-				SSLEnabled: sslEnabled,
-				ExposedTo:  exposedTo,
-				CreatedAt:  time.Now(),
+				Domain:      domain,
+				RootPath:    rootPath,
+				PHPVersion:  phpVer,
+				Framework:   framework,
+				ProxyPort:   proxyPort,
+				SSLEnabled:  sslEnabled,
+				SSLProvider: sslProvider,
+				ExposedTo:   exposedTo,
+				CreatedAt:   time.Now(),
 			})
 		}
 	}

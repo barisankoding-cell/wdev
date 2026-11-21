@@ -64,6 +64,8 @@ VIRTUAL HOST (NGINX):
   wdev site list            Tampilkan semua virtual host lokal
   wdev site create <domain> [root] [php-ver] [framework] [proxy-port]
                             Buat virtual host baru dengan SSL otomatis
+  wdev site ssl <domain> [--email <email>]
+                            Terbitkan & pasang SSL Let's Encrypt (certbot) pada vhost
   wdev site delete <domain> Hapus virtual host, SSL, dan entri /etc/hosts
   wdev site sync            Sinkronkan semua vhost ke /etc/hosts & sertifikat SSL
 
@@ -495,7 +497,7 @@ func main() {
 
 	case "site":
 		if len(args) < 2 {
-			fmt.Println("Penggunaan: wdev site <list|create|delete>")
+			fmt.Println("Penggunaan: wdev site <list|create|ssl|delete|sync>")
 			os.Exit(1)
 		}
 		switch args[1] {
@@ -509,12 +511,16 @@ func main() {
 				fmt.Println("Belum ada virtual host.")
 				return
 			}
-			fmt.Printf("%-24s %-12s %-10s %-8s %s\n", "DOMAIN", "FRAMEWORK", "RUNTIME", "SSL", "ROOT / TARGET")
-			fmt.Println(strings.Repeat("-", 70))
+			fmt.Printf("%-24s %-12s %-12s %-12s %s\n", "DOMAIN", "FRAMEWORK", "RUNTIME", "SSL", "ROOT / TARGET")
+			fmt.Println(strings.Repeat("-", 76))
 			for _, s := range sites {
 				sslText := "HTTP"
 				if s.SSLEnabled {
-					sslText = "SSL"
+					if s.SSLProvider == "letsencrypt" {
+						sslText = "HTTPS (LE)"
+					} else {
+						sslText = "HTTPS"
+					}
 				}
 				runtimeText := "PHP " + s.PHPVersion
 				if s.Framework == "static" {
@@ -526,7 +532,7 @@ func main() {
 				if s.Framework == "proxy" {
 					target = fmt.Sprintf("Port :%d", s.ProxyPort)
 				}
-				fmt.Printf("%-24s %-12s %-12s %-8s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, sslText, target)
+				fmt.Printf("%-24s %-12s %-12s %-12s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, sslText, target)
 			}
 
 		case "create", "add":
@@ -584,6 +590,27 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Println("✓ Seluruh virtual host berhasil disinkronkan ke /etc/hosts dan sertifikat SSL.")
+
+		case "ssl", "letsencrypt":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev site ssl <domain> [--email <email>]")
+				os.Exit(1)
+			}
+			domain := args[2]
+			email := ""
+			for i := 3; i < len(args); i++ {
+				if (args[i] == "--email" || args[i] == "-m") && i+1 < len(args) {
+					email = args[i+1]
+					i++
+				}
+			}
+			err := siteMgr.EnableLetsEncrypt(context.Background(), func(line string) {
+				fmt.Println(line)
+			}, domain, email)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Gagal mengaktifkan Let's Encrypt: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 	case "switch":

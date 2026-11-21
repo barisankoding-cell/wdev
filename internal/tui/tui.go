@@ -333,9 +333,10 @@ func (t *TUI) menuWebStack() {
 		fmt.Printf("  %s[5]%s 🔄 Sinkronisasi Hosts & SSL (wdev site sync)\n", Bold, Reset)
 		fmt.Printf("  %s[6]%s 🐘 Kelola Versi PHP CLI & FPM (wdev switch php)\n", Bold, Reset)
 		fmt.Printf("  %s[7]%s 🌐 Ekspos Vhost Lokal ke Internet (Cloudflare / PowerDNS)\n", Bold, Reset)
+		fmt.Printf("  %s[8]%s 🔒 Terbitkan SSL Let's Encrypt pada VHost (wdev site ssl)\n", Bold, Reset)
 		fmt.Printf("  %s[0]%s Kembali ke Menu Utama\n\n", Bold, Reset)
 
-		c := t.prompt("Pilih opsi [0-7]: ")
+		c := t.prompt("Pilih opsi [0-8]: ")
 		switch c {
 		case "1":
 			t.runTask("Full PHP Web Stack", t.inst.InstallPhpStack)
@@ -408,6 +409,14 @@ func (t *TUI) menuWebStack() {
 		case "7":
 			fmt.Println("Gunakan Menu [6] Cloudflare Tunnel atau Menu [7] PowerDNS VPS Edge untuk eksposur publik.")
 			t.waitEnter()
+		case "8":
+			dom := t.prompt("Masukkan domain virtual host (contoh: domainanda.com): ")
+			if dom != "" {
+				email := t.prompt("Email notifikasi Let's Encrypt (opsional, Enter untuk lewati): ")
+				t.runTask("SSL Let's Encrypt ("+dom+")", func(ctx context.Context, cb installer.LogCallback) error {
+					return t.siteMgr.EnableLetsEncrypt(ctx, cb, dom, email)
+				})
+			}
 		case "0", "q", "Q":
 			return
 		}

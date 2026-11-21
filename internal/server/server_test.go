@@ -622,3 +622,94 @@ func TestHandlePDNSZonesPostCreatesStaticVHost(t *testing.T) {
 		t.Fatalf("did not expect index.html when create_vhost=false")
 	}
 }
+
+func TestHandleSiteSSLValidationAndStartTask(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "site-ssl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          filepath.Join(tmp, "etc"),
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        filepath.Join(tmp, "hosts"),
+	}
+	_ = os.WriteFile(cfg.HostsFile, []byte("127.0.0.1 localhost\n"), 0644)
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	doneCh := make(chan struct{})
+	siteMgr.SetCertbotExecFn(func(ctx context.Context, cb func(string), bin string, args []string) error {
+		close(doneCh)
+		return nil
+	})
+	if _, err := siteMgr.EnsureDomainStaticVhost("nikaget.my.id"); err != nil {
+		t.Fatal(err)
+	}
+
+	run := runner.New(db)
+	inst := installer.New(cfg, db)
+	srv := New(cfg, db, run, inst, siteMgr, nil, nil, nil, nil, auth.New(cfg, db))
+
+	// 1. Reject GET
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/sites/ssl", nil)
+	recGet := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recGet, reqGet)
+	if recGet.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /api/sites/ssl = %d, want 405", recGet.Code)
+	}
+
+	// 2. Reject local .test domain
+	reqLocal := httptest.NewRequest(http.MethodPost, "/api/sites/ssl", strings.NewReader(`{"domain":"myapp.test"}`))
+	recLocal := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recLocal, reqLocal)
+	if recLocal.Code != http.StatusBadRequest {
+		t.Fatalf("POST /api/sites/ssl (.test) = %d, want 400", recLocal.Code)
+	}
+
+	// 3. Reject missing vhost
+	reqMissing := httptest.NewRequest(http.MethodPost, "/api/sites/ssl", strings.NewReader(`{"domain":"unknown.my.id"}`))
+	recMissing := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recMissing, reqMissing)
+	if recMissing.Code != http.StatusNotFound {
+		t.Fatalf("POST /api/sites/ssl (missing) = %d, want 404", recMissing.Code)
+	}
+
+	// 4. Valid POST /api/sites/ssl starts native task and executes certbot runner
+	if reqSudo, _ := inst.CheckSudoRequired(); !reqSudo {
+		reqOK := httptest.NewRequest(http.MethodPost, "/api/sites/ssl", strings.NewReader(`{"domain":"nikaget.my.id"}`))
+		recOK := httptest.NewRecorder()
+		srv.mux.ServeHTTP(recOK, reqOK)
+		if recOK.Code != http.StatusOK {
+			t.Fatalf("POST /api/sites/ssl = %d, body=%s", recOK.Code, recOK.Body.String())
+		}
+		var body struct {
+			Status string `json:"status"`
+			TaskID int64  `json:"task_id"`
+			Domain string `json:"domain"`
+		}
+		if err := json.Unmarshal(recOK.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Status != "started" || body.TaskID == 0 || body.Domain != "nikaget.my.id" {
+			t.Fatalf("unexpected /api/sites/ssl response: %+v", body)
+		}
+		select {
+		case <-doneCh:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for certbot task execution")
+		}
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+			if run.GetActiveTask() == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
