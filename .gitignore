@@ -9,6 +9,7 @@
 .env
 .env.*
 !.env.example
+!.env.test
 *.pem
 *.key
 *.crt
@@ -22,6 +23,7 @@ Thumbs.db
 
 # Artefak unduhan/ekstraksi saat pengujian skrip
 *.deb
+*.rpm
 *.tar.*
 *.zip
 
@@ -31,17 +33,38 @@ Thumbs.db
 *.orig
 *.rej
 
-# Artefak build & cache
+# Artefak build, pengujian & rilis Go
+# Catatan: web/static/ sengaja tetap di-track agar go build, go test, dan wdev update --source
+# dapat berjalan tanpa Node.js/pnpm.
 /wdev
+/wdev-edge
+/wdev-linux-*
+*.sha256
+*.test
+*.out
 bin/
+dist/
+coverage/
+
+# Database lokal
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+
+# Frontend (SvelteKit, Vite, pnpm, TypeScript)
 node_modules/
-dist/
+.svelte-kit/
+.output/
+.pnpm-store/
+pnpm-debug.log*
+*.tsbuildinfo
+vite.config.*.timestamp-*
 build/
-coverage/
 .cache/
+
+# Artefak native & Python
 *.o
 *.a
 *.so
