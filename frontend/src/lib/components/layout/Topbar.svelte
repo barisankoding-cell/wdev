@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
@@ -82,22 +81,6 @@
 				<span class="font-semibold text-primary">Edge Gateway</span>
 			{/if}
 		</Button>
-
-		<div class="hidden items-center gap-1.5 lg:flex">
-			{#if modeStore.mode === 'vps' || cp.systemStatus?.server_mode === 'vps' || !!(cp.systemStatus?.public_ip && cp.systemStatus.public_ip !== '-' && cp.systemStatus.public_ip !== '127.0.0.1')}
-				{@const pubIP = cp.systemStatus?.public_ip || modeStore.publicIP || '-'}
-				<Badge variant="outline" class="font-mono text-xs">
-					IP VPS: {pubIP || '-'}
-				</Badge>
-			{:else}
-				<Badge variant="outline" class="font-mono text-xs">
-					NetBird: {cp.systemStatus?.netbird_ip || '-'}
-				</Badge>
-			{/if}
-			<Badge variant="outline" class="font-mono text-xs">
-				LAN: {cp.systemStatus?.lan_ip || '-'}
-			</Badge>
-		</div>
 
 		<Button
 			variant="outline"

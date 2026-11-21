@@ -317,7 +317,7 @@
 
 		<Field.FieldSet>
 			<Field.FieldLegend variant="label">Cluster, Jaringan &amp; Akses Remote</Field.FieldLegend>
-			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
+			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				<Field.Field>
 					<Field.FieldLabel for="pg-cfg-version">Versi Cluster PostgreSQL</Field.FieldLabel>
 					<Select.Root
@@ -409,7 +409,7 @@
 
 		<Field.FieldSet>
 			<Field.FieldLegend variant="label">Tuning Memori, Koneksi &amp; Diagnostik</Field.FieldLegend>
-			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
+			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				<Field.Field>
 					<Field.FieldLabel for="pg-cfg-maxconn">max_connections</Field.FieldLabel>
 					<Input
@@ -487,7 +487,7 @@
 						required
 					/>
 				</Field.Field>
-				<Field.Field class="sm:col-span-2">
+				<Field.Field class="sm:col-span-2 lg:col-span-3">
 					<Field.FieldLabel for="pg-cfg-slowlog">
 						Log Slow Query (log_min_duration_statement ms)
 					</Field.FieldLabel>
@@ -554,7 +554,7 @@
 		<form onsubmit={handleCreateDB} class="rounded-lg border p-4">
 			<Field.FieldSet>
 				<Field.FieldLegend variant="label">Database Baru</Field.FieldLegend>
-				<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
+				<Field.FieldGroup class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 					<Field.Field>
 						<Field.FieldLabel for="pg-new-db-name">Nama Database</Field.FieldLabel>
 						<Input

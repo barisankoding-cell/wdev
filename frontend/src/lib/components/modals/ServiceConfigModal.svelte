@@ -310,7 +310,7 @@
 </script>
 
 <Dialog.Root bind:open={cp.serviceConfigOpen}>
-	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-3xl">
+	<Dialog.Content class="flex max-h-[92dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-4 sm:max-w-[min(94vw,80rem)]">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2 pr-6">
 				<Settings2Icon class="size-4 shrink-0 text-primary" />
@@ -460,7 +460,7 @@
 								</Button>
 							</div>
 							<pre
-								class="max-h-[48dvh] overflow-auto rounded-lg border bg-terminal p-4 font-mono text-xs leading-relaxed text-terminal-foreground whitespace-pre-wrap break-words"
+								class="max-h-[58dvh] overflow-auto rounded-lg border bg-terminal p-4 font-mono text-xs leading-relaxed text-terminal-foreground whitespace-pre-wrap break-words"
 							>{logsText}</pre>
 						</div>
 					</Tabs.Content>
