@@ -550,6 +550,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if s.pdnsMgr != nil {
+		stats.ServerMode = s.pdnsMgr.GetMode()
+		cfg := s.pdnsMgr.LoadConfig()
+		if cfg.VPSPublicIP != "" {
+			stats.PublicIP = cfg.VPSPublicIP
+		}
+		if stats.ServerMode == "vps" {
+			if stats.PublicIP != "" {
+				stats.NetbirdIP = stats.PublicIP
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, stats)
 }
 

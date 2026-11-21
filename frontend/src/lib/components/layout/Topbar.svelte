@@ -81,9 +81,16 @@
 		</Button>
 
 		<div class="hidden items-center gap-1.5 lg:flex">
-			<Badge variant="outline" class="font-mono text-xs">
-				NetBird: {cp.systemStatus?.netbird_ip || '-'}
-			</Badge>
+			{#if modeStore.mode === 'vps' || cp.systemStatus?.server_mode === 'vps' || !!(cp.systemStatus?.public_ip && cp.systemStatus.public_ip !== '-' && cp.systemStatus.public_ip !== '127.0.0.1')}
+				{@const pubIP = cp.systemStatus?.public_ip || modeStore.publicIP || '-'}
+				<Badge variant="outline" class="font-mono text-xs">
+					IP VPS: {pubIP || '-'}
+				</Badge>
+			{:else}
+				<Badge variant="outline" class="font-mono text-xs">
+					NetBird: {cp.systemStatus?.netbird_ip || '-'}
+				</Badge>
+			{/if}
 			<Badge variant="outline" class="font-mono text-xs">
 				LAN: {cp.systemStatus?.lan_ip || '-'}
 			</Badge>

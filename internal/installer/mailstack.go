@@ -2,6 +2,7 @@ package installer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,9 +11,90 @@ import (
 	"strings"
 )
 
+// isValidDomain memvalidasi FQDN domain sebelum proses instalasi mail stack.
+func isValidDomain(d string) bool {
+	d = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".")
+	if d == "" || len(d) > 253 || !strings.Contains(d, ".") || strings.Contains(d, "..") {
+		return false
+	}
+	for _, label := range strings.Split(d, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// HasConfiguredDomain memeriksa apakah ada domain atau situs yang sudah terkonfigurasi
+// di wdev sebelum komponen Mail Server Stack dipasang.
+func (inst *Installer) HasConfiguredDomain() bool {
+	// 1. Cek dari database wdev (tabel sites)
+	if inst.store != nil {
+		sites, err := inst.store.ListSites()
+		if err == nil && len(sites) > 0 {
+			for _, s := range sites {
+				if strings.TrimSpace(s.Domain) != "" {
+					return true
+				}
+			}
+		}
+	}
+
+	// 2. Cek file konfigurasi mail-domains.json jika ada
+	var statePaths []string
+	if inst.cfg != nil && inst.cfg.WdevEtc != "" {
+		statePaths = append(statePaths, filepath.Join(inst.cfg.WdevEtc, "mail-domains.json"))
+	}
+	statePaths = append(statePaths, "/etc/wdev/mail-domains.json", "/etc/wdev-edge/mail_domains.json")
+	for _, p := range statePaths {
+		if data, err := os.ReadFile(p); err == nil {
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err == nil && len(m) > 0 {
+				return true
+			}
+			var list []any
+			if err := json.Unmarshal(data, &list); err == nil && len(list) > 0 {
+				return true
+			}
+		}
+	}
+
+	// 3. Cek vhost Nginx yang sudah dikonfigurasi selain default / internal wdev
+	vhostDirs := []string{"/etc/nginx/sites-enabled", "/etc/nginx/sites-available"}
+	if inst.cfg != nil {
+		if inst.cfg.NginxSitesEnable != "" {
+			vhostDirs = append([]string{inst.cfg.NginxSitesEnable}, vhostDirs...)
+		}
+		if inst.cfg.NginxSitesAvail != "" {
+			vhostDirs = append([]string{inst.cfg.NginxSitesAvail}, vhostDirs...)
+		}
+	}
+	for _, dir := range vhostDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasSuffix(name, ".conf") {
+				base := strings.TrimSuffix(name, ".conf")
+				if base != "default" && base != "wdev_webmail" && base != "wdev_fallback" {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // InstallMailStack memasang Stalwart Mail Server, stalwart-cli, dan SnappyMail
-// tanpa skrip shell. Setup domain (DNS, relay, vhost) dijalankan terpisah oleh
-// `wdev mail` / Web UI setelah komponen ini terpasang.
+// tanpa skrip shell. Memerlukan setidaknya satu domain yang telah terdaftar di wdev.
 func hasPHPFPMBinary() bool {
 	if findTool("php-fpm") != "" {
 		return true
@@ -21,7 +103,18 @@ func hasPHPFPMBinary() bool {
 	return len(matches) > 0
 }
 
-func (inst *Installer) InstallMailStack(ctx context.Context, cb LogCallback) error {
+// InstallMailStackWithDomain memasang Stalwart Mail Server, stalwart-cli, dan SnappyMail
+// dengan validasi ketersediaan domain (baik melalui argumen domain atau domain yang sudah ada di sistem).
+func (inst *Installer) InstallMailStackWithDomain(ctx context.Context, cb LogCallback, domain string) error {
+	domain = strings.TrimSpace(domain)
+	if domain != "" {
+		if !isValidDomain(domain) {
+			return fmt.Errorf("domain %q tidak valid", domain)
+		}
+	} else if !inst.HasConfiguredDomain() {
+		return fmt.Errorf("belum ada domain yang terkonfigurasi di wdev. Tambahkan domain atau situs terlebih dahulu sebelum memasang Mail Server Stack")
+	}
+
 	cb("=== Memasang Mail Stack (Stalwart + SnappyMail) ===")
 	// Prasyarat: nginx (vhost/webmail/admin) dan PHP-FPM (SnappyMail).
 	_, sbinErr := os.Stat("/usr/sbin/nginx")
@@ -48,6 +141,10 @@ func (inst *Installer) InstallMailStack(ctx context.Context, cb LogCallback) err
 	return nil
 }
 
+func (inst *Installer) InstallMailStack(ctx context.Context, cb LogCallback) error {
+	return inst.InstallMailStackWithDomain(ctx, cb, "")
+}
+
 func stalwartArch() string {
 	switch runtime.GOARCH {
 	case "amd64":
@@ -61,10 +158,53 @@ func stalwartArch() string {
 	}
 }
 
-func pickLinuxAsset(assets []ghReleaseAsset, arch, suffix string) string {
+func pickLinuxAsset(assets []ghReleaseAsset, prefix, arch, suffix string) string {
+	targetPrefix := prefix + "-" + arch + "-"
+	// 1. Prioritaskan binary standar GNU (bukan FoundationDB atau varian custom lainnya)
 	for _, a := range assets {
 		name := strings.ToLower(a.Name)
-		if !strings.Contains(name, arch+"-unknown-linux-gnu") {
+		if strings.Contains(name, "foundationdb") {
+			continue
+		}
+		if !strings.HasPrefix(name, targetPrefix) && name != prefix+"-"+arch+suffix {
+			continue
+		}
+		if !strings.Contains(name, "-unknown-linux-gnu") && !strings.Contains(name, "-linux-gnu") {
+			continue
+		}
+		if strings.HasSuffix(name, suffix) {
+			return a.URL
+		}
+	}
+	// 2. Fallback untuk linux variant lain (misal musl) dengan prefix yang sama
+	for _, a := range assets {
+		name := strings.ToLower(a.Name)
+		if strings.Contains(name, "foundationdb") {
+			continue
+		}
+		if !strings.HasPrefix(name, targetPrefix) && name != prefix+"-"+arch+suffix {
+			continue
+		}
+		if !strings.Contains(name, "linux") {
+			continue
+		}
+		if strings.HasSuffix(name, suffix) {
+			return a.URL
+		}
+	}
+	// 3. Fallback jika arm/armv7 atau variasi penamaan lain, selama bukan foundationdb
+	for _, a := range assets {
+		name := strings.ToLower(a.Name)
+		if strings.Contains(name, "foundationdb") {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix+"-") {
+			continue
+		}
+		if !strings.Contains(name, arch) {
+			continue
+		}
+		if !strings.Contains(name, "linux") {
 			continue
 		}
 		if strings.HasSuffix(name, suffix) {
@@ -84,7 +224,7 @@ func (inst *Installer) installStalwart(ctx context.Context, cb LogCallback) erro
 		if err != nil {
 			return fmt.Errorf("gagal mengambil rilis Stalwart: %w", err)
 		}
-		url := pickLinuxAsset(assets, stalwartArch(), ".tar.gz")
+		url := pickLinuxAsset(assets, "stalwart", stalwartArch(), ".tar.gz")
 		if url == "" {
 			return fmt.Errorf("aset Stalwart untuk arsitektur %s tidak ditemukan", runtime.GOARCH)
 		}
@@ -100,7 +240,7 @@ func (inst *Installer) installStalwart(ctx context.Context, cb LogCallback) erro
 		if err := inst.runCmd(ctx, cb, "tar", "-xzf", archive, "-C", tmpDir); err != nil {
 			return err
 		}
-		bin, err := findFileNamed(tmpDir, "stalwart")
+		bin, err := findFileNamed(tmpDir, "stalwart", "stalwart-mail")
 		if err != nil {
 			return err
 		}
@@ -172,7 +312,7 @@ func (inst *Installer) installStalwartCLI(ctx context.Context, cb LogCallback) e
 	if err != nil {
 		return err
 	}
-	url := pickLinuxAsset(assets, stalwartArch(), ".tar.xz")
+	url := pickLinuxAsset(assets, "stalwart-cli", stalwartArch(), ".tar.xz")
 	if url == "" {
 		return fmt.Errorf("aset stalwart-cli tidak ditemukan")
 	}
@@ -270,15 +410,17 @@ func (inst *Installer) runCmdOutput(ctx context.Context, name string, args ...st
 	return string(out), err
 }
 
-func findFileNamed(root, name string) (string, error) {
+func findFileNamed(root string, names ...string) (string, error) {
 	var found string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}
-		if info.Name() == name {
-			found = path
-			return filepath.SkipAll
+		for _, name := range names {
+			if info.Name() == name {
+				found = path
+				return filepath.SkipAll
+			}
 		}
 		return nil
 	})
@@ -286,7 +428,7 @@ func findFileNamed(root, name string) (string, error) {
 		return "", err
 	}
 	if found == "" {
-		return "", fmt.Errorf("binary %s tidak ditemukan di arsip", name)
+		return "", fmt.Errorf("binary %s tidak ditemukan di arsip", strings.Join(names, " / "))
 	}
 	return found, nil
 }

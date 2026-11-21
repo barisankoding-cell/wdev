@@ -311,14 +311,45 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Gagal memuat status: %v\n", err)
 			os.Exit(1)
 		}
+		if pdnsMgr != nil {
+			stats.ServerMode = pdnsMgr.GetMode()
+			edgeCfg := pdnsMgr.LoadConfig()
+			if edgeCfg.VPSPublicIP != "" {
+				stats.PublicIP = edgeCfg.VPSPublicIP
+			}
+			if stats.ServerMode == "vps" && stats.PublicIP != "" {
+				stats.NetbirdIP = stats.PublicIP
+			}
+		}
 		fmt.Printf("=== wdev Status Sistem ===\n")
 		fmt.Printf("OS:         %s\n", stats.OSName)
 		fmt.Printf("Uptime:     %s\n", stats.UptimeString)
 		fmt.Printf("Load Avg:   %s (%d%%, %d%%, %d%% / %d vCPU)\n", stats.LoadAvg, stats.Load1mPct, stats.Load5mPct, stats.Load15mPct, stats.CPUCores)
+		if len(stats.CPUCoresUsage) > 1 {
+			var coreParts []string
+			for _, cu := range stats.CPUCoresUsage {
+				coreParts = append(coreParts, fmt.Sprintf("CPU%d: %d%%", cu.Core, cu.Percent))
+			}
+			fmt.Printf("Per-Core:   %s\n", strings.Join(coreParts, " | "))
+		}
 		fmt.Printf("RAM:        %d / %d MB (%d%%)\n", stats.MemUsedMB, stats.MemTotalMB, stats.MemPercent)
 		fmt.Printf("Disk (/):   %d / %d GB (%d%%)\n", stats.DiskUsedGB, stats.DiskTotalGB, stats.DiskPercent)
 		fmt.Printf("LAN IP:     %s\n", stats.LanIP)
-		fmt.Printf("NetBird IP: %s\n", stats.NetbirdIP)
+		if stats.ServerMode == "vps" || (stats.PublicIP != "" && stats.PublicIP != "-" && stats.PublicIP != "127.0.0.1") {
+			pub := stats.PublicIP
+			if pub == "" {
+				pub = stats.NetbirdIP
+			}
+			if pub == "" {
+				pub = "-"
+			}
+			fmt.Printf("IP VPS:     %s\n", pub)
+			if stats.NetbirdIP != "" && stats.NetbirdIP != "-" && stats.NetbirdIP != pub {
+				fmt.Printf("NetBird IP: %s\n", stats.NetbirdIP)
+			}
+		} else {
+			fmt.Printf("NetBird IP: %s\n", stats.NetbirdIP)
+		}
 		fmt.Println("\nLayanan Inti:")
 		for _, s := range stats.Services {
 			status := "NONAKTIF"
@@ -1366,7 +1397,20 @@ func main() {
 			fn = inst.InstallPhpStack
 		case "mail", "mail-stack":
 			taskName = "Mail Stack (Stalwart + SnappyMail)"
-			fn = inst.InstallMailStack
+			targetDomain := ""
+			for i := 2; i < len(args); i++ {
+				if args[i] == "--domain" || args[i] == "-d" {
+					if i+1 < len(args) {
+						targetDomain = args[i+1]
+						i++
+					}
+				} else if !strings.HasPrefix(args[i], "-") && targetDomain == "" {
+					targetDomain = args[i]
+				}
+			}
+			fn = func(ctx context.Context, cb func(string)) error {
+				return inst.InstallMailStackWithDomain(ctx, cb, targetDomain)
+			}
 		case "pdns", "powerdns":
 			taskName = "PowerDNS Authoritative Server"
 			fn = inst.InstallPowerDNS

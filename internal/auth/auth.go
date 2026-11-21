@@ -203,6 +203,9 @@ func VerifyPassword(password, encodedHash string) bool {
 
 // EnsureInitialized memastikan akun admin dan security entrance sudah disiapkan.
 func (m *Manager) EnsureInitialized() error {
+	if m.store == nil {
+		return nil
+	}
 	user, _ := m.store.GetSetting(SettingUsername)
 	if user == "" {
 		initialUser := "admin"

@@ -140,12 +140,12 @@ func isCGNATIPv4(ip net.IP) bool {
 	return ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127
 }
 
-// HasPublicInterfaceIP memeriksa apakah mesin ini memiliki IPv4 publik langsung
-// pada interface jaringan host (ciri khas VPS publik tanpa NAT).
-func HasPublicInterfaceIP() bool {
+// DetectPublicInterfaceIP mengembalikan alamat IPv4 publik pertama yang ditemukan
+// langsung pada interface fisik host.
+func DetectPublicInterfaceIP() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return false
+		return ""
 	}
 	for _, ifi := range ifaces {
 		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 || isVirtualOrTunnelIface(ifi.Name) {
@@ -165,11 +165,17 @@ func HasPublicInterfaceIP() bool {
 				continue
 			}
 			if !ip4.IsLoopback() && !ip4.IsPrivate() && !ip4.IsLinkLocalUnicast() && !ip4.IsMulticast() && !ip4.IsUnspecified() && !isCGNATIPv4(ip4) {
-				return true
+				return ip4.String()
 			}
 		}
 	}
-	return false
+	return ""
+}
+
+// HasPublicInterfaceIP memeriksa apakah mesin ini memiliki IPv4 publik langsung
+// pada interface jaringan host (ciri khas VPS publik tanpa NAT).
+func HasPublicInterfaceIP() bool {
+	return DetectPublicInterfaceIP() != ""
 }
 
 // DetectLocalLANIP mengembalikan IPv4 LAN/host utama (bukan loopback dan bukan NetBird).
@@ -220,29 +226,27 @@ func detectModeFromSignals(sig modeSignals) string {
 	if norm, ok := NormalizeMode(sig.explicitMode); ok {
 		return norm
 	}
-	// 1. Jika ada edge.conf VPS atau PowerDNS lokal, gunakan VPS atau Lokal.
+	// 1. Jika ada edge.conf VPS, ini jelas VPS agent.
 	if sig.hasEdgeAgentCfg {
 		return "vps"
 	}
-	if sig.hasLocalPDNS {
-		if sig.hasPublicNIC {
-			return "vps"
-		}
-		return "local"
-	}
-	// 2. Jika edge-dns.conf mengarah ke host remote (bukan loopback), ini client Edge.
-	if sig.remoteEdgeHost != "" {
-		return "edge"
-	}
-	// 3. Jika NetBird aktif tanpa PowerDNS lokal, arahkan ke Edge.
-	if sig.localNetbirdIP != "" {
-		return "edge"
-	}
-	// 4. Jika NIC memiliki IP publik langsung tanpa NetBird, ini VPS standalone.
+	// 2. Jika NIC memiliki IP publik langsung (ciri khas VPS publik tanpa NAT), ini PASTI adalah VPS standalone!
+	// Pengecekan ini harus didahulukan sebelum NetBird, karena VPS publik juga sering menginstal NetBird untuk VPN admin.
 	if sig.hasPublicNIC {
 		return "vps"
 	}
-	// 5. Default aman tanpa NetBird & tanpa IP publik: mode Lokal standalone.
+	if sig.hasLocalPDNS {
+		return "local"
+	}
+	// 3. Jika edge-dns.conf mengarah ke host remote (bukan loopback), ini client Edge.
+	if sig.remoteEdgeHost != "" {
+		return "edge"
+	}
+	// 4. Jika NetBird aktif tanpa IP publik host, arahkan ke Edge Gateway.
+	if sig.localNetbirdIP != "" {
+		return "edge"
+	}
+	// 5. Default aman: mode Lokal standalone.
 	return "local"
 }
 
@@ -480,6 +484,15 @@ func (m *Manager) LoadConfig() EdgeConfig {
 		if hasLocalPDNS || mode == "vps" {
 			if conf.VPSNetbirdIP == "" || conf.VPSNetbirdIP == "-" || conf.VPSNetbirdIP == "0.0.0.0" || hasLocalPDNS {
 				conf.VPSNetbirdIP = "127.0.0.1"
+			}
+		}
+		if mode == "vps" && conf.VPSPublicIP == "" {
+			if pub := DetectPublicInterfaceIP(); pub != "" {
+				conf.VPSPublicIP = pub
+			} else if pub := edge.DetectPublicIP(context.Background()); pub != "" {
+				conf.VPSPublicIP = pub
+			} else if lan := DetectLocalLANIP(); lan != "" {
+				conf.VPSPublicIP = lan
 			}
 		}
 		if mode == "local" && hasLocalPDNS && conf.VPSPublicIP == "" {

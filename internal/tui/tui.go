@@ -144,12 +144,31 @@ func (t *TUI) renderSystemSummary() {
 		fmt.Printf("%s[Gagal memuat status sistem]%s\n", Red, Reset)
 		return
 	}
+	if t.pdnsMgr != nil {
+		stats.ServerMode = t.pdnsMgr.GetMode()
+		cfg := t.pdnsMgr.LoadConfig()
+		if cfg.VPSPublicIP != "" {
+			stats.PublicIP = cfg.VPSPublicIP
+		}
+		if stats.ServerMode == "vps" && stats.PublicIP != "" {
+			stats.NetbirdIP = stats.PublicIP
+		}
+	}
+
+	netLabel := "NetBird:"
+	netVal := stats.NetbirdIP
+	if stats.ServerMode == "vps" || (stats.PublicIP != "" && stats.PublicIP != "-" && stats.PublicIP != "127.0.0.1") {
+		netLabel = "IP VPS: "
+		if stats.PublicIP != "" {
+			netVal = stats.PublicIP
+		}
+	}
 
 	fmt.Printf(" %sOS:%s %-25s  %sUptime:%s %s\n", Bold, Reset, stats.OSName, Bold, Reset, stats.UptimeString)
 	fmt.Printf(" %sRAM:%s %d/%d MB (%d%%)       %sDisk:%s   %d/%d GB (%d%%)\n",
 		Bold, Reset, stats.MemUsedMB, stats.MemTotalMB, stats.MemPercent,
 		Bold, Reset, stats.DiskUsedGB, stats.DiskTotalGB, stats.DiskPercent)
-	fmt.Printf(" %sLAN IP:%s %-22s  %sNetBird:%s %s\n", Bold, Reset, stats.LanIP, Bold, Reset, stats.NetbirdIP)
+	fmt.Printf(" %sLAN IP:%s %-22s  %s%s%s %s\n", Bold, Reset, stats.LanIP, Bold, Reset, netLabel, netVal)
 	fmt.Printf("%s------------------------------------------------------------------------%s\n", Dim, Reset)
 }
 

@@ -96,6 +96,14 @@ func TestDetectModeFromSignals(t *testing.T) {
 			},
 			want: "vps",
 		},
+		{
+			name: "public nic with netbird implies vps (vps with admin vpn)",
+			sig: modeSignals{
+				hasPublicNIC:   true,
+				localNetbirdIP: "10.3.35.254",
+			},
+			want: "vps",
+		},
 	}
 
 	for _, tc := range cases {
@@ -163,5 +171,17 @@ AGENT_PORT="19999"
 	}
 	if len(exposures) != 0 {
 		t.Fatalf("expected 0 exposures, got %d", len(exposures))
+	}
+
+	// Test VPS mode configuration
+	if err := mgr.SetMode("vps"); err != nil {
+		t.Fatalf("SetMode(vps) failed: %v", err)
+	}
+	vpsConf := mgr.LoadConfig()
+	if vpsConf.Mode != "vps" {
+		t.Fatalf("expected mode=vps, got %q", vpsConf.Mode)
+	}
+	if vpsConf.VPSNetbirdIP != "127.0.0.1" {
+		t.Fatalf("expected loopback VPSNetbirdIP in vps mode, got %q", vpsConf.VPSNetbirdIP)
 	}
 }

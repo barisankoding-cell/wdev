@@ -11,6 +11,7 @@
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
+	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import type { ServiceConfigKey, ServiceStatus, UpdaterStatus } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
@@ -261,6 +262,34 @@
 							<span class="text-[10px] text-muted-foreground">{load15Raw}</span>
 						</div>
 					</div>
+					{#if st.cpu_cores_usage && st.cpu_cores_usage.length > 1}
+						<div class="mt-1 flex flex-col gap-1.5 border-t border-border/50 pt-2">
+							<div class="flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+								<span>Penggunaan Core</span>
+								<span class="font-mono text-[10px]">{st.cpu_cores_usage.length} Cores</span>
+							</div>
+							<div class="grid grid-cols-1 gap-1.5">
+								{#each st.cpu_cores_usage as coreItem (coreItem.core)}
+									<div class="flex items-center gap-2 font-mono text-xs">
+										<span class="w-12 text-[11px] text-muted-foreground">Core {coreItem.core}</span>
+										<Progress value={Math.min(coreItem.percent, 100)} max={100} class="h-1.5 flex-1" />
+										<span
+											class={cn(
+												'w-9 text-right text-[11px] font-semibold tabular-nums',
+												coreItem.percent >= 90
+													? 'text-destructive'
+													: coreItem.percent >= 75
+														? 'text-warning'
+														: ''
+											)}
+										>
+											{coreItem.percent}%
+										</span>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
 				</Card.Content>
 			</Card.Root>
 
@@ -292,22 +321,29 @@
 		</div>
 
 		<!-- Network & Self-Update Row -->
+		{@const isVPS = modeStore.mode === 'vps' || st.server_mode === 'vps' || !!(st.public_ip && st.public_ip !== '-' && st.public_ip !== '127.0.0.1')}
+		{@const vpsIP = (st.public_ip && st.public_ip !== '-' && st.public_ip !== '127.0.0.1')
+			? st.public_ip
+			: (modeStore.publicIP && modeStore.publicIP !== '-' ? modeStore.publicIP : '')}
+		{@const networkIP = isVPS ? (vpsIP || (st.netbird_ip !== '-' ? st.netbird_ip : '')) : st.netbird_ip}
+		{@const networkLabel = isVPS ? 'IP VPS' : 'IP Jaringan NetBird (VPN Mesh)'}
+		{@const copyToastLabel = isVPS ? 'IP VPS' : 'IP NetBird'}
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
 			<Card.Root>
 				<Card.Header>
 					<div class="flex items-start justify-between gap-2">
 						<div class="min-w-0">
-							<Card.Description>IP Jaringan NetBird (VPN Mesh)</Card.Description>
+							<Card.Description>{networkLabel}</Card.Description>
 							<Card.Title class="mt-0.5 truncate font-mono text-base text-primary">
-								{st.netbird_ip || '-'}
+								{networkIP || '-'}
 							</Card.Title>
 						</div>
-						{#if st.netbird_ip}
+						{#if networkIP && networkIP !== '-'}
 							<Button
 								variant="ghost"
 								size="icon-sm"
-								aria-label="Salin IP NetBird"
-								onclick={() => copyAddress(st.netbird_ip, 'IP NetBird')}
+								aria-label="Salin {copyToastLabel}"
+								onclick={() => copyAddress(networkIP, copyToastLabel)}
 							>
 								<CopyIcon />
 							</Button>
@@ -338,6 +374,29 @@
 					</div>
 				</Card.Header>
 			</Card.Root>
+
+			{#if isVPS && st.netbird_ip && st.netbird_ip !== '-' && st.netbird_ip !== vpsIP}
+				<Card.Root>
+					<Card.Header>
+						<div class="flex items-start justify-between gap-2">
+							<div class="min-w-0">
+								<Card.Description>IP NetBird VPN (Mesh)</Card.Description>
+								<Card.Title class="mt-0.5 truncate font-mono text-base text-muted-foreground">
+									{st.netbird_ip}
+								</Card.Title>
+							</div>
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								aria-label="Salin IP NetBird"
+								onclick={() => copyAddress(st.netbird_ip, 'IP NetBird')}
+							>
+								<CopyIcon />
+							</Button>
+						</div>
+					</Card.Header>
+				</Card.Root>
+			{/if}
 
 			<Card.Root class="sm:col-span-2 lg:col-span-1">
 				<Card.Header>

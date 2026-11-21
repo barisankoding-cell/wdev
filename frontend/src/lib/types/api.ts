@@ -13,6 +13,11 @@ export interface ServiceStatus {
 	install_component?: string;
 }
 
+export interface CPUCoreUsage {
+	core: number;
+	percent: number;
+}
+
 export interface SystemStats {
 	wdev_version?: string;
 	hostname: string;
@@ -21,6 +26,7 @@ export interface SystemStats {
 	uptime_string: string;
 	load_avg: string;
 	cpu_cores?: number;
+	cpu_cores_usage?: CPUCoreUsage[];
 	load_percent?: number;
 	load_1m?: number;
 	load_5m?: number;
@@ -36,6 +42,8 @@ export interface SystemStats {
 	disk_percent: number;
 	lan_ip: string;
 	netbird_ip: string;
+	public_ip?: string;
+	server_mode?: string;
 	services: ServiceStatus[];
 	runtimes: Record<string, string>;
 }

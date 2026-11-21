@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,9 +28,10 @@ type SystemStats struct {
 	OSName       string            `json:"os_name"`
 	Kernel       string            `json:"kernel"`
 	UptimeString string            `json:"uptime_string"`
-	LoadAvg      string            `json:"load_avg"`
-	CPUCores     int               `json:"cpu_cores"`
-	LoadPercent  int               `json:"load_percent"`
+	LoadAvg       string            `json:"load_avg"`
+	CPUCores      int               `json:"cpu_cores"`
+	CPUCoresUsage []CPUCoreUsage    `json:"cpu_cores_usage,omitempty"`
+	LoadPercent   int               `json:"load_percent"`
 	Load1m       float64           `json:"load_1m"`
 	Load5m       float64           `json:"load_5m"`
 	Load15m      float64           `json:"load_15m"`
@@ -44,8 +46,15 @@ type SystemStats struct {
 	DiskPercent  int               `json:"disk_percent"`
 	LanIP        string            `json:"lan_ip"`
 	NetbirdIP    string            `json:"netbird_ip"`
+	PublicIP     string            `json:"public_ip,omitempty"`
+	ServerMode   string            `json:"server_mode,omitempty"`
 	Services     []ServiceStatus   `json:"services"`
 	Runtimes     map[string]string `json:"runtimes"`
+}
+
+type CPUCoreUsage struct {
+	Core    int `json:"core"`
+	Percent int `json:"percent"`
 }
 
 type ServiceStatus struct {
@@ -75,6 +84,7 @@ var globalServiceCache = &serviceVersionCache{
 
 func init() {
 	go RefreshLatestVersions(false)
+	go startCPUSampler()
 }
 
 func cleanVersion(v string) string {
@@ -140,19 +150,26 @@ func Collect() (*SystemStats, error) {
 	loadAvg, cpuCores, l1, l5, l15, p1, p5, p15 := getLoadAvgInfo()
 	memTotal, memUsed, memPct := getMemInfo()
 	diskTotal, diskUsed, diskPct := getDiskInfo("/")
-	lanIP, netbirdIP := getNetworkIPs()
+	lanIP, netbirdIP, publicIP := getNetworkIPs()
 	services := getServiceStatuses()
 	runtimes := getRuntimeVersions()
+	cpuCoresUsage := getCPUCoresUsage()
+
+	serverMode := ""
+	if publicIP != "" && publicIP != "-" && publicIP != "127.0.0.1" {
+		serverMode = "vps"
+	}
 
 	return &SystemStats{
-		WdevVersion:  version.Version,
-		Hostname:     hostname,
-		OSName:       osName,
-		Kernel:       kernel,
-		UptimeString: uptimeStr,
-		LoadAvg:      loadAvg,
-		CPUCores:     cpuCores,
-		LoadPercent:  p1,
+		WdevVersion:   version.Version,
+		Hostname:      hostname,
+		OSName:        osName,
+		Kernel:        kernel,
+		UptimeString:  uptimeStr,
+		LoadAvg:       loadAvg,
+		CPUCores:      cpuCores,
+		CPUCoresUsage: cpuCoresUsage,
+		LoadPercent:   p1,
 		Load1m:       l1,
 		Load5m:       l5,
 		Load15m:      l15,
@@ -167,6 +184,8 @@ func Collect() (*SystemStats, error) {
 		DiskPercent:  diskPct,
 		LanIP:        lanIP,
 		NetbirdIP:    netbirdIP,
+		PublicIP:     publicIP,
+		ServerMode:    serverMode,
 		Services:     services,
 		Runtimes:     runtimes,
 	}, nil
@@ -259,6 +278,182 @@ func getLoadAvgInfo() (summary string, cpuCores int, l1, l5, l15 float64, p1, p5
 	return summary, cpuCores, l1, l5, l15, p1, p5, p15
 }
 
+type coreTickSample struct {
+	idle  uint64
+	total uint64
+}
+
+var (
+	cpuMu            sync.RWMutex
+	prevCPUTicks     map[int]coreTickSample
+	lastCPUTickTime  time.Time
+	cachedCoresUsage []CPUCoreUsage
+)
+
+func parseProcStat(content string) map[int]coreTickSample {
+	res := make(map[int]coreTickSample)
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "cpu") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		name := fields[0]
+		if name == "cpu" {
+			continue // skip aggregate cpu line
+		}
+		coreIDStr := strings.TrimPrefix(name, "cpu")
+		coreID, err := strconv.Atoi(coreIDStr)
+		if err != nil {
+			continue
+		}
+
+		var values []uint64
+		for _, f := range fields[1:] {
+			v, _ := strconv.ParseUint(f, 10, 64)
+			values = append(values, v)
+		}
+		if len(values) < 4 {
+			continue
+		}
+		user := values[0]
+		nice := values[1]
+		sys := values[2]
+		idle := values[3]
+		var iowait, irq, softirq, steal uint64
+		if len(values) > 4 {
+			iowait = values[4]
+		}
+		if len(values) > 5 {
+			irq = values[5]
+		}
+		if len(values) > 6 {
+			softirq = values[6]
+		}
+		if len(values) > 7 {
+			steal = values[7]
+		}
+		idleTotal := idle + iowait
+		nonIdle := user + nice + sys + irq + softirq + steal
+		total := idleTotal + nonIdle
+		res[coreID] = coreTickSample{
+			idle:  idleTotal,
+			total: total,
+		}
+	}
+	return res
+}
+
+func calculateCoresUsage(prev, curr map[int]coreTickSample) []CPUCoreUsage {
+	var list []CPUCoreUsage
+	for coreID, curSamp := range curr {
+		prevSamp, ok := prev[coreID]
+		if !ok {
+			continue
+		}
+		totalDelta := int64(curSamp.total) - int64(prevSamp.total)
+		idleDelta := int64(curSamp.idle) - int64(prevSamp.idle)
+		pct := 0
+		if totalDelta > 0 && totalDelta >= idleDelta {
+			usedDelta := totalDelta - idleDelta
+			pct = int(math.Round(float64(usedDelta) / float64(totalDelta) * 100.0))
+			if pct < 0 {
+				pct = 0
+			} else if pct > 100 {
+				pct = 100
+			}
+		}
+		list = append(list, CPUCoreUsage{
+			Core:    coreID,
+			Percent: pct,
+		})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].Core < list[j].Core
+	})
+	return list
+}
+
+func startCPUSampler() {
+	raw, err := os.ReadFile("/proc/stat")
+	if err == nil {
+		cpuMu.Lock()
+		prevCPUTicks = parseProcStat(string(raw))
+		lastCPUTickTime = time.Now()
+		cpuMu.Unlock()
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	for range ticker.C {
+		raw, err := os.ReadFile("/proc/stat")
+		if err != nil {
+			continue
+		}
+		curr := parseProcStat(string(raw))
+		cpuMu.Lock()
+		if len(prevCPUTicks) > 0 {
+			cachedCoresUsage = calculateCoresUsage(prevCPUTicks, curr)
+		}
+		prevCPUTicks = curr
+		lastCPUTickTime = time.Now()
+		cpuMu.Unlock()
+	}
+}
+
+func getCPUCoresUsage() []CPUCoreUsage {
+	cpuMu.RLock()
+	cached := cachedCoresUsage
+	lastTime := lastCPUTickTime
+	hasPrev := len(prevCPUTicks) > 0
+	cpuMu.RUnlock()
+
+	if len(cached) > 0 && time.Since(lastTime) < 5*time.Second {
+		res := make([]CPUCoreUsage, len(cached))
+		copy(res, cached)
+		return res
+	}
+
+	raw1, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return nil
+	}
+	sample1 := parseProcStat(string(raw1))
+	if len(sample1) <= 1 {
+		return nil
+	}
+
+	cpuMu.Lock()
+	if hasPrev && time.Since(lastTime) < 10*time.Second {
+		usage := calculateCoresUsage(prevCPUTicks, sample1)
+		prevCPUTicks = sample1
+		lastCPUTickTime = time.Now()
+		cachedCoresUsage = usage
+		cpuMu.Unlock()
+		return usage
+	}
+	cpuMu.Unlock()
+
+	time.Sleep(150 * time.Millisecond)
+	raw2, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return nil
+	}
+	sample2 := parseProcStat(string(raw2))
+	usage := calculateCoresUsage(sample1, sample2)
+
+	cpuMu.Lock()
+	prevCPUTicks = sample2
+	lastCPUTickTime = time.Now()
+	cachedCoresUsage = usage
+	cpuMu.Unlock()
+
+	return usage
+}
+
 func getMemInfo() (totalMB int64, usedMB int64, percent int) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
@@ -306,13 +501,65 @@ func getDiskInfo(path string) (totalGB int64, usedGB int64, percent int) {
 	return
 }
 
-func getNetworkIPs() (lanIP string, netbirdIP string) {
+func isPublicIPv4(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	if ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127 {
+		return false
+	}
+	return true
+}
+
+func loadEdgeDNSPublicIP() string {
+	paths := []string{
+		"/etc/wdev/edge-dns.conf",
+		"/etc/wdev-edge/edge.conf",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "wdev", "edge-dns.conf"))
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+				continue
+			}
+			parts := strings.SplitN(line, "=", 2)
+			k := strings.TrimSpace(parts[0])
+			v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+			if (k == "VPS_PUBLIC_IP" || k == "PUBLIC_IP") && v != "" && v != "127.0.0.1" && v != "localhost" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+func getNetworkIPs() (lanIP string, netbirdIP string, publicIP string) {
 	lanIP = "127.0.0.1"
 	netbirdIP = "-"
+	publicIP = ""
 
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			name := strings.ToLower(iface.Name)
+			if name == "lo" || strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") ||
+				strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "virbr") || strings.HasPrefix(name, "cni") {
+				continue
+			}
 			addrs, err := iface.Addrs()
 			if err != nil {
 				continue
@@ -322,14 +569,22 @@ func getNetworkIPs() (lanIP string, netbirdIP string) {
 				if !ok || ipnet.IP.IsLoopback() || ipnet.IP.To4() == nil {
 					continue
 				}
-				ipStr := ipnet.IP.String()
-				if iface.Name == "wt0" {
+				ip4 := ipnet.IP.To4()
+				ipStr := ip4.String()
+				if name == "wt0" {
 					netbirdIP = ipStr
-				} else if !strings.HasPrefix(iface.Name, "docker") && !strings.HasPrefix(iface.Name, "br-") && lanIP == "127.0.0.1" {
+				} else if isPublicIPv4(ip4) {
+					if publicIP == "" {
+						publicIP = ipStr
+					}
+				} else if lanIP == "127.0.0.1" {
 					lanIP = ipStr
 				}
 			}
 		}
+	}
+	if publicIP == "" {
+		publicIP = loadEdgeDNSPublicIP()
 	}
 	return
 }
