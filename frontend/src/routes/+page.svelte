@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
+	import * as Collapsible from '#lib/components/ui/collapsible/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Progress } from '#lib/components/ui/progress/index.js';
@@ -13,7 +14,12 @@
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import { cn } from '#lib/utils.js';
-	import type { ServiceConfigKey, ServiceStatus, UpdaterStatus } from '#lib/types/api.js';
+	import type {
+		CPUCoreUsage,
+		ServiceConfigKey,
+		ServiceStatus,
+		UpdaterStatus
+	} from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -25,6 +31,8 @@
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import ChevronUpIcon from '@lucide/svelte/icons/chevron-up';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import ArrowUpCircleIcon from '@lucide/svelte/icons/arrow-up-circle';
 	import CopyIcon from '@lucide/svelte/icons/copy';
@@ -33,8 +41,32 @@
 	let servicePending = $state<Record<string, boolean>>({});
 	let updaterStatus = $state<UpdaterStatus | null>(null);
 	let checkingSelfUpdate = $state(false);
+	let coresOpen = $state(true);
 
 	const configurableServices = new Set<string>(['redis', 'postgresql', 'php-fpm', 'nginx']);
+
+	function getCoreGridColsClass(count: number): string {
+		if (count <= 2) return 'grid-cols-2';
+		if (count === 3) return 'grid-cols-2 @sm:grid-cols-3';
+		if (count === 4 || count === 8 || count === 16) {
+			return 'grid-cols-2 @lg:grid-cols-4';
+		}
+		if (count === 10) return 'grid-cols-2 @md:grid-cols-5';
+		return 'grid-cols-2 @sm:grid-cols-3 @xl:grid-cols-4 @4xl:grid-cols-6';
+	}
+
+	function getCoreSummary(cores: CPUCoreUsage[]): { avg: number; peak: CPUCoreUsage } {
+		let sum = 0;
+		let peak = cores[0];
+		for (const item of cores) {
+			sum += item.percent;
+			if (item.percent > peak.percent) peak = item;
+		}
+		return {
+			avg: Math.round(sum / cores.length),
+			peak
+		};
+	}
 
 	async function copyAddress(val: string, label: string) {
 		if (!val || val === '-') return;
@@ -191,15 +223,16 @@
 
 	<!-- System Metrics -->
 	{#if !cp.systemStatus}
-		<div class="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+		<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
 			{#each [1, 2, 3, 4] as idx (idx)}
 				<Card.Root>
 					<Card.Header>
 						<Skeleton class="h-4 w-24" />
 						<Skeleton class="h-7 w-28" />
 					</Card.Header>
-					<Card.Content>
-						<Skeleton class="h-2 w-full" />
+					<Card.Content class="mt-auto flex flex-col gap-2.5">
+						<Skeleton class="h-1 w-full" />
+						<Skeleton class="h-12 w-full" />
 					</Card.Content>
 				</Card.Root>
 			{/each}
@@ -214,21 +247,40 @@
 		{@const load1Raw = (st.load_1m ?? 0).toFixed(2)}
 		{@const load5Raw = (st.load_5m ?? 0).toFixed(2)}
 		{@const load15Raw = (st.load_15m ?? 0).toFixed(2)}
-		<div class="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-			<Card.Root class="col-span-2 sm:col-span-1">
+		<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
+			<Card.Root>
 				<Card.Header>
-					<Card.Description>Sistem Operasi</Card.Description>
-					<Card.Title class="truncate text-base">{st.os_name}</Card.Title>
+					<div class="flex items-center justify-between gap-2">
+						<Card.Description>Sistem Operasi</Card.Description>
+						{#if st.hostname}
+							<Badge variant="outline" class="max-w-32 truncate font-mono text-[10px]">
+								{st.hostname}
+							</Badge>
+						{/if}
+					</div>
+					<Card.Title class="text-base leading-snug break-words">{st.os_name}</Card.Title>
 				</Card.Header>
-				<Card.Content>
-					<p class="text-xs text-muted-foreground">Uptime: {st.uptime_string}</p>
-					{#if st.kernel}
-						<p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">Kernel {st.kernel}</p>
-					{/if}
+				<Card.Content class="mt-auto">
+					<div class="flex flex-col gap-1 rounded-md border bg-muted/40 px-2.5 py-2 text-xs">
+						<div class="flex items-center justify-between gap-2">
+							<span class="shrink-0 text-muted-foreground">Uptime</span>
+							<span class="font-mono text-[11px] font-medium tabular-nums">
+								{st.uptime_string}
+							</span>
+						</div>
+						{#if st.kernel}
+							<div class="flex items-baseline justify-between gap-2">
+								<span class="shrink-0 text-muted-foreground">Kernel</span>
+								<span class="min-w-0 break-all text-right font-mono text-[11px] text-muted-foreground">
+									{st.kernel}
+								</span>
+							</div>
+						{/if}
+					</div>
 				</Card.Content>
 			</Card.Root>
 
-			<Card.Root class="col-span-2 sm:col-span-1">
+			<Card.Root>
 				<Card.Header>
 					<div class="flex items-center justify-between gap-2">
 						<Card.Description>Load Average</Card.Description>
@@ -236,89 +288,181 @@
 					</div>
 					<Card.Title
 						class={cn(
-							'font-mono text-lg tabular-nums',
+							'font-mono text-xl font-semibold tracking-tight tabular-nums',
 							loadPct > 100 ? 'text-destructive' : loadPct >= 75 && 'text-warning'
 						)}
 					>
 						{loadPct}%
 					</Card.Title>
 				</Card.Header>
-				<Card.Content class="flex flex-col gap-2">
+				<Card.Content class="mt-auto flex flex-col gap-2.5">
 					<Progress value={Math.min(loadPct, 100)} max={100} aria-label="Persentase Load Average CPU" />
-					<div class="grid grid-cols-3 gap-1.5 rounded-md border bg-muted/40 px-2 py-1.5 font-mono tabular-nums">
-						<div class="flex flex-col">
+					<div
+						class="grid grid-cols-3 divide-x divide-border/60 rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono tabular-nums"
+					>
+						<div class="flex flex-col pr-2 leading-tight">
 							<span class="text-[10px] text-muted-foreground">1m</span>
-							<span class="text-xs font-semibold">{load1Pct}%</span>
+							<span class="mt-0.5 text-xs font-semibold">{load1Pct}%</span>
 							<span class="text-[10px] text-muted-foreground">{load1Raw}</span>
 						</div>
-						<div class="flex flex-col">
+						<div class="flex flex-col px-2 leading-tight">
 							<span class="text-[10px] text-muted-foreground">5m</span>
-							<span class="text-xs font-semibold">{load5Pct}%</span>
+							<span class="mt-0.5 text-xs font-semibold">{load5Pct}%</span>
 							<span class="text-[10px] text-muted-foreground">{load5Raw}</span>
 						</div>
-						<div class="flex flex-col">
+						<div class="flex flex-col pl-2 leading-tight">
 							<span class="text-[10px] text-muted-foreground">15m</span>
-							<span class="text-xs font-semibold">{load15Pct}%</span>
+							<span class="mt-0.5 text-xs font-semibold">{load15Pct}%</span>
 							<span class="text-[10px] text-muted-foreground">{load15Raw}</span>
 						</div>
 					</div>
-					{#if st.cpu_cores_usage && st.cpu_cores_usage.length > 1}
-						<div class="mt-1 flex flex-col gap-1.5 border-t border-border/50 pt-2">
-							<div class="flex items-center justify-between text-[11px] font-medium text-muted-foreground">
-								<span>Penggunaan Core</span>
-								<span class="font-mono text-[10px]">{st.cpu_cores_usage.length} Cores</span>
-							</div>
-							<div class="grid grid-cols-1 gap-1.5">
-								{#each st.cpu_cores_usage as coreItem (coreItem.core)}
-									<div class="flex items-center gap-2 font-mono text-xs">
-										<span class="w-12 text-[11px] text-muted-foreground">Core {coreItem.core}</span>
-										<Progress value={Math.min(coreItem.percent, 100)} max={100} class="h-1.5 flex-1" />
-										<span
-											class={cn(
-												'w-9 text-right text-[11px] font-semibold tabular-nums',
-												coreItem.percent >= 90
-													? 'text-destructive'
-													: coreItem.percent >= 75
-														? 'text-warning'
-														: ''
-											)}
-										>
-											{coreItem.percent}%
-										</span>
-									</div>
-								{/each}
-							</div>
-						</div>
-					{/if}
 				</Card.Content>
 			</Card.Root>
 
 			<Card.Root>
 				<Card.Header>
-					<Card.Description>Memori (RAM)</Card.Description>
-					<Card.Title class="font-mono text-lg tabular-nums">{st.mem_percent}%</Card.Title>
+					<div class="flex items-center justify-between gap-2">
+						<Card.Description>Memori (RAM)</Card.Description>
+						{#if st.mem_total_mb > 0}
+							<Badge variant="outline" class="font-mono text-[10px]">
+								{(st.mem_total_mb / 1024).toFixed(1)} GB
+							</Badge>
+						{/if}
+					</div>
+					<Card.Title
+						class={cn(
+							'font-mono text-xl font-semibold tracking-tight tabular-nums',
+							st.mem_percent >= 90 ? 'text-destructive' : st.mem_percent >= 75 && 'text-warning'
+						)}
+					>
+						{st.mem_percent}%
+					</Card.Title>
 				</Card.Header>
-				<Card.Content class="flex flex-col gap-2">
+				<Card.Content class="mt-auto flex flex-col gap-2.5">
 					<Progress value={st.mem_percent} max={100} aria-label="Penggunaan RAM" />
-					<p class="font-mono text-[11px] text-muted-foreground tabular-nums">
-						{st.mem_used_mb} / {st.mem_total_mb} MB
-					</p>
+					<div class="flex flex-col gap-1 rounded-md border bg-muted/40 px-2.5 py-2 text-xs">
+						<div class="flex items-center justify-between gap-2">
+							<span class="text-muted-foreground">Terpakai</span>
+							<span class="font-mono text-[11px] font-medium tabular-nums">
+								{st.mem_used_mb} / {st.mem_total_mb} MB
+							</span>
+						</div>
+						<div class="flex items-center justify-between gap-2">
+							<span class="text-muted-foreground">Tersedia</span>
+							<span class="font-mono text-[11px] text-muted-foreground tabular-nums">
+								{Math.max(st.mem_total_mb - st.mem_used_mb, 0)} MB
+							</span>
+						</div>
+					</div>
 				</Card.Content>
 			</Card.Root>
 
 			<Card.Root>
 				<Card.Header>
-					<Card.Description>Disk Root</Card.Description>
-					<Card.Title class="font-mono text-lg tabular-nums">{st.disk_percent}%</Card.Title>
+					<div class="flex items-center justify-between gap-2">
+						<Card.Description>Disk Root</Card.Description>
+						<Badge variant="outline" class="font-mono text-[10px]">/</Badge>
+					</div>
+					<Card.Title
+						class={cn(
+							'font-mono text-xl font-semibold tracking-tight tabular-nums',
+							st.disk_percent >= 90 ? 'text-destructive' : st.disk_percent >= 80 && 'text-warning'
+						)}
+					>
+						{st.disk_percent}%
+					</Card.Title>
 				</Card.Header>
-				<Card.Content class="flex flex-col gap-2">
+				<Card.Content class="mt-auto flex flex-col gap-2.5">
 					<Progress value={st.disk_percent} max={100} aria-label="Penggunaan Disk" />
-					<p class="font-mono text-[11px] text-muted-foreground tabular-nums">
-						{st.disk_used_gb} / {st.disk_total_gb} GB
-					</p>
+					<div class="flex flex-col gap-1 rounded-md border bg-muted/40 px-2.5 py-2 text-xs">
+						<div class="flex items-center justify-between gap-2">
+							<span class="text-muted-foreground">Terpakai</span>
+							<span class="font-mono text-[11px] font-medium tabular-nums">
+								{st.disk_used_gb} / {st.disk_total_gb} GB
+							</span>
+						</div>
+						<div class="flex items-center justify-between gap-2">
+							<span class="text-muted-foreground">Tersedia</span>
+							<span class="font-mono text-[11px] text-muted-foreground tabular-nums">
+								{Math.max(st.disk_total_gb - st.disk_used_gb, 0)} GB
+							</span>
+						</div>
+					</div>
 				</Card.Content>
 			</Card.Root>
 		</div>
+
+		<!-- Per-Core CPU Utilization Strip -->
+		{#if st.cpu_cores_usage && st.cpu_cores_usage.length > 1}
+			{@const coreSummary = getCoreSummary(st.cpu_cores_usage)}
+			<Card.Root class="@container gap-0">
+				<Collapsible.Root bind:open={coresOpen}>
+					<Card.Header>
+						<div class="flex flex-wrap items-center gap-2">
+							<Card.Title class="text-sm font-semibold">Penggunaan CPU per Core</Card.Title>
+							<Badge variant="outline" class="font-mono text-[10px]">
+								{st.cpu_cores_usage.length} Cores
+							</Badge>
+						</div>
+						<Card.Description class="font-mono text-xs tabular-nums">
+							Rata-rata {coreSummary.avg}% · Puncak Core {coreSummary.peak.core} ({coreSummary.peak.percent}%)
+						</Card.Description>
+						<Card.Action>
+							<Collapsible.Trigger>
+								{#snippet child({ props })}
+									<Button variant="ghost" size="xs" {...props}>
+										{coresOpen ? 'Sembunyikan' : 'Tampilkan'}
+										{#if coresOpen}
+											<ChevronUpIcon data-icon="inline-end" />
+										{:else}
+											<ChevronDownIcon data-icon="inline-end" />
+										{/if}
+									</Button>
+								{/snippet}
+							</Collapsible.Trigger>
+						</Card.Action>
+					</Card.Header>
+					<Collapsible.Content class="pt-3">
+						<Card.Content>
+							<div
+								class={cn(
+									'grid gap-2',
+									getCoreGridColsClass(st.cpu_cores_usage.length),
+									st.cpu_cores_usage.length > 24 &&
+										'max-h-56 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]'
+								)}
+							>
+								{#each st.cpu_cores_usage as coreItem (coreItem.core)}
+									<div class="flex flex-col gap-1.5 rounded-lg border bg-muted/30 px-2.5 py-2">
+										<div class="flex items-center justify-between gap-2 font-mono text-xs">
+											<span class="text-[11px] text-muted-foreground">Core {coreItem.core}</span>
+											<span
+												class={cn(
+													'text-[11px] font-semibold tabular-nums',
+													coreItem.percent >= 90
+														? 'text-destructive'
+														: coreItem.percent >= 75
+															? 'text-warning'
+															: 'text-foreground'
+												)}
+											>
+												{coreItem.percent}%
+											</span>
+										</div>
+										<Progress
+											value={Math.min(coreItem.percent, 100)}
+											max={100}
+											class="h-1"
+											aria-label="Penggunaan Core {coreItem.core}"
+										/>
+									</div>
+								{/each}
+							</div>
+						</Card.Content>
+					</Collapsible.Content>
+				</Collapsible.Root>
+			</Card.Root>
+		{/if}
 
 		<!-- Network & Self-Update Row -->
 		{@const isVPS = modeStore.mode === 'vps' || st.server_mode === 'vps' || !!(st.public_ip && st.public_ip !== '-' && st.public_ip !== '127.0.0.1')}
@@ -328,8 +472,14 @@
 		{@const networkIP = isVPS ? (vpsIP || (st.netbird_ip !== '-' ? st.netbird_ip : '')) : st.netbird_ip}
 		{@const networkLabel = isVPS ? 'IP VPS' : 'IP Jaringan NetBird (VPN Mesh)'}
 		{@const copyToastLabel = isVPS ? 'IP VPS' : 'IP NetBird'}
-		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-			<Card.Root>
+		{@const hasExtraNetbird = Boolean(isVPS && st.netbird_ip && st.netbird_ip !== '-' && st.netbird_ip !== vpsIP)}
+		<div
+			class={cn(
+				'grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4',
+				hasExtraNetbird ? 'xl:grid-cols-4' : 'lg:grid-cols-3'
+			)}
+		>
+			<Card.Root class="justify-center">
 				<Card.Header>
 					<div class="flex items-start justify-between gap-2">
 						<div class="min-w-0">
@@ -352,7 +502,7 @@
 				</Card.Header>
 			</Card.Root>
 
-			<Card.Root>
+			<Card.Root class="justify-center">
 				<Card.Header>
 					<div class="flex items-start justify-between gap-2">
 						<div class="min-w-0">
@@ -375,8 +525,8 @@
 				</Card.Header>
 			</Card.Root>
 
-			{#if isVPS && st.netbird_ip && st.netbird_ip !== '-' && st.netbird_ip !== vpsIP}
-				<Card.Root>
+			{#if hasExtraNetbird}
+				<Card.Root class="justify-center">
 					<Card.Header>
 						<div class="flex items-start justify-between gap-2">
 							<div class="min-w-0">
@@ -398,7 +548,7 @@
 				</Card.Root>
 			{/if}
 
-			<Card.Root class="sm:col-span-2 lg:col-span-1">
+			<Card.Root class={cn('justify-center', !hasExtraNetbird && 'sm:col-span-2 lg:col-span-1')}>
 				<Card.Header>
 					<div class="flex flex-wrap items-center justify-between gap-2">
 						<div class="min-w-0">
