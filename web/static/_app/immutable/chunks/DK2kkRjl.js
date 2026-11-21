@@ -1,1 +1,0 @@
-import{n as e,r as t}from"./DpLaB4WV.js";import{p as n}from"./CQ1Q2g3n.js";var r={name:`terminal`,size:24,node:[[`path`,{d:`M12 19h8`}],[`path`,{d:`m4 17 6-6-6-6`}]]};r.node;var i=new Set([`$$slots`,`$$events`,`$$legacy`]);function a(a,o){let s=e(o,i);n(a,t(()=>s,{get icon(){return r}}))}export{a as t};

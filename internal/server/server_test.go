@@ -817,7 +817,65 @@ func TestHandleSitesPostAutoAddsSubdomainARecordInVPSMode(t *testing.T) {
 	reqDelRole := httptest.NewRequest(http.MethodPost, "/api/service-config/postgresql/delete-role", strings.NewReader(`{"role":"postgres"}`))
 	recDelRole := httptest.NewRecorder()
 	srv.mux.ServeHTTP(recDelRole, reqDelRole)
-	if recDelRole.Code != http.StatusBadRequest && recDelRole.Code != http.StatusOK {
-		t.Fatalf("unexpected POST delete-role status %d: %s", recDelRole.Code, recDelRole.Body.String())
+	if recDelRole.Code == http.StatusOK && !strings.Contains(recDelRole.Body.String(), "sudo_required") {
+		t.Fatalf("unexpected POST delete-role OK body: %s", recDelRole.Body.String())
 	}
+}
+
+func TestFileManagerEndpointsSecurityAndCRUD(t *testing.T) {
+	tmp := t.TempDir()
+	rootDir := filepath.Join(tmp, "www")
+	outsideDir := filepath.Join(tmp, "outside")
+	if err := os.MkdirAll(rootDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := store.New(filepath.Join(tmp, "wdev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: filepath.Join(tmp, "etc"), WebRootBase: rootDir}
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), inst, nil, nil, nil, nil, nil, authMgr)
+	srv.FileManager().SetRoots(rootDir)
+
+	// 1. List root
+	recList := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recList, httptest.NewRequest(http.MethodGet, "/api/files/list?path="+url.QueryEscape(rootDir), nil))
+	if recList.Code != http.StatusOK {
+		t.Fatalf("GET /api/files/list = %d, body=%s", recList.Code, recList.Body.String())
+	}
+
+	// 2. Write + Read file via API
+	targetFile := filepath.Join(rootDir, "hello.txt")
+	reqWrite := httptest.NewRequest(http.MethodPost, "/api/files/write", strings.NewReader(`{"path":`+strconvQuote(targetFile)+`,"content":"halo wdev"}`))
+	recWrite := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recWrite, reqWrite)
+	if recWrite.Code != http.StatusOK {
+		t.Fatalf("POST /api/files/write = %d, body=%s", recWrite.Code, recWrite.Body.String())
+	}
+
+	recRead := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recRead, httptest.NewRequest(http.MethodGet, "/api/files/read?path="+url.QueryEscape(targetFile), nil))
+	if recRead.Code != http.StatusOK || !strings.Contains(recRead.Body.String(), "halo wdev") {
+		t.Fatalf("GET /api/files/read = %d, body=%s", recRead.Code, recRead.Body.String())
+	}
+
+	// 3. Traversal outside allowed root must return 403 Forbidden
+	recForbidden := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recForbidden, httptest.NewRequest(http.MethodGet, "/api/files/list?path="+url.QueryEscape(outsideDir), nil))
+	if recForbidden.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for outside root, got %d (%s)", recForbidden.Code, recForbidden.Body.String())
+	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

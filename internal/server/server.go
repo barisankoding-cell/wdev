@@ -20,6 +20,7 @@ import (
 	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
+	"wdev/internal/filemanager"
 	"wdev/internal/installer"
 	"wdev/internal/mail"
 	"wdev/internal/monitor"
@@ -46,6 +47,7 @@ type Server struct {
 	mailMgr     *mail.Manager
 	authMgr     *auth.Manager
 	svcCfgMgr   *serviceconfig.Manager
+	fileMgr     *filemanager.Manager
 	mux         *http.ServeMux
 }
 
@@ -82,6 +84,7 @@ func New(
 		mailMgr:     mailMgr,
 		authMgr:     authMgr,
 		svcCfgMgr:   serviceconfig.New(inst.GetSudoPassword),
+		fileMgr:     filemanager.New(cfg, s),
 		mux:         http.NewServeMux(),
 	}
 	srv.routes()
@@ -141,6 +144,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	s.mux.HandleFunc("/api/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("/api/auth/change-credentials", s.handleAuthChangeCredentials)
+	s.registerFileManagerRoutes()
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
 
 	// Embedded Static UI (Svelte SPA)
@@ -185,7 +189,14 @@ func (s *Server) wrapCSRF(next http.Handler) http.Handler {
 		cleanURLPath := path.Clean("/" + r.URL.Path)
 		if strings.HasPrefix(cleanURLPath, "/api/") {
 			if r.Body != nil {
-				r.Body = http.MaxBytesReader(w, r.Body, maxAPIBody)
+				limit := maxAPIBody
+				switch cleanURLPath {
+				case "/api/files/upload":
+					limit = filemanager.MaxUploadBytes
+				case "/api/files/write":
+					limit = 8 << 20
+				}
+				r.Body = http.MaxBytesReader(w, r.Body, limit)
 			}
 			// Validasi asal request pada metode mutasi untuk mencegah CSRF
 			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {

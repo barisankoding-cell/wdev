@@ -1,1 +1,0 @@
-import{n as e,r as t}from"./DpLaB4WV.js";import{p as n}from"./CQ1Q2g3n.js";var r={name:`circle-arrow-up`,size:24,node:[[`circle`,{cx:`12`,cy:`12`,r:`10`}],[`path`,{d:`m16 12-4-4-4 4`}],[`path`,{d:`M12 16V8`}]],aliases:[`arrow-up-circle`]};r.node;var i=new Set([`$$slots`,`$$events`,`$$legacy`]);function a(a,o){let s=e(o,i);n(a,t(()=>s,{get icon(){return r}}))}export{a as t};

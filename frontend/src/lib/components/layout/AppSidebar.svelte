@@ -12,6 +12,7 @@
 	import NetworkIcon from '@lucide/svelte/icons/network';
 	import CloudIcon from '@lucide/svelte/icons/cloud';
 	import MailIcon from '@lucide/svelte/icons/mail';
+	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import type { Component } from 'svelte';
 
@@ -39,6 +40,10 @@
 				{ label: 'Toolchains & SDKs', href: '/toolchains', icon: WrenchIcon },
 				{ label: 'Workspace & ADE', href: '/workspace', icon: MonitorIcon }
 			]
+		},
+		{
+			title: 'Sistem & Berkas',
+			items: [{ label: 'File Manager', href: '/files', icon: FolderOpenIcon }]
 		},
 		modeStore.mode === 'edge'
 			? {

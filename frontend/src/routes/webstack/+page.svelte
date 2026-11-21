@@ -27,6 +27,7 @@
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload';
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
+	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 
 	let sites = $state<SiteRecord[]>([]);
 	let zones = $state<ZoneInfo[]>([]);
@@ -424,9 +425,20 @@
 										: `PHP ${site.php_version || '8.4'}`}
 							</Table.Cell>
 							<Table.Cell data-label="Root" class="sm:max-w-52">
-								<code class="block break-all sm:truncate text-xs text-muted-foreground" title={site.root_path || '-'}>
-									{site.root_path || '-'}
-								</code>
+								{#if site.root_path && site.framework !== 'proxy'}
+									<a
+										href={`/files?path=${encodeURIComponent(site.root_path)}`}
+										title={`Buka ${site.root_path} di File Manager`}
+										class="inline-flex max-w-full items-center gap-1.5 font-mono text-xs text-primary hover:underline"
+									>
+										<FolderOpenIcon class="size-3.5 shrink-0" />
+										<span class="break-all sm:truncate">{site.root_path}</span>
+									</a>
+								{:else}
+									<code class="block break-all sm:truncate text-xs text-muted-foreground" title={site.root_path || '-'}>
+										{site.root_path || '-'}
+									</code>
+								{/if}
 							</Table.Cell>
 							<Table.Cell data-label="SSL">
 								{#if site.ssl_enabled}

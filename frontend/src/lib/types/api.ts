@@ -594,3 +594,48 @@ export interface InstallItemPayload {
 	version?: string;
 }
 
+export interface FileRootInfo {
+	name: string;
+	path: string;
+	kind: 'webroot' | 'vhost' | 'home' | 'custom' | string;
+	domain?: string;
+}
+
+export interface FileEntry {
+	name: string;
+	path: string;
+	is_dir: boolean;
+	is_symlink?: boolean;
+	symlink_target?: string;
+	size: number;
+	mode: string;
+	perm_text: string;
+	owner: string;
+	group: string;
+	mod_time: string;
+	ext?: string;
+	editable: boolean;
+	is_image: boolean;
+	is_archive: boolean;
+}
+
+export interface FileListResult {
+	path: string;
+	parent?: string;
+	can_go_up: boolean;
+	roots: FileRootInfo[];
+	entries: FileEntry[];
+	total_dirs: number;
+	total_files: number;
+	total_size: number;
+}
+
+export interface FileContentResult {
+	path: string;
+	name: string;
+	content: string;
+	size: number;
+	mode: string;
+	mod_time: string;
+}
+

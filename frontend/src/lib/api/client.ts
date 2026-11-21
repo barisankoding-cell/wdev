@@ -7,6 +7,10 @@ import type {
 	DomainActionReport,
 	EdgeConfig,
 	EnvStatusResponse,
+	FileContentResult,
+	FileEntry,
+	FileListResult,
+	FileRootInfo,
 	LoginPayload,
 	MailStatus,
 	ManagedRelayRecord,
@@ -57,7 +61,7 @@ export class ApiError extends Error {
 
 export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 	const headers = new Headers(init?.headers);
-	if (init?.body && !headers.has('Content-Type')) {
+	if (init?.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
 		headers.set('Content-Type', 'application/json');
 	}
 	const res = await fetch(url, { ...init, headers });
@@ -396,5 +400,84 @@ export const api = {
 		apiFetch<{ status: string; mode: string; message: string }>('/api/mode', {
 			method: 'POST',
 			body: JSON.stringify({ mode })
-		})
+		}),
+
+	// File Manager
+	getFileRoots: () => apiFetch<FileRootInfo[]>('/api/files/roots'),
+	listFiles: (path = '', showHidden = false) => {
+		const params = new URLSearchParams();
+		if (path) params.set('path', path);
+		if (showHidden) params.set('hidden', '1');
+		const qs = params.toString();
+		return apiFetch<FileListResult>(qs ? `/api/files/list?${qs}` : '/api/files/list');
+	},
+	searchFiles: (path: string, q: string, showHidden = false) => {
+		const params = new URLSearchParams({ path, q });
+		if (showHidden) params.set('hidden', '1');
+		return apiFetch<{ entries: FileEntry[] }>(`/api/files/search?${params.toString()}`);
+	},
+	readFileContent: (path: string) =>
+		apiFetch<FileContentResult>(`/api/files/read?path=${encodeURIComponent(path)}`),
+	writeFileContent: (path: string, content: string) =>
+		apiFetch<{ status: string; path: string }>('/api/files/write', {
+			method: 'POST',
+			body: JSON.stringify({ path, content })
+		}),
+	mkdirFile: (path: string) =>
+		apiFetch<{ status: string }>('/api/files/mkdir', {
+			method: 'POST',
+			body: JSON.stringify({ path })
+		}),
+	renameFile: (path: string, new_name: string) =>
+		apiFetch<{ status: string; path: string }>('/api/files/rename', {
+			method: 'POST',
+			body: JSON.stringify({ path, new_name })
+		}),
+	copyFiles: (sources: string[], dest_dir: string) =>
+		apiFetch<{ status: string; count: number }>('/api/files/copy', {
+			method: 'POST',
+			body: JSON.stringify({ sources, dest_dir })
+		}),
+	moveFiles: (sources: string[], dest_dir: string) =>
+		apiFetch<{ status: string; count: number }>('/api/files/move', {
+			method: 'POST',
+			body: JSON.stringify({ sources, dest_dir })
+		}),
+	deleteFiles: (paths: string[]) =>
+		apiFetch<{ status: string; count: number }>('/api/files/delete', {
+			method: 'POST',
+			body: JSON.stringify({ paths })
+		}),
+	chmodFiles: (paths: string[], mode: string, recursive = false, web_owner = false) =>
+		apiFetch<{ status: string }>('/api/files/chmod', {
+			method: 'POST',
+			body: JSON.stringify({ paths, mode, recursive, web_owner })
+		}),
+	uploadFiles: (dir: string, files: FileList | File[]) => {
+		const form = new FormData();
+		form.append('dir', dir);
+		for (const f of Array.from(files)) {
+			form.append('files', f, f.name);
+		}
+		return apiFetch<{ status: string; count: number; entries: FileEntry[] }>('/api/files/upload', {
+			method: 'POST',
+			body: form
+		});
+	},
+	compressFiles: (paths: string[], output_path = '') =>
+		apiFetch<{ status: string; entry: FileEntry }>('/api/files/compress', {
+			method: 'POST',
+			body: JSON.stringify({ paths, output_path })
+		}),
+	extractFile: (path: string, dest_dir = '') =>
+		apiFetch<{ status: string; count: number }>('/api/files/extract', {
+			method: 'POST',
+			body: JSON.stringify({ path, dest_dir })
+		}),
+	fileRawUrl: (path: string) => `/api/files/raw?path=${encodeURIComponent(path)}`,
+	fileDownloadUrl: (paths: string[]) => {
+		const params = new URLSearchParams();
+		for (const p of paths) params.append('paths', p);
+		return `/api/files/download?${params.toString()}`;
+	}
 };
