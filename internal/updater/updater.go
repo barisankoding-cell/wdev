@@ -44,11 +44,12 @@ type Asset struct {
 }
 
 type Options struct {
-	CheckOnly bool
-	Force     bool
-	EdgeHost  string // mis. root@203.0.113.10
-	EdgeKey   string
-	SourceDir string // alternatif: build dari checkout git lokal
+	CheckOnly   bool
+	Force       bool
+	EdgeHost    string // mis. root@203.0.113.10
+	EdgeKey     string
+	SourceDir   string // alternatif: build dari checkout git lokal
+	SkipRestart bool   // lewati restart di dalam Run (dipakai Web UI agar event finish SSE sempat terkirim dulu)
 }
 
 type Result struct {
@@ -315,6 +316,11 @@ func installBinary(srcPath, dstPath string) error {
 	return os.Chmod(dstPath, 0755)
 }
 
+// RestartService me-restart unit systemd secara non-blocking.
+func RestartService(ctx context.Context, unit string) error {
+	return restartService(ctx, unit)
+}
+
 func restartService(ctx context.Context, unit string) error {
 	if out, err := exec.CommandContext(ctx, "systemctl", "cat", unit).CombinedOutput(); err != nil || len(out) == 0 {
 		return nil
@@ -451,11 +457,6 @@ func Run(ctx context.Context, current string, opts Options, cb func(string)) (Re
 	res.Installed = true
 	cb("✓ Biner wdev diperbarui ke v" + res.Latest)
 
-	if err := restartService(ctx, "wdev.service"); err != nil {
-		return res, err
-	}
-	cb("✓ wdev.service di-restart")
-
 	if strings.TrimSpace(opts.EdgeHost) != "" {
 		cb("Memperbarui edge agent di " + opts.EdgeHost + "...")
 		if err := updateEdge(ctx, opts); err != nil {
@@ -465,6 +466,15 @@ func Run(ctx context.Context, current string, opts Options, cb func(string)) (Re
 			res.EdgeUpdate = "updated"
 			cb("✓ Edge agent diperbarui dan di-restart")
 		}
+	}
+
+	if !opts.SkipRestart {
+		if err := restartService(ctx, "wdev.service"); err != nil {
+			return res, err
+		}
+		cb("✓ wdev.service di-restart")
+	} else {
+		cb("Menjadwalkan restart wdev.service setelah tugas selesai...")
 	}
 
 	res.Message = fmt.Sprintf("wdev diperbarui ke v%s", res.Latest)

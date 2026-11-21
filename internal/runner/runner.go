@@ -147,6 +147,12 @@ func (r *Runner) appendAndBroadcastLocked(taskID int64, typ EventType, message, 
 
 // StartNativeTask runs a native Go function while broadcasting logs
 func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb func(string)) error) (int64, error) {
+	return r.StartNativeTaskAfter(name, fn, nil)
+}
+
+// StartNativeTaskAfter runs a native Go function while broadcasting logs and invokes
+// afterFinish only after the task record and SSE finish event have been emitted.
+func (r *Runner) StartNativeTaskAfter(name string, fn func(ctx context.Context, cb func(string)) error, afterFinish func(status string)) (int64, error) {
 	r.mu.Lock()
 	if r.activeTask != nil {
 		r.mu.Unlock()
@@ -196,6 +202,9 @@ func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb fu
 			_ = r.store.FinishTask(taskID, status, logBuf.String())
 		}
 		r.emit(taskID, EventFinish, msg, status, true)
+		if afterFinish != nil {
+			afterFinish(status)
+		}
 	}()
 
 	return taskID, nil

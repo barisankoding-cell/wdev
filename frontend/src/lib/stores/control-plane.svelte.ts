@@ -120,6 +120,9 @@ class ControlPlaneStore {
 	private clearedSeq = 0;
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
 	private isPrivilegedPending = false;
+	private pendingRestartReload = false;
+	private reloadTriggered = false;
+	private reloadFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor() {
 		this.restoreTerminalState();
@@ -248,11 +251,60 @@ class ControlPlaneStore {
 			clearInterval(this.pollTimer);
 			this.pollTimer = null;
 		}
+		if (this.reloadFallbackTimer) {
+			clearTimeout(this.reloadFallbackTimer);
+			this.reloadFallbackTimer = null;
+		}
 		if (this.eventSource) {
 			this.eventSource.close();
 			this.eventSource = null;
 			this.sseConnected = false;
 		}
+	}
+
+	armSelfUpdateReload() {
+		this.reloadTriggered = false;
+		this.pendingRestartReload = true;
+	}
+
+	private cancelSelfUpdateReload() {
+		this.pendingRestartReload = false;
+		if (this.reloadFallbackTimer) {
+			clearTimeout(this.reloadFallbackTimer);
+			this.reloadFallbackTimer = null;
+		}
+	}
+
+	private scheduleSelfUpdateFallbackReload(attempt = 0) {
+		if (!this.pendingRestartReload || this.reloadTriggered || typeof window === 'undefined') return;
+		if (this.reloadFallbackTimer) {
+			clearTimeout(this.reloadFallbackTimer);
+		}
+		const delayMs = attempt === 0 ? 4500 : 2000;
+		this.reloadFallbackTimer = setTimeout(async () => {
+			if (!this.pendingRestartReload || this.reloadTriggered) return;
+			try {
+				await api.getStatus(false);
+				this.triggerSelfUpdateReload();
+			} catch {
+				if (attempt < 5) {
+					this.scheduleSelfUpdateFallbackReload(attempt + 1);
+				}
+			}
+		}, delayMs);
+	}
+
+	private triggerSelfUpdateReload() {
+		if (this.reloadTriggered || typeof window === 'undefined') return;
+		this.reloadTriggered = true;
+		this.cancelSelfUpdateReload();
+		this.isTaskRunning = false;
+		this.lastTaskStatus = 'success';
+		this.saveTerminalState();
+		toast.success('wdev berhasil diperbarui. Memuat ulang halaman...');
+		setTimeout(() => {
+			window.location.reload();
+		}, 600);
 	}
 
 	private connectSSE() {
@@ -276,9 +328,14 @@ class ControlPlaneStore {
 				if (data.type === 'ping') {
 					this.sseConnected = true;
 					if (data.instance_id && data.instance_id !== this.instanceId) {
+						const hadInstance = this.instanceId !== '';
 						this.instanceId = data.instance_id;
 						this.lastSeq = 0;
 						this.clearedSeq = 0;
+						if (hadInstance && this.pendingRestartReload) {
+							this.triggerSelfUpdateReload();
+							return;
+						}
 						this.saveTerminalState();
 					}
 					return;
@@ -313,6 +370,9 @@ class ControlPlaneStore {
 			if (cleanTask) {
 				this.currentTaskName = cleanTask;
 			}
+			if (!evt.replay && cleanTask === 'Pembaruan Biner wdev') {
+				this.armSelfUpdateReload();
+			}
 			if (!evt.replay) {
 				this.terminalOpen = true;
 			}
@@ -334,7 +394,15 @@ class ControlPlaneStore {
 			});
 			this.saveTerminalState();
 			if (!evt.replay) {
-				if (ok) {
+				if (this.pendingRestartReload) {
+					if (ok) {
+						toast.info('Pembaruan biner selesai. Menunggu wdev restart untuk memuat ulang halaman...');
+						this.scheduleSelfUpdateFallbackReload(0);
+					} else {
+						this.cancelSelfUpdateReload();
+						toast.error(`Tugas gagal: ${this.currentTaskName}`);
+					}
+				} else if (ok) {
 					toast.success(`Tugas selesai: ${this.currentTaskName}`);
 				} else {
 					toast.error(`Tugas gagal: ${this.currentTaskName}`);

@@ -12,6 +12,7 @@ import (
 	"time"
 	"wdev/internal/auth"
 	"wdev/internal/site"
+	"wdev/internal/store"
 )
 
 const panelDomainDeniedHTML = `<!DOCTYPE html>
@@ -99,6 +100,81 @@ func (s *Server) panelPortNumber() int {
 	return 3200
 }
 
+// detectExistingPanelDomain memeriksa apakah sudah ada domain panel yang terikat
+// atau virtual host reverse proxy aktif yang mengarah ke port panel wdev.
+func (s *Server) detectExistingPanelDomain() (activeDomain string, isBound bool, detectedProxyDomain string, detectedSite *store.SiteRecord) {
+	boundDomain, _, _ := s.authMgr.PanelDomainConfig()
+	panelPort := s.panelPortNumber()
+
+	if s.siteMgr != nil {
+		if sites, err := s.siteMgr.ListSites(); err == nil {
+			for i := range sites {
+				st := sites[i]
+				if strings.EqualFold(st.Framework, "proxy") && st.ProxyPort == panelPort {
+					if boundDomain != "" && strings.EqualFold(st.Domain, boundDomain) {
+						copyRec := st
+						detectedProxyDomain = st.Domain
+						detectedSite = &copyRec
+						break
+					}
+					if detectedSite == nil {
+						copyRec := st
+						detectedProxyDomain = st.Domain
+						detectedSite = &copyRec
+					}
+				}
+			}
+		}
+	}
+
+	if boundDomain != "" {
+		return boundDomain, true, detectedProxyDomain, detectedSite
+	}
+	return detectedProxyDomain, false, detectedProxyDomain, detectedSite
+}
+
+func (s *Server) cleanupPanelDomainResources(targetDomain string, deleteSite bool) int {
+	targetDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(targetDomain), "."))
+	if targetDomain == "" {
+		return 0
+	}
+
+	var existing store.SiteRecord
+	var hasSite bool
+	if s.siteMgr != nil {
+		existing, hasSite = s.siteMgr.GetSite(targetDomain)
+	}
+
+	deletedDNS := 0
+	if s.pdnsMgr != nil {
+		if hasSite && existing.ExposedTo != "" {
+			_ = s.pdnsMgr.Unexpose(existing.ExposedTo, true)
+			if cnt, err := s.pdnsMgr.DeleteDomainDNSRecords(existing.ExposedTo); err == nil {
+				deletedDNS += cnt
+			}
+		}
+		if !hasSite || !strings.EqualFold(existing.ExposedTo, targetDomain) {
+			if cnt, err := s.pdnsMgr.DeleteDomainDNSRecords(targetDomain); err == nil {
+				deletedDNS += cnt
+			}
+		}
+	}
+
+	if s.cfMgr != nil {
+		status := s.cfMgr.GetStatus()
+		for _, exp := range status.Exposures {
+			if strings.EqualFold(exp.LocalDomain, targetDomain) || strings.EqualFold(exp.PublicHost, targetDomain) {
+				_ = s.cfMgr.Unexpose(exp.LocalDomain)
+			}
+		}
+	}
+
+	if deleteSite && s.siteMgr != nil && hasSite {
+		_ = s.siteMgr.DeleteSite(targetDomain)
+	}
+	return deletedDNS
+}
+
 func (s *Server) availableRootDomainsForPanel() []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -136,6 +212,7 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		domain, sslEnabled, blockIP := s.authMgr.PanelDomainConfig()
+		_, isBound, detectedProxyDomain, detectedSite := s.detectExistingPanelDomain()
 		port := s.panelPortNumber()
 		entrance := s.authMgr.GetSecurityEntrance()
 		entrancePath := ""
@@ -145,9 +222,12 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 
 		pubIP := ""
 		mode := "local"
+		edgeConfigured := false
 		if s.pdnsMgr != nil {
 			mode = s.pdnsMgr.GetMode()
-			pubIP = s.pdnsMgr.LoadConfig().VPSPublicIP
+			edgeCfg := s.pdnsMgr.LoadConfig()
+			pubIP = edgeCfg.VPSPublicIP
+			edgeConfigured = edgeCfg.Configured && edgeCfg.VPSNetbirdIP != ""
 		}
 
 		var sslProvider string
@@ -165,8 +245,26 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 					sslProvider = rec.SSLProvider
 					sslExpiresAt = rec.SSLExpiresAt
 					sslDaysLeft = rec.SSLDaysLeft
+					if sslProvider == "" && mode == "edge" && rec.ExposedTo != "" && sslEnabled {
+						sslProvider = "edge"
+					}
 				}
 			}
+		}
+
+		var detectedProxyURL, detectedProxySSLProvider, detectedProxyExposedTo string
+		if detectedSite != nil {
+			detectedProxyExposedTo = detectedSite.ExposedTo
+			detectedProxySSLProvider = detectedSite.SSLProvider
+			isEdgeExposed := mode == "edge" && detectedSite.ExposedTo != ""
+			if detectedProxySSLProvider == "" && isEdgeExposed {
+				detectedProxySSLProvider = "edge"
+			}
+			detScheme := "http"
+			if detectedSite.SSLEnabled || isEdgeExposed {
+				detScheme = "https"
+			}
+			detectedProxyURL = fmt.Sprintf("%s://%s%s", detScheme, detectedSite.Domain, entrancePath)
 		}
 
 		domains := s.availableRootDomainsForPanel()
@@ -178,21 +276,27 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 		panelSSLExp, panelSSLDays := s.authMgr.GetPanelCertExpiry()
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"domain":               domain,
-			"domain_url":           domainURL,
-			"ssl_enabled":          sslEnabled,
-			"block_direct_ip":      blockIP,
-			"ssl_provider":         sslProvider,
-			"ssl_expires_at":       sslExpiresAt,
-			"ssl_days_left":        sslDaysLeft,
-			"panel_ssl_enabled":    panelSSLEnabled,
-			"panel_ssl_expires_at": panelSSLExp,
-			"panel_ssl_days_left":  panelSSLDays,
-			"panel_port":           port,
-			"entrance_path":        entrancePath,
-			"public_ip":            pubIP,
-			"server_mode":          mode,
-			"available_domains":    domains,
+			"domain":                     domain,
+			"bound":                      isBound,
+			"domain_url":                 domainURL,
+			"detected_proxy_domain":      detectedProxyDomain,
+			"detected_proxy_url":         detectedProxyURL,
+			"detected_proxy_ssl_provider": detectedProxySSLProvider,
+			"detected_proxy_exposed_to":  detectedProxyExposedTo,
+			"ssl_enabled":                sslEnabled,
+			"block_direct_ip":            blockIP,
+			"ssl_provider":               sslProvider,
+			"ssl_expires_at":             sslExpiresAt,
+			"ssl_days_left":              sslDaysLeft,
+			"panel_ssl_enabled":          panelSSLEnabled,
+			"panel_ssl_expires_at":       panelSSLExp,
+			"panel_ssl_days_left":        panelSSLDays,
+			"panel_port":                 port,
+			"entrance_path":              entrancePath,
+			"public_ip":                  pubIP,
+			"server_mode":                mode,
+			"edge_configured":            edgeConfigured,
+			"available_domains":          domains,
 		})
 
 	case http.MethodPost:
@@ -220,19 +324,35 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 			sslMode = "letsencrypt"
 		}
 		switch sslMode {
-		case "letsencrypt", "local", "external", "none":
+		case "letsencrypt", "edge", "local", "external", "none":
 		default:
-			writeError(w, http.StatusBadRequest, "ssl_mode tidak valid (gunakan: letsencrypt, local, external, atau none)")
+			writeError(w, http.StatusBadRequest, "ssl_mode tidak valid (gunakan: letsencrypt, edge, local, external, atau none)")
 			return
 		}
-		if sslMode == "letsencrypt" {
+		if sslMode == "letsencrypt" || sslMode == "edge" {
 			if err := site.ValidateLetsEncryptDomain(domain); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}
+		if sslMode == "edge" {
+			if s.pdnsMgr == nil || s.pdnsMgr.GetMode() != "edge" {
+				writeError(w, http.StatusBadRequest, "Mode SSL Edge hanya tersedia ketika Server Mode = edge.")
+				return
+			}
+			edgeCfg := s.pdnsMgr.LoadConfig()
+			if !edgeCfg.Configured || edgeCfg.VPSNetbirdIP == "" {
+				writeError(w, http.StatusBadRequest, "VPS Edge Gateway belum dikonfigurasi. Hubungkan VPS Edge terlebih dahulu di menu Server Mode.")
+				return
+			}
+		}
 
 		panelPort := s.panelPortNumber()
+		if activeDom, isBound, detectedProxy, _ := s.detectExistingPanelDomain(); isBound || detectedProxy != "" {
+			writeError(w, http.StatusConflict, fmt.Sprintf("Domain panel %q sudah terdeteksi aktif mengarah ke port %d. Hapus domain tersebut beserta seluruh DNS terkait terlebih dahulu sebelum mengganti atau mengaktifkan kembali.", activeDom, panelPort))
+			return
+		}
+
 		if sslMode != "external" && s.siteMgr != nil {
 			if existing, ok := s.siteMgr.GetSite(domain); ok {
 				if !(existing.Framework == "proxy" && existing.ProxyPort == panelPort) {
@@ -310,7 +430,7 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodDelete:
-		var removeVHost bool
+		removeVHost := true
 		if r.Body != nil {
 			var payload struct {
 				RemoveVHost *bool `json:"remove_vhost"`
@@ -320,18 +440,43 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		boundDomain, _, _ := s.authMgr.PanelDomainConfig()
+		_, _, detectedProxyDomain, _ := s.detectExistingPanelDomain()
+
 		if err := s.authMgr.UnbindPanelDomain(); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if removeVHost && boundDomain != "" && s.siteMgr != nil {
-			if existing, ok := s.siteMgr.GetSite(boundDomain); ok && existing.Framework == "proxy" && existing.ProxyPort == s.panelPortNumber() {
-				_ = s.siteMgr.DeleteSite(boundDomain)
+
+		targets := make([]string, 0, 2)
+		seenTarget := make(map[string]bool)
+		addTarget := func(dom string) {
+			dom = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(dom), "."))
+			if dom == "" || seenTarget[dom] {
+				return
 			}
+			seenTarget[dom] = true
+			targets = append(targets, dom)
 		}
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status":  "unbound",
-			"message": "Domain panel dilepas; akses via IP kembali diaktifkan",
+		if removeVHost {
+			addTarget(boundDomain)
+			addTarget(detectedProxyDomain)
+		} else if boundDomain == "" && detectedProxyDomain != "" {
+			addTarget(detectedProxyDomain)
+		}
+
+		deletedDNS := 0
+		for _, target := range targets {
+			deletedDNS += s.cleanupPanelDomainResources(target, true)
+		}
+		deletedDom := boundDomain
+		if deletedDom == "" {
+			deletedDom = detectedProxyDomain
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":              "unbound",
+			"deleted_domain":      deletedDom,
+			"dns_records_deleted": deletedDNS,
+			"message":             "Domain panel beserta konfigurasi proxy dan record DNS terkait berhasil dihapus; akses via IP kembali diaktifkan.",
 		})
 
 	default:
@@ -421,7 +566,19 @@ func (s *Server) executeBindPanelDomain(ctx context.Context, cb func(string), do
 	panelPort := s.panelPortNumber()
 	cb(fmt.Sprintf("=== KONFIGURASI DOMAIN PANEL (%s -> 127.0.0.1:%d) ===", domain, panelPort))
 
-	if syncDNS && s.pdnsMgr != nil && s.pdnsMgr.GetMode() == "vps" {
+	mode := "local"
+	if s.pdnsMgr != nil {
+		mode = s.pdnsMgr.GetMode()
+	}
+	useEdgeGateway := mode == "edge" && (sslMode == "edge" || sslMode == "letsencrypt")
+	if useEdgeGateway {
+		conf := s.pdnsMgr.LoadConfig()
+		if !conf.Configured || conf.VPSNetbirdIP == "" {
+			return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi; tidak dapat menerbitkan SSL Edge untuk %s", domain)
+		}
+	}
+
+	if syncDNS && !useEdgeGateway && s.pdnsMgr != nil && mode == "vps" {
 		conf := s.pdnsMgr.LoadConfig()
 		if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
 			if zone, zErr := s.pdnsMgr.FindMatchingZone(domain); zErr == nil && zone != "" {
@@ -439,26 +596,44 @@ func (s *Server) executeBindPanelDomain(ctx context.Context, cb func(string), do
 		return fmt.Errorf("manajer situs/Nginx tidak tersedia")
 	}
 
+	isPublic := site.ValidateLetsEncryptDomain(domain) == nil
+	skipHosts := useEdgeGateway || (mode == "vps" && isPublic)
+	_, existedBefore := s.siteMgr.GetSite(domain)
+
 	cb(fmt.Sprintf("[2/4] Membuat konfigurasi Nginx reverse proxy %s -> http://127.0.0.1:%d...", domain, panelPort))
 	if err := s.siteMgr.CreateSite(site.CreateOptions{
 		Domain:     domain,
 		Framework:  "proxy",
 		ProxyPort:  panelPort,
 		SSLEnabled: sslMode == "local",
+		SkipHosts:  skipHosts,
 	}); err != nil {
 		return fmt.Errorf("gagal menyiapkan proxy Nginx panel: %w", err)
 	}
 	cb("✓ Virtual Host proxy Nginx aktif.")
 
 	sslEnabled := false
-	switch sslMode {
-	case "letsencrypt":
+	switch {
+	case useEdgeGateway:
+		cb(fmt.Sprintf("[3/4] Mengekspos %s lewat VPS Edge Gateway & menerbitkan SSL Let's Encrypt...", domain))
+		if err := s.pdnsMgr.ExposeSite(domain, domain, true); err != nil {
+			if !existedBefore {
+				_ = s.cleanupPanelDomainResources(domain, true)
+			}
+			return fmt.Errorf("expose & SSL Edge Gateway gagal: %w (binding domain & blokir IP dibatalkan agar akses panel Anda tidak terkunci)", err)
+		}
+		sslEnabled = true
+		cb("✓ Tunnel VPS Edge & sertifikat HTTPS Let's Encrypt aktif.")
+	case sslMode == "letsencrypt":
 		cb(fmt.Sprintf("[3/4] Menerbitkan sertifikat SSL Let's Encrypt untuk %s...", domain))
 		if err := s.siteMgr.EnableLetsEncrypt(ctx, cb, domain, email); err != nil {
+			if !existedBefore {
+				_ = s.cleanupPanelDomainResources(domain, true)
+			}
 			return fmt.Errorf("penerbitan SSL Let's Encrypt gagal: %w (binding domain & blokir IP dibatalkan agar akses panel Anda tidak terkunci)", err)
 		}
 		sslEnabled = true
-	case "local":
+	case sslMode == "local":
 		sslEnabled = true
 		cb("[3/4] Sertifikat SSL lokal diterapkan pada proxy Nginx.")
 	default:

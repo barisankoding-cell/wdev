@@ -780,7 +780,12 @@ export interface TerminalAuditRecord {
 
 export interface PanelDomainStatus {
 	domain: string;
+	bound?: boolean;
 	domain_url?: string;
+	detected_proxy_domain?: string;
+	detected_proxy_url?: string;
+	detected_proxy_ssl_provider?: string;
+	detected_proxy_exposed_to?: string;
 	ssl_enabled: boolean;
 	block_direct_ip: boolean;
 	ssl_provider?: string;
@@ -793,12 +798,13 @@ export interface PanelDomainStatus {
 	entrance_path: string;
 	public_ip?: string;
 	server_mode: string;
+	edge_configured?: boolean;
 	available_domains: string[];
 }
 
 export interface BindPanelDomainPayload {
 	domain: string;
-	ssl_mode: 'letsencrypt' | 'local' | 'external' | 'none';
+	ssl_mode: 'letsencrypt' | 'edge' | 'local' | 'external' | 'none';
 	email?: string;
 	block_direct_ip?: boolean;
 	sync_dns?: boolean;

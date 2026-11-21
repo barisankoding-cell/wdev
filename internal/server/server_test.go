@@ -1784,3 +1784,370 @@ func TestHandleSetupComponentsEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelDomainEdgeModeAndDirectSSLProxyFlow(t *testing.T) {
+	restoreNB := pdns.SetLocalNetbirdIPFn(func() string { return "100.64.0.22" })
+	defer restoreNB()
+
+	var proxyCreateBody string
+	var proxyDeletedPath string
+	var sslFailMode bool
+
+	pdnsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones":
+			_ = json.NewEncoder(w).Encode([]pdns.ZoneInfo{{ID: "nikaget.my.id.", Name: "nikaget.my.id."}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones/nikaget.my.id.":
+			_ = json.NewEncoder(w).Encode(pdns.ZoneInfo{
+				ID:   "nikaget.my.id.",
+				Name: "nikaget.my.id.",
+				RRsets: []pdns.RRSet{
+					{Name: "nikaget.my.id.", Type: "A", TTL: 300, Records: []pdns.Record{{Content: "174.128.205.124"}}},
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/servers/localhost/zones/nikaget.my.id.":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/proxies":
+			b, _ := io.ReadAll(r.Body)
+			proxyCreateBody = string(b)
+			w.WriteHeader(http.StatusOK)
+			if sslFailMode {
+				_, _ = w.Write([]byte(`{"success":true,"ssl":"failed: DNS problem"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"ssl":"active"}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/proxies/"):
+			proxyDeletedPath = r.URL.Path
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"success":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer pdnsSrv.Close()
+	u, _ := url.Parse(pdnsSrv.URL)
+
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "edge-panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	hostsPath := filepath.Join(tmp, "hosts")
+	_ = os.WriteFile(hostsPath, []byte("127.0.0.1 localhost\n"), 0644)
+
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          etcDir,
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        hostsPath,
+	}
+	pdnsMgr := pdns.New(cfg, db)
+	_ = pdnsMgr.SetMode("edge")
+	confData := "VPS_NETBIRD_IP=\"" + u.Hostname() + "\"\n" +
+		"VPS_PUBLIC_IP=\"174.128.205.124\"\n" +
+		"API_KEY=\"edge-test-key\"\n" +
+		"PDNS_PORT=\"" + u.Port() + "\"\n" +
+		"AGENT_PORT=\"" + u.Port() + "\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(confData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	run := runner.New(db)
+	authMgr := auth.New(cfg, db)
+	_ = authMgr.SetPanelSSLEnabled(true)
+	_, _, _ = authMgr.EnsurePanelSelfSignedCert("127.0.0.1")
+
+	srv := New(cfg, db, run, nil, siteMgr, nil, nil, pdnsMgr, nil, authMgr)
+	mainHandler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
+	plainHandler := srv.wrapPlainPortHandler(mainHandler)
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	// 1. GET /api/panel/domain reports edge mode + edge_configured
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqGet.Host = "127.0.0.1:3200"
+	reqGet.RemoteAddr = "127.0.0.1:50000"
+	reqGet.Header.Set("X-Forwarded-Proto", "https")
+	reqGet.AddCookie(sessCookie)
+	recGet := httptest.NewRecorder()
+	plainHandler.ServeHTTP(recGet, reqGet)
+	if recGet.Code != http.StatusOK || !strings.Contains(recGet.Body.String(), `"server_mode":"edge"`) || !strings.Contains(recGet.Body.String(), `"edge_configured":true`) {
+		t.Fatalf("GET /api/panel/domain (edge) = %d body=%s", recGet.Code, recGet.Body.String())
+	}
+
+	// 2. If Edge SSL issuance fails, binding & block_direct_ip must stay disabled
+	sslFailMode = true
+	reqFail := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel.nikaget.my.id","ssl_mode":"edge","block_direct_ip":true}`))
+	reqFail.Host = "127.0.0.1:3200"
+	reqFail.RemoteAddr = "127.0.0.1:50000"
+	reqFail.Header.Set("X-Forwarded-Proto", "https")
+	reqFail.Header.Set("Origin", "https://127.0.0.1:3200")
+	reqFail.AddCookie(sessCookie)
+	recFail := httptest.NewRecorder()
+	plainHandler.ServeHTTP(recFail, reqFail)
+	if recFail.Code != http.StatusOK {
+		t.Fatalf("POST /api/panel/domain (fail ssl) = %d body=%s", recFail.Code, recFail.Body.String())
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if run.GetActiveTask() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if authMgr.GetPanelDomain() != "" || authMgr.IsBlockDirectIP() {
+		t.Fatalf("expected panel domain and block_direct_ip disabled when edge SSL failed")
+	}
+
+	// 3. Bind panel domain via ssl_mode: edge succeeds, exposes via Edge, skips /etc/hosts, and serves HTTP without 308 loop when X-Forwarded-Proto=https
+	sslFailMode = false
+	proxyCreateBody = ""
+	reqBind := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel.nikaget.my.id","ssl_mode":"edge","block_direct_ip":true}`))
+	reqBind.Host = "127.0.0.1:3200"
+	reqBind.RemoteAddr = "127.0.0.1:50000"
+	reqBind.Header.Set("X-Forwarded-Proto", "https")
+	reqBind.Header.Set("Origin", "https://127.0.0.1:3200")
+	reqBind.AddCookie(sessCookie)
+	recBind := httptest.NewRecorder()
+	plainHandler.ServeHTTP(recBind, reqBind)
+	if recBind.Code != http.StatusOK || !strings.Contains(recBind.Body.String(), `"started"`) {
+		t.Fatalf("POST /api/panel/domain (edge) = %d body=%s", recBind.Code, recBind.Body.String())
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if run.GetActiveTask() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	dom, sslOn, blockIP := authMgr.PanelDomainConfig()
+	if dom != "panel.nikaget.my.id" || !sslOn || !blockIP {
+		t.Fatalf("unexpected bound config: dom=%q ssl=%v block=%v", dom, sslOn, blockIP)
+	}
+	if !strings.Contains(proxyCreateBody, `"domain":"panel.nikaget.my.id"`) || !strings.Contains(proxyCreateBody, `"target_port":80`) || !strings.Contains(proxyCreateBody, `"ssl":true`) {
+		t.Fatalf("unexpected Edge proxy create payload: %s", proxyCreateBody)
+	}
+	vhostBytes, err := os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "panel.nikaget.my.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vhostText := string(vhostBytes)
+	if strings.Contains(vhostText, "ssl_certificate") || !strings.Contains(vhostText, "proxy_set_header X-Forwarded-Proto $fe_proto;") {
+		t.Fatalf("expected HTTP Edge local vhost with $fe_proto, got:\n%s", vhostText)
+	}
+	hostsBytes, _ := os.ReadFile(hostsPath)
+	if strings.Contains(string(hostsBytes), "panel.nikaget.my.id") {
+		t.Fatalf("expected /etc/hosts skipped for public Edge panel domain")
+	}
+
+	// 4. Proxied HTTPS request on plain HTTP listener serves 200 OK (no 308 loop even with panel_ssl_enabled=true) and reports ssl_provider=edge
+	reqProxied := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqProxied.Host = "panel.nikaget.my.id"
+	reqProxied.RemoteAddr = "127.0.0.1:44444"
+	reqProxied.Header.Set("X-Forwarded-Proto", "https")
+	reqProxied.AddCookie(sessCookie)
+	recProxied := httptest.NewRecorder()
+	plainHandler.ServeHTTP(recProxied, reqProxied)
+	if recProxied.Code != http.StatusOK || !strings.Contains(recProxied.Body.String(), `"ssl_provider":"edge"`) {
+		t.Fatalf("expected 200 OK with ssl_provider=edge (no 308 loop), got %d body=%s", recProxied.Code, recProxied.Body.String())
+	}
+
+	// 5. Plain HTTP without X-Forwarded-Proto: https still redirects 308 -> https://panel.nikaget.my.id
+	reqPlain := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqPlain.Host = "panel.nikaget.my.id"
+	reqPlain.RemoteAddr = "203.0.113.10:44444"
+	recPlain := httptest.NewRecorder()
+	plainHandler.ServeHTTP(recPlain, reqPlain)
+	if recPlain.Code != http.StatusPermanentRedirect || recPlain.Header().Get("Location") != "https://panel.nikaget.my.id/" {
+		t.Fatalf("expected 308 redirect, got %d loc=%q", recPlain.Code, recPlain.Header().Get("Location"))
+	}
+
+	// 6. Unbind removes Edge proxy & local vhost
+	reqUnbind := httptest.NewRequest(http.MethodDelete, "/api/panel/domain", strings.NewReader(`{"remove_vhost":true}`))
+	reqUnbind.Host = "panel.nikaget.my.id"
+	reqUnbind.RemoteAddr = "127.0.0.1:44444"
+	reqUnbind.Header.Set("X-Forwarded-Proto", "https")
+	reqUnbind.Header.Set("Origin", "https://panel.nikaget.my.id")
+	reqUnbind.AddCookie(sessCookie)
+	recUnbind := httptest.NewRecorder()
+	plainHandler.ServeHTTP(recUnbind, reqUnbind)
+	if recUnbind.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/panel/domain = %d body=%s", recUnbind.Code, recUnbind.Body.String())
+	}
+	if proxyDeletedPath != "/api/v1/proxies/panel.nikaget.my.id" {
+		t.Fatalf("expected Edge unexpose DELETE, got %q", proxyDeletedPath)
+	}
+}
+
+func TestPanelDomainDetectsProxyPortBlocksReplaceAndDeletesDNS(t *testing.T) {
+	restoreNB := pdns.SetLocalNetbirdIPFn(func() string { return "100.64.0.22" })
+	defer restoreNB()
+
+	var proxyDeletedPath string
+	var pdnsDeletePatch string
+
+	pdnsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones":
+			_ = json.NewEncoder(w).Encode([]pdns.ZoneInfo{{ID: "erposoft.my.id.", Name: "erposoft.my.id."}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones/erposoft.my.id.":
+			_ = json.NewEncoder(w).Encode(pdns.ZoneInfo{
+				ID:   "erposoft.my.id.",
+				Name: "erposoft.my.id.",
+				RRsets: []pdns.RRSet{
+					{Name: "erposoft.my.id.", Type: "SOA"},
+					{Name: "lara.erposoft.my.id.", Type: "A"},
+					{Name: "panel.erposoft.my.id.", Type: "A"},
+					{Name: "panel.erposoft.my.id.", Type: "TXT"},
+					{Name: "_acme-challenge.panel.erposoft.my.id.", Type: "TXT"},
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/servers/localhost/zones/erposoft.my.id.":
+			b, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(b), `"changetype":"DELETE"`) {
+				pdnsDeletePatch = string(b)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/proxies":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"success":true,"ssl":"active"}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/proxies/"):
+			proxyDeletedPath = r.URL.Path
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"success":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer pdnsSrv.Close()
+	u, _ := url.Parse(pdnsSrv.URL)
+
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "detect-panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          etcDir,
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+	}
+	pdnsMgr := pdns.New(cfg, db)
+	_ = pdnsMgr.SetMode("edge")
+	confData := "VPS_NETBIRD_IP=\"" + u.Hostname() + "\"\nVPS_PUBLIC_IP=\"174.128.205.124\"\nAPI_KEY=\"edge-test-key\"\nPDNS_PORT=\"" + u.Port() + "\"\nAGENT_PORT=\"" + u.Port() + "\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(confData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	run := runner.New(db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, run, nil, siteMgr, nil, nil, pdnsMgr, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	// Simulasikan situs proxy yang sudah ada sebelumnya untuk port 3200 (mis. dibuat lewat Webstack)
+	if err := siteMgr.CreateSite(site.CreateOptions{
+		Domain:     "panel.erposoft.my.id",
+		Framework:  "proxy",
+		ProxyPort:  3200,
+		SSLEnabled: false,
+		SkipHosts:  true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.SetSiteExposedTo("panel.erposoft.my.id", "panel.erposoft.my.id")
+
+	// 1. GET /api/panel/domain harus mendeteksi domain port 3200 tersebut
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqGet.Host = "127.0.0.1:3200"
+	reqGet.AddCookie(sessCookie)
+	recGet := httptest.NewRecorder()
+	handler.ServeHTTP(recGet, reqGet)
+	if recGet.Code != http.StatusOK ||
+		!strings.Contains(recGet.Body.String(), `"detected_proxy_domain":"panel.erposoft.my.id"`) ||
+		!strings.Contains(recGet.Body.String(), `"detected_proxy_ssl_provider":"edge"`) ||
+		!strings.Contains(recGet.Body.String(), `"bound":false`) {
+		t.Fatalf("expected detected proxy domain in GET /api/panel/domain, got %d body=%s", recGet.Code, recGet.Body.String())
+	}
+
+	// 2. Mencoba bind atau mengganti sebelum menghapus domain yg ada wajib ditolak 409 Conflict
+	reqConflict := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel2.erposoft.my.id","ssl_mode":"edge","block_direct_ip":true}`))
+	reqConflict.Host = "127.0.0.1:3200"
+	reqConflict.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqConflict.AddCookie(sessCookie)
+	recConflict := httptest.NewRecorder()
+	handler.ServeHTTP(recConflict, reqConflict)
+	if recConflict.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict before deleting detected domain, got %d body=%s", recConflict.Code, recConflict.Body.String())
+	}
+
+	// 3. DELETE /api/panel/domain menghapus vhost, proxy Edge, DAN semua DNS terkait panel.erposoft.my.id
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/panel/domain", strings.NewReader(`{"remove_vhost":true}`))
+	reqDel.Host = "127.0.0.1:3200"
+	reqDel.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqDel.AddCookie(sessCookie)
+	recDel := httptest.NewRecorder()
+	handler.ServeHTTP(recDel, reqDel)
+	if recDel.Code != http.StatusOK ||
+		!strings.Contains(recDel.Body.String(), `"deleted_domain":"panel.erposoft.my.id"`) ||
+		!strings.Contains(recDel.Body.String(), `"dns_records_deleted":3`) {
+		t.Fatalf("expected 200 delete with dns_records_deleted=3, got %d body=%s", recDel.Code, recDel.Body.String())
+	}
+	if proxyDeletedPath != "/api/v1/proxies/panel.erposoft.my.id" {
+		t.Fatalf("expected Edge proxy delete, got %q", proxyDeletedPath)
+	}
+	if !strings.Contains(pdnsDeletePatch, `"name":"panel.erposoft.my.id."`) ||
+		!strings.Contains(pdnsDeletePatch, `"name":"_acme-challenge.panel.erposoft.my.id."`) ||
+		strings.Contains(pdnsDeletePatch, `"name":"lara.erposoft.my.id."`) {
+		t.Fatalf("unexpected PowerDNS delete patch:\n%s", pdnsDeletePatch)
+	}
+	if _, ok := siteMgr.GetSite("panel.erposoft.my.id"); ok {
+		t.Fatalf("expected site panel.erposoft.my.id deleted")
+	}
+
+	// 4. Setelah dihapus, domain baru bisa diaktifkan kembali
+	reqRebind := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel2.erposoft.my.id","ssl_mode":"edge","block_direct_ip":true}`))
+	reqRebind.Host = "127.0.0.1:3200"
+	reqRebind.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqRebind.AddCookie(sessCookie)
+	recRebind := httptest.NewRecorder()
+	handler.ServeHTTP(recRebind, reqRebind)
+	if recRebind.Code != http.StatusOK || !strings.Contains(recRebind.Body.String(), `"started"`) {
+		t.Fatalf("expected 200 started after delete, got %d body=%s", recRebind.Code, recRebind.Body.String())
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if run.GetActiveTask() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if authMgr.GetPanelDomain() != "panel2.erposoft.my.id" {
+		t.Fatalf("expected panel2.erposoft.my.id bound after rebind, got %q", authMgr.GetPanelDomain())
+	}
+}

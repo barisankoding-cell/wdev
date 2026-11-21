@@ -191,3 +191,40 @@ func TestSyncFromDiskPreservesFrameworkAndSameDomainExposedTo(t *testing.T) {
 		t.Fatalf("SyncFromDisk clobbered metadata: %+v", sites[0])
 	}
 }
+
+func TestSyncFromDiskPreservesProxyPort(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := New(filepath.Join(tmp, "proxy-sync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	avail := filepath.Join(tmp, "sites-available")
+	if err := os.MkdirAll(avail, 0755); err != nil {
+		t.Fatal(err)
+	}
+	vhost := `server {
+    listen 80;
+    server_name panel.erposoft.my.id;
+    location / {
+        proxy_pass http://127.0.0.1:3200;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $fe_proto;
+    }
+}
+`
+	if err := os.WriteFile(filepath.Join(avail, "panel.erposoft.my.id"), []byte(vhost), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	db.SyncFromDisk(avail, filepath.Join(tmp, "exposures"))
+
+	sites, err := db.ListSites()
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("unexpected ListSites: %+v err=%v", sites, err)
+	}
+	if sites[0].Framework != "proxy" || sites[0].ProxyPort != 3200 {
+		t.Fatalf("SyncFromDisk did not parse proxy_port: %+v", sites[0])
+	}
+}

@@ -141,6 +141,9 @@
 				(sudoPass) => api.applySelfUpdate('', sudoPass)
 			);
 			if (res) {
+				if (res.status === 'started') {
+					cp.armSelfUpdateReload();
+				}
 				cp.openTerminal('Pembaruan Biner wdev');
 			}
 		} catch (err) {

@@ -667,3 +667,77 @@ func TestPHPVHostPropagatesProxyHTTPSAndHealsLegacyConfigs(t *testing.T) {
 		t.Fatalf("expected idempotent 0 updates on second call, got count=%d err=%v", count2, err)
 	}
 }
+
+func TestProxyVHostTemplateAndUpgradePreservesXForwardedProto(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "proxy-test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+	}
+	mgr := New(cfg, db)
+	mgr.SetSkipNginxExec(true)
+
+	// 1. Proxy vhost baru harus mempertahankan X-Forwarded-Proto: https lewat $fe_proto
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:     "panel-new.erposoft.my.id",
+		Framework:  "proxy",
+		ProxyPort:  3200,
+		SSLEnabled: false,
+		SkipHosts:  true,
+	}); err != nil {
+		t.Fatalf("CreateSite proxy failed: %v", err)
+	}
+	newConf, err := os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "panel-new.erposoft.my.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"proxy_pass http://127.0.0.1:3200;",
+		"set $fe_proto $scheme;",
+		`if ($http_x_forwarded_proto ~* "^https(,|$)") {`,
+		"proxy_set_header X-Forwarded-Proto $fe_proto;",
+	} {
+		if !strings.Contains(string(newConf), want) {
+			t.Fatalf("new proxy vhost missing %q:\n%s", want, string(newConf))
+		}
+	}
+
+	// 2. Proxy vhost lama yang masih menimpa X-Forwarded-Proto $scheme harus otomatis diperbaiki
+	legacyProxy := `server {
+    listen 80;
+    server_name legacy-proxy.erposoft.my.id;
+    location / {
+        proxy_pass http://127.0.0.1:3200;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+`
+	legacyPath := filepath.Join(cfg.NginxSitesAvail, "legacy-proxy.erposoft.my.id")
+	if err := os.WriteFile(legacyPath, []byte(legacyProxy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := mgr.EnsureProxyHTTPSForPHPVhosts()
+	if err != nil {
+		t.Fatalf("EnsureProxyHTTPSForPHPVhosts failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 legacy proxy vhost patched, got %d", count)
+	}
+	patched, _ := os.ReadFile(legacyPath)
+	if !strings.Contains(string(patched), "proxy_set_header X-Forwarded-Proto $fe_proto;") {
+		t.Fatalf("legacy proxy vhost not patched:\n%s", string(patched))
+	}
+	count2, err := mgr.EnsureProxyHTTPSForPHPVhosts()
+	if err != nil || count2 != 0 {
+		t.Fatalf("expected idempotent 0 updates on second call, got count=%d err=%v", count2, err)
+	}
+}

@@ -3,6 +3,7 @@ package pdns
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -540,5 +541,77 @@ server {
 	}
 	if _, err := os.Stat(filepath.Join(confD, "wdev-edge-realip.conf")); !os.IsNotExist(err) {
 		t.Fatalf("expected wdev-edge-realip.conf removed in local mode, err=%v", err)
+	}
+}
+
+func TestDeleteDomainDNSRecordsRemovesAllRelatedRRsetsOnly(t *testing.T) {
+	var lastPatch string
+	pdnsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones":
+			_ = json.NewEncoder(w).Encode([]ZoneInfo{{ID: "erposoft.my.id.", Name: "erposoft.my.id."}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones/erposoft.my.id.":
+			_ = json.NewEncoder(w).Encode(ZoneInfo{
+				ID:   "erposoft.my.id.",
+				Name: "erposoft.my.id.",
+				RRsets: []RRSet{
+					{Name: "erposoft.my.id.", Type: "SOA"},
+					{Name: "erposoft.my.id.", Type: "NS"},
+					{Name: "erposoft.my.id.", Type: "MX"},
+					{Name: "lara.erposoft.my.id.", Type: "A"},
+					{Name: "panel.erposoft.my.id.", Type: "A"},
+					{Name: "panel.erposoft.my.id.", Type: "AAAA"},
+					{Name: "panel.erposoft.my.id.", Type: "TXT"},
+					{Name: "www.panel.erposoft.my.id.", Type: "CNAME"},
+					{Name: "_acme-challenge.panel.erposoft.my.id.", Type: "TXT"},
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/servers/localhost/zones/erposoft.my.id.":
+			b, _ := io.ReadAll(r.Body)
+			lastPatch = string(b)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer pdnsSrv.Close()
+	u, _ := url.Parse(pdnsSrv.URL)
+
+	tmp := t.TempDir()
+	st, err := store.New(filepath.Join(tmp, "dns-cleanup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	cfgData := "VPS_NETBIRD_IP=\"" + u.Hostname() + "\"\nVPS_PUBLIC_IP=\"174.128.205.124\"\nAPI_KEY=\"k\"\nPDNS_PORT=\"" + u.Port() + "\"\nAGENT_PORT=\"" + u.Port() + "\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(cfgData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(&config.Config{WdevEtc: etcDir}, st)
+	count, err := mgr.DeleteDomainDNSRecords("panel.erposoft.my.id")
+	if err != nil {
+		t.Fatalf("DeleteDomainDNSRecords failed: %v", err)
+	}
+	if count != 5 {
+		t.Fatalf("expected 5 matched RRsets for panel.erposoft.my.id, got %d (patch=%s)", count, lastPatch)
+	}
+	for _, want := range []string{
+		`"name":"panel.erposoft.my.id."`,
+		`"name":"www.panel.erposoft.my.id."`,
+		`"name":"_acme-challenge.panel.erposoft.my.id."`,
+		`"changetype":"DELETE"`,
+	} {
+		if !strings.Contains(lastPatch, want) {
+			t.Fatalf("expected DELETE patch to contain %q, got:\n%s", want, lastPatch)
+		}
+	}
+	for _, untouched := range []string{"lara.erposoft.my.id.", `"name":"erposoft.my.id."`, `"type":"MX"`, `"type":"SOA"`} {
+		if strings.Contains(lastPatch, untouched) {
+			t.Fatalf("DELETE patch must NOT delete unrelated record %q:\n%s", untouched, lastPatch)
+		}
 	}
 }

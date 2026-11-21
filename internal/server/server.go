@@ -1148,13 +1148,8 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 			resp["dns_deleted"] = deleteDNS
 		}
 	} else if mode == "vps" && deleteDNS && s.pdnsMgr != nil {
-		if zone, err := s.pdnsMgr.FindMatchingZone(domain); err == nil && zone != "" {
-			cleanZone := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zone), "."))
-			if domain != cleanZone {
-				if delErr := s.pdnsMgr.DeleteRecord(zone, domain, "A"); delErr == nil {
-					resp["dns_deleted"] = true
-				}
-			}
+		if _, delErr := s.pdnsMgr.DeleteDomainDNSRecords(domain); delErr == nil {
+			resp["dns_deleted"] = true
 		}
 	}
 
@@ -3360,10 +3355,18 @@ func (s *Server) handleUpdaterApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := updater.Options{}
-	taskID, err := s.runner.StartNativeTask("Pembaruan Biner wdev", func(ctx context.Context, cb func(string)) error {
-		_, err := updater.Run(ctx, version.Version, opts, cb)
+	opts := updater.Options{SkipRestart: true}
+	installed := false
+	taskID, err := s.runner.StartNativeTaskAfter("Pembaruan Biner wdev", func(ctx context.Context, cb func(string)) error {
+		res, err := updater.Run(ctx, version.Version, opts, cb)
+		installed = res.Installed
 		return err
+	}, func(status string) {
+		if status == "success" && installed {
+			// Beri waktu singkat agar frame SSE finish sempat dikirim ke browser sebelum systemd mengirim SIGTERM.
+			time.Sleep(300 * time.Millisecond)
+			_ = updater.RestartService(context.Background(), "wdev.service")
+		}
 	})
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())

@@ -1710,7 +1710,7 @@ func main() {
 			printPanelInfo(info)
 		case "domain":
 			if len(args) < 3 {
-				fmt.Println("Penggunaan: wdev panel domain <domain|off> [--ssl letsencrypt|local|external|none] [--email <email>] [--allow-ip]")
+				fmt.Println("Penggunaan: wdev panel domain <domain|off> [--ssl letsencrypt|edge|local|external|none] [--email <email>] [--allow-ip]")
 				return
 			}
 			targetDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(args[2]), "."))
@@ -1720,12 +1720,42 @@ func main() {
 					fmt.Fprintf(os.Stderr, "Gagal melepas domain panel: %v\n", err)
 					os.Exit(1)
 				}
-				if oldDom != "" {
-					if rec, ok := siteMgr.GetSite(oldDom); ok && rec.Framework == "proxy" && strconv.Itoa(rec.ProxyPort) == cfg.HTTPPort {
-						_ = siteMgr.DeleteSite(oldDom)
+				panelPortNum, _ := strconv.Atoi(cfg.HTTPPort)
+				if panelPortNum <= 0 {
+					panelPortNum = 3200
+				}
+				targets := []string{}
+				seen := map[string]bool{}
+				addT := func(d string) {
+					d = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(d), "."))
+					if d != "" && !seen[d] {
+						seen[d] = true
+						targets = append(targets, d)
 					}
 				}
-				fmt.Println("✓ Binding domain panel dilepas; akses via IP kembali diaktifkan.")
+				addT(oldDom)
+				if allSites, err := siteMgr.ListSites(); err == nil {
+					for _, st := range allSites {
+						if strings.EqualFold(st.Framework, "proxy") && st.ProxyPort == panelPortNum {
+							addT(st.Domain)
+						}
+					}
+				}
+				for _, td := range targets {
+					if rec, ok := siteMgr.GetSite(td); ok {
+						if pdnsMgr != nil {
+							if rec.ExposedTo != "" {
+								_ = pdnsMgr.Unexpose(rec.ExposedTo, false)
+							} else {
+								_, _ = pdnsMgr.DeleteDomainDNSRecords(td)
+							}
+						}
+						_ = siteMgr.DeleteSite(td)
+					} else if pdnsMgr != nil {
+						_, _ = pdnsMgr.DeleteDomainDNSRecords(td)
+					}
+				}
+				fmt.Println("✓ Domain panel, proxy Nginx port panel, dan record DNS terkait berhasil dihapus; akses via IP kembali diaktifkan.")
 				return
 			}
 			sslMode := "letsencrypt"
@@ -1747,19 +1777,43 @@ func main() {
 					blockIP = false
 				}
 			}
+			switch sslMode {
+			case "letsencrypt", "edge", "local", "external", "none":
+			default:
+				fmt.Fprintf(os.Stderr, "Error: --ssl %q tidak valid (gunakan: letsencrypt, edge, local, external, atau none)\n", sslMode)
+				os.Exit(1)
+			}
 			if err := site.ValidateDomain(targetDom); err != nil {
 				fmt.Fprintf(os.Stderr, "Error domain: %v\n", err)
 				os.Exit(1)
 			}
-			if sslMode == "letsencrypt" {
+			if sslMode == "letsencrypt" || sslMode == "edge" {
 				if err := site.ValidateLetsEncryptDomain(targetDom); err != nil {
 					fmt.Fprintf(os.Stderr, "Error domain Let's Encrypt: %v\n", err)
 					os.Exit(1)
 				}
 			}
+			serverMode := pdnsMgr.GetMode()
+			useEdgeGateway := serverMode == "edge" && (sslMode == "edge" || sslMode == "letsencrypt")
+			if sslMode == "edge" && !useEdgeGateway {
+				fmt.Fprintf(os.Stderr, "Error: --ssl edge hanya tersedia ketika mode server = edge.\n")
+				os.Exit(1)
+			}
 			panelPortNum, _ := strconv.Atoi(cfg.HTTPPort)
 			if panelPortNum <= 0 {
 				panelPortNum = 3200
+			}
+			if boundCur := authMgr.GetPanelDomain(); boundCur != "" {
+				fmt.Fprintf(os.Stderr, "Error: domain panel %q masih terikat. Jalankan 'wdev panel domain off' terlebih dahulu sebelum mengganti atau mengaktifkan kembali.\n", boundCur)
+				os.Exit(1)
+			}
+			if allSites, err := siteMgr.ListSites(); err == nil {
+				for _, st := range allSites {
+					if strings.EqualFold(st.Framework, "proxy") && st.ProxyPort == panelPortNum {
+						fmt.Fprintf(os.Stderr, "Error: domain %q sudah terdeteksi memakai port panel %d. Jalankan 'wdev panel domain off' terlebih dahulu untuk menghapus domain & DNS-nya.\n", st.Domain, panelPortNum)
+						os.Exit(1)
+					}
+				}
 			}
 			if existing, ok := siteMgr.GetSite(targetDom); ok && sslMode != "external" {
 				if !(existing.Framework == "proxy" && existing.ProxyPort == panelPortNum) {
@@ -1768,7 +1822,13 @@ func main() {
 				}
 			}
 			if sslMode != "external" {
-				if pdnsMgr != nil && pdnsMgr.GetMode() == "vps" {
+				if useEdgeGateway {
+					conf := pdnsMgr.LoadConfig()
+					if !conf.Configured || conf.VPSNetbirdIP == "" {
+						fmt.Fprintf(os.Stderr, "Error: VPS Edge Gateway belum dikonfigurasi.\n")
+						os.Exit(1)
+					}
+				} else if serverMode == "vps" {
 					conf := pdnsMgr.LoadConfig()
 					if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
 						if zone, zErr := pdnsMgr.FindMatchingZone(targetDom); zErr == nil && zone != "" {
@@ -1776,16 +1836,23 @@ func main() {
 						}
 					}
 				}
+				skipHosts := useEdgeGateway || (serverMode == "vps" && site.ValidateLetsEncryptDomain(targetDom) == nil)
 				if err := siteMgr.CreateSite(site.CreateOptions{
 					Domain:     targetDom,
 					Framework:  "proxy",
 					ProxyPort:  panelPortNum,
 					SSLEnabled: sslMode == "local",
+					SkipHosts:  skipHosts,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "Gagal menyiapkan proxy Nginx: %v\n", err)
 					os.Exit(1)
 				}
-				if sslMode == "letsencrypt" {
+				if useEdgeGateway {
+					if err := pdnsMgr.ExposeSite(targetDom, targetDom, true); err != nil {
+						fmt.Fprintf(os.Stderr, "Gagal mengekspos panel lewat VPS Edge Gateway: %v\n", err)
+						os.Exit(1)
+					}
+				} else if sslMode == "letsencrypt" {
 					if err := siteMgr.EnableLetsEncrypt(context.Background(), func(line string) { fmt.Println(line) }, targetDom, sslEmail); err != nil {
 						fmt.Fprintf(os.Stderr, "Gagal menerbitkan Let's Encrypt: %v\n", err)
 						os.Exit(1)

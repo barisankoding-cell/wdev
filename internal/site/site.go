@@ -880,8 +880,9 @@ func (m *Manager) EnsureProxyHTTPSForPHPVhosts() (int, error) {
 		if readErr != nil {
 			continue
 		}
-		nextText, changed := EnsureFastCGIProxyHTTPSInConfig(string(origBytes))
-		if !changed {
+		nextText, changedFastCGI := EnsureFastCGIProxyHTTPSInConfig(string(origBytes))
+		nextText, changedProxy := EnsureProxyProtoInConfig(nextText)
+		if !changedFastCGI && !changedProxy {
 			continue
 		}
 		if writeErr := m.writeFile(confPath, []byte(nextText), 0644); writeErr != nil {

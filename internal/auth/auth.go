@@ -125,7 +125,8 @@ func IsHTTPS(r *http.Request) bool {
 		return true
 	}
 	if isTrustedProxy(remoteHost(r.RemoteAddr)) {
-		return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+		firstProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+		return strings.EqualFold(firstProto, "https")
 	}
 	return false
 }

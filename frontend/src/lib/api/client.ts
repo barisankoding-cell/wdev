@@ -465,7 +465,7 @@ export const api = {
 			body: JSON.stringify({ enabled, hosts })
 		}),
 	unbindPanelDomain: (remove_vhost = true) =>
-		apiFetch<{ status: string; message: string }>('/api/panel/domain', {
+		apiFetch<{ status: string; message: string; deleted_domain?: string; dns_records_deleted?: number }>('/api/panel/domain', {
 			method: 'DELETE',
 			body: JSON.stringify({ remove_vhost })
 		}),

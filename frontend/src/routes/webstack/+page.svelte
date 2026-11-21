@@ -4,9 +4,7 @@
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
-	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
-	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import * as InputGroup from '#lib/components/ui/input-group/index.js';
 	import { cn } from '#lib/utils.js';
@@ -18,14 +16,13 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
-	import FolderPickerDialog from '#lib/components/modals/FolderPickerDialog.svelte';
+	import CreateVhostModal from '#lib/components/modals/CreateVhostModal.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
-	import type { FileRootInfo, SiteRecord, ZoneInfo } from '#lib/types/api.js';
+	import type { SiteRecord, ZoneInfo } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
-	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -41,7 +38,6 @@
 
 	let sites = $state<SiteRecord[]>([]);
 	let zones = $state<ZoneInfo[]>([]);
-	let fileRoots = $state<FileRootInfo[]>([]);
 	let loading = $state(true);
 	let searchQuery = $state('');
 	let siteDeleting = $state<Record<string, boolean>>({});
@@ -50,21 +46,6 @@
 
 	// Modal Tambah VHost
 	let createOpen = $state(false);
-	let folderPickerOpen = $state(false);
-	let creating = $state(false);
-	let domainMode = $state<'custom' | 'subdomain'>('custom');
-	let domain = $state('');
-	let subdomainPrefix = $state('');
-	let parentDomain = $state('');
-	let domainTouched = $state(false);
-	let framework = $state('laravel');
-	let phpVersion = $state('8.4');
-	let rootPath = $state('');
-	let proxyPortStr = $state('3000');
-	let sslEnabled = $state(true);
-	let edgeExposeEnabled = $state(true);
-	let edgeSSLEnabled = $state(true);
-	let addLocalHosts = $state(false);
 
 	// Modal Ekspos & SSL Edge (untuk situs yang belum terekspos)
 	let exposeOpen = $state(false);
@@ -85,39 +66,10 @@
 	let deleteUnexpose = $state(true);
 	let deleteDNSRecord = $state(false);
 
-	const frameworks = [
-		{ value: 'laravel', label: 'Laravel (root di /public)' },
-		{ value: 'wordpress', label: 'WordPress' },
-		{ value: 'ci4', label: 'CodeIgniter 4 (root di /public)' },
-		{ value: 'ci3', label: 'CodeIgniter 3' },
-		{ value: 'symfony', label: 'Symfony (root di /public)' },
-		{ value: 'generic', label: 'Generic PHP' },
-		{ value: 'static', label: 'Static HTML (index.html)' },
-		{ value: 'proxy', label: 'Reverse Proxy (Node/Go/Python/Docker)' }
-	];
-
-	const phpVersions = ['8.4', '8.3', '8.2', '8.1'];
-	const isProxy = $derived(framework === 'proxy');
-	const isStatic = $derived(framework === 'static');
 	const isVPS = $derived(modeStore.mode === 'vps');
 	const isEdge = $derived(modeStore.mode === 'edge');
 	const isLocal = $derived(modeStore.mode === 'local');
 	const supportsDNS = $derived(isVPS || isEdge);
-
-	const detectedDrives = $derived.by(() => {
-		const byPath = new Map<string, { name: string; path: string }>();
-		for (const r of fileRoots) {
-			if (r.kind === 'drive') {
-				byPath.set(r.path, { name: r.name, path: r.path });
-			}
-		}
-		for (const d of cp.systemStatus?.mount_drives ?? []) {
-			if (!byPath.has(d.mount_point)) {
-				byPath.set(d.mount_point, { name: d.name, path: d.mount_point });
-			}
-		}
-		return Array.from(byPath.values());
-	});
 
 	function isLocalOnlyDomain(dom: string): boolean {
 		const clean = dom.trim().replace(/\.$/, '').toLowerCase();
@@ -152,32 +104,17 @@
 		return [...pdnsZones, ...fromSites];
 	});
 
-	const domainChoices = $derived(isEdge ? pdnsZones : parentDomains);
-
-	const cleanSubPrefix = $derived(
-		subdomainPrefix.trim().replace(/^\.+|\.+$/g, '').toLowerCase()
-	);
-	const effectiveDomain = $derived(
-		isEdge
-			? !parentDomain
-				? ''
-				: cleanSubPrefix
-					? `${cleanSubPrefix}.${parentDomain}`
-					: parentDomain
-			: isVPS && domainMode === 'subdomain'
-				? cleanSubPrefix && parentDomain
-					? `${cleanSubPrefix}.${parentDomain}`
-					: ''
-				: domain.trim().replace(/^\.+|\.+$/g, '').toLowerCase()
-	);
-	const domainInvalid = $derived(
-		domainTouched &&
-			(isEdge
-				? !parentDomain
-				: isVPS && domainMode === 'subdomain'
-					? cleanSubPrefix.length === 0 || !parentDomain
-					: effectiveDomain.length === 0)
-	);
+	async function refreshZonesQuiet() {
+		if (!supportsDNS) {
+			zones = [];
+			return;
+		}
+		try {
+			zones = (await api.listPDNSZones()) ?? [];
+		} catch {
+			// PowerDNS belum terhubung / opsional
+		}
+	}
 
 	const filteredSites = $derived.by(() => {
 		const q = searchQuery.trim().toLowerCase();
@@ -190,21 +127,6 @@
 				(s.exposed_to || '').toLowerCase().includes(q)
 		);
 	});
-
-	async function refreshZonesQuiet() {
-		if (!supportsDNS) {
-			zones = [];
-			return;
-		}
-		try {
-			zones = (await api.listPDNSZones()) ?? [];
-			if (!parentDomain && domainChoices.length > 0) {
-				parentDomain = domainChoices[0];
-			}
-		} catch {
-			// PowerDNS belum terhubung / opsional
-		}
-	}
 
 	async function loadSites() {
 		loading = true;
@@ -246,36 +168,8 @@
 		lastLoadedMode = currentMode;
 	});
 
-	$effect(() => {
-		if (domainChoices.length > 0 && (!parentDomain || !domainChoices.includes(parentDomain))) {
-			parentDomain = domainChoices[0];
-		}
-	});
-
 	function openCreate() {
-		domainMode = isEdge ? 'subdomain' : 'custom';
-		domain = '';
-		subdomainPrefix = '';
-		parentDomain = domainChoices[0] ?? '';
-		domainTouched = false;
-		framework = 'laravel';
-		phpVersion = '8.4';
-		rootPath = '';
-		proxyPortStr = '3000';
-		sslEnabled = isLocal;
-		edgeExposeEnabled = isEdge;
-		edgeSSLEnabled = true;
-		addLocalHosts = false;
 		createOpen = true;
-		void api
-			.getFileRoots()
-			.then((rootsRes) => {
-				fileRoots = rootsRes ?? [];
-			})
-			.catch(() => {});
-		if (supportsDNS) {
-			void refreshZonesQuiet();
-		}
 	}
 
 	async function triggerLetsEncrypt(siteDomain: string, skipConfirm = false) {
@@ -402,103 +296,10 @@
 		}
 	}
 
-	function switchDomainMode(nextMode: string) {
-		if (nextMode !== 'custom' && nextMode !== 'subdomain') return;
-		domainMode = nextMode;
-		domainTouched = false;
-		if (nextMode === 'subdomain') {
-			if (!parentDomain && domainChoices.length > 0) {
-				parentDomain = domainChoices[0];
-			}
-			void refreshZonesQuiet();
-		}
-	}
-
-	async function submitCreate(e: SubmitEvent) {
-		e.preventDefault();
-		domainTouched = true;
-		if (isEdge || (isVPS && domainMode === 'subdomain')) {
-			if (!parentDomain) {
-				toast.warning(
-					isEdge
-						? 'Tambahkan domain/zone di menu PowerDNS & Edge terlebih dahulu.'
-						: 'Pilih domain induk terlebih dahulu atau gunakan mode Domain Utama.'
-				);
-				document.getElementById('site-parent-domain')?.focus();
-				return;
-			}
-			if (!isEdge && !cleanSubPrefix) {
-				document.getElementById('site-sub-prefix')?.focus();
-				return;
-			}
-			if (
-				cleanSubPrefix &&
-				!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(cleanSubPrefix)
-			) {
-				toast.warning('Nama subdomain hanya boleh berisi huruf, angka, tanda hubung (-), atau titik.');
-				document.getElementById('site-sub-prefix')?.focus();
-				return;
-			}
-		}
-		const cleanDomain = effectiveDomain;
-		if (!cleanDomain) {
-			document.getElementById('site-domain')?.focus();
-			return;
-		}
-		const proxyPort = parseInt(proxyPortStr, 10) || 0;
-		if (isProxy && (proxyPort < 1 || proxyPort > 65535)) {
-			toast.error('Port aplikasi proxy harus antara 1 sampai 65535.');
-			document.getElementById('site-proxy-port')?.focus();
-			return;
-		}
-
-		const cleanIsLocal = isLocalOnlyDomain(cleanDomain);
-		const wantVPSLetsEncrypt = isVPS && sslEnabled && !cleanIsLocal;
-		const wantEdgeTunnel = isEdge && edgeExposeEnabled;
-		const resolvedEdgeDomain = cleanDomain;
-
-		creating = true;
-		try {
-			const res = await api.createSite({
-				domain: cleanDomain,
-				framework,
-				php_version: isProxy || isStatic ? '' : phpVersion,
-				root_path: rootPath.trim(),
-				proxy_port: proxyPort,
-				ssl_enabled: wantVPSLetsEncrypt || wantEdgeTunnel ? false : sslEnabled,
-				...(isEdge ? { add_hosts: addLocalHosts } : {}),
-				...(wantEdgeTunnel
-					? {
-							expose_edge: true,
-							edge_domain: resolvedEdgeDomain,
-							edge_ssl: edgeSSLEnabled
-						}
-					: {})
-			});
-
-			if (res?.edge_error) {
-				toast.warning(
-					`Virtual host ${cleanDomain} berhasil dibuat, namun eksposur VPS Edge gagal: ${res.edge_error}`
-				);
-			} else if (res?.edge_exposed) {
-				toast.success(
-					`Virtual host ${cleanDomain} dibuat & terekspos ke ${res.edge_domain || resolvedEdgeDomain}${res.dns_synced ? ' (DNS A & Proxy VPS aktif)' : ''}.`
-				);
-			} else if (res?.dns_synced && res?.dns_message) {
-				toast.success(`Virtual host ${cleanDomain} berhasil dibuat (${res.dns_message}).`);
-			} else {
-				toast.success(`Virtual host ${cleanDomain} berhasil dibuat!`);
-			}
-
-			createOpen = false;
-			await loadSites();
-			if (wantVPSLetsEncrypt) {
-				await triggerLetsEncrypt(cleanDomain, true);
-			}
-		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal membuat virtual host');
-		} finally {
-			creating = false;
+	async function handleVhostCreated({ domain: createdDom, wantVPSLetsEncrypt }: { domain: string; wantVPSLetsEncrypt: boolean }) {
+		await loadSites();
+		if (wantVPSLetsEncrypt) {
+			await triggerLetsEncrypt(createdDom, true);
 		}
 	}
 
@@ -918,351 +719,13 @@
 	{/if}
 </div>
 
-<Dialog.Root bind:open={createOpen}>
-	<Dialog.Content class="flex max-h-[92dvh] w-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
-		<Dialog.Header class="shrink-0 border-b px-4 pt-4 pb-3 pr-12 text-left">
-			<Dialog.Title class="text-base sm:text-sm">Buat Virtual Host Baru</Dialog.Title>
-			<Dialog.Description class="text-xs leading-relaxed sm:text-sm">
-				{#if isVPS}
-					Membuat konfigurasi Nginx (<code>wdev site create</code>) langsung aktif di VPS publik.
-				{:else if isEdge}
-					Membuat virtual host Nginx memakai domain / subdomain PowerDNS dan mengeksposnya via NetBird Tunnel + SSL Let's Encrypt di VPS Edge.
-				{:else}
-					Membuat konfigurasi Nginx (<code>wdev site create</code>), entri <code>/etc/hosts</code>, dan sertifikat SSL lokal.
-				{/if}
-			</Dialog.Description>
-		</Dialog.Header>
-
-		<form onsubmit={submitCreate} class="flex min-h-0 flex-1 flex-col">
-			<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain scroll-pb-4 px-4 py-4">
-				<Field.FieldGroup>
-					<Field.Field data-invalid={domainInvalid ? 'true' : undefined}>
-						<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-							<Field.FieldLabel for={isEdge || (isVPS && domainMode === 'subdomain') ? 'site-sub-prefix' : 'site-domain'}>
-								{isLocal ? 'Domain Lokal' : isEdge ? 'Domain PowerDNS' : 'Domain'}
-							</Field.FieldLabel>
-							{#if isEdge}
-								<Badge variant="outline" class="w-fit text-[11px] font-medium">
-									Zone PowerDNS ({domainChoices.length})
-								</Badge>
-							{:else if isVPS}
-								<ToggleGroup.Root
-									type="single"
-									bind:value={() => domainMode, (v) => switchDomainMode(v)}
-									variant="outline"
-									spacing={2}
-									class="grid w-full grid-cols-2 sm:inline-flex sm:w-auto"
-									aria-label="Mode input domain"
-								>
-									<ToggleGroup.Item value="custom" class="min-h-10 text-xs sm:min-h-8 sm:px-3">
-										Domain Utama
-									</ToggleGroup.Item>
-									<ToggleGroup.Item value="subdomain" class="min-h-10 text-xs sm:min-h-8 sm:px-3">
-										Subdomain ({domainChoices.length})
-									</ToggleGroup.Item>
-								</ToggleGroup.Root>
-							{/if}
-						</div>
-
-						{#if isEdge || (isVPS && domainMode === 'subdomain')}
-							{#if domainChoices.length === 0}
-								<div class="flex flex-col gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-3 text-xs text-muted-foreground">
-									{#if isEdge}
-										<p>Belum ada zone di PowerDNS VPS Edge. Tambahkan domain zone di menu <strong>PowerDNS &amp; Edge</strong> terlebih dahulu sebelum membuat Virtual Host.</p>
-										<div>
-											<Button size="sm" variant="outline" class="min-h-10 w-full sm:min-h-0 sm:w-auto" href="/powerdns">
-												<NetworkIcon data-icon="inline-start" />
-												Kelola Zone PowerDNS
-											</Button>
-										</div>
-									{:else}
-										<p>Belum ada domain atau zone PowerDNS yang tersedia sebagai induk subdomain. Tambahkan zone di menu PowerDNS terlebih dahulu atau pilih <strong>Domain Utama</strong>.</p>
-									{/if}
-								</div>
-							{:else}
-								<div class="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
-									<InputGroup.Root class="h-11 min-w-0 sm:h-8">
-										<InputGroup.Input
-											id="site-sub-prefix"
-											name="subdomain_prefix"
-											placeholder={isEdge ? 'app / api (kosong = utama)' : 'app / api / admin'}
-											class="h-full text-base md:text-sm"
-											autocorrect="off"
-											autocapitalize="none"
-											spellcheck={false}
-											enterkeyhint="next"
-											aria-invalid={domainInvalid ? 'true' : undefined}
-											bind:value={subdomainPrefix}
-											onblur={() => (domainTouched = true)}
-											oninput={() => {
-												if (subdomainPrefix.trim()) domainTouched = false;
-											}}
-											required={!isEdge}
-										/>
-										<InputGroup.Addon align="inline-end">
-											<InputGroup.Text>.</InputGroup.Text>
-										</InputGroup.Addon>
-									</InputGroup.Root>
-
-									<Select.Root
-										type="single"
-										value={parentDomain}
-										onValueChange={(v) => {
-											if (v) parentDomain = v;
-										}}
-									>
-										<Select.Trigger
-											id="site-parent-domain"
-											class="h-11 w-full text-base sm:h-8 sm:text-sm"
-											aria-label="Pilih domain PowerDNS"
-										>
-											<span class="truncate">{parentDomain || 'Pilih domain PowerDNS'}</span>
-										</Select.Trigger>
-										<Select.Content>
-											<Select.Group>
-												{#each domainChoices as pd (pd)}
-													<Select.Item value={pd}>{pd}</Select.Item>
-												{/each}
-											</Select.Group>
-										</Select.Content>
-									</Select.Root>
-								</div>
-								<div class="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-									<span class="shrink-0">Domain hasil:</span>
-									<code class="min-w-0 break-all rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
-										{effectiveDomain || `<subdomain>.${parentDomain}`}
-									</code>
-								</div>
-							{/if}
-						{:else}
-							<Input
-								id="site-domain"
-								name="domain"
-								class="h-11 text-base sm:h-8 sm:text-sm"
-								placeholder={isLocal ? 'proyekanda.test' : 'domainanda.com'}
-								autocorrect="off"
-								autocapitalize="none"
-								spellcheck={false}
-								enterkeyhint="next"
-								aria-invalid={domainInvalid ? 'true' : undefined}
-								bind:value={domain}
-								onblur={() => (domainTouched = true)}
-								oninput={() => {
-									if (domain.trim()) domainTouched = false;
-								}}
-								required
-							/>
-						{/if}
-
-						<Field.FieldDescription>
-							{#if isEdge}
-								Pilih zone PowerDNS lalu isi awalan subdomain (atau kosongkan awalan untuk memakai domain utama zone).
-							{:else if isVPS && domainMode === 'subdomain'}
-								Pilih domain induk dan isi awalan subdomain. Record DNS A otomatis dibuat bila zone dikelola PowerDNS lokal.
-							{:else if isVPS}
-								Masukkan domain FQDN yang mengarah ke IP publik VPS ini.
-							{:else}
-								Akhiran <code>.test</code> disarankan untuk pengembangan lokal.
-							{/if}
-						</Field.FieldDescription>
-						{#if domainInvalid}
-							<Field.FieldError
-								errors={[{ message: isEdge ? 'Pilih zone PowerDNS terlebih dahulu.' : isVPS && domainMode === 'subdomain' ? 'Awalan subdomain dan domain induk wajib diisi.' : 'Domain wajib diisi.' }]}
-							/>
-						{/if}
-					</Field.Field>
-
-					<Field.Field>
-						<Field.FieldLabel for="site-framework">Framework / Pola Aplikasi</Field.FieldLabel>
-						<Select.Root type="single" bind:value={framework}>
-							<Select.Trigger id="site-framework" class="h-11 w-full text-base sm:h-8 sm:text-sm">
-								<span class="truncate">{frameworks.find((f) => f.value === framework)?.label ?? framework}</span>
-							</Select.Trigger>
-							<Select.Content>
-								<Select.Group>
-									{#each frameworks as fw (fw.value)}
-										<Select.Item value={fw.value}>{fw.label}</Select.Item>
-									{/each}
-								</Select.Group>
-							</Select.Content>
-						</Select.Root>
-					</Field.Field>
-
-					{#if isProxy}
-						<Field.Field>
-							<Field.FieldLabel for="site-proxy-port">Port Aplikasi Lokal</Field.FieldLabel>
-							<Input
-								id="site-proxy-port"
-								type="text"
-								name="proxy_port"
-								class="h-11 text-base sm:h-8 sm:text-sm"
-								inputmode="numeric"
-								pattern="[0-9]+"
-								enterkeyhint="done"
-								placeholder="3000"
-								bind:value={proxyPortStr}
-								required
-							/>
-							<Field.FieldDescription>Contoh: 3000 (Node/Vite) atau 8080 (Go/Docker).</Field.FieldDescription>
-						</Field.Field>
-					{:else}
-						{#if !isStatic}
-							<Field.Field>
-								<Field.FieldLabel for="site-php-ver">Versi PHP Target</Field.FieldLabel>
-								<Select.Root type="single" bind:value={phpVersion}>
-									<Select.Trigger id="site-php-ver" class="h-11 w-full text-base sm:h-8 sm:text-sm">
-										PHP {phpVersion}
-									</Select.Trigger>
-									<Select.Content>
-										<Select.Group>
-											{#each phpVersions as ver (ver)}
-												<Select.Item value={ver}>PHP {ver}</Select.Item>
-											{/each}
-										</Select.Group>
-									</Select.Content>
-								</Select.Root>
-							</Field.Field>
-						{/if}
-
-						<Field.Field>
-							<Field.FieldLabel for="site-root-path">Document Root (Opsional)</Field.FieldLabel>
-							<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-								<Input
-									id="site-root-path"
-									name="root_path"
-									class="h-11 min-w-0 flex-1 font-mono text-base sm:h-8 sm:text-xs"
-									placeholder={effectiveDomain ? `/var/www/${effectiveDomain}` : (isLocal ? '/var/www/proyekanda.test' : '/var/www/domainanda.com')}
-									autocorrect="off"
-									autocapitalize="none"
-									spellcheck={false}
-									enterkeyhint="done"
-									bind:value={rootPath}
-								/>
-								<Button
-									type="button"
-									variant="outline"
-									class="min-h-11 w-full shrink-0 sm:min-h-0 sm:h-8 sm:w-auto"
-									onclick={() => (folderPickerOpen = true)}
-								>
-									<FolderOpenIcon data-icon="inline-start" />
-									Cari Folder
-								</Button>
-							</div>
-							{#if detectedDrives.length > 0}
-								<div class="flex flex-wrap items-center gap-1.5 pt-1">
-									<span class="text-xs text-muted-foreground">Drive cepat:</span>
-									<Button
-										type="button"
-										size="xs"
-										variant={!rootPath.trim() ? 'secondary' : 'outline'}
-										class="fm-touch-btn h-8 text-xs sm:h-7"
-										onclick={() => (rootPath = '')}
-									>
-										Default (/var/www)
-									</Button>
-									{#each detectedDrives as drv (drv.path)}
-										{@const active = rootPath.trim() === drv.path || rootPath.trim().startsWith(drv.path + '/')}
-										<Button
-											type="button"
-											size="xs"
-											variant={active ? 'secondary' : 'outline'}
-											class="fm-touch-btn h-8 max-w-full text-xs sm:h-7"
-											onclick={() => {
-												rootPath = effectiveDomain ? `${drv.path}/${effectiveDomain}` : drv.path;
-											}}
-										>
-											<HardDriveIcon data-icon="inline-start" />
-											<span class="truncate">{drv.name}</span>
-										</Button>
-									{/each}
-								</div>
-							{/if}
-							<Field.FieldDescription>
-								Kosongkan untuk otomatis di <code>/var/www/&lt;domain&gt;</code>, atau ketuk <strong>Cari Folder</strong> untuk memilih direktori yang sudah ada.
-								{#if !isStatic}
-									Untuk Laravel/CI4/Symfony pilih folder root proyek (<code>/public</code> ditambahkan otomatis).
-								{/if}
-							</Field.FieldDescription>
-						</Field.Field>
-					{/if}
-
-					{#if isEdge}
-						<div class="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
-							<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
-								<Checkbox id="site-edge-expose" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={edgeExposeEnabled} />
-								<Field.FieldLabel for="site-edge-expose" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-									Ekspos ke internet &amp; sinkronkan DNS via VPS Edge Tunnel (NetBird{modeStore.publicIP ? ` → ${modeStore.publicIP}` : ''})
-								</Field.FieldLabel>
-							</Field.Field>
-
-							{#if edgeExposeEnabled}
-								<div class="flex flex-col gap-2.5 pl-4 sm:pl-6">
-									<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
-										<Checkbox id="site-edge-ssl" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={edgeSSLEnabled} />
-										<Field.FieldLabel for="site-edge-ssl" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-											Terbitkan SSL Let's Encrypt (HTTPS) di VPS Edge Gateway
-										</Field.FieldLabel>
-									</Field.Field>
-									<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
-										<Checkbox id="site-add-hosts" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={addLocalHosts} />
-										<Field.FieldLabel for="site-add-hosts" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-											Tambahkan juga ke <code>/etc/hosts</code> lokal (opsional, untuk akses langsung 127.0.0.1)
-										</Field.FieldLabel>
-									</Field.Field>
-								</div>
-							{:else}
-								<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
-									<Checkbox id="site-ssl" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={sslEnabled} />
-									<Field.FieldLabel for="site-ssl" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-										Aktifkan Sertifikat SSL Lokal (HTTPS mkcert)
-									</Field.FieldLabel>
-								</Field.Field>
-							{/if}
-						</div>
-					{:else if isVPS}
-						<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
-							<Checkbox id="site-ssl" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={sslEnabled} />
-							<Field.FieldLabel for="site-ssl" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-								Terbitkan SSL Let's Encrypt (HTTPS) setelah virtual host dibuat
-							</Field.FieldLabel>
-						</Field.Field>
-					{:else}
-						<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
-							<Checkbox id="site-ssl" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={sslEnabled} />
-							<Field.FieldLabel for="site-ssl" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-								Aktifkan Sertifikat SSL Otomatis (HTTPS mkcert)
-							</Field.FieldLabel>
-						</Field.Field>
-					{/if}
-				</Field.FieldGroup>
-			</div>
-
-			<Dialog.Footer class="mx-0 mb-0 shrink-0 flex-row gap-2 rounded-b-xl border-t bg-muted/50 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] sm:justify-end">
-				<Button
-					type="button"
-					variant="outline"
-					class="min-h-11 flex-1 sm:min-h-0 sm:h-8 sm:flex-initial"
-					onclick={() => (createOpen = false)}
-				>
-					Batal
-				</Button>
-				<Button
-					type="submit"
-					class="min-h-11 flex-1 sm:min-h-0 sm:h-8 sm:flex-initial"
-					disabled={creating || (isEdge && domainChoices.length === 0)}
-				>
-					{#if creating}
-						<Spinner data-icon="inline-start" />
-						Membuat...
-					{:else}
-						<PlusIcon data-icon="inline-start" />
-						Buat Virtual Host
-					{/if}
-				</Button>
-			</Dialog.Footer>
-		</form>
-	</Dialog.Content>
-</Dialog.Root>
+<CreateVhostModal
+	bind:open={createOpen}
+	{pdnsZones}
+	{parentDomains}
+	onRefreshZones={refreshZonesQuiet}
+	onCreated={handleVhostCreated}
+/>
 
 <!-- Modal Ekspos VHost ke VPS Edge Tunnel -->
 <Dialog.Root bind:open={exposeOpen}>
@@ -1407,11 +870,3 @@
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
-
-<FolderPickerDialog
-	bind:open={folderPickerOpen}
-	initialPath={rootPath.trim()}
-	onSelect={(picked) => {
-		rootPath = picked;
-	}}
-/>

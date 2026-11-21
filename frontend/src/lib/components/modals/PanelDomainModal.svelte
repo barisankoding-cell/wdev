@@ -31,11 +31,13 @@
 	let rootZone = $state('');
 	let subPrefix = $state('panel');
 	let customDomain = $state('');
-	let sslMode = $state<'letsencrypt' | 'local' | 'external' | 'none'>('letsencrypt');
+	let sslMode = $state<'letsencrypt' | 'edge' | 'local' | 'external' | 'none'>('letsencrypt');
 	let sslEmail = $state('');
 	let blockDirectIP = $state(true);
 	let syncDNS = $state(true);
 	let pendingTargetURL = $state('');
+
+	const activeExistingDomain = $derived(status?.domain || status?.detected_proxy_domain || '');
 
 	const resolvedDomain = $derived.by(() => {
 		if (domainInputMode === 'subdomain' && rootZone) {
@@ -58,11 +60,13 @@
 			} else {
 				domainInputMode = 'custom';
 			}
-			if (res.domain) {
-				customDomain = res.domain;
-			}
-			if (res.server_mode !== 'vps') {
-				sslMode = res.domain && res.ssl_enabled ? 'local' : 'local';
+			customDomain = res.domain || res.detected_proxy_domain || '';
+			if (res.server_mode === 'edge') {
+				sslMode = res.edge_configured === false ? 'external' : 'edge';
+			} else if (res.server_mode === 'vps') {
+				sslMode = 'letsencrypt';
+			} else {
+				sslMode = 'local';
 			}
 		} catch (err) {
 			errorMsg = err instanceof ApiError || err instanceof Error ? err.message : 'Gagal memuat status domain panel';
@@ -158,10 +162,11 @@
 	}
 
 	async function handleUnbind() {
+		const targetName = activeExistingDomain || 'domain panel';
 		const ok = await cp.confirm({
-			title: 'Lepas Domain Panel',
-			description: `Lepaskan pengikatan domain "${status?.domain}" dan izinkan kembali akses panel memakai nomor IP? Proxy VHost Nginx domain panel juga akan dihapus.`,
-			confirmText: 'Lepas Domain',
+			title: 'Hapus Domain Panel & DNS',
+			description: `Hapus domain "${targetName}" beserta konfigurasi proxy Nginx port ${status?.panel_port}, tunnel Edge (jika ada), dan seluruh record DNS terkait? Setelah dihapus, Anda dapat mengaktifkan atau mengganti domain panel kembali.`,
+			confirmText: 'Hapus Domain & DNS',
 			destructive: true
 		});
 		if (!ok) return;
@@ -169,11 +174,16 @@
 		busy = true;
 		errorMsg = null;
 		try {
-			await api.unbindPanelDomain(true);
-			toast.success('Domain panel dilepas. Panel dapat diakses via IP kembali.');
+			const res = await api.unbindPanelDomain(true);
+			pendingTargetURL = '';
+			const dnsNote =
+				res.dns_records_deleted && res.dns_records_deleted > 0
+					? ` (${res.dns_records_deleted} record DNS dihapus)`
+					: '';
+			toast.success(`Domain panel dan DNS terkait berhasil dihapus${dnsNote}. Sekarang Anda dapat mengaktifkan domain baru.`);
 			await loadStatus();
 		} catch (err) {
-			errorMsg = err instanceof ApiError || err instanceof Error ? err.message : 'Gagal melepas domain panel';
+			errorMsg = err instanceof ApiError || err instanceof Error ? err.message : 'Gagal menghapus domain panel';
 		} finally {
 			busy = false;
 		}
@@ -283,32 +293,43 @@
 				</div>
 			</div>
 
-			{#if status.domain}
+			{#if activeExistingDomain}
+				{@const isFormalBound = Boolean(status.domain)}
+				{@const cardURL = status.domain_url || status.detected_proxy_url || ''}
+				{@const cardProvider = status.ssl_provider || status.detected_proxy_ssl_provider || ''}
+				{@const cardHasSSL = isFormalBound ? status.ssl_enabled : Boolean(cardProvider || cardURL.startsWith('https://'))}
 				<div class="bg-muted/40 space-y-3 rounded-lg border p-3.5 text-xs">
 					<div class="flex flex-wrap items-center justify-between gap-2">
 						<div class="flex items-center gap-2">
 							<ShieldCheckIcon class="size-4 text-emerald-500" />
-							<span class="font-semibold">Domain Terikat: {status.domain}</span>
+							<span class="font-semibold">
+								{isFormalBound ? `Domain Terikat: ${status.domain}` : `Domain Port Panel (:${status.panel_port}) Terdeteksi: ${status.detected_proxy_domain}`}
+							</span>
 						</div>
 						<div class="flex flex-wrap items-center gap-1.5">
-							<Badge variant={status.ssl_enabled ? 'default' : 'secondary'} class="text-[11px]">
-								{status.ssl_enabled ? `HTTPS (${status.ssl_provider || 'SSL'})` : 'HTTP'}
+							<Badge variant={cardHasSSL ? 'default' : 'secondary'} class="text-[11px]">
+								{cardHasSSL ? `HTTPS (${cardProvider || 'SSL'})` : 'HTTP'}
 							</Badge>
-							<Badge variant={status.block_direct_ip ? 'destructive' : 'outline'} class="text-[11px]">
-								{status.block_direct_ip ? 'IP Langsung Diblokir' : 'IP Diizinkan'}
-							</Badge>
+							{#if isFormalBound}
+								<Badge variant={status.block_direct_ip ? 'destructive' : 'outline'} class="text-[11px]">
+									{status.block_direct_ip ? 'IP Langsung Diblokir' : 'IP Diizinkan'}
+								</Badge>
+							{:else}
+								<Badge variant="outline" class="text-[11px]">
+									Proxy Port {status.panel_port}
+								</Badge>
+							{/if}
 						</div>
 					</div>
 
-					{#if status.domain_url}
-						{@const boundURL = status.domain_url}
+					{#if cardURL}
 						<div class="flex flex-wrap items-center gap-2">
-							<code class="bg-background min-w-0 flex-1 truncate rounded border px-2 py-1 font-mono">{boundURL}</code>
-							<Button size="sm" variant="outline" class="h-7 px-2 text-xs" onclick={() => copyText(boundURL)}>
+							<code class="bg-background min-w-0 flex-1 truncate rounded border px-2 py-1 font-mono">{cardURL}</code>
+							<Button size="sm" variant="outline" class="h-7 px-2 text-xs" onclick={() => copyText(cardURL)}>
 								<CopyIcon class="size-3.5" />
 								Salin
 							</Button>
-							<Button size="sm" class="h-7 px-2 text-xs" href={boundURL} target="_blank" rel="noopener">
+							<Button size="sm" class="h-7 px-2 text-xs" href={cardURL} target="_blank" rel="noopener">
 								<ExternalLinkIcon class="size-3.5" />
 								Buka
 							</Button>
@@ -324,18 +345,29 @@
 						</p>
 					{/if}
 
+					<Alert.Root class="border-amber-500/40 bg-amber-500/10 py-2.5">
+						<AlertCircleIcon class="size-4 text-amber-600 dark:text-amber-400" />
+						<Alert.Description class="text-xs leading-relaxed">
+							Port panel <code class="font-mono">:{status.panel_port}</code> sudah terpakai oleh domain <code class="font-mono font-semibold">{activeExistingDomain}</code>. Untuk mencabut, mengganti, atau mengaktifkan ulang domain panel, klik <strong>Hapus Domain &amp; DNS</strong> terlebih dahulu.
+						</Alert.Description>
+					</Alert.Root>
+
 					<div class="flex flex-wrap items-center justify-between gap-2 pt-1">
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							class="h-7 text-xs"
-							disabled={busy}
-							onclick={() => toggleBlockIP(!status!.block_direct_ip)}
-						>
-							<LockIcon class="size-3.5" />
-							{status.block_direct_ip ? 'Izinkan Akses IP Sementara' : 'Blokir Akses via IP'}
-						</Button>
+						{#if isFormalBound}
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="h-7 text-xs"
+								disabled={busy}
+								onclick={() => toggleBlockIP(!status!.block_direct_ip)}
+							>
+								<LockIcon class="size-3.5" />
+								{status.block_direct_ip ? 'Izinkan Akses IP Sementara' : 'Blokir Akses via IP'}
+							</Button>
+						{:else}
+							<span></span>
+						{/if}
 						<Button
 							type="button"
 							variant="destructive"
@@ -345,12 +377,17 @@
 							onclick={handleUnbind}
 						>
 							<Trash2Icon class="size-3.5" />
-							Lepas Domain Panel
+							Hapus Domain &amp; DNS
 						</Button>
 					</div>
 				</div>
-			{/if}
 
+				<Dialog.Footer>
+					<Button type="button" variant="outline" onclick={() => authStore.closePanelDomain()} disabled={busy}>
+						Tutup
+					</Button>
+				</Dialog.Footer>
+			{:else}
 			<form onsubmit={handleBindSubmit} class="space-y-4">
 				{#if status.available_domains.length > 0}
 					<div class="grid grid-cols-2 gap-1.5 rounded-lg border bg-muted/30 p-1">
@@ -422,9 +459,15 @@
 				<Field>
 					<FieldLabel>Mode SSL &amp; Forwarding</FieldLabel>
 					<NativeSelect.Root bind:value={sslMode}>
-						<NativeSelect.Option value="letsencrypt">
-							HTTPS Let's Encrypt (Auto Proxy Nginx + Certbot — VPS Publik)
-						</NativeSelect.Option>
+						{#if status.server_mode === 'edge'}
+							<NativeSelect.Option value="edge">
+								HTTPS Edge Gateway (Let's Encrypt via VPS Edge + Tunnel NetBird)
+							</NativeSelect.Option>
+						{:else}
+							<NativeSelect.Option value="letsencrypt">
+								HTTPS Let's Encrypt (Auto Proxy Nginx + Certbot — VPS Publik)
+							</NativeSelect.Option>
+						{/if}
 						<NativeSelect.Option value="local">
 							HTTPS Lokal / Self-Signed (Nginx Proxy HTTPS)
 						</NativeSelect.Option>
@@ -435,6 +478,15 @@
 							HTTP Nginx Reverse Proxy (Tanpa SSL)
 						</NativeSelect.Option>
 					</NativeSelect.Root>
+					{#if status.server_mode === 'edge' && sslMode === 'edge'}
+						<FieldDescription>
+							{#if status.edge_configured}
+								Nginx lokal melayani HTTP di belakang terowongan NetBird, sementara VPS Edge ({status.public_ip || 'Gateway'}) menerbitkan SSL Let's Encrypt dan DNS A record (jika zona dikelola PowerDNS).
+							{:else}
+								VPS Edge Gateway belum terhubung. Konfigurasikan di menu Server Mode terlebih dahulu atau pilih Proxy Eksternal.
+							{/if}
+						</FieldDescription>
+					{/if}
 				</Field>
 
 				{#if sslMode === 'letsencrypt'}
@@ -483,6 +535,7 @@
 					</Button>
 				</Dialog.Footer>
 			</form>
+			{/if}
 		{/if}
 	</Dialog.Content>
 </Dialog.Root>

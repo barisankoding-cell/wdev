@@ -102,3 +102,54 @@ func TestRunnerReplayAndActiveSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestStartNativeTaskAfterRunsHookAfterFinishPersisted(t *testing.T) {
+	db, err := store.New(filepath.Join(t.TempDir(), "runner-after.db"))
+	if err != nil {
+		t.Fatalf("store.New failed: %v", err)
+	}
+	defer db.Close()
+
+	r := New(db)
+	ch := r.Subscribe()
+	defer r.Unsubscribe(ch)
+
+	hookDone := make(chan string, 1)
+	var hookTasks []store.TaskRecord
+	_, err = r.StartNativeTaskAfter("Pembaruan Biner wdev", func(ctx context.Context, cb func(string)) error {
+		cb("unduh selesai")
+		return nil
+	}, func(status string) {
+		hookTasks, _ = db.ListRecentTasks(1)
+		hookDone <- status
+	})
+	if err != nil {
+		t.Fatalf("StartNativeTaskAfter failed: %v", err)
+	}
+
+	var gotStatus string
+	select {
+	case gotStatus = <-hookDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for afterFinish hook")
+	}
+	if gotStatus != "success" {
+		t.Fatalf("afterFinish status = %q, want success", gotStatus)
+	}
+	if len(hookTasks) != 1 || hookTasks[0].Status != "success" {
+		t.Fatalf("expected FinishTask persisted before afterFinish hook, got %+v", hookTasks)
+	}
+
+	sawFinish := false
+	deadline := time.After(time.Second)
+	for !sawFinish {
+		select {
+		case ev := <-ch:
+			if ev.Type == EventFinish && ev.Status == "success" {
+				sawFinish = true
+			}
+		case <-deadline:
+			t.Fatal("expected EventFinish emitted before afterFinish")
+		}
+	}
+}

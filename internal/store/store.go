@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+var proxyPassPortRe = regexp.MustCompile(`(?i)\bproxy_pass\s+https?://[^:/\s]+:(\d{1,5})(?:[;/\s]|$)`)
 
 type Store struct {
 	db *sql.DB
@@ -453,6 +457,13 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "root ") {
 					rootPath = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "root "), ";"))
+				}
+				if proxyPort == 0 {
+					if m := proxyPassPortRe.FindStringSubmatch(line); len(m) > 1 {
+						if p, err := strconv.Atoi(m[1]); err == nil && p > 0 && p <= 65535 {
+							proxyPort = p
+						}
+					}
 				}
 				if strings.Contains(line, "php") && strings.Contains(line, "-fpm.sock") {
 					for _, v := range []string{"8.4", "8.3", "8.2", "8.1"} {

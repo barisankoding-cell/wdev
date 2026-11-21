@@ -9,6 +9,32 @@ import (
 
 var includeFastCGIParamsRe = regexp.MustCompile(`(?m)^([ \t]*)(include\s+(?:fastcgi_params|fastcgi\.conf);)[ \t]*\r?$`)
 
+var proxyProtoSchemeRe = regexp.MustCompile(`(?m)^([ \t]*)(proxy_set_header\s+X-Forwarded-Proto\s+\$scheme;)[ \t]*\r?$`)
+
+// EnsureProxyProtoInConfig menjaga header X-Forwarded-Proto: https dari reverse proxy
+// hulu (seperti VPS Edge Gateway / Cloudflare Tunnel) agar tidak tertimpa menjadi http
+// oleh Nginx proxy lokal yang menerima di port 80.
+func EnsureProxyProtoInConfig(confText string) (string, bool) {
+	if strings.Contains(confText, "$fe_proto") || !proxyProtoSchemeRe.MatchString(confText) {
+		return confText, false
+	}
+	updated := proxyProtoSchemeRe.ReplaceAllStringFunc(confText, func(line string) string {
+		m := proxyProtoSchemeRe.FindStringSubmatch(line)
+		indent := ""
+		if len(m) > 1 {
+			indent = m[1]
+		}
+		var b strings.Builder
+		b.WriteString(indent + "set $fe_proto $scheme;\n")
+		b.WriteString(indent + `if ($http_x_forwarded_proto ~* "^https(,|$)") {` + "\n")
+		b.WriteString(indent + "    set $fe_proto https;\n")
+		b.WriteString(indent + "}\n")
+		b.WriteString(indent + "proxy_set_header X-Forwarded-Proto $fe_proto;")
+		return b.String()
+	})
+	return updated, updated != confText
+}
+
 // EnsureFastCGIProxyHTTPSInConfig menyuntikkan penerusan status HTTPS dari header
 // X-Forwarded-Proto reverse proxy ke FastCGI PHP agar aplikasi (Laravel, dll.)
 // mengenali HTTPS tanpa perlu mengubah konfigurasi aplikasi.
@@ -86,6 +112,10 @@ server {
     client_max_body_size 260m;
 
     location / {
+        set $fe_proto $scheme;
+        if ($http_x_forwarded_proto ~* "^https(,|$)") {
+            set $fe_proto https;
+        }
         proxy_pass http://127.0.0.1:{{.ProxyPort}};
         proxy_http_version 1.1;
         proxy_buffering off;
@@ -97,7 +127,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $fe_proto;
     }
     {{else if eq .Framework "static"}}
     root {{.EffectiveRoot}};

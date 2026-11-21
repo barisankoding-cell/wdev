@@ -1214,6 +1214,113 @@ func (m *Manager) patchRecords(zone, name, rtype string, contents []string, ttl 
 	return nil
 }
 
+// DeleteDomainDNSRecords menghapus semua record DNS di PowerDNS yang berkaitan
+// dengan domain (record domain utama, wildcard, www, dan _acme-challenge).
+func (m *Manager) DeleteDomainDNSRecords(domain string) (int, error) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" {
+		return 0, fmt.Errorf("domain tidak boleh kosong")
+	}
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return 0, nil
+	}
+	zone, err := m.FindMatchingZone(domain)
+	if err != nil || zone == "" {
+		return 0, nil
+	}
+
+	zoneFQDN := strings.TrimSuffix(strings.TrimSpace(zone), ".") + "."
+	cleanZone := strings.ToLower(strings.TrimSuffix(zoneFQDN, "."))
+	isApex := domain == cleanZone
+
+	type rrKey struct {
+		name  string
+		rtype string
+	}
+	seen := make(map[rrKey]bool)
+	var rrsets []map[string]any
+	addDelete := func(fqdn, rtype string) {
+		fqdn = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(fqdn), ".")) + "."
+		rtype = strings.ToUpper(strings.TrimSpace(rtype))
+		k := rrKey{name: fqdn, rtype: rtype}
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		rrsets = append(rrsets, map[string]any{
+			"name":       fqdn,
+			"type":       rtype,
+			"changetype": "DELETE",
+		})
+	}
+
+	matchedCount := 0
+	if zInfo, zErr := m.GetZone(zone); zErr == nil && zInfo != nil {
+		for _, rr := range zInfo.RRsets {
+			cleanName := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rr.Name), "."))
+			rtype := strings.ToUpper(strings.TrimSpace(rr.Type))
+			if rtype == "SOA" || rtype == "NS" {
+				continue
+			}
+			matchesDomain := false
+			if isApex {
+				matchesDomain = (cleanName == domain && (rtype == "A" || rtype == "AAAA" || rtype == "CNAME" || rtype == "CAA" || rtype == "HTTPS" || rtype == "SVCB")) ||
+					cleanName == "www."+domain ||
+					cleanName == "_acme-challenge."+domain ||
+					cleanName == "_acme-challenge.www."+domain ||
+					(cleanName == "*."+domain && (rtype == "A" || rtype == "AAAA" || rtype == "CNAME"))
+			} else {
+				matchesDomain = cleanName == domain || strings.HasSuffix(cleanName, "."+domain)
+			}
+			if matchesDomain {
+				addDelete(cleanName, rtype)
+				matchedCount++
+			}
+		}
+	}
+
+	// Sertakan fallback standar secara idempoten agar record yang baru dipropagasi atau mock zone tetap terhapus.
+	for _, rt := range []string{"A", "AAAA", "CNAME"} {
+		addDelete(domain, rt)
+		addDelete("www."+domain, rt)
+	}
+	if !isApex {
+		addDelete(domain, "TXT")
+	}
+	addDelete("_acme-challenge."+domain, "TXT")
+	addDelete("_acme-challenge.www."+domain, "TXT")
+
+	if len(rrsets) == 0 {
+		return 0, nil
+	}
+
+	payload := map[string]any{"rrsets": rrsets}
+	jsonBytes, _ := json.Marshal(payload)
+
+	client := http.Client{Timeout: 4 * time.Second}
+	url := fmt.Sprintf("http://%s:%s/api/v1/servers/localhost/zones/%s", conf.VPSNetbirdIP, conf.PDNSPort, zoneFQDN)
+	req, err := http.NewRequest("PATCH", url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-API-Key", conf.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("gagal memanggil API PowerDNS: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("API PowerDNS merespons %d: %s", resp.StatusCode, string(body))
+	}
+
+	return matchedCount, nil
+}
+
 func (m *Manager) DeleteRecord(zone, name, rtype string) error {
 	conf, err := m.requirePDNSConfig()
 	if err != nil {
@@ -1469,6 +1576,16 @@ func (m *Manager) Expose(domain string, targetPort int, useSSL bool, websocket b
 		return fmt.Errorf("VPS Edge Agent merespons status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
+	var okResp struct {
+		SSL string `json:"ssl"`
+	}
+	if len(bodyBytes) > 0 {
+		_ = json.Unmarshal(bodyBytes, &okResp)
+	}
+	if useSSL && strings.HasPrefix(strings.ToLower(strings.TrimSpace(okResp.SSL)), "failed:") {
+		return fmt.Errorf("tunnel Edge aktif tetapi penerbitan SSL Let's Encrypt di Edge gagal (%s)", strings.TrimSpace(okResp.SSL))
+	}
+
 	return nil
 }
 
@@ -1604,8 +1721,11 @@ func configureLocalVhost(confPath, pubDom string) error {
 		})
 	}
 
-	// Always ensure PHP FastCGI passes proxy HTTPS status (including when localDomain == pubDom)
+	// Always ensure PHP FastCGI and proxy vhosts preserve Edge HTTPS status
 	if nextText, changed := site.EnsureFastCGIProxyHTTPSInConfig(text); changed {
+		text = nextText
+	}
+	if nextText, changed := site.EnsureProxyProtoInConfig(text); changed {
 		text = nextText
 	}
 
@@ -1660,11 +1780,7 @@ func (m *Manager) Unexpose(domain string, keepDNS bool) error {
 
 	// 2. Remove DNS records from PowerDNS if !keepDNS
 	if !keepDNS {
-		zone, _ := m.FindMatchingZone(domain)
-		if zone != "" && domain != zone {
-			_ = m.DeleteRecord(zone, domain, "A")
-			_ = m.DeleteRecord(zone, domain, "CNAME")
-		}
+		_, _ = m.DeleteDomainDNSRecords(domain)
 	}
 
 	// 3. Remove alias from local Nginx vhosts
