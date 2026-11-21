@@ -2,6 +2,7 @@
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -26,6 +27,7 @@
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import UserPlusIcon from '@lucide/svelte/icons/user-plus';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	let {
 		mode,
@@ -821,34 +823,52 @@
 									<Table.Cell data-label="Database" class="font-mono text-xs text-muted-foreground">
 										{role.databases?.length ? role.databases.join(', ') : '-'}
 									</Table.Cell>
-									<Table.Cell data-label="Aksi">
-										<div class="flex flex-wrap justify-end gap-1.5">
-											<Button
-												type="button"
-												variant="outline"
-												size="xs"
-												onclick={() => openEditRole(role)}
-											>
-												<KeyRoundIcon data-icon="inline-start" />
-												Edit / Password
-											</Button>
-											{#if role.name !== 'postgres' && onDeleteRole}
-												<Button
-													type="button"
-													variant="destructive"
-													size="xs"
-													disabled={deletingRole === role.name}
-													onclick={() => onDeleteRole({ version, role: role.name })}
-												>
-													{#if deletingRole === role.name}
-														<Spinner data-icon="inline-start" />
-														Menghapus...
-													{:else}
-														<Trash2Icon data-icon="inline-start" />
-														Hapus
-													{/if}
-												</Button>
-											{/if}
+									<Table.Cell data-label="Aksi" class="text-right">
+										<div class="flex justify-end">
+											<DropdownMenu.Root>
+												<DropdownMenu.Trigger>
+													{#snippet child({ props })}
+														<Button
+															type="button"
+															variant="outline"
+															size="xs"
+															disabled={deletingRole === role.name}
+															{...props}
+														>
+															{#if deletingRole === role.name}
+																<Spinner data-icon="inline-start" />
+																Menghapus...
+															{:else}
+																Aksi
+																<ChevronDownIcon data-icon="inline-end" />
+															{/if}
+														</Button>
+													{/snippet}
+												</DropdownMenu.Trigger>
+												<DropdownMenu.Content align="end" class="w-44">
+													<DropdownMenu.Group>
+														<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+															{role.name}
+														</DropdownMenu.Label>
+														<DropdownMenu.Separator />
+														<DropdownMenu.Item onclick={() => openEditRole(role)}>
+															<KeyRoundIcon />
+															<span>Edit / Password</span>
+														</DropdownMenu.Item>
+														{#if role.name !== 'postgres' && onDeleteRole}
+															<DropdownMenu.Separator />
+															<DropdownMenu.Item
+																variant="destructive"
+																disabled={deletingRole === role.name}
+																onclick={() => onDeleteRole({ version, role: role.name })}
+															>
+																<Trash2Icon />
+																<span>Hapus Role</span>
+															</DropdownMenu.Item>
+														{/if}
+													</DropdownMenu.Group>
+												</DropdownMenu.Content>
+											</DropdownMenu.Root>
 										</div>
 									</Table.Cell>
 								</Table.Row>

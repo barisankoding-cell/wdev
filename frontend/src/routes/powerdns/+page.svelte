@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
@@ -43,6 +44,7 @@
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	let edge = $state<EdgeConfig | null>(null);
 	let zones = $state<ZoneInfo[]>([]);
@@ -819,59 +821,58 @@
 								<Table.Cell data-label="Status">
 									<StatusBadge tone="success" label="Aktif" />
 								</Table.Cell>
-								<Table.Cell data-label="Aksi">
-									<div class="flex flex-wrap justify-end gap-1.5">
-										<Button
-											variant="outline"
-											size="xs"
-											disabled={Boolean(zPending)}
-											onclick={() => openRecordsModal(z.name)}
-										>
-											<ListIcon data-icon="inline-start" />
-											Record
-										</Button>
-										<Button
-											variant="outline"
-											size="xs"
-											disabled={Boolean(zPending)}
-											onclick={() => runZoneDoctor(z.name)}
-										>
-											{#if zPending === 'doctor'}
-												<Spinner data-icon="inline-start" />
-												Memeriksa...
-											{:else}
-												<StethoscopeIcon data-icon="inline-start" />
-												Doctor
-											{/if}
-										</Button>
-										<Button
-											variant="outline"
-											size="xs"
-											disabled={Boolean(zPending)}
-											onclick={() => runZoneRepair(z.name)}
-										>
-											{#if zPending === 'repair'}
-												<Spinner data-icon="inline-start" />
-												Memperbaiki...
-											{:else}
-												<WrenchIcon data-icon="inline-start" />
-												Repair
-											{/if}
-										</Button>
-										<Button
-											variant="destructive"
-											size="xs"
-											disabled={Boolean(zPending)}
-											onclick={() => deleteZone(z.name)}
-										>
-											{#if zPending === 'delete'}
-												<Spinner data-icon="inline-start" />
-												Menghapus...
-											{:else}
-												<Trash2Icon data-icon="inline-start" />
-												Hapus
-											{/if}
-										</Button>
+								<Table.Cell data-label="Aksi" class="text-right">
+									<div class="flex justify-end">
+										<DropdownMenu.Root>
+											<DropdownMenu.Trigger>
+												{#snippet child({ props })}
+													<Button variant="outline" size="xs" disabled={Boolean(zPending)} {...props}>
+														{#if zPending === 'doctor'}
+															<Spinner data-icon="inline-start" />
+															Memeriksa...
+														{:else if zPending === 'repair'}
+															<Spinner data-icon="inline-start" />
+															Memperbaiki...
+														{:else if zPending === 'delete'}
+															<Spinner data-icon="inline-start" />
+															Menghapus...
+														{:else}
+															Aksi
+															<ChevronDownIcon data-icon="inline-end" />
+														{/if}
+													</Button>
+												{/snippet}
+											</DropdownMenu.Trigger>
+											<DropdownMenu.Content align="end" class="w-48">
+												<DropdownMenu.Group>
+													<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+														{z.name}
+													</DropdownMenu.Label>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => openRecordsModal(z.name)}>
+														<ListIcon />
+														<span>Kelola Record</span>
+													</DropdownMenu.Item>
+													<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneDoctor(z.name)}>
+														<StethoscopeIcon />
+														<span>Doctor Zone</span>
+													</DropdownMenu.Item>
+													<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneRepair(z.name)}>
+														<WrenchIcon />
+														<span>Repair Zone</span>
+													</DropdownMenu.Item>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item
+														variant="destructive"
+														disabled={Boolean(zPending)}
+														onclick={() => deleteZone(z.name)}
+													>
+														<Trash2Icon />
+														<span>Hapus Zone</span>
+													</DropdownMenu.Item>
+												</DropdownMenu.Group>
+											</DropdownMenu.Content>
+										</DropdownMenu.Root>
 									</div>
 								</Table.Cell>
 							</Table.Row>
@@ -973,38 +974,60 @@
 									{/if}
 								</Table.Cell>
 								<Table.Cell data-label="Target NetBird" class="font-mono text-xs">{targetNB}</Table.Cell>
-								<Table.Cell data-label="Aksi">
-									<div class="flex flex-wrap justify-end gap-1.5">
-										{#if s.exposed_to}
-											<Button
-												variant="outline"
-												size="xs"
-												href={`https://${s.exposed_to}`}
-												target="_blank"
-												rel="noopener noreferrer"
-											>
-												<ExternalLinkIcon data-icon="inline-start" />
-												Buka
-											</Button>
-											<Button
-												variant="destructive"
-												size="xs"
-												disabled={Boolean(unexposingPending[s.exposed_to])}
-												onclick={() => unexposeDomain(s.exposed_to)}
-											>
-												{#if unexposingPending[s.exposed_to]}
-													<Spinner data-icon="inline-start" />
-													Memutus...
-												{:else}
-													Putus Ekspos
-												{/if}
-											</Button>
-										{:else}
-											<Button size="xs" onclick={() => openExposeModal('site', s.domain)}>
-												<CloudUploadIcon data-icon="inline-start" />
-												Ekspos ke VPS
-											</Button>
-										{/if}
+								<Table.Cell data-label="Aksi" class="text-right">
+									<div class="flex justify-end">
+										<DropdownMenu.Root>
+											<DropdownMenu.Trigger>
+												{#snippet child({ props })}
+													<Button
+														variant="outline"
+														size="xs"
+														disabled={Boolean(s.exposed_to && unexposingPending[s.exposed_to])}
+														{...props}
+													>
+														{#if s.exposed_to && unexposingPending[s.exposed_to]}
+															<Spinner data-icon="inline-start" />
+															Memutus...
+														{:else}
+															Aksi
+															<ChevronDownIcon data-icon="inline-end" />
+														{/if}
+													</Button>
+												{/snippet}
+											</DropdownMenu.Trigger>
+											<DropdownMenu.Content align="end" class="w-48">
+												<DropdownMenu.Group>
+													<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+														{s.domain}
+													</DropdownMenu.Label>
+													<DropdownMenu.Separator />
+													{#if s.exposed_to}
+														<DropdownMenu.Item>
+															{#snippet child({ props })}
+																<a href={`https://${s.exposed_to}`} target="_blank" rel="noopener noreferrer" {...props}>
+																	<ExternalLinkIcon />
+																	<span>Buka Domain</span>
+																</a>
+															{/snippet}
+														</DropdownMenu.Item>
+														<DropdownMenu.Separator />
+														<DropdownMenu.Item
+															variant="destructive"
+															disabled={Boolean(unexposingPending[s.exposed_to])}
+															onclick={() => unexposeDomain(s.exposed_to)}
+														>
+															<Trash2Icon />
+															<span>Putus Ekspos</span>
+														</DropdownMenu.Item>
+													{:else}
+														<DropdownMenu.Item onclick={() => openExposeModal('site', s.domain)}>
+															<CloudUploadIcon />
+															<span>Ekspos ke VPS</span>
+														</DropdownMenu.Item>
+													{/if}
+												</DropdownMenu.Group>
+											</DropdownMenu.Content>
+										</DropdownMenu.Root>
 									</div>
 								</Table.Cell>
 							</Table.Row>
@@ -1103,20 +1126,53 @@
 									<code class="block break-all text-xs text-muted-foreground sm:truncate">{exp.config_file || '-'}</code>
 								</Table.Cell>
 								<Table.Cell data-label="Aksi" class="text-right">
-									<Button
-										variant="destructive"
-										size="xs"
-										disabled={Boolean(unexposingPending[exp.domain])}
-										onclick={() => unexposeDomain(exp.domain)}
-									>
-										{#if unexposingPending[exp.domain]}
-											<Spinner data-icon="inline-start" />
-											Menghapus...
-										{:else}
-											<Trash2Icon data-icon="inline-start" />
-											Hapus Ekspos
-										{/if}
-									</Button>
+									<div class="flex justify-end">
+										<DropdownMenu.Root>
+											<DropdownMenu.Trigger>
+												{#snippet child({ props })}
+													<Button
+														variant="outline"
+														size="xs"
+														disabled={Boolean(unexposingPending[exp.domain])}
+														{...props}
+													>
+														{#if unexposingPending[exp.domain]}
+															<Spinner data-icon="inline-start" />
+															Menghapus...
+														{:else}
+															Aksi
+															<ChevronDownIcon data-icon="inline-end" />
+														{/if}
+													</Button>
+												{/snippet}
+											</DropdownMenu.Trigger>
+											<DropdownMenu.Content align="end" class="w-48">
+												<DropdownMenu.Group>
+													<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+														{exp.domain}
+													</DropdownMenu.Label>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item>
+														{#snippet child({ props })}
+															<a href={`https://${exp.domain}`} target="_blank" rel="noopener noreferrer" {...props}>
+																<ExternalLinkIcon />
+																<span>Buka Domain</span>
+															</a>
+														{/snippet}
+													</DropdownMenu.Item>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item
+														variant="destructive"
+														disabled={Boolean(unexposingPending[exp.domain])}
+														onclick={() => unexposeDomain(exp.domain)}
+													>
+														<Trash2Icon />
+														<span>Hapus Ekspos</span>
+													</DropdownMenu.Item>
+												</DropdownMenu.Group>
+											</DropdownMenu.Content>
+										</DropdownMenu.Root>
+									</div>
 								</Table.Cell>
 							</Table.Row>
 						{/each}
@@ -1338,20 +1394,40 @@
 											{#if isProtected}
 												<Badge variant="secondary" class="font-normal text-muted-foreground">Sistem</Badge>
 											{:else}
-												<Button
-													variant="destructive"
-													size="xs"
-													disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
-													onclick={() => deleteRecord(rr.name, rr.type)}
-												>
-													{#if recordPending[`${rr.name}:${rr.type}`]}
-														<Spinner data-icon="inline-start" />
-														Menghapus...
-													{:else}
-														<Trash2Icon data-icon="inline-start" />
-														Hapus
-													{/if}
-												</Button>
+												<div class="flex justify-end">
+													<DropdownMenu.Root>
+														<DropdownMenu.Trigger>
+															{#snippet child({ props })}
+																<Button
+																	variant="outline"
+																	size="xs"
+																	disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
+																	{...props}
+																>
+																	{#if recordPending[`${rr.name}:${rr.type}`]}
+																		<Spinner data-icon="inline-start" />
+																		Menghapus...
+																	{:else}
+																		Aksi
+																		<ChevronDownIcon data-icon="inline-end" />
+																	{/if}
+																</Button>
+															{/snippet}
+														</DropdownMenu.Trigger>
+														<DropdownMenu.Content align="end" class="w-44">
+															<DropdownMenu.Group>
+																<DropdownMenu.Item
+																	variant="destructive"
+																	disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
+																	onclick={() => deleteRecord(rr.name, rr.type)}
+																>
+																	<Trash2Icon />
+																	<span>Hapus Record</span>
+																</DropdownMenu.Item>
+															</DropdownMenu.Group>
+														</DropdownMenu.Content>
+													</DropdownMenu.Root>
+												</div>
 											{/if}
 										</Table.Cell>
 									</Table.Row>

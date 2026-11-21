@@ -23,6 +23,7 @@
 		DialogHeader,
 		DialogTitle
 	} from '#lib/components/ui/dialog/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import { Field, FieldDescription, FieldLabel } from '#lib/components/ui/field/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -43,6 +44,7 @@
 	import ArrowDownIcon from '@lucide/svelte/icons/arrow-down';
 	import ArrowUpDownIcon from '@lucide/svelte/icons/arrow-up-down';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
@@ -1082,7 +1084,7 @@
 
 	<!-- Main Explorer Card (with drag-and-drop dropzone) -->
 	<Card
-		class={`relative transition-colors ${dragOver ? 'border-primary ring-primary/30 ring-2' : ''}`}
+		class={`relative flex min-h-[460px] flex-col transition-colors sm:min-h-[calc(100dvh-15rem)] ${dragOver ? 'border-primary ring-primary/30 ring-2' : ''}`}
 		ondragenter={handleWorkspaceDragEnter}
 		ondragover={handleWorkspaceDragOver}
 		ondragleave={handleWorkspaceDragLeave}
@@ -1367,7 +1369,7 @@
 			</div>
 		</CardHeader>
 
-		<CardContent class="pt-0">
+		<CardContent class="flex flex-1 flex-col pt-0">
 			{#if errorMsg}
 				<Alert variant="destructive" class="mb-4">
 					<CircleAlertIcon class="size-4" />
@@ -1388,7 +1390,7 @@
 					{/each}
 				</div>
 			{:else if visibleEntries.length === 0}
-				<Empty.Root class="border">
+				<Empty.Root class="flex flex-1 flex-col justify-center border min-h-[360px]">
 					<Empty.Header>
 						<Empty.Media variant="icon">
 							<FolderOpenIcon class="size-5" />
@@ -1416,7 +1418,8 @@
 					{/if}
 				</Empty.Root>
 			{:else}
-				<ResponsiveTableWrapper label="Daftar Berkas File Manager">
+				<div class="flex-1 min-h-[360px]">
+					<ResponsiveTableWrapper label="Daftar Berkas File Manager">
 					<Table>
 						<TableHeader>
 							<TableRow>
@@ -1567,62 +1570,74 @@
 										{formatModTime(entry.mod_time)}
 									</TableCell>
 									<TableCell data-label="Aksi" class="text-right">
-										<div class="flex flex-wrap items-center justify-end gap-1">
-											{#if !entry.is_dir && (entry.editable || entry.is_image)}
-												<Button
-													variant="outline"
-													size="sm"
-													class="h-7 px-2 text-xs"
-													onclick={() => openEditor(entry)}
-												>
-													{entry.editable ? 'Edit' : 'Lihat'}
-												</Button>
-											{/if}
-											{#if entry.is_archive}
-												<Button
-													variant="outline"
-													size="sm"
-													class="h-7 px-2 text-xs"
-													onclick={() => openExtractDialog(entry)}
-												>
-													Ekstrak
-												</Button>
-											{/if}
-											<Button
-												variant="outline"
-												size="sm"
-												class="h-7 gap-1 px-2 text-xs"
-												title={entry.is_dir ? 'Download folder sebagai ZIP' : 'Download berkas'}
-												onclick={() => triggerDownload([entry.path])}
-											>
-												<DownloadIcon class="size-3" />
-												<span class="hidden md:inline">Download</span>
-											</Button>
-											<Button
-												variant="ghost"
-												size="icon-sm"
-												title="Ubah nama"
-												onclick={() => openRenameDialog(entry)}
-											>
-												<PencilIcon class="size-3.5" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="icon-sm"
-												title="Permission / Chmod"
-												onclick={() => openChmodDialog([entry])}
-											>
-												<LockIcon class="size-3.5" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="icon-sm"
-												class="text-destructive hover:text-destructive"
-												title="Hapus"
-												onclick={() => confirmDelete([entry.path])}
-											>
-												<Trash2Icon class="size-3.5" />
-											</Button>
+										<div class="flex justify-end">
+											<DropdownMenu.Root>
+												<DropdownMenu.Trigger>
+													{#snippet child({ props })}
+														<Button
+															variant="outline"
+															size="xs"
+															onclick={(e) => e.stopPropagation()}
+															{...props}
+														>
+															Aksi
+															<ChevronDownIcon data-icon="inline-end" />
+														</Button>
+													{/snippet}
+												</DropdownMenu.Trigger>
+												<DropdownMenu.Content align="end" class="w-48">
+													<DropdownMenu.Group>
+														<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+															{entry.name}
+														</DropdownMenu.Label>
+														<DropdownMenu.Separator />
+														{#if entry.is_dir}
+															<DropdownMenu.Item onclick={() => void navigateTo(entry.path)}>
+																<FolderOpenIcon />
+																<span>Buka Folder</span>
+															</DropdownMenu.Item>
+														{:else if entry.editable || entry.is_image}
+															<DropdownMenu.Item onclick={() => openEditor(entry)}>
+																<EyeIcon />
+																<span>{entry.editable ? 'Edit File' : 'Lihat Gambar'}</span>
+															</DropdownMenu.Item>
+														{/if}
+														{#if entry.is_archive}
+															<DropdownMenu.Item onclick={() => openExtractDialog(entry)}>
+																<FileArchiveIcon />
+																<span>Ekstrak Arsip</span>
+															</DropdownMenu.Item>
+														{/if}
+														<DropdownMenu.Item onclick={() => triggerDownload([entry.path])}>
+															<DownloadIcon />
+															<span>{entry.is_dir ? 'Download ZIP' : 'Download File'}</span>
+														</DropdownMenu.Item>
+														<DropdownMenu.Item
+															onclick={() => openTerminalAt(entry.is_dir ? entry.path : currentPath)}
+														>
+															<SquareTerminalIcon />
+															<span>Open Terminal</span>
+														</DropdownMenu.Item>
+														<DropdownMenu.Separator />
+														<DropdownMenu.Item onclick={() => openRenameDialog(entry)}>
+															<PencilIcon />
+															<span>Ubah Nama</span>
+														</DropdownMenu.Item>
+														<DropdownMenu.Item onclick={() => openChmodDialog([entry])}>
+															<LockIcon />
+															<span>Permission / Chmod</span>
+														</DropdownMenu.Item>
+														<DropdownMenu.Separator />
+														<DropdownMenu.Item
+															variant="destructive"
+															onclick={() => confirmDelete([entry.path])}
+														>
+															<Trash2Icon />
+															<span>Hapus</span>
+														</DropdownMenu.Item>
+													</DropdownMenu.Group>
+												</DropdownMenu.Content>
+											</DropdownMenu.Root>
 										</div>
 									</TableCell>
 								</TableRow>
@@ -1630,6 +1645,7 @@
 						</TableBody>
 					</Table>
 				</ResponsiveTableWrapper>
+				</div>
 			{/if}
 		</CardContent>
 	</Card>

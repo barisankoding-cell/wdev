@@ -2,6 +2,7 @@
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
@@ -15,6 +16,7 @@
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	let {
 		mode,
@@ -399,7 +401,7 @@
 							<Table.Head>Keys</Table.Head>
 							<Table.Head>Expires</Table.Head>
 							<Table.Head>Avg TTL</Table.Head>
-							<Table.Head>Aksi</Table.Head>
+							<Table.Head class="text-right">Aksi</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
@@ -416,22 +418,42 @@
 									<Table.Cell data-label="Keys">{ks.keys}</Table.Cell>
 									<Table.Cell data-label="Expires">{ks.expires}</Table.Cell>
 									<Table.Cell data-label="Avg TTL">{ks.avg_ttl} ms</Table.Cell>
-									<Table.Cell data-label="Aksi">
-										<Button
-											type="button"
-											variant="destructive"
-											size="xs"
-											disabled={flushingDB === ks.index}
-											onclick={() => onFlushDB(ks.index)}
-										>
-											{#if flushingDB === ks.index}
-												<Spinner data-icon="inline-start" />
-												Mengosongkan...
-											{:else}
-												<Trash2Icon data-icon="inline-start" />
-												Flush {ks.db}
-											{/if}
-										</Button>
+									<Table.Cell data-label="Aksi" class="text-right">
+										<div class="flex justify-end">
+											<DropdownMenu.Root>
+												<DropdownMenu.Trigger>
+													{#snippet child({ props })}
+														<Button
+															type="button"
+															variant="outline"
+															size="xs"
+															disabled={flushingDB === ks.index}
+															{...props}
+														>
+															{#if flushingDB === ks.index}
+																<Spinner data-icon="inline-start" />
+																Mengosongkan...
+															{:else}
+																Aksi
+																<ChevronDownIcon data-icon="inline-end" />
+															{/if}
+														</Button>
+													{/snippet}
+												</DropdownMenu.Trigger>
+												<DropdownMenu.Content align="end" class="w-40">
+													<DropdownMenu.Group>
+														<DropdownMenu.Item
+															variant="destructive"
+															disabled={flushingDB === ks.index}
+															onclick={() => onFlushDB(ks.index)}
+														>
+															<Trash2Icon />
+															<span>Flush {ks.db}</span>
+														</DropdownMenu.Item>
+													</DropdownMenu.Group>
+												</DropdownMenu.Content>
+											</DropdownMenu.Root>
+										</div>
 									</Table.Cell>
 								</Table.Row>
 							{/each}

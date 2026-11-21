@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
@@ -28,6 +29,7 @@
 	import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload';
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	let sites = $state<SiteRecord[]>([]);
 	let zones = $state<ZoneInfo[]>([]);
@@ -495,37 +497,77 @@
 								</Table.Cell>
 							{/if}
 							<Table.Cell data-label="Aksi" class="text-right">
-								<div class="flex flex-wrap justify-end gap-1.5">
-									{#if isVPS}
-										<Button
-											variant={hasLetsEncrypt ? 'outline' : 'default'}
-											size="xs"
-											disabled={Boolean(sslPending[site.domain]) || Boolean(siteDeleting[site.domain])}
-											onclick={() => triggerLetsEncrypt(site.domain)}
-										>
-											{#if sslPending[site.domain]}
-												<Spinner data-icon="inline-start" />
-												Memproses...
-											{:else}
-												<ShieldCheckIcon data-icon="inline-start" />
-												{hasLetsEncrypt ? 'Perbarui SSL' : "Generate Let's Encrypt"}
-											{/if}
-										</Button>
-									{/if}
-									<Button
-										variant="destructive"
-										size="xs"
-										disabled={Boolean(siteDeleting[site.domain]) || Boolean(sslPending[site.domain])}
-										onclick={() => deleteSite(site.domain)}
-									>
-										{#if siteDeleting[site.domain]}
-											<Spinner data-icon="inline-start" />
-											Menghapus...
-										{:else}
-											<Trash2Icon data-icon="inline-start" />
-											Hapus
-										{/if}
-									</Button>
+								{@const busySite = Boolean(sslPending[site.domain]) || Boolean(siteDeleting[site.domain])}
+								<div class="flex justify-end">
+									<DropdownMenu.Root>
+										<DropdownMenu.Trigger>
+											{#snippet child({ props })}
+												<Button variant="outline" size="xs" disabled={busySite} {...props}>
+													{#if sslPending[site.domain]}
+														<Spinner data-icon="inline-start" />
+														Memproses...
+													{:else if siteDeleting[site.domain]}
+														<Spinner data-icon="inline-start" />
+														Menghapus...
+													{:else}
+														Aksi
+														<ChevronDownIcon data-icon="inline-end" />
+													{/if}
+												</Button>
+											{/snippet}
+										</DropdownMenu.Trigger>
+										<DropdownMenu.Content align="end" class="w-52">
+											<DropdownMenu.Group>
+												<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+													{site.domain}
+												</DropdownMenu.Label>
+												<DropdownMenu.Separator />
+												<DropdownMenu.Item>
+													{#snippet child({ props })}
+														<a href={`${proto}${site.domain}`} target="_blank" rel="noopener noreferrer" {...props}>
+															<ExternalLinkIcon />
+															<span>Buka Situs</span>
+														</a>
+													{/snippet}
+												</DropdownMenu.Item>
+												{#if site.root_path && site.framework !== 'proxy'}
+													<DropdownMenu.Item>
+														{#snippet child({ props })}
+															<a href={`/files?path=${encodeURIComponent(site.root_path)}`} {...props}>
+																<FolderOpenIcon />
+																<span>Buka File Manager</span>
+															</a>
+														{/snippet}
+													</DropdownMenu.Item>
+												{/if}
+												{#if isVPS}
+													<DropdownMenu.Item disabled={busySite} onclick={() => triggerLetsEncrypt(site.domain)}>
+														<ShieldCheckIcon />
+														<span>{hasLetsEncrypt ? 'Perbarui SSL' : "Generate Let's Encrypt"}</span>
+													</DropdownMenu.Item>
+												{/if}
+												{#if isEdge && !site.exposed_to}
+													<DropdownMenu.Item>
+														{#snippet child({ props })}
+															<a href={`/powerdns?expose=${encodeURIComponent(site.domain)}`} {...props}>
+																<CloudUploadIcon />
+																<span>Ekspos ke VPS</span>
+															</a>
+														{/snippet}
+													</DropdownMenu.Item>
+												{/if}
+												<DropdownMenu.Separator />
+												<DropdownMenu.Item
+													variant="destructive"
+													disabled={busySite}
+													onclick={() => deleteSite(site.domain)}
+												>
+													<Trash2Icon />
+													<span>Hapus Situs</span>
+												</DropdownMenu.Item>
+											</DropdownMenu.Group>
+										</DropdownMenu.Content>
+									</DropdownMenu.Root>
 								</div>
 							</Table.Cell>
 						</Table.Row>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as Card from '#lib/components/ui/card/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -17,6 +18,7 @@
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	let cfStatus = $state<TunnelStatus | null>(null);
 	let localDomain = $state('');
@@ -196,20 +198,53 @@
 									<Badge variant="outline">{exp.profile}</Badge>
 								</Table.Cell>
 								<Table.Cell data-label="Aksi" class="text-right">
-									<Button
-										variant="destructive"
-										size="xs"
-										disabled={Boolean(exposureDeleting[exp.local_domain])}
-										onclick={() => unexpose(exp.local_domain)}
-									>
-										{#if exposureDeleting[exp.local_domain]}
-											<Spinner data-icon="inline-start" />
-											Menghapus...
-										{:else}
-											<Trash2Icon data-icon="inline-start" />
-											Hapus
-										{/if}
-									</Button>
+									<div class="flex justify-end">
+										<DropdownMenu.Root>
+											<DropdownMenu.Trigger>
+												{#snippet child({ props })}
+													<Button
+														variant="outline"
+														size="xs"
+														disabled={Boolean(exposureDeleting[exp.local_domain])}
+														{...props}
+													>
+														{#if exposureDeleting[exp.local_domain]}
+															<Spinner data-icon="inline-start" />
+															Menghapus...
+														{:else}
+															Aksi
+															<ChevronDownIcon data-icon="inline-end" />
+														{/if}
+													</Button>
+												{/snippet}
+											</DropdownMenu.Trigger>
+											<DropdownMenu.Content align="end" class="w-48">
+												<DropdownMenu.Group>
+													<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+														{exp.local_domain}
+													</DropdownMenu.Label>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item>
+														{#snippet child({ props })}
+															<a href={`https://${exp.public_host}`} target="_blank" rel="noopener noreferrer" {...props}>
+																<ExternalLinkIcon />
+																<span>Buka URL Publik</span>
+															</a>
+														{/snippet}
+													</DropdownMenu.Item>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item
+														variant="destructive"
+														disabled={Boolean(exposureDeleting[exp.local_domain])}
+														onclick={() => unexpose(exp.local_domain)}
+													>
+														<Trash2Icon />
+														<span>Hapus Exposure</span>
+													</DropdownMenu.Item>
+												</DropdownMenu.Group>
+											</DropdownMenu.Content>
+										</DropdownMenu.Root>
+									</div>
 								</Table.Cell>
 							</Table.Row>
 						{/each}

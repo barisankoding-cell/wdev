@@ -1119,42 +1119,62 @@
 											<Badge variant="outline">SMTP Lokal</Badge>
 										{/if}
 									</Table.Cell>
-									<Table.Cell data-label="Aksi">
-										<div class="flex flex-wrap justify-end gap-1.5">
-											<Button
-												variant="outline"
-												size="xs"
-												href={grp.webmail}
-												target="_blank"
-												rel="noopener noreferrer"
-											>
-												Webmail
-												<ExternalLinkIcon data-icon="inline-end" />
-											</Button>
-											<Button
-												variant="outline"
-												size="xs"
-												disabled={Boolean(accountPending[acc.email])}
-												onclick={() => openEditAccountPass(acc.email)}
-											>
-												<KeyRoundIcon data-icon="inline-start" />
-												Ubah Password
-											</Button>
-											{#if !acc.is_admin}
-												<Button
-													variant="destructive"
-													size="xs"
-													disabled={Boolean(accountPending[acc.email])}
-													onclick={() => deleteAccount(acc.email)}
-												>
-													{#if accountPending[acc.email]}
-														<Spinner data-icon="inline-start" />
-														Menghapus...
-													{:else}
-														Hapus
-													{/if}
-												</Button>
-											{/if}
+									<Table.Cell data-label="Aksi" class="text-right">
+										<div class="flex justify-end">
+											<DropdownMenu.Root>
+												<DropdownMenu.Trigger>
+													{#snippet child({ props })}
+														<Button
+															variant="outline"
+															size="xs"
+															disabled={Boolean(accountPending[acc.email])}
+															{...props}
+														>
+															{#if accountPending[acc.email]}
+																<Spinner data-icon="inline-start" />
+																Menghapus...
+															{:else}
+																Aksi
+																<ChevronDownIcon data-icon="inline-end" />
+															{/if}
+														</Button>
+													{/snippet}
+												</DropdownMenu.Trigger>
+												<DropdownMenu.Content align="end" class="w-48">
+													<DropdownMenu.Group>
+														<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+															{acc.email}
+														</DropdownMenu.Label>
+														<DropdownMenu.Separator />
+														<DropdownMenu.Item>
+															{#snippet child({ props })}
+																<a href={grp.webmail} target="_blank" rel="noopener noreferrer" {...props}>
+																	<ExternalLinkIcon />
+																	<span>Buka Webmail</span>
+																</a>
+															{/snippet}
+														</DropdownMenu.Item>
+														<DropdownMenu.Item
+															disabled={Boolean(accountPending[acc.email])}
+															onclick={() => openEditAccountPass(acc.email)}
+														>
+															<KeyRoundIcon />
+															<span>Ubah Password</span>
+														</DropdownMenu.Item>
+														{#if !acc.is_admin}
+															<DropdownMenu.Separator />
+															<DropdownMenu.Item
+																variant="destructive"
+																disabled={Boolean(accountPending[acc.email])}
+																onclick={() => deleteAccount(acc.email)}
+															>
+																<Trash2Icon />
+																<span>Hapus Akun</span>
+															</DropdownMenu.Item>
+														{/if}
+													</DropdownMenu.Group>
+												</DropdownMenu.Content>
+											</DropdownMenu.Root>
 										</div>
 									</Table.Cell>
 								</Table.Row>
