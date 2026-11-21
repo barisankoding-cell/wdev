@@ -93,9 +93,15 @@ func TestValidMailDomain(t *testing.T) {
 	}
 }
 
-func TestRelayDNSPlanUnknown(t *testing.T) {
-	plan := relayDNSPlan("", "example.com")
-	if len(plan) != 1 || !contains(plan[0], "belum dikonfigurasi") {
-		t.Fatalf("plan kosong untuk provider kosong: %v", plan)
+func TestRelayDNSPlanLocalAndDefault(t *testing.T) {
+	for _, provider := range []string{"", "local", "direct", "mx"} {
+		plan := relayDNSPlan(provider, "example.com")
+		if len(plan) < 2 || !contains(plan[0], "SMTP Lokal") {
+			t.Fatalf("expected local SMTP plan for %q, got %v", provider, plan)
+		}
+	}
+	unknownPlan := relayDNSPlan("unknown-provider", "example.com")
+	if len(unknownPlan) != 1 || !contains(unknownPlan[0], "SMTP Lokal") {
+		t.Fatalf("expected fallback local SMTP plan for unknown provider, got %v", unknownPlan)
 	}
 }

@@ -99,7 +99,7 @@ MAIL SERVER & RELAY:
   wdev mail status                         Status Stalwart, SnappyMail, dan relay per domain
   wdev mail accounts [domain]              Daftar akun email dikelompokkan per domain
   wdev mail add-account <email> <password> Buat kotak pos / akun email baru
- wdev mail set-relay <domain|global> <provider> Setel relay (resend, brevo, custom, off)
+ wdev mail set-relay <domain|global> <provider> Setel outbound (local, resend, brevo, custom, off)
   wdev mail admin-reset <domain>           Reset password admin Stalwart untuk domain
  wdev mail unset-relay <domain> Hapus override relay domain (fallback default)
  wdev mail admin-cred <domain> Tampilkan kredensial admin Stalwart domain
@@ -116,9 +116,9 @@ INSTALASI & SYSTEMD SERVICE:
 
 func relayModeLabel(relayOnly bool) string {
 	if relayOnly {
-		return "relay-only (direct/port 25 nonaktif)"
+		return "relay eksternal (via SMTP relay)"
 	}
-	return "belum relay-only (periksa konfigurasi relay)"
+	return "SMTP lokal Stalwart (direct MX default)"
 }
 
 func printZoneChecks(report pdns.ZoneDoctorReport) {
@@ -1038,11 +1038,11 @@ func main() {
 			if st.GlobalRelay != nil {
 				fmt.Printf("Global Relay:         %s (%s:%d)\n", st.GlobalRelay.Provider, st.GlobalRelay.Host, st.GlobalRelay.Port)
 			} else {
-				fmt.Printf("Global Relay:         (belum dikonfigurasi)\n")
+				fmt.Printf("Global Relay:         (tidak disetel — memakai SMTP lokal Stalwart)\n")
 			}
 			fmt.Println("\nRelay per Domain:")
 			if len(st.DomainRelays) == 0 {
-				fmt.Println("  (Belum ada konfigurasi domain relay)")
+				fmt.Println("  (Tidak ada override relay per domain)")
 			} else {
 				for dom, r := range st.DomainRelays {
 					fmt.Printf("  - %s: %s via %s:%d (User: %s)\n", dom, strings.ToUpper(r.Provider), r.Host, r.Port, r.Username)
@@ -1064,7 +1064,7 @@ func main() {
 				os.Exit(1)
 			}
 			for _, d := range accs {
-				relayStr := "Relay Default"
+				relayStr := "Default (SMTP Lokal / Global)"
 				if d.Relay != nil {
 					relayStr = fmt.Sprintf("%s (%s:%d)", strings.ToUpper(d.Relay.Provider), d.Relay.Host, d.Relay.Port)
 				}
@@ -1107,7 +1107,7 @@ func main() {
 
 		case "set-relay":
 			if len(args) < 4 {
-				fmt.Println("Penggunaan: wdev mail set-relay <domain|global> <provider: resend|brevo|custom|off> [host] [port] [user] [pass]")
+				fmt.Println("Penggunaan: wdev mail set-relay <domain|global> <provider: local|resend|brevo|custom|off> [host] [port] [user] [pass]")
 				os.Exit(1)
 			}
 			dom := args[2]

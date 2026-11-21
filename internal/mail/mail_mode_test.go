@@ -78,7 +78,7 @@ func TestPreflightLocalModeStandaloneWithoutNetbirdOrPDNS(t *testing.T) {
 	}
 }
 
-func TestPreflightVPSModeStandaloneWithoutNetbird(t *testing.T) {
+func TestPreflightVPSModeStandaloneWithoutNetbirdOrRelay(t *testing.T) {
 	mgr, cfg := newTestMailManager(t, "vps")
 	edgeConf := "VPS_NETBIRD_IP=\"127.0.0.1\"\nVPS_PUBLIC_IP=\"203.0.113.10\"\nAPI_KEY=\"k\"\nPDNS_PORT=\"8081\"\n"
 	if err := os.WriteFile(filepath.Join(cfg.WdevEtc, "edge-dns.conf"), []byte(edgeConf), 0600); err != nil {
@@ -91,9 +91,15 @@ func TestPreflightVPSModeStandaloneWithoutNetbird(t *testing.T) {
 	if containsSubstr(pf.Blockers, "NetBird") || containsSubstr(pf.Blockers, "wdev pdns connect") {
 		t.Fatalf("vps mode must not require NetBird or edge connect, blockers=%v", pf.Blockers)
 	}
+	if containsSubstr(pf.Blockers, "relay") {
+		t.Fatalf("vps mode must allow setup without external SMTP relay, blockers=%v", pf.Blockers)
+	}
+	if !containsSubstr(pf.Warnings, "SMTP lokal Stalwart") {
+		t.Fatalf("expected default local SMTP info warning in vps mode, warnings=%v", pf.Warnings)
+	}
 }
 
-func TestPreflightEdgeModeRequiresNetbirdAndGateway(t *testing.T) {
+func TestPreflightEdgeModeRequiresNetbirdAndGatewayWithoutRelayBlocker(t *testing.T) {
 	mgr, _ := newTestMailManager(t, "edge")
 	pf := mgr.Preflight("example.com")
 	if pf.Mode != "edge" {
@@ -101,6 +107,23 @@ func TestPreflightEdgeModeRequiresNetbirdAndGateway(t *testing.T) {
 	}
 	if !containsSubstr(pf.Blockers, "Edge Gateway") {
 		t.Fatalf("expected edge gateway blocker in edge mode, got %v", pf.Blockers)
+	}
+	if containsSubstr(pf.Blockers, "relay") {
+		t.Fatalf("edge mode must allow setup without external SMTP relay, blockers=%v", pf.Blockers)
+	}
+	if !containsSubstr(pf.Warnings, "SMTP lokal Stalwart") {
+		t.Fatalf("expected default local SMTP info warning in edge mode, warnings=%v", pf.Warnings)
+	}
+}
+
+func TestActiveRelayProviderDefaultsToLocal(t *testing.T) {
+	mgr, _ := newTestMailManager(t, "vps")
+	if got := mgr.ActiveRelayProvider("example.com"); got != "local" {
+		t.Fatalf("ActiveRelayProvider without relay = %q, want local", got)
+	}
+	plan := relayDNSPlan("local", "example.com")
+	if len(plan) == 0 || !strings.Contains(plan[0], "SMTP Lokal") {
+		t.Fatalf("expected local SMTP DNS plan, got %v", plan)
 	}
 }
 

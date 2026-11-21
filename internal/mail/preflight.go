@@ -105,7 +105,7 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 			st.Warnings = append(st.Warnings, "Zone DNS "+st.Domain+" belum ada di PowerDNS; record DNS dilewati dan memakai /etc/hosts lokal")
 		}
 		if !st.RelayConfigured {
-			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email tetap berfungsi lokal atau atur relay nanti di tab Relay")
+			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email tetap berjalan via SMTP lokal Stalwart atau atur relay nanti di tab Relay")
 		}
 	case "vps":
 		if !cfg.Reachable && !cfg.HasLocalPDNS {
@@ -115,7 +115,7 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 			st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
 		}
 		if !st.RelayConfigured {
-			st.Blockers = append(st.Blockers, "relay outbound default belum disetel; mode relay-only menolak setup")
+			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email keluar akan memakai SMTP lokal Stalwart (direct MX). Atur relay nanti bila port 25 dibatasi penyedia VPS")
 		}
 		if st.Domain != "" && st.DNSZone == "" {
 			st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")
@@ -131,7 +131,7 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 			st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
 		}
 		if !st.RelayConfigured {
-			st.Blockers = append(st.Blockers, "relay outbound default belum disetel; mode relay-only menolak setup")
+			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email keluar akan memakai SMTP lokal Stalwart (direct MX). Atur relay nanti bila port 25 dibatasi ISP/VPS")
 		}
 		if st.Domain != "" && st.DNSZone == "" {
 			st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")

@@ -13,14 +13,14 @@ import (
 	"time"
 )
 
-// Mode relay-only: pengiriman langsung via port 25 tidak dipakai. Semua email
-// keluar harus lewat relay, dengan satu relay default sebagai fallback.
+// Routing outbound Stalwart: secara default memakai SMTP lokal Stalwart ('mx').
+// Bila relay eksternal dikonfigurasi (Resend, Brevo, Custom), email keluar
+// dapat diarahkan lewat relay default atau override per domain.
 const (
 	RelayScopeAll     = "global"
 	DefaultRelayRoute = "relay"
+	LocalSMTPRoute    = "mx"
 )
-
-const relayOnlyMode = "mode relay-only"
 
 type relayCredential struct {
 	Provider    string `json:"provider"`
@@ -390,6 +390,14 @@ func (m *Manager) loadGlobalRelayCred() (relayCredential, bool) {
 	return cred, true
 }
 
+func (m *Manager) removeGlobalRelayCred() error {
+	p := m.globalRelayCredPath()
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return runRoot("rm", "-f", p)
+	}
+	return nil
+}
+
 func (m *Manager) saveGlobalRelayCred(cred relayCredential) error {
 	cred.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(cred, "", " ")
@@ -454,7 +462,7 @@ func (m *Manager) removeDomainRelayCred(domain string) error {
 func (m *Manager) ensureDefaultRelay(adminEmail, adminPass string) (string, error) {
 	cred, ok := m.loadGlobalRelayCred()
 	if !ok {
-		return "", fmt.Errorf("%s: relay default belum dikonfigurasi", relayOnlyMode)
+		return "", fmt.Errorf("relay default belum dikonfigurasi")
 	}
 	if err := m.upsertRelayRoute(adminEmail, adminPass, DefaultRelayRoute, cred); err != nil {
 		return "", err
@@ -472,41 +480,92 @@ func (m *Manager) ensureDefaultRelay(adminEmail, adminPass string) (string, erro
 	return DefaultRelayRoute, nil
 }
 
-// ensureRelayReady memastikan relay default tersedia. Untuk migrasi dari
-// konfigurasi lama yang hanya punya relay per domain, relay domain tersebut
-// dipromosikan menjadi default agar mode relay-only tetap berlaku.
-func (m *Manager) ensureRelayReady(domain, adminEmail, adminPass string) error {
-	if _, ok := m.loadGlobalRelayCred(); ok {
-		return nil
+// ensureLocalSMTPDefault memastikan outbound default Stalwart memakai SMTP lokal
+// ('mx') saat belum ada relay eksternal yang disetel.
+func (m *Manager) ensureLocalSMTPDefault(adminEmail, adminPass string) error {
+	if adminEmail == "" || adminPass == "" {
+		return fmt.Errorf("kredensial admin Stalwart belum tersedia")
 	}
-	cred, ok := m.loadDomainRelayCred(strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), ".")))
-	if !ok {
-		return fmt.Errorf("%s: relay outbound wajib dikonfigurasi (resend/brevo/custom) sebelum setup domain", relayOnlyMode)
-	}
-	cred.Route = DefaultRelayRoute
-	if err := m.saveGlobalRelayCred(cred); err != nil {
+	route, err := m.loadOutboundRoute(adminEmail, adminPass)
+	if err != nil {
 		return err
 	}
-	if adminEmail == "" || adminPass == "" {
-		return fmt.Errorf("%s: kredensial admin Stalwart belum tersedia untuk mengaktifkan relay default", relayOnlyMode)
+	if route.Else == LocalSMTPRoute {
+		return nil
 	}
-	_, err := m.ensureDefaultRelay(adminEmail, adminPass)
-	return err
+	// Pertahankan relay eksternal yang sudah ada bila kredensial global masih tercatat.
+	if route.Else != "" {
+		if _, ok := m.loadGlobalRelayCred(); ok {
+			return nil
+		}
+	}
+	route.Else = LocalSMTPRoute
+	return m.saveOutboundRoute(adminEmail, adminPass, route)
+}
+
+// applyLocalSMTP mengarahkan pengiriman keluar ke SMTP lokal bawaan Stalwart ('mx').
+// Untuk scope global, relay default dihapus; untuk satu domain, override relay
+// dibersihkan dan domain memakai 'mx' secara eksplisit bila masih ada relay global.
+func (m *Manager) applyLocalSMTP(adminEmail, adminPass, domain string) error {
+	isGlobal := domain == "" || domain == RelayScopeAll
+	route, err := m.loadOutboundRoute(adminEmail, adminPass)
+	if err != nil {
+		return err
+	}
+	if isGlobal {
+		if err := m.removeGlobalRelayCred(); err != nil {
+			return err
+		}
+		route.Else = LocalSMTPRoute
+		if err := m.saveOutboundRoute(adminEmail, adminPass, route); err != nil {
+			return err
+		}
+		if err := m.deleteRelayRoute(adminEmail, adminPass, DefaultRelayRoute); err != nil {
+			return err
+		}
+		_ = restartStalwart()
+		return nil
+	}
+
+	if err := m.removeDomainRelayCred(domain); err != nil {
+		return err
+	}
+	if route.Else != "" && route.Else != LocalSMTPRoute {
+		route.upsertDomain(domain, LocalSMTPRoute)
+	} else {
+		route.Else = LocalSMTPRoute
+		route.removeDomain(domain)
+	}
+	if err := m.saveOutboundRoute(adminEmail, adminPass, route); err != nil {
+		return err
+	}
+	if err := m.deleteRelayRoute(adminEmail, adminPass, relayRouteName(domain)); err != nil {
+		return err
+	}
+	_ = restartStalwart()
+	return nil
 }
 
 // ActiveRelayProvider mengembalikan provider relay efektif untuk satu domain
-// (override domain lebih diprioritaskan daripada relay default).
+// (override domain lebih diprioritaskan daripada relay default; "local" berarti direct MX).
 func (m *Manager) ActiveRelayProvider(domain string) string {
 	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
 	if domain != "" && domain != RelayScopeAll {
 		if cred, ok := m.loadDomainRelayCred(domain); ok {
 			return strings.ToLower(cred.Provider)
 		}
+		if adminEmail, adminPass, err := m.pickValidAdminCred(domain); err == nil {
+			if route, err := m.loadOutboundRoute(adminEmail, adminPass); err == nil {
+				if routeBranchTarget(route, domain) == LocalSMTPRoute {
+					return "local"
+				}
+			}
+		}
 	}
 	if cred, ok := m.loadGlobalRelayCred(); ok {
 		return strings.ToLower(cred.Provider)
 	}
-	return ""
+	return "local"
 }
 
 // GetOutboundRoutes mengembalikan kondisi routing efektif dari Stalwart.
@@ -591,7 +650,7 @@ func (m *Manager) applyRelay(adminEmail, adminPass, domain, provider, host strin
 
 func (m *Manager) removeDomainRelay(adminEmail, adminPass, domain string) error {
 	if domain == "" || domain == RelayScopeAll {
-		return fmt.Errorf("%s: relay default tidak bisa dihapus; setel provider relay lain", relayOnlyMode)
+		return m.applyLocalSMTP(adminEmail, adminPass, RelayScopeAll)
 	}
 	routeName := relayRouteName(domain)
 	route, err := m.loadOutboundRoute(adminEmail, adminPass)
@@ -599,16 +658,14 @@ func (m *Manager) removeDomainRelay(adminEmail, adminPass, domain string) error 
 		return err
 	}
 	removed := route.removeDomain(domain)
-	if route.Else == "" || route.Else == "mx" {
+	if route.Else == "" || route.Else == LocalSMTPRoute {
 		if cred, ok := m.loadGlobalRelayCred(); ok {
 			if err := m.upsertRelayRoute(adminEmail, adminPass, DefaultRelayRoute, cred); err != nil {
 				return err
 			}
 			route.Else = DefaultRelayRoute
-		} else if len(route.Branches) > 0 {
-			route.Else = route.Branches[0].Then
 		} else {
-			return fmt.Errorf("%s: tidak ada relay default untuk fallback", relayOnlyMode)
+			route.Else = LocalSMTPRoute
 		}
 	}
 	if removed || route.Else != "" {
@@ -626,15 +683,16 @@ func (m *Manager) removeDomainRelay(adminEmail, adminPass, domain string) error 
 	return nil
 }
 
-// RemoveRelay menghapus override relay satu domain (fallback ke relay default).
+// RemoveRelay menghapus override relay satu domain (fallback ke relay default / SMTP lokal),
+// atau menghapus relay global bila scope adalah "global".
 func (m *Manager) RemoveRelay(domain string) error {
 	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
-	if domain == "" || domain == RelayScopeAll {
-		return fmt.Errorf("%s: relay default tidak bisa dihapus; setel provider relay lain", relayOnlyMode)
-	}
 	adminEmail, adminPass, err := m.pickValidAdminCred(domain)
 	if err != nil || adminEmail == "" {
 		return fmt.Errorf("kredensial admin Stalwart belum ada atau tidak valid")
+	}
+	if domain == "" || domain == RelayScopeAll {
+		return m.applyLocalSMTP(adminEmail, adminPass, RelayScopeAll)
 	}
 	previous := ""
 	if prev, ok := m.loadDomainRelayCred(domain); ok {
@@ -643,7 +701,7 @@ func (m *Manager) RemoveRelay(domain string) error {
 	if err := m.removeDomainRelay(adminEmail, adminPass, domain); err != nil {
 		return err
 	}
-	effective := ""
+	effective := "local"
 	if cred, ok := m.loadGlobalRelayCred(); ok {
 		effective = strings.ToLower(cred.Provider)
 	}

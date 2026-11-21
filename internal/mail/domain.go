@@ -186,9 +186,10 @@ func (m *Manager) deleteMailDNS(zone, domain string, rep *DomainActionReport) {
 	}
 
 	// SPF hanya dihapus bila TXT apex tunggal dan persis kebijakan bawaan wdev
-	// (v=spf1 -all); TXT lain seperti verifikasi domain tidak boleh ikut hilang.
+	// (v=spf1 -all atau v=spf1 mx ~all); TXT lain seperti verifikasi domain tidak boleh ikut hilang.
 	if txt, err := m.pdnsMgr.LookupRecords(zone, "@", "TXT"); err == nil && len(txt) == 1 {
-		if strings.EqualFold(strings.Trim(strings.TrimSpace(txt[0]), `"`), "v=spf1 -all") {
+		val := strings.Trim(strings.TrimSpace(txt[0]), `"`)
+		if strings.EqualFold(val, "v=spf1 -all") || strings.EqualFold(val, "v=spf1 mx ~all") || strings.EqualFold(val, "v=spf1 a mx ~all") {
 			if err := m.pdnsMgr.DeleteRecord(zone, "@", "TXT"); err == nil {
 				removed++
 			}
@@ -528,16 +529,23 @@ func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb f
 		}
 	}
 
-	// SPF: tambah hanya jika belum ada agar include relay tidak tertimpa.
+	// SPF: tambah hanya jika belum ada agar record custom tidak tertimpa.
 	spf, err := m.pdnsMgr.LookupRecords(zone, "@", "TXT")
 	if err != nil {
 		rep.add("SPF", actionWarn, err.Error())
 	} else if containsSPF(spf) {
 		rep.add("SPF", actionOK, "record SPF sudah ada; nilai custom dipertahankan")
-	} else if err := m.pdnsMgr.AddRecordKeep(zone, "@", "TXT", `"v=spf1 -all"`, 300); err != nil {
-		rep.add("SPF", actionFail, err.Error())
 	} else {
-		rep.add("SPF", actionFixed, `"v=spf1 -all" (dibuat)`)
+		prov := m.ActiveRelayProvider(domain)
+		wantSPF := `"v=spf1 mx ~all"`
+		if prov != "" && prov != "local" && prov != "direct" && prov != "mx" {
+			wantSPF = `"v=spf1 -all"`
+		}
+		if err := m.pdnsMgr.AddRecordKeep(zone, "@", "TXT", wantSPF, 300); err != nil {
+			rep.add("SPF", actionFail, err.Error())
+		} else {
+			rep.add("SPF", actionFixed, wantSPF+" (dibuat)")
+		}
 	}
 
 	// DMARC: tambah hanya jika belum ada.
@@ -592,6 +600,10 @@ func (m *Manager) repairRelayRouting(domain, adminEmail, adminPass string, rep *
 
 	if hasBranch {
 		target := routeBranchTarget(route, domain)
+		if target == LocalSMTPRoute {
+			rep.add("Relay outbound", actionOK, "domain memakai SMTP lokal Stalwart (direct MX)")
+			return
+		}
 		if target != "" {
 			if existing, _ := m.findMtaRoute(adminEmail, adminPass, target); existing != nil {
 				rep.add("Relay outbound", actionOK, "domain memakai route "+target+" yang valid")
@@ -599,9 +611,9 @@ func (m *Manager) repairRelayRouting(domain, adminEmail, adminPass string, rep *
 			}
 		}
 		route.removeDomain(domain)
-		if route.Else == "" || route.Else == "mx" {
+		if route.Else == "" || route.Else == LocalSMTPRoute {
 			if _, err := m.ensureDefaultRelay(adminEmail, adminPass); err != nil {
-				rep.add("Relay outbound", actionWarn, "route domain menunjuk route tidak valid dan relay default belum siap: "+err.Error())
+				route.Else = LocalSMTPRoute
 			}
 		}
 		if err := m.saveOutboundRoute(adminEmail, adminPass, route); err != nil {
@@ -620,7 +632,16 @@ func (m *Manager) repairRelayRouting(domain, adminEmail, adminPass string, rep *
 		rep.add("Relay outbound", actionOK, "domain memakai relay default; routing default valid")
 		return
 	}
-	rep.add("Relay outbound", actionWarn, "belum ada relay default maupun override domain; email keluar tidak akan terkirim")
+	if route.Else != LocalSMTPRoute {
+		route.Else = LocalSMTPRoute
+		if err := m.saveOutboundRoute(adminEmail, adminPass, route); err != nil {
+			rep.add("Relay outbound", actionWarn, err.Error())
+			return
+		}
+		rep.add("Relay outbound", actionFixed, "routing outbound default diarahkan ke SMTP lokal Stalwart (direct MX)")
+		return
+	}
+	rep.add("Relay outbound", actionOK, "domain memakai SMTP lokal Stalwart (direct MX)")
 }
 
 func routeBranchTarget(route *outboundRoute, domain string) string {

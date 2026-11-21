@@ -1522,6 +1522,9 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 
 	prov := strings.ToLower(strings.TrimSpace(opts.Provider))
 	if prov == "disable" || prov == "none" || prov == "off" {
+		if cleanDom == RelayScopeAll {
+			return m.RemoveRelay(RelayScopeAll)
+		}
 		previous := ""
 		if prev, ok := m.loadDomainRelayCred(cleanDom); ok {
 			previous = strings.ToLower(prev.Provider)
@@ -1530,16 +1533,29 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 			return err
 		}
 		// Provider baru = relay default efektif setelah override dihapus.
-		effective := ""
+		effective := "local"
 		if cred, ok := m.loadGlobalRelayCred(); ok {
 			effective = strings.ToLower(cred.Provider)
 		}
 		m.setLastRelayDNS(m.reconcileRelayDNS(cleanDom, previous, effective))
 		return nil
 	}
-	switch prov {
-	case "direct", "mx":
-		return fmt.Errorf("%s: provider direct tidak didukung; pilih resend, brevo, atau custom", relayOnlyMode)
+	if prov == "local" || prov == "direct" || prov == "mx" {
+		previous := ""
+		if cleanDom == RelayScopeAll {
+			if prev, ok := m.loadGlobalRelayCred(); ok {
+				previous = strings.ToLower(prev.Provider)
+			}
+		} else if prev, ok := m.loadDomainRelayCred(cleanDom); ok {
+			previous = strings.ToLower(prev.Provider)
+		}
+		if err := m.applyLocalSMTP(adminEmail, adminPass, cleanDom); err != nil {
+			return err
+		}
+		if cleanDom != RelayScopeAll {
+			m.setLastRelayDNS(m.reconcileRelayDNS(cleanDom, previous, "local"))
+		}
+		return nil
 	}
 
 	host := opts.Host
@@ -1590,7 +1606,7 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 		}
 		implicitTLS = (port == 465 || port == 2465)
 	default:
-		return fmt.Errorf("provider relay tidak dikenal: %s (pilihan: resend, brevo, custom, off)", opts.Provider)
+		return fmt.Errorf("provider relay tidak dikenal: %s (pilihan: local, resend, brevo, custom, off)", opts.Provider)
 	}
 
 	previous := ""
@@ -1708,13 +1724,15 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 	_ = m.writeSnappyMailDomainConfig(cleanDom)
 
 	relayProv := strings.ToLower(strings.TrimSpace(opts.RelayProv))
-	if relayProv == "direct" || relayProv == "mx" {
-		relayProv = ""
+	if relayProv == "local" || relayProv == "direct" || relayProv == "mx" {
+		relayProv = "local"
 	}
-	if relayProv == "" && mode != "local" {
-		if err := m.ensureRelayReady(cleanDom, adminUser, adminPass); err != nil {
-			return err
-		}
+	_, hasGlobalRelay := m.loadGlobalRelayCred()
+	_, hasDomainRelay := m.loadDomainRelayCred(cleanDom)
+	usesExternalRelay := (relayProv != "" && relayProv != "local") || (relayProv == "" && (hasGlobalRelay || hasDomainRelay))
+	spfRecord := `"v=spf1 mx ~all"`
+	if usesExternalRelay {
+		spfRecord = `"v=spf1 -all"`
 	}
 
 	// 2. Standarisasi DNS Record di PowerDNS (wajib untuk Edge/VPS; opsional + /etc/hosts di mode Lokal)
@@ -1757,7 +1775,7 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 			{name: "webmail." + cleanDom, rtype: "A", content: dnsIP},
 			{name: "mailadmin." + cleanDom, rtype: "A", content: dnsIP},
 			{name: "@", rtype: "MX", content: "10 mail." + cleanDom + ".", skipOnExist: true},
-			{name: "@", rtype: "TXT", content: "\"v=spf1 -all\"", keep: true, skipOnExist: true},
+			{name: "@", rtype: "TXT", content: spfRecord, keep: true, skipOnExist: true},
 			{name: "_dmarc", rtype: "TXT", content: fmt.Sprintf("\"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s\"", cleanDom), skipOnExist: true},
 		}
 
@@ -1805,7 +1823,11 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 				cb(" ✓ PTR/rDNS VPS cocok dengan mail." + cleanDom)
 			}
 		}
-		cb("✓ DNS inbound (A, MX) & kebijakan outbound (SPF -all, DMARC) disinkronkan")
+		if usesExternalRelay {
+			cb("✓ DNS inbound (A, MX) & kebijakan outbound (SPF -all, DMARC) disinkronkan")
+		} else {
+			cb("✓ DNS inbound (A, MX) & kebijakan outbound (SPF mx ~all, DMARC) disinkronkan")
+		}
 	}
 
 	switch mode {
@@ -1885,8 +1907,18 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 		}
 	}
 
-	// 4. Konfigurasi relay outbound.
+	// 4. Konfigurasi routing outbound (relay eksternal atau SMTP lokal bawaan Stalwart).
 	switch {
+	case relayProv == "local":
+		cb("Mengonfigurasi outbound ke SMTP lokal Stalwart (direct MX)...")
+		if err := m.SetRelay(SetRelayOptions{Domain: cleanDom, Provider: "local"}); err != nil {
+			cb(fmt.Sprintf("  [WARN] Gagal menyetel routing SMTP lokal: %v", err))
+		} else {
+			cb(" ✓ Outbound memakai SMTP lokal Stalwart (direct MX)")
+			for _, line := range relayDNSPlan("local", cleanDom) {
+				cb("   " + line)
+			}
+		}
 	case relayProv != "":
 		cb(fmt.Sprintf("Mengonfigurasi relay outbound (%s)...", relayProv))
 		relayOpts := SetRelayOptions{
@@ -1900,18 +1932,21 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 			cb("   " + line)
 		}
 	default:
-		if _, err := m.ensureDefaultRelay(adminUser, adminPass); err != nil {
-			if mode == "local" {
-				cb(" [INFO] Mode Lokal: belum ada relay outbound; email tetap berjalan lokal atau konfigurasi relay nanti di tab Relay")
-			} else {
-				return fmt.Errorf("relay default tidak siap: %w", err)
-			}
-		} else {
+		if _, err := m.ensureDefaultRelay(adminUser, adminPass); err == nil {
 			cb(" ✓ Domain memakai relay default yang sudah ada")
 			if cred, ok := m.loadGlobalRelayCred(); ok {
 				for _, line := range relayDNSPlan(cred.Provider, cleanDom) {
 					cb("   " + line)
 				}
+			}
+		} else {
+			if err := m.ensureLocalSMTPDefault(adminUser, adminPass); err != nil {
+				cb(fmt.Sprintf(" [INFO] Routing outbound default memakai SMTP lokal Stalwart (%v)", err))
+			} else {
+				cb(" ✓ Belum ada relay eksternal; memakai SMTP lokal bawaan Stalwart (direct MX)")
+			}
+			for _, line := range relayDNSPlan("local", cleanDom) {
+				cb("   " + line)
 			}
 		}
 	}

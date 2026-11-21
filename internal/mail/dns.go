@@ -77,7 +77,12 @@ func relayDNSPlan(provider, domain string) []string {
 			"Custom relay: jika relay mengirim dengan envelope-from domain ini, tambahkan include SPF penyedia ke satu record TXT SPF.",
 			"Custom relay: pastikan relay mengizinkan pengiriman untuk " + domain + ".",
 		}
+	case "", "local", "direct", "mx":
+		return []string{
+			"SMTP Lokal (Direct MX): pengiriman keluar memakai mesin SMTP Stalwart bawaan (pastikan port 25 outbound terbuka & PTR/rDNS mengarah ke mail." + domain + ").",
+			"SMTP Lokal (Direct MX): pastikan record TXT SPF mengizinkan MX/IP server (mis. v=spf1 mx ~all) dan publikasikan DKIM dari panel Stalwart bila diperlukan.",
+		}
 	default:
-		return []string{"Relay belum dikonfigurasi; email keluar tidak akan terkirim."}
+		return []string{"SMTP Lokal (Direct MX): pengiriman keluar memakai mesin SMTP Stalwart bawaan."}
 	}
 }

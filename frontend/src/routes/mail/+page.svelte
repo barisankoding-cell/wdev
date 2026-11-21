@@ -241,7 +241,7 @@
 	}
 
 	async function loadRelayDNSRecords(domain: string, provider: string) {
-		if (!domain || domain === 'global') {
+		if (!domain || domain === 'global' || provider === 'local') {
 			relayDNSText = '';
 			return;
 		}
@@ -258,6 +258,8 @@
 
 	function openRelayModal(domain = 'global') {
 		relayTargetDomain = domain || 'global';
+		const outboundRoute =
+			relayTargetDomain === 'global' ? '' : mailStatus?.outbound_routes?.[relayTargetDomain];
 		const existing =
 			relayTargetDomain === 'global'
 				? mailStatus?.global_relay
@@ -265,14 +267,19 @@
 
 		relaySecret = '';
 		relayPass = '';
-		if (existing?.host) {
+		if (relayTargetDomain !== 'global' && outboundRoute === 'mx' && !mailStatus?.domain_relays?.[relayTargetDomain]?.host) {
+			relayProvider = 'local';
+			relayHost = '';
+			relayPortStr = '587';
+			relayUser = '';
+		} else if (existing?.host) {
 			const p = existing.provider.toLowerCase();
 			relayProvider = p === 'resend' || p === 'brevo' || p === 'custom' ? p : 'custom';
 			relayHost = existing.host || '';
 			relayPortStr = String(existing.port || 587);
 			relayUser = existing.username || '';
 		} else {
-			relayProvider = 'brevo';
+			relayProvider = 'local';
 			relayHost = '';
 			relayPortStr = '587';
 			relayUser = '';
@@ -304,7 +311,9 @@
 			provider: relayProvider
 		};
 
-		if (relayProvider === 'resend' || relayProvider === 'brevo') {
+		if (relayProvider === 'local') {
+			// Menggunakan SMTP lokal Stalwart (direct MX); tidak butuh host/kredensial relay eksternal.
+		} else if (relayProvider === 'resend' || relayProvider === 'brevo') {
 			if (!relaySecret.trim()) {
 				toast.warning(`API / SMTP Key untuk ${relayProvider.toUpperCase()} wajib diisi.`);
 				return;
@@ -328,7 +337,7 @@
 				.split('\n')
 				.map((l) => l.trim())
 				.filter(Boolean);
-			if (lines.length > 0 && relayTargetDomain !== 'global') {
+			if (relayProvider !== 'local' && lines.length > 0 && relayTargetDomain !== 'global') {
 				const parsed = lines.map((line) => {
 					const parts = line.split(/\s+/);
 					if (parts.length < 3) {
@@ -344,7 +353,9 @@
 			}
 			const dnsNote = formatRelayDNSFeedback(res.dns);
 			toast.success(
-				`Relay domain ${relayTargetDomain} berhasil disimpan.${dnsNote ? ` (${dnsNote})` : ''}`
+				relayProvider === 'local'
+					? `Outbound ${relayTargetDomain === 'global' ? 'default' : relayTargetDomain} diarahkan ke SMTP lokal Stalwart.${dnsNote ? ` (${dnsNote})` : ''}`
+					: `Relay domain ${relayTargetDomain} berhasil disimpan.${dnsNote ? ` (${dnsNote})` : ''}`
 			);
 			relayOpen = false;
 			await loadMail();
@@ -356,9 +367,12 @@
 	}
 
 	async function removeRelayOverride(domain: string) {
+		const fallbackDesc = mailStatus?.global_relay?.host
+			? `relay default (${mailStatus.global_relay.provider.toUpperCase()})`
+			: 'SMTP lokal bawaan Stalwart (direct MX)';
 		const ok = await cp.confirm({
-			title: 'Hapus Override Relay',
-			description: `Hapus override relay untuk ${domain}? Domain akan kembali memakai relay default.`,
+			title: 'Hapus Override Outbound',
+			description: `Hapus override outbound untuk ${domain}? Domain akan kembali memakai ${fallbackDesc}.`,
 			confirmText: 'Hapus Override',
 			destructive: true
 		});
@@ -485,9 +499,9 @@
 					Stalwart Mail Server &amp; Webmail SnappyMail mandiri tanpa NetBird via /etc/hosts atau PowerDNS lokal.
 				</p>
 			{:else}
-				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server &amp; Outbound SMTP Relay</h1>
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server &amp; Outbound SMTP</h1>
 				<p class="text-sm text-muted-foreground">
-					Manajemen kotak pos Stalwart, webmail SnappyMail, serta outbound SMTP relay-only per domain.
+					Manajemen kotak pos Stalwart, webmail SnappyMail, serta pengiriman SMTP lokal atau relay eksternal per domain.
 				</p>
 			{/if}
 		</div>
@@ -584,20 +598,20 @@
 	<!-- Domain & Relay Table -->
 	<section class="flex flex-col gap-3">
 		<div>
-			<h2 class="text-lg font-semibold tracking-tight">Status Domain &amp; Outbound SMTP Relay</h2>
+			<h2 class="text-lg font-semibold tracking-tight">Status Domain &amp; Outbound SMTP</h2>
 			<p class="text-xs text-muted-foreground">
-				Relay-only: email keluar selalu lewat relay default atau override per domain (Resend, Brevo, Custom SMTP).
+				Default memakai SMTP lokal Stalwart (direct MX) atau relay default bila disetel; dapat di-override per domain (Resend, Brevo, Custom SMTP, atau SMTP Lokal).
 			</p>
 		</div>
 
-		<ResponsiveTableWrapper label="Tabel Status Relay per Domain">
+		<ResponsiveTableWrapper label="Tabel Status Outbound SMTP per Domain">
 			<Table.Root>
 				<Table.Header>
 					<Table.Row>
 						<Table.Head>Domain</Table.Head>
-						<Table.Head>Provider Relay</Table.Head>
-						<Table.Head>Relay Host &amp; Port</Table.Head>
-						<Table.Head>Username</Table.Head>
+						<Table.Head>Mode / Provider</Table.Head>
+						<Table.Head>SMTP / Relay Host</Table.Head>
+						<Table.Head>Username / Sumber</Table.Head>
 						<Table.Head>Panel Admin</Table.Head>
 						<Table.Head>Webmail</Table.Head>
 						<Table.Head class="text-right">Aksi</Table.Head>
@@ -613,12 +627,16 @@
 					{:else}
 						{#each mailStatus.domains as dom (dom.domain)}
 							{@const domRelay = mailStatus.domain_relays?.[dom.domain]}
-							{@const activeRelay = domRelay?.host ? domRelay : mailStatus.global_relay}
-							{@const isOverride = Boolean(domRelay?.host)}
+							{@const outboundRoute = mailStatus.outbound_routes?.[dom.domain]}
+							{@const isLocalOverride = outboundRoute === 'mx' && !domRelay?.host}
+							{@const activeRelay = isLocalOverride ? null : (domRelay?.host ? domRelay : mailStatus.global_relay)}
+							{@const isOverride = Boolean(domRelay?.host) || isLocalOverride}
 							<Table.Row>
 								<Table.Cell data-label="Domain" class="font-semibold">{dom.domain}</Table.Cell>
 								<Table.Cell data-label="Provider">
-									{#if activeRelay?.host}
+									{#if isLocalOverride}
+										<StatusBadge tone="success" label="SMTP LOKAL (DIRECT)" />
+									{:else if activeRelay?.host}
 										<StatusBadge
 											tone={activeRelay.provider === 'resend'
 												? 'info'
@@ -628,19 +646,31 @@
 											label={`${isOverride ? '' : 'DEFAULT · '}${activeRelay.provider.toUpperCase()}`}
 										/>
 									{:else}
-										<StatusBadge tone="destructive" label="BELUM ADA RELAY" />
+										<StatusBadge tone="success" label="DEFAULT · SMTP LOKAL" />
 									{/if}
 								</Table.Cell>
 								<Table.Cell data-label="Host:Port" class="font-mono text-xs">
-									{activeRelay?.host ? `${activeRelay.host}:${activeRelay.port}` : 'Outbound nonaktif'}
+									{#if isLocalOverride}
+										Stalwart SMTP (Direct MX)
+									{:else if activeRelay?.host}
+										{activeRelay.host}:{activeRelay.port}
+									{:else}
+										Stalwart SMTP (Direct MX)
+									{/if}
 								</Table.Cell>
 								<Table.Cell data-label="Username">
 									<div class="text-xs">{activeRelay?.username || '-'}</div>
-									{#if activeRelay?.host}
-										<div class="text-[11px] text-muted-foreground">
-											{isOverride ? 'override domain' : 'ikut relay default'}
-										</div>
-									{/if}
+									<div class="text-[11px] text-muted-foreground">
+										{#if isLocalOverride}
+											override SMTP lokal
+										{:else if domRelay?.host}
+											override domain
+										{:else if activeRelay?.host}
+											ikut relay default
+										{:else}
+											SMTP lokal bawaan
+										{/if}
+									</div>
 								</Table.Cell>
 								<Table.Cell data-label="Admin">
 									<Button
@@ -779,8 +809,14 @@
 											<Badge variant="secondary">
 												{grp.relay.provider.toUpperCase()} ({grp.relay.host})
 											</Badge>
+										{:else if mailStatus?.outbound_routes?.[grp.domain] === 'mx'}
+											<Badge variant="outline">SMTP Lokal (Direct)</Badge>
+										{:else if mailStatus?.global_relay?.host}
+											<Badge variant="outline">
+												Default ({mailStatus.global_relay.provider.toUpperCase()})
+											</Badge>
 										{:else}
-											<Badge variant="outline">Relay Default</Badge>
+											<Badge variant="outline">SMTP Lokal</Badge>
 										{/if}
 									</Table.Cell>
 									<Table.Cell data-label="Aksi">
@@ -913,9 +949,9 @@
 <Dialog.Root bind:open={relayOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-lg">
 		<Dialog.Header>
-			<Dialog.Title>Konfigurasi Outbound SMTP Relay</Dialog.Title>
+			<Dialog.Title>Konfigurasi Outbound SMTP</Dialog.Title>
 			<Dialog.Description>
-				Provider pihak ketiga menjaga reputasi pengiriman email keluar tanpa port 25 langsung.
+				Gunakan SMTP lokal bawaan Stalwart (direct MX) atau arahkan pengiriman keluar lewat relay SMTP pihak ketiga.
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -935,12 +971,12 @@
 					>
 						<Select.Trigger id="mail-relay-domain" class="w-full">
 							{relayTargetDomain === 'global'
-								? 'Semua Domain (relay default)'
+								? 'Semua Domain (default)'
 								: relayTargetDomain}
 						</Select.Trigger>
 						<Select.Content>
 							<Select.Group>
-								<Select.Item value="global">Semua Domain (relay default)</Select.Item>
+								<Select.Item value="global">Semua Domain (default)</Select.Item>
 								{#each mailStatus?.domains || [] as dom (dom.domain)}
 									<Select.Item value={dom.domain}>{dom.domain}</Select.Item>
 								{/each}
@@ -950,7 +986,7 @@
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="mail-relay-provider">Provider Relay</Field.FieldLabel>
+					<Field.FieldLabel for="mail-relay-provider">Mode / Provider Outbound</Field.FieldLabel>
 					<Select.Root
 						type="single"
 						value={relayProvider}
@@ -962,14 +998,17 @@
 						}}
 					>
 						<Select.Trigger id="mail-relay-provider" class="w-full">
-							{relayProvider === 'resend'
-								? 'Resend (smtp.resend.com:465 - Implicit TLS)'
-								: relayProvider === 'brevo'
-									? 'Brevo / Sendinblue (smtp-relay.brevo.com:587)'
-									: 'Custom SMTP Relay (Server / Port Kustom)'}
+							{relayProvider === 'local'
+								? 'SMTP Lokal Stalwart (Direct MX / Tanpa Relay)'
+								: relayProvider === 'resend'
+									? 'Resend (smtp.resend.com:465 - Implicit TLS)'
+									: relayProvider === 'brevo'
+										? 'Brevo / Sendinblue (smtp-relay.brevo.com:587)'
+										: 'Custom SMTP Relay (Server / Port Kustom)'}
 						</Select.Trigger>
 						<Select.Content>
 							<Select.Group>
+								<Select.Item value="local">SMTP Lokal Stalwart (Direct MX / Tanpa Relay)</Select.Item>
 								<Select.Item value="resend">Resend (smtp.resend.com:465 - Implicit TLS)</Select.Item>
 								<Select.Item value="brevo">Brevo / Sendinblue (smtp-relay.brevo.com:587)</Select.Item>
 								<Select.Item value="custom">Custom SMTP Relay (Server / Port Kustom)</Select.Item>
@@ -978,7 +1017,19 @@
 					</Select.Root>
 				</Field.Field>
 
-				{#if relayProvider === 'resend' || relayProvider === 'brevo'}
+				{#if relayProvider === 'local'}
+					<Alert.Root>
+						<InfoIcon />
+						<Alert.Title>SMTP Lokal Bawaan Stalwart</Alert.Title>
+						<Alert.Description>
+							{#if relayTargetDomain === 'global'}
+								Semua domain tanpa override akan mengirim email langsung menggunakan SMTP lokal Stalwart (direct MX) tanpa relay pihak ketiga.
+							{:else}
+								Domain <strong>{relayTargetDomain}</strong> akan mengirim email langsung melalui SMTP lokal Stalwart (direct MX).
+							{/if}
+						</Alert.Description>
+					</Alert.Root>
+				{:else if relayProvider === 'resend' || relayProvider === 'brevo'}
 					<Field.Field>
 						<Field.FieldLabel for="mail-relay-secret">
 							{relayProvider === 'resend' ? 'API Key Resend (re_...)' : 'Master SMTP Key Brevo (xkeysib-...)'}
@@ -1017,20 +1068,22 @@
 					</Field.Field>
 				{/if}
 
-				<Field.Field>
-					<Field.FieldLabel for="mail-relay-dns">Record DNS Relay (dikelola wdev)</Field.FieldLabel>
-					<Textarea
-						id="mail-relay-dns"
-						rows={4}
-						spellcheck={false}
-						class="font-mono text-xs"
-						placeholder="CNAME brevo1._domainkey.domain.com b1.domain.com.dkim.brevo.com"
-						bind:value={relayDNSText}
-					/>
-					<Field.FieldDescription>
-						Satu record per baris: <code>TYPE NAMA NILAI</code>. Otomatis dibersihkan bila provider diganti.
-					</Field.FieldDescription>
-				</Field.Field>
+				{#if relayProvider !== 'local'}
+					<Field.Field>
+						<Field.FieldLabel for="mail-relay-dns">Record DNS Relay (dikelola wdev)</Field.FieldLabel>
+						<Textarea
+							id="mail-relay-dns"
+							rows={4}
+							spellcheck={false}
+							class="font-mono text-xs"
+							placeholder="CNAME brevo1._domainkey.domain.com b1.domain.com.dkim.brevo.com"
+							bind:value={relayDNSText}
+						/>
+						<Field.FieldDescription>
+							Satu record per baris: <code>TYPE NAMA NILAI</code>. Otomatis dibersihkan bila provider diganti.
+						</Field.FieldDescription>
+					</Field.Field>
+				{/if}
 			</Field.FieldGroup>
 		</form>
 
@@ -1097,9 +1150,9 @@
 							{#if (preflight.mode || modeStore.mode) === 'local'}
 								Stalwart dan stalwart-cli siap digunakan dalam Mode Lokal Standalone (tanpa NetBird).
 							{:else if (preflight.mode || modeStore.mode) === 'vps'}
-								Stalwart, CLI, PowerDNS lokal, dan relay default siap digunakan (Mode VPS Standalone tanpa NetBird).
+								Stalwart, stalwart-cli, dan PowerDNS lokal siap digunakan (Mode VPS Standalone tanpa NetBird).
 							{:else}
-								Stalwart, CLI, NetBird, Edge Gateway, dan relay default siap digunakan.
+								Stalwart, stalwart-cli, NetBird, dan Edge Gateway siap digunakan.
 							{/if}
 						</Alert.Description>
 					</Alert.Root>
@@ -1164,21 +1217,32 @@
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="mail-setup-relay-prov">Outbound SMTP Relay</Field.FieldLabel>
+					<Field.FieldLabel for="mail-setup-relay-prov">Pengiriman Keluar (Outbound SMTP)</Field.FieldLabel>
 					<Select.Root type="single" bind:value={setupRelayProv}>
 						<Select.Trigger id="mail-setup-relay-prov" class="w-full">
 							{setupRelayProv === ''
-								? 'Gunakan relay default yang sudah ada'
-								: setupRelayProv === 'resend'
-									? 'Resend (smtp.resend.com:465 - Rekomendasi)'
-									: setupRelayProv === 'brevo'
-										? 'Brevo (smtp-relay.brevo.com:587)'
-										: 'Custom SMTP Relay Server'}
+								? mailStatus?.global_relay?.host
+									? `Gunakan default saat ini (${mailStatus.global_relay.provider.toUpperCase()})`
+									: 'SMTP Lokal Stalwart (Default - Tanpa Relay)'
+								: setupRelayProv === 'local'
+									? 'SMTP Lokal Stalwart (Direct MX - Tanpa Relay)'
+									: setupRelayProv === 'resend'
+										? 'Resend (smtp.resend.com:465)'
+										: setupRelayProv === 'brevo'
+											? 'Brevo (smtp-relay.brevo.com:587)'
+											: 'Custom SMTP Relay Server'}
 						</Select.Trigger>
 						<Select.Content>
 							<Select.Group>
-								<Select.Item value="">Gunakan relay default yang sudah ada</Select.Item>
-								<Select.Item value="resend">Resend (smtp.resend.com:465 - Rekomendasi)</Select.Item>
+								<Select.Item value="">
+									{mailStatus?.global_relay?.host
+										? `Gunakan default saat ini (${mailStatus.global_relay.provider.toUpperCase()})`
+										: 'SMTP Lokal Stalwart (Default - Tanpa Relay)'}
+								</Select.Item>
+								{#if mailStatus?.global_relay?.host}
+									<Select.Item value="local">SMTP Lokal Stalwart (Direct MX - Tanpa Relay)</Select.Item>
+								{/if}
+								<Select.Item value="resend">Resend (smtp.resend.com:465)</Select.Item>
 								<Select.Item value="brevo">Brevo (smtp-relay.brevo.com:587)</Select.Item>
 								<Select.Item value="custom">Custom SMTP Relay Server</Select.Item>
 							</Select.Group>
@@ -1186,9 +1250,9 @@
 					</Select.Root>
 					<Field.FieldDescription>
 						{#if modeStore.mode === 'local'}
-							Mode Lokal: relay outbound bersifat opsional untuk uji coba lokal, atau pilih Resend/Brevo/Custom SMTP untuk pengiriman ke internet.
+							Default memakai SMTP lokal Stalwart tanpa relay; pilih Resend/Brevo/Custom bila ingin mengirim ke internet via relay.
 						{:else}
-							Mode relay-only: email keluar tidak pernah dikirim langsung via port 25.
+							Opsional: biarkan default untuk langsung memakai SMTP lokal Stalwart (direct MX), atau pilih Resend/Brevo/Custom SMTP Relay.
 						{/if}
 					</Field.FieldDescription>
 				</Field.Field>
