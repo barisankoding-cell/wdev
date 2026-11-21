@@ -960,9 +960,69 @@ func replaceTransport(domain, entry string) {
 // HTTP server
 // ---------------------------------------------------------------------------
 
+var (
+	loadAPIKeyFn = LoadAPIKey
+	netbirdCGNAT = mustParseCIDR("100.64.0.0/10")
+)
+
+func mustParseCIDR(cidr string) *net.IPNet {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(err)
+	}
+	return ipNet
+}
+
+func isAllowedAgentPeer(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
+		host = h
+	}
+	if idx := strings.IndexByte(host, '%'); idx != -1 {
+		host = host[:idx]
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || netbirdCGNAT.Contains(ip) {
+		return true
+	}
+	if extra := strings.TrimSpace(os.Getenv("WDEV_EDGE_ALLOW_IPS")); extra != "" {
+		for _, entry := range strings.Split(extra, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			if strings.Contains(entry, "/") {
+				if _, cidr, err := net.ParseCIDR(entry); err == nil && cidr.Contains(ip) {
+					return true
+				}
+			} else if allowed := net.ParseIP(entry); allowed != nil && allowed.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requireAllowedAgentPeer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isAllowedAgentPeer(r.RemoteAddr) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Forbidden: peer IP not allowed"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func audit(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := LoadAPIKey()
+		if !isAllowedAgentPeer(r.RemoteAddr) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Forbidden: peer IP not allowed"})
+			return
+		}
+		key := loadAPIKeyFn()
 		got := r.Header.Get("X-API-Key")
 		if key == "" || subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized: Invalid or missing X-API-Key"})
@@ -1203,7 +1263,7 @@ func NewAgentHandler() http.Handler {
 		writeJSON(w, 200, map[string]any{"success": true, "message": "Mail queue flush triggered successfully."})
 	}))
 
-	return mux
+	return requireAllowedAgentPeer(mux)
 }
 
 func stringOr(m map[string]any, key string) string {
@@ -1242,6 +1302,8 @@ func RunAgent(addr string, cb func(string)) error {
 		Addr:              addr,
 		Handler:           NewAgentHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 	return srv.ListenAndServe()
 }

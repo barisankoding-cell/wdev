@@ -61,6 +61,9 @@ if [ ! -f "/usr/local/bin/wdev" ]; then
 fi
 
 echo -e "${BLUE}>>> [3/4] Memasang systemd service wdev (port 3200)...${NC}"
+if [ ! -f /etc/wdev/wdev.db ]; then
+  /usr/local/bin/wdev panel ssl on >/dev/null 2>&1 || true
+fi
 /usr/local/bin/wdev install service --port 3200
 
 echo -e "${BLUE}>>> [4/4] Memeriksa firewall (UFW)...${NC}"

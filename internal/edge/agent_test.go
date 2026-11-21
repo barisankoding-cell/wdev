@@ -69,14 +69,79 @@ func TestMailStreamBlock(t *testing.T) {
 }
 
 func TestAgentAuthRequired(t *testing.T) {
-	prev := LoadAPIKey()
-	if prev == "" {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/ping", nil)
-		rec := httptest.NewRecorder()
-		NewAgentHandler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want 401", rec.Code)
+	prevLoader := loadAPIKeyFn
+	loadAPIKeyFn = func() string { return "test-secret-key" }
+	defer func() { loadAPIKeyFn = prevLoader }()
+
+	// 1. Peer dari NetBird tanpa API key -> 401 Unauthorized
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ping", nil)
+	req.RemoteAddr = "100.64.0.5:43210"
+	rec := httptest.NewRecorder()
+	NewAgentHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+
+	// 2. Peer dari IP publik ditolak (403 Forbidden) meskipun mengirim X-API-Key valid
+	reqPub := httptest.NewRequest(http.MethodGet, "/api/v1/ping", nil)
+	reqPub.RemoteAddr = "203.0.113.50:43210"
+	reqPub.Header.Set("X-API-Key", "test-secret-key")
+	recPub := httptest.NewRecorder()
+	NewAgentHandler().ServeHTTP(recPub, reqPub)
+	if recPub.Code != http.StatusForbidden {
+		t.Fatalf("public peer status = %d, want 403", recPub.Code)
+	}
+
+	// 3. Peer publik ke rute tak dikenal juga ditolak sebelum routing (403 Forbidden)
+	reqPubUnknown := httptest.NewRequest(http.MethodGet, "/unknown", nil)
+	reqPubUnknown.RemoteAddr = "203.0.113.50:43210"
+	recPubUnknown := httptest.NewRecorder()
+	NewAgentHandler().ServeHTTP(recPubUnknown, reqPubUnknown)
+	if recPubUnknown.Code != http.StatusForbidden {
+		t.Fatalf("public peer unknown path status = %d, want 403", recPubUnknown.Code)
+	}
+
+	// 4. Peer dari loopback dan NetBird dengan X-API-Key valid -> 200 OK
+	for _, peer := range []string{"127.0.0.1:43210", "[::1]:43210", "100.64.0.5:43210"} {
+		reqOK := httptest.NewRequest(http.MethodGet, "/api/v1/ping", nil)
+		reqOK.RemoteAddr = peer
+		reqOK.Header.Set("X-API-Key", "test-secret-key")
+		recOK := httptest.NewRecorder()
+		NewAgentHandler().ServeHTTP(recOK, reqOK)
+		if recOK.Code != http.StatusOK {
+			t.Fatalf("allowed peer %s status = %d, want 200", peer, recOK.Code)
 		}
+	}
+}
+
+func TestIsAllowedAgentPeer(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:1234", true},
+		{"[::1]:1234", true},
+		{"100.64.0.1:1234", true},
+		{"100.127.255.254:1234", true},
+		{"10.10.0.5:1234", true},
+		{"192.168.1.10:1234", true},
+		{"100.128.0.1:1234", false}, // di luar 100.64.0.0/10
+		{"203.0.113.50:1234", false},
+		{"", false},
+		{"invalid", false},
+	}
+	for _, tc := range cases {
+		if got := isAllowedAgentPeer(tc.addr); got != tc.want {
+			t.Errorf("isAllowedAgentPeer(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+
+	t.Setenv("WDEV_EDGE_ALLOW_IPS", "203.0.113.50, 198.51.100.0/24")
+	if !isAllowedAgentPeer("203.0.113.50:9999") {
+		t.Fatal("expected WDEV_EDGE_ALLOW_IPS exact IP to be allowed")
+	}
+	if !isAllowedAgentPeer("198.51.100.42:9999") {
+		t.Fatal("expected WDEV_EDGE_ALLOW_IPS CIDR IP to be allowed")
 	}
 }
 

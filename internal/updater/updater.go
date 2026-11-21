@@ -477,18 +477,38 @@ func Run(ctx context.Context, current string, opts Options, cb func(string)) (Re
 	return res, nil
 }
 
-func updateEdge(ctx context.Context, opts Options) error {
-	scpArgs := []string{}
-	sshArgs := []string{}
-	if opts.EdgeKey != "" {
-		scpArgs = append(scpArgs, "-i", opts.EdgeKey)
-		sshArgs = append(sshArgs, "-i", opts.EdgeKey)
+func buildEdgeSSHArgs(opts Options) (scpArgs []string, sshArgs []string, host string, err error) {
+	host = strings.TrimSpace(opts.EdgeHost)
+	if host == "" || strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t\r\n\x00") {
+		return nil, nil, "", fmt.Errorf("host edge tidak valid: %q", opts.EdgeHost)
 	}
-	scpArgs = append(scpArgs, BinaryPath, opts.EdgeHost+":"+EdgePath)
+	key := strings.TrimSpace(opts.EdgeKey)
+	if key != "" && (strings.HasPrefix(key, "-") || strings.ContainsAny(key, "\r\n\x00")) {
+		return nil, nil, "", fmt.Errorf("path key SSH edge tidak valid")
+	}
+
+	common := []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=15",
+		"-o", "StrictHostKeyChecking=accept-new",
+	}
+	if key != "" {
+		common = append(common, "-i", key)
+	}
+
+	scpArgs = append(append([]string(nil), common...), "--", BinaryPath, host+":"+EdgePath)
+	sshArgs = append(append([]string(nil), common...), "--", host, "chmod 0755 "+EdgePath+" && systemctl restart wdev-edge-agent")
+	return scpArgs, sshArgs, host, nil
+}
+
+func updateEdge(ctx context.Context, opts Options) error {
+	scpArgs, sshArgs, _, err := buildEdgeSSHArgs(opts)
+	if err != nil {
+		return err
+	}
 	if out, err := exec.CommandContext(ctx, "scp", scpArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("scp gagal: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	sshArgs = append(sshArgs, opts.EdgeHost, "chmod 0755 "+EdgePath+" && systemctl restart wdev-edge-agent")
 	if out, err := exec.CommandContext(ctx, "ssh", sshArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("ssh restart gagal: %w (%s)", err, strings.TrimSpace(string(out)))
 	}

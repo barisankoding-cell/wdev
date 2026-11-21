@@ -198,3 +198,31 @@ func TestClientIPIgnoresUntrustedProxyHeaders(t *testing.T) {
 		t.Fatalf("ClientIP() behind loopback proxy = %q, want 198.51.100.22", got)
 	}
 }
+
+func TestClearInitialPassword(t *testing.T) {
+	st, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	cfg := &config.Config{HTTPPort: "3200"}
+	mgr := New(cfg, st)
+
+	infoBefore := mgr.GetPanelAccessInfo("", "")
+	if infoBefore.PasswordIsCustom || infoBefore.Password == "" {
+		t.Fatalf("expected initial password to be present before clear, got %+v", infoBefore)
+	}
+	initPass := infoBefore.Password
+
+	if err := mgr.ClearInitialPassword(); err != nil {
+		t.Fatalf("ClearInitialPassword failed: %v", err)
+	}
+	infoAfter := mgr.GetPanelAccessInfo("", "")
+	if !infoAfter.PasswordIsCustom {
+		t.Fatalf("expected PasswordIsCustom=true after ClearInitialPassword, got %+v", infoAfter)
+	}
+	if gotRaw, _ := st.GetSetting(SettingInitialPassword); gotRaw != "" {
+		t.Fatalf("expected SettingInitialPassword cleared in DB, got %q", gotRaw)
+	}
+	if !mgr.ValidateCredentials("admin", initPass) {
+		t.Fatalf("expected password hash to remain valid after ClearInitialPassword")
+	}
+}

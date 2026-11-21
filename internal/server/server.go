@@ -221,10 +221,26 @@ func (s *Server) wrapCSRF(next http.Handler) http.Handler {
 						writeError(w, http.StatusForbidden, "Permintaan cross-site ditolak (CSRF protection)")
 						return
 					}
-					if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+					origin := strings.TrimSpace(r.Header.Get("Origin"))
+					if origin != "" {
 						u, err := url.Parse(origin)
-						if err != nil || !strings.EqualFold(u.Host, r.Host) {
+						if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) || (u.Scheme != "http" && u.Scheme != "https") {
 							writeError(w, http.StatusForbidden, "Origin tidak diizinkan (CSRF protection)")
+							return
+						}
+					}
+					referer := strings.TrimSpace(r.Header.Get("Referer"))
+					if origin == "" && referer != "" {
+						u, err := url.Parse(referer)
+						if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) || (u.Scheme != "http" && u.Scheme != "https") {
+							writeError(w, http.StatusForbidden, "Referer tidak diizinkan (CSRF protection)")
+							return
+						}
+					}
+					if hasSessionCookie && origin == "" && referer == "" {
+						fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+						if fetchSite != "same-origin" {
+							writeError(w, http.StatusForbidden, "Header asal permintaan (Origin/Referer) diperlukan (CSRF protection)")
 							return
 						}
 					}
@@ -385,6 +401,9 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Gagal membuat sesi: "+err.Error())
 		return
+	}
+	if s.authMgr.IsAuthEnabled() {
+		_ = s.authMgr.ClearInitialPassword()
 	}
 
 	http.SetCookie(w, &http.Cookie{

@@ -20,6 +20,12 @@ func TestWdevServiceUnitContentHasToolchainEnv(t *testing.T) {
 	if !strings.Contains(unit, `Environment="PATH=`) {
 		t.Error("unit tidak memuat PATH toolchain")
 	}
+	if !strings.Contains(unit, "UMask=0022") {
+		t.Error("unit tidak memuat UMask=0022")
+	}
+	if !strings.Contains(unit, "PrivateTmp=true") {
+		t.Error("unit tidak memuat PrivateTmp=true")
+	}
 }
 
 func TestWdevServiceUnitContentDefaults(t *testing.T) {

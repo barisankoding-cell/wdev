@@ -428,7 +428,7 @@ api-key=%s
 webserver=yes
 webserver-address=0.0.0.0
 webserver-port=%s
-webserver-allow-from=127.0.0.1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+webserver-allow-from=127.0.0.1,::1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 
 version-string=anonymous
 security-poll-suffix=
@@ -439,6 +439,7 @@ default-soa-edit=INCEPTION-INCREMENT
 	if err := writeRootFile("/etc/powerdns/pdns.conf", []byte(conf), 0640); err != nil {
 		return err
 	}
+	_ = exec.Command("chown", "root:pdns", "/etc/powerdns/pdns.conf").Run()
 	_ = exec.Command("chown", "-R", "pdns:pdns", dbDir).Run()
 	_ = exec.Command("chmod", "664", dbFile).Run()
 

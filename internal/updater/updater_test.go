@@ -95,3 +95,61 @@ func TestInstallBinaryFreshAndReplace(t *testing.T) {
 		t.Fatalf("unexpected leftover staging files: %v", matches)
 	}
 }
+
+func TestBuildEdgeSSHArgs(t *testing.T) {
+	scpArgs, sshArgs, host, err := buildEdgeSSHArgs(Options{
+		EdgeHost: "root@203.0.113.10",
+		EdgeKey:  "/root/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "root@203.0.113.10" {
+		t.Fatalf("host = %q", host)
+	}
+	for _, args := range [][]string{scpArgs, sshArgs} {
+		joined := joinArgs(args)
+		for _, want := range []string{
+			"BatchMode=yes",
+			"ConnectTimeout=15",
+			"StrictHostKeyChecking=accept-new",
+			"-i /root/.ssh/id_ed25519",
+			" -- ",
+		} {
+			if !containsString(joined, want) {
+				t.Fatalf("args %q missing %q", joined, want)
+			}
+		}
+	}
+
+	for _, bad := range []Options{
+		{EdgeHost: ""},
+		{EdgeHost: "-oProxyCommand=evil"},
+		{EdgeHost: "root@host evil"},
+		{EdgeHost: "root@203.0.113.10", EdgeKey: "-oProxyCommand=evil"},
+	} {
+		if _, _, _, err := buildEdgeSSHArgs(bad); err == nil {
+			t.Fatalf("expected error for invalid edge options %+v", bad)
+		}
+	}
+}
+
+func joinArgs(args []string) string {
+	out := ""
+	for i, a := range args {
+		if i > 0 {
+			out += " "
+		}
+		out += a
+	}
+	return out
+}
+
+func containsString(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

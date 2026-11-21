@@ -409,6 +409,14 @@ func (m *Manager) SetPassword(newPass string) error {
 	return nil
 }
 
+// ClearInitialPassword menghapus password awal plaintext dari database setelah login pertama berhasil.
+func (m *Manager) ClearInitialPassword() error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	return m.store.SetSetting(SettingInitialPassword, "")
+}
+
 // ValidateCredentials memvalidasi login username & password secara constant-time.
 func (m *Manager) ValidateCredentials(user, pass string) bool {
 	if !m.IsAuthEnabled() {

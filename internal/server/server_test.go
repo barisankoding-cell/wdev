@@ -443,6 +443,73 @@ func TestSecurityHardeningMiddlewaresAndEndpoints(t *testing.T) {
 		t.Fatalf("expected 403 for cross-origin POST, got %d", recCSRF.Code)
 	}
 
+	// 3b. CSRF protection menolak POST ber-cookie tanpa Origin, Referer, dan Sec-Fetch-Site
+	reqNoOrigin := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"vps"}`))
+	reqNoOrigin.Host = "panel.example.com:3200"
+	reqNoOrigin.AddCookie(sessionCookie)
+	recNoOrigin := httptest.NewRecorder()
+	handler.ServeHTTP(recNoOrigin, reqNoOrigin)
+	if recNoOrigin.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for cookie POST missing Origin/Referer, got %d", recNoOrigin.Code)
+	}
+
+	// 3c. CSRF protection menolak POST ber-cookie dengan Origin: null
+	reqNullOrigin := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"vps"}`))
+	reqNullOrigin.Host = "panel.example.com:3200"
+	reqNullOrigin.Header.Set("Origin", "null")
+	reqNullOrigin.AddCookie(sessionCookie)
+	recNullOrigin := httptest.NewRecorder()
+	handler.ServeHTTP(recNullOrigin, reqNullOrigin)
+	if recNullOrigin.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for Origin: null, got %d", recNullOrigin.Code)
+	}
+
+	// 3d. CSRF protection menolak POST ber-cookie dengan Referer host berbeda dan menerima Referer cocok
+	reqBadRef := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"local"}`))
+	reqBadRef.Host = "panel.example.com:3200"
+	reqBadRef.Header.Set("Referer", "https://evil.example.net/attack")
+	reqBadRef.AddCookie(sessionCookie)
+	recBadRef := httptest.NewRecorder()
+	handler.ServeHTTP(recBadRef, reqBadRef)
+	if recBadRef.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for mismatched Referer, got %d", recBadRef.Code)
+	}
+
+	reqGoodRef := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"local"}`))
+	reqGoodRef.Host = "panel.example.com:3200"
+	reqGoodRef.Header.Set("Referer", "https://panel.example.com:3200/settings")
+	reqGoodRef.AddCookie(sessionCookie)
+	recGoodRef := httptest.NewRecorder()
+	handler.ServeHTTP(recGoodRef, reqGoodRef)
+	if recGoodRef.Code != http.StatusOK {
+		t.Fatalf("expected 200 for matching Referer, got %d (%s)", recGoodRef.Code, recGoodRef.Body.String())
+	}
+
+	// 3e. Login pertama via /api/auth/login membersihkan panel_initial_password dari SQLite
+	initInfo := authMgr.GetPanelAccessInfo("", "")
+	if initInfo.PasswordIsCustom || initInfo.Password == "" {
+		t.Fatalf("expected initial password before first login, got %+v", initInfo)
+	}
+	loginBody, _ := json.Marshal(map[string]string{
+		"username": initInfo.Username,
+		"password": initInfo.Password,
+	})
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(loginBody))
+	reqLogin.Host = "localhost:3200"
+	reqLogin.Header.Set("Origin", "http://localhost:3200")
+	reqLogin.AddCookie(&http.Cookie{Name: auth.CookieEntranceName, Value: func() string {
+		c, _ := authMgr.GenerateEntranceCookie()
+		return c.Value
+	}()})
+	recLogin := httptest.NewRecorder()
+	handler.ServeHTTP(recLogin, reqLogin)
+	if recLogin.Code != http.StatusOK {
+		t.Fatalf("POST /api/auth/login failed: %d (%s)", recLogin.Code, recLogin.Body.String())
+	}
+	if cleared, _ := db.GetSetting(auth.SettingInitialPassword); cleared != "" {
+		t.Fatalf("expected panel_initial_password cleared after first login, got %q", cleared)
+	}
+
 	// 4. /api/updater/apply menolak source_dir lewat Web API
 	reqUpd := httptest.NewRequest(http.MethodPost, "/api/updater/apply", strings.NewReader(`{"source_dir":"/tmp/evil"}`))
 	reqUpd.Host = "localhost:3200"
