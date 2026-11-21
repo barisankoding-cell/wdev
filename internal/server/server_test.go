@@ -1488,7 +1488,7 @@ func TestHandleMailRelayDNSSyncEndpointValidation(t *testing.T) {
 	pdnsMgr := pdns.New(cfg, db)
 	mailMgr := mail.New(cfg, db, pdnsMgr)
 	authMgr := auth.New(cfg, db)
-	srv := New(cfg, db, runner.New(db), installer.New(cfg, db), nil, pdnsMgr, nil, mailMgr, nil, authMgr)
+	srv := New(cfg, db, runner.New(db), installer.New(cfg, db), nil, nil, nil, pdnsMgr, mailMgr, authMgr)
 	handler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
 
 	token, err := authMgr.CreateSession("admin")
