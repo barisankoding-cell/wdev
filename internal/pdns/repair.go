@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -88,16 +89,26 @@ func (m *Manager) RepairZone(domain string) (ZoneDoctorReport, error) {
 	}
 	conf := m.LoadConfig()
 	targetIP := strings.TrimSpace(conf.VPSPublicIP)
-	if targetIP == "" {
-		switch conf.Mode {
-		case "local":
+	switch conf.Mode {
+	case "local":
+		if targetIP == "" {
 			targetIP = DetectLocalLANIP()
 			if targetIP == "" {
 				targetIP = "127.0.0.1"
 			}
-		case "vps":
-			targetIP = "127.0.0.1"
-		default:
+		}
+	case "vps":
+		if !IsPublicIPv4String(targetIP) {
+			targetIP = DetectPublicIP()
+		}
+		if !IsPublicIPv4String(targetIP) {
+			return report, fmt.Errorf("IP publik VPS valid belum terdeteksi; atur VPS_PUBLIC_IP di konfigurasi DNS")
+		}
+		if os.Geteuid() == 0 && conf.HasAPIKey && !IsPublicIPv4String(m.readEdgeDNSFilePublicIP()) {
+			_ = m.SaveConfig(conf.VPSNetbirdIP, targetIP, conf.APIKey, conf.PDNSPort, conf.AgentPort)
+		}
+	default:
+		if targetIP == "" {
 			return report, fmt.Errorf("IP publik VPS belum tercatat; jalankan 'wdev pdns connect'")
 		}
 	}

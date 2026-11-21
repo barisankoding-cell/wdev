@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"wdev/internal/config"
 	"wdev/internal/edge"
@@ -204,19 +205,51 @@ func HasPublicInterfaceIP() bool {
 	return DetectPublicInterfaceIP() != ""
 }
 
+var (
+	detectExternalPublicIPFn = edge.DetectPublicIP
+	externalPublicIPMu       sync.Mutex
+	cachedExternalPublicIP   string
+	cachedExternalPublicAt   time.Time
+	cachedExternalFailAt     time.Time
+)
+
+const (
+	externalPublicIPTTL     = 5 * time.Minute
+	externalPublicFailDelay = 10 * time.Second
+)
+
+func detectCachedExternalPublicIP() string {
+	externalPublicIPMu.Lock()
+	defer externalPublicIPMu.Unlock()
+
+	if cachedExternalPublicIP != "" && time.Since(cachedExternalPublicAt) < externalPublicIPTTL {
+		return cachedExternalPublicIP
+	}
+	if cachedExternalPublicIP == "" && !cachedExternalFailAt.IsZero() && time.Since(cachedExternalFailAt) < externalPublicFailDelay {
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	pub := strings.TrimSpace(detectExternalPublicIPFn(ctx))
+	if IsPublicIPv4String(pub) {
+		cachedExternalPublicIP = pub
+		cachedExternalPublicAt = time.Now()
+		cachedExternalFailAt = time.Time{}
+		return pub
+	}
+	cachedExternalFailAt = time.Now()
+	// Pertahankan IP publik valid terakhir bila lookup sementara gagal setelah TTL habis.
+	return cachedExternalPublicIP
+}
+
 // DetectPublicIP mendeteksi IPv4 publik baik langsung pada interface jaringan (tanpa NAT)
-// maupun floating IP / 1:1 NAT melalui layanan eksternal.
+// maupun floating IP / 1:1 NAT melalui layanan eksternal (di-cache 5 menit).
 func DetectPublicIP() string {
 	if pub := DetectPublicInterfaceIP(); pub != "" {
 		return pub
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
-	defer cancel()
-	pub := edge.DetectPublicIP(ctx)
-	if IsPublicIPv4String(pub) {
-		return pub
-	}
-	return ""
+	return detectCachedExternalPublicIP()
 }
 
 // HasPublicIP memeriksa apakah mesin ini memiliki alamat IPv4 publik (baik langsung di NIC maupun Floating IP).
@@ -302,11 +335,12 @@ func detectModeFromSignals(sig modeSignals) string {
 	return "local"
 }
 
-func (m *Manager) readRemoteEdgeHost() string {
+func (m *Manager) readEdgeDNSField(key string) string {
 	candidates := []string{filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")}
 	if m.cfg.WdevEtc != "/etc/wdev" {
 		candidates = append(candidates, "/etc/wdev/edge-dns.conf")
 	}
+	prefix := key + "="
 	for _, confFile := range candidates {
 		data, err := os.ReadFile(confFile)
 		if err != nil {
@@ -315,13 +349,25 @@ func (m *Manager) readRemoteEdgeHost() string {
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(line, "VPS_NETBIRD_IP=") {
-				v := strings.Trim(strings.TrimPrefix(line, "VPS_NETBIRD_IP="), "\"")
-				if v != "" && v != "127.0.0.1" && v != "localhost" && v != "::1" && v != "0.0.0.0" {
+			if strings.HasPrefix(line, prefix) {
+				v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, prefix)), "\"")
+				if v != "" {
 					return v
 				}
 			}
 		}
+	}
+	return ""
+}
+
+func (m *Manager) readEdgeDNSFilePublicIP() string {
+	return m.readEdgeDNSField("VPS_PUBLIC_IP")
+}
+
+func (m *Manager) readRemoteEdgeHost() string {
+	v := m.readEdgeDNSField("VPS_NETBIRD_IP")
+	if v != "" && v != "127.0.0.1" && v != "localhost" && v != "::1" && v != "0.0.0.0" {
+		return v
 	}
 	return ""
 }
@@ -441,13 +487,15 @@ func (m *Manager) ensureLocalPDNSConfig(mode string) {
 		}
 	}
 
-	if pubIP == "" {
-		if mode == "vps" {
+	if mode == "vps" {
+		if !IsPublicIPv4String(pubIP) {
 			pubIP = DetectPublicIP()
 		}
 		if !IsPublicIPv4String(pubIP) {
 			pubIP = ""
 		}
+	} else if pubIP == "" || !IsPublicIPv4String(pubIP) {
+		pubIP = ""
 	}
 
 	if apiKey != "" {
@@ -543,9 +591,15 @@ func (m *Manager) LoadConfig() EdgeConfig {
 				conf.VPSNetbirdIP = "127.0.0.1"
 			}
 		}
-		if mode == "vps" && (conf.VPSPublicIP == "" || !IsPublicIPv4String(conf.VPSPublicIP)) {
-			if pub := DetectPublicIP(); pub != "" {
-				conf.VPSPublicIP = pub
+		if mode == "vps" {
+			// Mode Full VPS tidak boleh memakai IP privat/CGNAT/loopback sebagai target record publik.
+			if !IsPublicIPv4String(conf.VPSPublicIP) {
+				conf.VPSPublicIP = ""
+			}
+			if conf.VPSPublicIP == "" {
+				if pub := DetectPublicIP(); pub != "" {
+					conf.VPSPublicIP = pub
+				}
 			}
 		}
 		if mode == "local" && hasLocalPDNS && conf.VPSPublicIP == "" {
@@ -736,20 +790,20 @@ func (m *Manager) AddZone(zoneName string) error {
 		return err
 	}
 	zoneIP := strings.TrimSpace(conf.VPSPublicIP)
-	if zoneIP == "" {
-		switch conf.Mode {
-		case "local":
+	switch conf.Mode {
+	case "local":
+		if zoneIP == "" {
 			zoneIP = DetectLocalLANIP()
 			if zoneIP == "" {
 				zoneIP = "127.0.0.1"
 			}
-		case "vps":
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			zoneIP = edge.DetectPublicIP(ctx)
-			cancel()
-			if zoneIP == "" {
-				zoneIP = DetectLocalLANIP()
-			}
+		}
+	case "vps":
+		if !IsPublicIPv4String(zoneIP) {
+			zoneIP = DetectPublicIP()
+		}
+		if !IsPublicIPv4String(zoneIP) {
+			zoneIP = ""
 		}
 	}
 	if zoneIP == "" {

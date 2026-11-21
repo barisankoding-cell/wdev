@@ -1201,7 +1201,7 @@
 
 <!-- Manage DNS Records Dialog -->
 <Dialog.Root bind:open={recordsOpen}>
-	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-3xl">
+	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-4xl">
 		<Dialog.Header>
 			<Dialog.Title>Record DNS — {currentZone}</Dialog.Title>
 			<Dialog.Description>Tambah atau hapus record DNS authoritative pada zone ini.</Dialog.Description>
@@ -1209,7 +1209,7 @@
 
 		<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
 			<form onsubmit={submitAddRecord} class="rounded-lg border p-3.5">
-				<Field.FieldGroup class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_110px_1.6fr_90px_auto]">
+				<Field.FieldGroup class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(140px,1fr)_100px_minmax(220px,1.8fr)_85px_auto]">
 					<Field.Field>
 						<Field.FieldLabel for="pdns-rec-name">Nama / Host</Field.FieldLabel>
 						<Input id="pdns-rec-name" placeholder="@ atau sub" bind:value={recName} />
@@ -1249,14 +1249,14 @@
 			</form>
 
 			<ResponsiveTableWrapper label="Tabel Record DNS PowerDNS">
-				<Table.Root>
+				<Table.Root class="sm:table-fixed">
 					<Table.Header>
 						<Table.Row>
-							<Table.Head>Nama Record</Table.Head>
-							<Table.Head>Tipe</Table.Head>
-							<Table.Head>TTL</Table.Head>
+							<Table.Head class="sm:w-48 lg:w-52">Nama Record</Table.Head>
+							<Table.Head class="sm:w-20">Tipe</Table.Head>
+							<Table.Head class="sm:w-16">TTL</Table.Head>
 							<Table.Head>Konten</Table.Head>
-							<Table.Head class="text-right">Aksi</Table.Head>
+							<Table.Head class="text-right sm:w-32">Aksi</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
@@ -1282,22 +1282,29 @@
 								{@const isEdgeProxy = exposures.some((p) => p.domain === cleanName)}
 								{#each rr.records || [] as rec, idx (idx)}
 									<Table.Row>
-										<Table.Cell data-label="Nama" class="font-semibold">
-											<span>{rr.name}</span>
-											{#if isEdgeProxy}
-												<Badge variant="secondary" class="ml-1.5 text-[10px]">Edge Proxy</Badge>
-											{/if}
+										<Table.Cell data-label="Nama" class="whitespace-normal wrap-anywhere font-semibold">
+											<div class="flex flex-wrap items-center gap-1.5">
+												<span>{rr.name}</span>
+												{#if isEdgeProxy}
+													<Badge variant="secondary" class="text-[10px]">Edge Proxy</Badge>
+												{/if}
+											</div>
 										</Table.Cell>
 										<Table.Cell data-label="Tipe">
 											<Badge variant="outline">{rr.type}</Badge>
 										</Table.Cell>
-										<Table.Cell data-label="TTL">{rr.ttl}</Table.Cell>
-										<Table.Cell data-label="Konten" class="break-all font-mono text-xs sm:max-w-64">
+										<Table.Cell data-label="TTL" class="tabular-nums text-muted-foreground">
+											{rr.ttl}
+										</Table.Cell>
+										<Table.Cell
+											data-label="Konten"
+											class="whitespace-normal break-normal wrap-anywhere font-mono text-xs leading-relaxed"
+										>
 											{rec.content}
 										</Table.Cell>
-										<Table.Cell data-label="Aksi" class="text-right">
+										<Table.Cell data-label="Aksi" class="text-right whitespace-nowrap">
 											{#if isProtected}
-												<span class="text-xs text-muted-foreground">Sistem</span>
+												<Badge variant="secondary" class="font-normal text-muted-foreground">Sistem</Badge>
 											{:else}
 												<Button
 													variant="destructive"

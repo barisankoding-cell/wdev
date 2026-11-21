@@ -146,8 +146,20 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 	}
 
 	publicIP := strings.TrimSpace(conf.VPSPublicIP)
+	if conf.Mode == "vps" {
+		if !IsPublicIPv4String(publicIP) {
+			publicIP = DetectPublicIP()
+		}
+		if !IsPublicIPv4String(publicIP) {
+			publicIP = ""
+		}
+	}
 	if publicIP == "" {
-		report.add("IP publik VPS", CheckWarn, "belum tercatat di edge.conf")
+		msg := "belum tercatat di edge.conf"
+		if conf.Mode == "vps" {
+			msg = "IP publik VPS valid belum terdeteksi; pastikan VPS_PUBLIC_IP di edge-dns.conf terisi IP publik"
+		}
+		report.add("IP publik VPS", CheckWarn, msg)
 	} else {
 		glueOK := true
 		for _, host := range report.Nameservers {
@@ -198,9 +210,20 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 				report.add("Glue publik "+host, CheckWarn, "belum resolve dari publik")
 				continue
 			}
-			if publicIP != "" && ips[0].String() == publicIP {
-				report.add("Glue publik "+host, CheckOK, ips[0].String())
-			} else if publicIP != "" {
+			if publicIP == "" {
+				report.add("Glue publik "+host, CheckWarn, fmt.Sprintf("terbaca %s (IP publik VPS belum terdeteksi untuk verifikasi)", ips[0]))
+				continue
+			}
+			matched := false
+			for _, ip := range ips {
+				if ip.String() == publicIP {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				report.add("Glue publik "+host, CheckOK, publicIP)
+			} else {
 				report.add("Glue publik "+host, CheckWarn, fmt.Sprintf("terbaca %s, diharapkan %s", ips[0], publicIP))
 			}
 		}
@@ -234,7 +257,11 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 	}
 
 	// Port 53 TCP.
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(authIP, "53"), 4*time.Second)
+	port53Target := authIP
+	if port53Target == "" && len(authTargets) > 0 {
+		port53Target = authTargets[0]
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(port53Target, "53"), 4*time.Second)
 	if err != nil {
 		report.add("Port 53", CheckWarn, "TCP 53 tidak terjangkau dari mesin ini: "+err.Error())
 	} else {

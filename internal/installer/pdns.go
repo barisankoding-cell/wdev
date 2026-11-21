@@ -428,9 +428,29 @@ func hasNonLoopbackIPv6() bool {
 	return false
 }
 
+func isInstallerPublicIPv4(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	if ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127 {
+		return false
+	}
+	return true
+}
+
 func (inst *Installer) detectHostRecordIP(ctx context.Context) string {
+	explicitMode := ""
+	if inst != nil && inst.store != nil {
+		if val, err := inst.store.GetSetting("server_mode"); err == nil {
+			explicitMode = strings.ToLower(strings.TrimSpace(val))
+		}
+	}
+
 	var lanFallback string
-	var hasPublicNIC bool
+	var publicNICIP string
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, ifi := range ifaces {
@@ -462,14 +482,40 @@ func (inst *Installer) detectHostRecordIP(ctx context.Context) string {
 					}
 					continue
 				}
-				hasPublicNIC = true
-				if lanFallback == "" {
-					lanFallback = ip4.String()
+				if publicNICIP == "" {
+					publicNICIP = ip4.String()
 				}
 			}
 		}
 	}
-	if hasPublicNIC {
+
+	if explicitMode == "local" {
+		if lanFallback != "" {
+			return lanFallback
+		}
+		return "127.0.0.1"
+	}
+
+	if publicNICIP != "" {
+		return publicNICIP
+	}
+
+	_, edgeConfErr := os.Stat("/etc/wdev-edge/edge.conf")
+	hasEdgeConf := edgeConfErr == nil
+	if hasEdgeConf {
+		if data, err := os.ReadFile("/etc/wdev-edge/edge.conf"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "PUBLIC_IP=") {
+					v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "PUBLIC_IP=")), "\"")
+					if p := net.ParseIP(v); p != nil && isInstallerPublicIPv4(p.To4()) {
+						return v
+					}
+				}
+			}
+		}
+	}
+
+	if explicitMode == "vps" || hasEdgeConf {
 		transport := &http.Transport{
 			DialContext: func(c context.Context, network, addr string) (net.Conn, error) {
 				return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(c, "tcp4", addr)
@@ -488,9 +534,12 @@ func (inst *Installer) detectHostRecordIP(ctx context.Context) string {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
 			_ = resp.Body.Close()
 			ip := strings.TrimSpace(string(body))
-			if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+			if p := net.ParseIP(ip); p != nil && isInstallerPublicIPv4(p.To4()) {
 				return ip
 			}
+		}
+		if explicitMode == "vps" {
+			return ""
 		}
 	}
 	if lanFallback != "" {
