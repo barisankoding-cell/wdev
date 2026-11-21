@@ -50,6 +50,7 @@ type Server struct {
 	svcCfgMgr   *serviceconfig.Manager
 	fileMgr     *filemanager.Manager
 	termMgr     *terminal.Manager
+	termSec     *terminalSecurityState
 	mux         *http.ServeMux
 }
 
@@ -413,6 +414,7 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if s.installer != nil {
 		s.installer.ClearSudoPassword()
 	}
+	s.revokeTerminalGrantForRequest(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.CookieSessionName,
 		Value:    "",
@@ -492,6 +494,7 @@ func (s *Server) handleAuthChangeCredentials(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	s.revokeAllTerminalGrants()
 
 	// Terbitkan sesi baru untuk admin yang baru saja memperbarui kredensial
 	if newToken, err := s.authMgr.CreateSession(updatedUsername); err == nil {

@@ -32,7 +32,9 @@ import type {
 	ServerMode,
 	ServiceConfigKey,
 	SetRelayPayload,
+	TerminalAuditRecord,
 	TerminalInfo,
+	TerminalUnlockResponse,
 	SetupMailPayload,
 	SiteRecord,
 	SwitchersMap,
@@ -568,11 +570,26 @@ export const api = {
 
 	// Interactive PTY Terminal
 	getTerminalInfo: () => apiFetch<TerminalInfo>('/api/terminal/info'),
-	terminalWsUrl: (opts: { cwd?: string; shell?: string; cols?: number; rows?: number } = {}) => {
+	unlockTerminal: (password: string, user = '', remember = true) =>
+		apiFetch<TerminalUnlockResponse>('/api/terminal/unlock', {
+			method: 'POST',
+			body: JSON.stringify({ password, user, remember })
+		}),
+	lockTerminal: () =>
+		apiFetch<{ status: string; message: string }>('/api/terminal/lock', {
+			method: 'POST'
+		}),
+	getTerminalAudit: (limit = 50) =>
+		apiFetch<TerminalAuditRecord[]>(`/api/terminal/audit?limit=${limit}`),
+	terminalWsUrl: (
+		opts: { cwd?: string; shell?: string; user?: string; token?: string; cols?: number; rows?: number } = {}
+	) => {
 		const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const params = new URLSearchParams();
 		if (opts.cwd) params.set('cwd', opts.cwd);
 		if (opts.shell) params.set('shell', opts.shell);
+		if (opts.user) params.set('user', opts.user);
+		if (opts.token) params.set('token', opts.token);
 		if (opts.cols) params.set('cols', String(opts.cols));
 		if (opts.rows) params.set('rows', String(opts.rows));
 		const qs = params.toString();

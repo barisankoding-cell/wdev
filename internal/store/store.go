@@ -71,6 +71,20 @@ type TaskRecord struct {
 	LogOutput  string    `json:"log_output"`
 }
 
+type TerminalAuditRecord struct {
+	ID         int64      `json:"id"`
+	SessionID  string     `json:"session_id"`
+	PanelUser  string     `json:"panel_user"`
+	TargetUser string     `json:"target_user"`
+	Shell      string     `json:"shell"`
+	Cwd        string     `json:"cwd"`
+	ClientIP   string     `json:"client_ip"`
+	Status     string     `json:"status"` // active, closed, idle_timeout, error
+	ExitCode   int        `json:"exit_code"`
+	StartedAt  time.Time  `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+}
+
 func New(dbPath string) (*Store, error) {
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -158,6 +172,19 @@ func (s *Store) migrate() error {
 			username TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			expires_at DATETIME NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS terminal_audits (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL UNIQUE,
+			panel_user TEXT NOT NULL DEFAULT '',
+			target_user TEXT NOT NULL DEFAULT '',
+			shell TEXT NOT NULL DEFAULT '',
+			cwd TEXT NOT NULL DEFAULT '',
+			client_ip TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active',
+			exit_code INTEGER NOT NULL DEFAULT 0,
+			started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			ended_at DATETIME
 		);`,
 	}
 
@@ -504,5 +531,79 @@ func (s *Store) DeleteAllSessions() error {
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM panel_sessions`)
 	return err
+}
+
+// InsertTerminalAudit mencatat pembukaan sesi terminal PTY.
+func (s *Store) InsertTerminalAudit(rec TerminalAuditRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec.StartedAt.IsZero() {
+		rec.StartedAt = time.Now()
+	}
+	if rec.Status == "" {
+		rec.Status = "active"
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO terminal_audits (session_id, panel_user, target_user, shell, cwd, client_ip, status, exit_code, started_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO NOTHING`,
+		rec.SessionID, rec.PanelUser, rec.TargetUser, rec.Shell, rec.Cwd, rec.ClientIP, rec.Status, rec.ExitCode, rec.StartedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+// CompleteTerminalAudit memperbarui status akhir dan waktu selesai sesi terminal PTY.
+func (s *Store) CompleteTerminalAudit(sessionID, status string, exitCode int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if status == "" {
+		status = "closed"
+	}
+	_, err := s.db.Exec(
+		`UPDATE terminal_audits SET status = ?, exit_code = ?, ended_at = ? WHERE session_id = ? AND ended_at IS NULL`,
+		status, exitCode, time.Now().Format(time.RFC3339), sessionID,
+	)
+	return err
+}
+
+// ListTerminalAudits mengembalikan daftar riwayat audit pembukaan terminal terbaru.
+func (s *Store) ListTerminalAudits(limit int) ([]TerminalAuditRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT id, session_id, panel_user, target_user, shell, cwd, client_ip, status, exit_code, started_at, ended_at
+		 FROM terminal_audits ORDER BY id DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TerminalAuditRecord
+	for rows.Next() {
+		var r TerminalAuditRecord
+		var startStr string
+		var endStr sql.NullString
+		if err := rows.Scan(&r.ID, &r.SessionID, &r.PanelUser, &r.TargetUser, &r.Shell, &r.Cwd, &r.ClientIP, &r.Status, &r.ExitCode, &startStr, &endStr); err != nil {
+			return nil, err
+		}
+		if t, err := time.Parse(time.RFC3339, startStr); err == nil {
+			r.StartedAt = t
+		} else if t2, err2 := time.Parse("2006-01-02 15:04:05", startStr); err2 == nil {
+			r.StartedAt = t2
+		}
+		if endStr.Valid && endStr.String != "" {
+			if t, err := time.Parse(time.RFC3339, endStr.String); err == nil {
+				r.EndedAt = &t
+			} else if t2, err2 := time.Parse("2006-01-02 15:04:05", endStr.String); err2 == nil {
+				r.EndedAt = &t2
+			}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 

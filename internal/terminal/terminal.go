@@ -11,9 +11,11 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"wdev/internal/config"
@@ -26,46 +28,73 @@ const (
 	DefaultMaxSessions = 16
 	DefaultCols        = 120
 	DefaultRows        = 32
+	DefaultIdleTimeout = 15 * time.Minute
 )
 
-// Info merangkum metadata sistem & shell untuk sesi terminal PTY.
+// TargetUser mendeskripsikan akun Linux yang dapat dipilih untuk menjalankan shell PTY.
+type TargetUser struct {
+	Username string `json:"username"`
+	UID      uint32 `json:"uid"`
+	GID      uint32 `json:"gid"`
+	HomeDir  string `json:"home_dir"`
+	Shell    string `json:"shell"`
+	IsRoot   bool   `json:"is_root"`
+}
+
+// Info merangkum metadata sistem, user target, shell, dan kebijakan keamanan terminal PTY.
 type Info struct {
-	Hostname        string   `json:"hostname"`
-	OSName          string   `json:"os_name"`
-	User            string   `json:"user"`
-	Shell           string   `json:"shell"`
-	AvailableShells []string `json:"available_shells"`
-	HomeDir         string   `json:"home_dir"`
-	ServerMode      string   `json:"server_mode,omitempty"`
-	ActiveSessions  int      `json:"active_sessions"`
-	MaxSessions     int      `json:"max_sessions"`
+	Hostname             string       `json:"hostname"`
+	OSName               string       `json:"os_name"`
+	User                 string       `json:"user"`
+	DefaultUser          string       `json:"default_user"`
+	AvailableUsers       []TargetUser `json:"available_users"`
+	IsDaemonRoot         bool         `json:"is_daemon_root"`
+	Shell                string       `json:"shell"`
+	AvailableShells      []string     `json:"available_shells"`
+	HomeDir              string       `json:"home_dir"`
+	ServerMode           string       `json:"server_mode,omitempty"`
+	ActiveSessions       int          `json:"active_sessions"`
+	MaxSessions          int          `json:"max_sessions"`
+	IdleTimeoutSeconds   int          `json:"idle_timeout_seconds"`
+	IsHTTPS              bool         `json:"is_https"`
+	RootUnlocked         bool         `json:"root_unlocked"`
+	RootUnlockExpiresAt  *time.Time   `json:"root_unlock_expires_at,omitempty"`
+	StepUpAlwaysRequired bool         `json:"step_up_always_required"`
 }
 
 // StartOptions mengonfigurasi pembukaan sesi terminal PTY baru.
 type StartOptions struct {
-	Cwd   string
-	Shell string
-	Cols  uint16
-	Rows  uint16
+	User        string
+	Cwd         string
+	Shell       string
+	Cols        uint16
+	Rows        uint16
+	IdleTimeout time.Duration // 0 => DefaultIdleTimeout; < 0 => nonaktif
 }
 
 // Session merepresentasikan satu proses shell interaktif berbasis PTY.
 type Session struct {
-	ID        string
-	Cwd       string
-	Shell     string
-	User      string
-	Hostname  string
-	StartedAt time.Time
+	ID          string
+	TargetUser  TargetUser
+	Cwd         string
+	Shell       string
+	User        string
+	Hostname    string
+	StartedAt   time.Time
+	IdleTimeout time.Duration
 
-	cmd       *exec.Cmd
-	ptmx      *os.File
-	pid       int
-	doneCh    chan struct{}
-	exitCode  int
-	exitErr   error
-	closeOnce sync.Once
-	onClose   func()
+	cmd           *exec.Cmd
+	ptmx          *os.File
+	pid           int
+	doneCh        chan struct{}
+	exitCode      int
+	exitErr       error
+	closeReasonMu sync.Mutex
+	closeReason   string
+	lastInputNano atomic.Int64
+	stopWatchCh   chan struct{}
+	closeOnce     sync.Once
+	onClose       func()
 }
 
 // Manager mengelola siklus hidup sesi PTY interaktif secara aman.
@@ -117,47 +146,91 @@ func detectOSName() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
-func lookupPasswdUser() (username, homeDir, loginShell string) {
-	uidStr := strconv.Itoa(os.Getuid())
-	if f, err := os.Open("/etc/passwd"); err == nil {
-		defer f.Close()
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			line := sc.Text()
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			fields := strings.Split(line, ":")
-			if len(fields) >= 7 && fields[2] == uidStr {
-				username = fields[0]
-				homeDir = fields[5]
-				loginShell = fields[6]
-				break
+type passwdEntry struct {
+	username string
+	uid      uint32
+	gid      uint32
+	homeDir  string
+	shell    string
+}
+
+func readPasswdEntries() []passwdEntry {
+	f, err := os.Open("/etc/passwd")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var entries []passwdEntry
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) < 7 {
+			continue
+		}
+		uid64, err1 := strconv.ParseUint(fields[2], 10, 32)
+		gid64, err2 := strconv.ParseUint(fields[3], 10, 32)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		entries = append(entries, passwdEntry{
+			username: fields[0],
+			uid:      uint32(uid64),
+			gid:      uint32(gid64),
+			homeDir:  fields[5],
+			shell:    fields[6],
+		})
+	}
+	return entries
+}
+
+func lookupCurrentProcessUser() TargetUser {
+	euid := uint32(os.Geteuid())
+	egid := uint32(os.Getegid())
+	for _, pe := range readPasswdEntries() {
+		if pe.uid == euid {
+			return TargetUser{
+				Username: pe.username,
+				UID:      pe.uid,
+				GID:      pe.gid,
+				HomeDir:  pe.homeDir,
+				Shell:    pe.shell,
+				IsRoot:   pe.uid == 0,
 			}
 		}
 	}
+	username := os.Getenv("USER")
+	homeDir, _ := os.UserHomeDir()
 	if u, err := user.Current(); err == nil {
-		if username == "" {
+		if u.Username != "" {
 			username = u.Username
 		}
-		if homeDir == "" {
+		if u.HomeDir != "" {
 			homeDir = u.HomeDir
 		}
 	}
 	if username == "" {
-		username = os.Getenv("USER")
-	}
-	if username == "" {
-		username = "root"
-	}
-	if homeDir == "" {
-		if h, err := os.UserHomeDir(); err == nil && h != "" {
-			homeDir = h
+		if euid == 0 {
+			username = "root"
 		} else {
-			homeDir = "/"
+			username = strconv.FormatUint(uint64(euid), 10)
 		}
 	}
-	return username, homeDir, loginShell
+	if homeDir == "" {
+		homeDir = "/"
+	}
+	return TargetUser{
+		Username: username,
+		UID:      euid,
+		GID:      egid,
+		HomeDir:  homeDir,
+		Shell:    os.Getenv("SHELL"),
+		IsRoot:   euid == 0,
+	}
 }
 
 func isUsableShell(p string) bool {
@@ -176,12 +249,105 @@ func isUsableShell(p string) bool {
 	return info.Mode()&0111 != 0
 }
 
-// AvailableShells mengembalikan daftar shell interaktif yang tersedia di host.
-func (m *Manager) AvailableShells() []string {
-	_, _, passwdShell := lookupPasswdUser()
+// AvailableUsers mengembalikan daftar user Linux yang aman dipakai untuk PTY.
+// Ketika wdev berjalan sebagai root, user non-root interaktif diposisikan paling depan (default aman),
+// dan root diletakkan di akhir dengan penanda IsRoot=true.
+func (m *Manager) AvailableUsers() []TargetUser {
+	current := lookupCurrentProcessUser()
+	if os.Geteuid() != 0 {
+		return []TargetUser{current}
+	}
+
+	sudoUser := strings.TrimSpace(os.Getenv("SUDO_USER"))
+	var nonRoot []TargetUser
+	var rootEntry *TargetUser
+
+	for _, pe := range readPasswdEntries() {
+		if pe.uid == 0 {
+			if rootEntry == nil {
+				h := pe.homeDir
+				if h == "" {
+					h = "/root"
+				}
+				rootEntry = &TargetUser{
+					Username: pe.username,
+					UID:      pe.uid,
+					GID:      pe.gid,
+					HomeDir:  h,
+					Shell:    pe.shell,
+					IsRoot:   true,
+				}
+			}
+			continue
+		}
+		// Abaikan akun sistem/nobody; ambil akun manusia interaktif (UID 1000..60000).
+		if pe.uid < 1000 || pe.uid > 60000 || pe.username == "nobody" {
+			continue
+		}
+		if !isUsableShell(pe.shell) {
+			continue
+		}
+		home := pe.homeDir
+		if home == "" {
+			home = "/"
+		}
+		if st, err := os.Stat(home); err != nil || !st.IsDir() {
+			continue
+		}
+		nonRoot = append(nonRoot, TargetUser{
+			Username: pe.username,
+			UID:      pe.uid,
+			GID:      pe.gid,
+			HomeDir:  home,
+			Shell:    pe.shell,
+			IsRoot:   false,
+		})
+	}
+
+	sort.SliceStable(nonRoot, func(i, j int) bool {
+		if sudoUser != "" {
+			if nonRoot[i].Username == sudoUser && nonRoot[j].Username != sudoUser {
+				return true
+			}
+			if nonRoot[j].Username == sudoUser && nonRoot[i].Username != sudoUser {
+				return false
+			}
+		}
+		return nonRoot[i].UID < nonRoot[j].UID
+	})
+
+	if rootEntry == nil {
+		r := current
+		r.IsRoot = true
+		rootEntry = &r
+	}
+
+	out := make([]TargetUser, 0, len(nonRoot)+1)
+	out = append(out, nonRoot...)
+	out = append(out, *rootEntry)
+	return out
+}
+
+// ResolveTargetUser memvalidasi dan memilih user Linux target untuk sesi PTY.
+func (m *Manager) ResolveTargetUser(requested string) (TargetUser, error) {
+	users := m.AvailableUsers()
+	req := strings.TrimSpace(requested)
+	if req == "" {
+		return users[0], nil
+	}
+	for _, u := range users {
+		if u.Username == req {
+			return u, nil
+		}
+	}
+	return TargetUser{}, fmt.Errorf("akun OS %q tidak diizinkan atau tidak tersedia untuk terminal", requested)
+}
+
+// AvailableShellsForUser mengembalikan daftar shell interaktif dengan prioritas shell milik target user.
+func (m *Manager) AvailableShellsForUser(preferredShell string) []string {
 	candidates := []string{
+		preferredShell,
 		os.Getenv("SHELL"),
-		passwdShell,
 		"/bin/zsh",
 		"/usr/bin/zsh",
 		"/bin/bash",
@@ -227,9 +393,15 @@ func (m *Manager) AvailableShells() []string {
 	return out
 }
 
+// AvailableShells mengembalikan daftar shell interaktif yang tersedia di host.
+func (m *Manager) AvailableShells() []string {
+	cur := lookupCurrentProcessUser()
+	return m.AvailableShellsForUser(cur.Shell)
+}
+
 // ResolveShell memvalidasi shell pilihan pengguna agar hanya shell interaktif sah yang dapat dijalankan.
-func (m *Manager) ResolveShell(requested string) (string, error) {
-	avail := m.AvailableShells()
+func (m *Manager) ResolveShell(requested, preferredUserShell string) (string, error) {
+	avail := m.AvailableShellsForUser(preferredUserShell)
 	req := strings.TrimSpace(requested)
 	if req == "" {
 		return avail[0], nil
@@ -244,20 +416,73 @@ func (m *Manager) ResolveShell(requested string) (string, error) {
 		if resolved, err := filepath.EvalSymlinks(sh); err == nil {
 			shReal = resolved
 		}
-		if cleanReq == sh || reqReal == shReal || filepath.Base(cleanReq) == filepath.Base(sh) && !strings.Contains(req, "/") {
+		if cleanReq == sh || reqReal == shReal || (filepath.Base(cleanReq) == filepath.Base(sh) && !strings.Contains(req, "/")) {
 			return sh, nil
 		}
 	}
 	return "", fmt.Errorf("shell %q tidak tersedia atau tidak diizinkan", requested)
 }
 
-// ResolveStartDir memvalidasi working directory awal dan memberikan fallback yang aman.
-func (m *Manager) ResolveStartDir(requested string) (string, string) {
-	_, homeDir, _ := lookupPasswdUser()
-	fallback := homeDir
-	if info, err := os.Stat(fallback); err != nil || !info.IsDir() {
+func canTargetTraverseDir(dirPath string, target TargetUser) bool {
+	if target.UID == 0 || target.UID == uint32(os.Geteuid()) {
+		return true
+	}
+	resolved := dirPath
+	if eval, err := filepath.EvalSymlinks(dirPath); err == nil {
+		resolved = eval
+	}
+	gids := map[uint32]bool{target.GID: true}
+	if u, err := user.LookupId(strconv.FormatUint(uint64(target.UID), 10)); err == nil {
+		if grpIDs, gerr := u.GroupIds(); gerr == nil {
+			for _, g := range grpIDs {
+				if parsed, perr := strconv.ParseUint(g, 10, 32); perr == nil {
+					gids[uint32(parsed)] = true
+				}
+			}
+		}
+	}
+
+	cur := "/"
+	checkOne := func(p string) bool {
+		info, err := os.Stat(p)
+		if err != nil {
+			return false
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return true
+		}
+		perm := info.Mode().Perm()
+		if st.Uid == target.UID {
+			return perm&0100 != 0
+		}
+		if gids[st.Gid] {
+			return perm&0010 != 0
+		}
+		return perm&0001 != 0
+	}
+
+	if !checkOne(cur) {
+		return false
+	}
+	for _, part := range strings.Split(strings.TrimPrefix(resolved, "/"), "/") {
+		if part == "" {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		if !checkOne(cur) {
+			return false
+		}
+	}
+	return true
+}
+
+// ResolveStartDir memvalidasi working directory awal untuk user target dan memberi fallback yang aman.
+func (m *Manager) ResolveStartDir(requested string, target TargetUser) (string, string) {
+	fallback := target.HomeDir
+	if info, err := os.Stat(fallback); err != nil || !info.IsDir() || !canTargetTraverseDir(fallback, target) {
 		if m.cfg != nil && m.cfg.WebRootBase != "" {
-			if wi, err := os.Stat(m.cfg.WebRootBase); err == nil && wi.IsDir() {
+			if wi, err := os.Stat(m.cfg.WebRootBase); err == nil && wi.IsDir() && canTargetTraverseDir(m.cfg.WebRootBase, target) {
 				fallback = m.cfg.WebRootBase
 			} else {
 				fallback = "/"
@@ -279,24 +504,30 @@ func (m *Manager) ResolveStartDir(requested string) (string, string) {
 	if err != nil {
 		return fallback, fmt.Sprintf("Direktori %q tidak ditemukan, dialihkan ke %s", clean, fallback)
 	}
+	targetDir := clean
 	if !info.IsDir() {
 		parent := filepath.Dir(clean)
-		if pi, err := os.Stat(parent); err == nil && pi.IsDir() {
-			return parent, ""
+		pi, perr := os.Stat(parent)
+		if perr != nil || !pi.IsDir() {
+			return fallback, fmt.Sprintf("Target %q bukan direktori, dialihkan ke %s", clean, fallback)
 		}
-		return fallback, fmt.Sprintf("Target %q bukan direktori, dialihkan ke %s", clean, fallback)
+		targetDir = parent
 	}
-	return clean, ""
+	if !canTargetTraverseDir(targetDir, target) {
+		return fallback, fmt.Sprintf("Akun %s tidak memiliki izin masuk ke %q, dialihkan ke %s", target.Username, targetDir, fallback)
+	}
+	return targetDir, ""
 }
 
-// SystemInfo mengembalikan ringkasan sistem, user, shell, dan jumlah sesi aktif.
+// SystemInfo mengembalikan ringkasan sistem, daftar user, shell, dan jumlah sesi aktif.
 func (m *Manager) SystemInfo() Info {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "localhost"
 	}
-	userName, homeDir, _ := lookupPasswdUser()
-	shells := m.AvailableShells()
+	users := m.AvailableUsers()
+	defUser := users[0]
+	shells := m.AvailableShellsForUser(defUser.Shell)
 
 	m.mu.Lock()
 	active := len(m.sessions)
@@ -304,14 +535,18 @@ func (m *Manager) SystemInfo() Info {
 	m.mu.Unlock()
 
 	return Info{
-		Hostname:        hostname,
-		OSName:          detectOSName(),
-		User:            userName,
-		Shell:           shells[0],
-		AvailableShells: shells,
-		HomeDir:         homeDir,
-		ActiveSessions:  active,
-		MaxSessions:     maxSess,
+		Hostname:           hostname,
+		OSName:             detectOSName(),
+		User:               defUser.Username,
+		DefaultUser:        defUser.Username,
+		AvailableUsers:     users,
+		IsDaemonRoot:       os.Geteuid() == 0,
+		Shell:              shells[0],
+		AvailableShells:    shells,
+		HomeDir:            defUser.HomeDir,
+		ActiveSessions:     active,
+		MaxSessions:        maxSess,
+		IdleTimeoutSeconds: int(DefaultIdleTimeout.Seconds()),
 	}
 }
 
@@ -388,16 +623,41 @@ func clampDimensions(cols, rows uint16) (uint16, uint16) {
 	return cols, rows
 }
 
-// StartSession meluncurkan proses shell interaktif di dalam Linux PTY baru.
+func lookupSupplementaryGroups(uid uint32, primaryGID uint32) []uint32 {
+	var groups []uint32
+	if u, err := user.LookupId(strconv.FormatUint(uint64(uid), 10)); err == nil {
+		if grpIDs, gerr := u.GroupIds(); gerr == nil {
+			for _, gs := range grpIDs {
+				if parsed, perr := strconv.ParseUint(gs, 10, 32); perr == nil {
+					groups = append(groups, uint32(parsed))
+				}
+			}
+		}
+	}
+	if len(groups) == 0 {
+		groups = []uint32{primaryGID}
+	}
+	return groups
+}
+
+// StartSession meluncurkan proses shell interaktif di dalam Linux PTY baru dengan isolasi privilege & idle timeout.
 func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
-	shellPath, err := m.ResolveShell(opts.Shell)
+	target, err := m.ResolveTargetUser(opts.User)
 	if err != nil {
 		return nil, "", err
 	}
-	cwd, fallbackReason := m.ResolveStartDir(opts.Cwd)
+	shellPath, err := m.ResolveShell(opts.Shell, target.Shell)
+	if err != nil {
+		return nil, "", err
+	}
+	cwd, fallbackReason := m.ResolveStartDir(opts.Cwd, target)
 	cols, rows := clampDimensions(opts.Cols, opts.Rows)
 
-	userName, homeDir, _ := lookupPasswdUser()
+	idleTimeout := opts.IdleTimeout
+	if idleTimeout == 0 {
+		idleTimeout = DefaultIdleTimeout
+	}
+
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "localhost"
@@ -410,37 +670,77 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 		m.mu.Unlock()
 		return nil, "", fmt.Errorf("batas maksimum sesi terminal (%d) tercapai", m.maxSessions)
 	}
-	// Reserve slot sebelum StartWithSize agar tidak race melewati maxSessions.
 	m.sessions[sessionID] = nil
 	m.mu.Unlock()
 
-	cmd := exec.Command(shellPath, shellArgs(shellPath)...)
-	cmd.Dir = cwd
-	cmd.Env = buildTerminalEnv(userName, homeDir, shellPath, cwd)
-
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Cols: cols,
-		Rows: rows,
-	})
+	ptmx, tty, err := pty.Open()
 	if err != nil {
 		m.mu.Lock()
 		delete(m.sessions, sessionID)
 		m.mu.Unlock()
-		return nil, "", fmt.Errorf("gagal memulai PTY terminal: %w", err)
+		return nil, "", fmt.Errorf("gagal membuka Linux PTY: %w", err)
 	}
 
-	sess := &Session{
-		ID:        sessionID,
-		Cwd:       cwd,
-		Shell:     shellPath,
-		User:      userName,
-		Hostname:  hostname,
-		StartedAt: time.Now(),
-		cmd:       cmd,
-		ptmx:      ptmx,
-		pid:       cmd.Process.Pid,
-		doneCh:    make(chan struct{}),
+	if szErr := pty.Setsize(ptmx, &pty.Winsize{Cols: cols, Rows: rows}); szErr != nil {
+		_ = tty.Close()
+		_ = ptmx.Close()
+		m.mu.Lock()
+		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+		return nil, "", fmt.Errorf("gagal mengatur ukuran PTY: %w", szErr)
 	}
+
+	sysAttr := &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
+	}
+
+	// Turunkan hak akses ke akun non-root secara aman bila wdev berjalan sebagai root dan user memilih non-root.
+	if os.Geteuid() == 0 && target.UID != 0 {
+		_ = os.Chown(tty.Name(), int(target.UID), int(target.GID))
+		_ = tty.Chmod(0620)
+		sysAttr.Credential = &syscall.Credential{
+			Uid:    target.UID,
+			Gid:    target.GID,
+			Groups: lookupSupplementaryGroups(target.UID, target.GID),
+		}
+	}
+
+	cmd := exec.Command(shellPath, shellArgs(shellPath)...)
+	cmd.Dir = cwd
+	cmd.Env = buildTerminalEnv(target.Username, target.HomeDir, shellPath, cwd)
+	cmd.Stdin = tty
+	cmd.Stdout = tty
+	cmd.Stderr = tty
+	cmd.SysProcAttr = sysAttr
+
+	if startErr := cmd.Start(); startErr != nil {
+		_ = tty.Close()
+		_ = ptmx.Close()
+		m.mu.Lock()
+		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+		return nil, "", fmt.Errorf("gagal memulai proses shell PTY: %w", startErr)
+	}
+	_ = tty.Close()
+
+	sess := &Session{
+		ID:          sessionID,
+		TargetUser:  target,
+		Cwd:         cwd,
+		Shell:       shellPath,
+		User:        target.Username,
+		Hostname:    hostname,
+		StartedAt:   time.Now(),
+		IdleTimeout: idleTimeout,
+		cmd:         cmd,
+		ptmx:        ptmx,
+		pid:         cmd.Process.Pid,
+		doneCh:      make(chan struct{}),
+		stopWatchCh: make(chan struct{}),
+	}
+	sess.lastInputNano.Store(time.Now().UnixNano())
 	sess.onClose = func() {
 		m.mu.Lock()
 		delete(m.sessions, sessionID)
@@ -450,6 +750,10 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 	m.mu.Lock()
 	m.sessions[sessionID] = sess
 	m.mu.Unlock()
+
+	if idleTimeout > 0 {
+		go sess.watchIdle(idleTimeout)
+	}
 
 	go func() {
 		waitErr := cmd.Wait()
@@ -472,13 +776,43 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 	return sess, fallbackReason, nil
 }
 
+func (s *Session) watchIdle(timeout time.Duration) {
+	checkEvery := timeout / 4
+	if checkEvery < 50*time.Millisecond {
+		checkEvery = 50 * time.Millisecond
+	}
+	if checkEvery > 15*time.Second {
+		checkEvery = 15 * time.Second
+	}
+	ticker := time.NewTicker(checkEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopWatchCh:
+			return
+		case <-s.doneCh:
+			return
+		case <-ticker.C:
+			last := time.Unix(0, s.lastInputNano.Load())
+			if time.Since(last) >= timeout {
+				_ = s.CloseWithReason("idle_timeout")
+				return
+			}
+		}
+	}
+}
+
 // Read membaca byte mentah dari PTY master.
 func (s *Session) Read(p []byte) (int, error) {
 	return s.ptmx.Read(p)
 }
 
-// Write menulis byte input dari pengguna ke PTY master.
+// Write menulis byte input dari pengguna ke PTY master dan mereset idle timer.
 func (s *Session) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		s.lastInputNano.Store(time.Now().UnixNano())
+	}
 	return s.ptmx.Write(p)
 }
 
@@ -497,10 +831,30 @@ func (s *Session) Wait() (int, error) {
 	return s.exitCode, s.exitErr
 }
 
+// Reason mengembalikan alasan penutupan khusus bila sesi diputus paksa (mis. "idle_timeout").
+func (s *Session) Reason() string {
+	s.closeReasonMu.Lock()
+	defer s.closeReasonMu.Unlock()
+	return s.closeReason
+}
+
+// CloseWithReason menutup PTY sambil mencatat alasan penutupan.
+func (s *Session) CloseWithReason(reason string) error {
+	if reason != "" {
+		s.closeReasonMu.Lock()
+		if s.closeReason == "" {
+			s.closeReason = reason
+		}
+		s.closeReasonMu.Unlock()
+	}
+	return s.Close()
+}
+
 // Close menutup PTY dan menghentikan grup proses shell dengan aman.
 func (s *Session) Close() error {
 	var closeErr error
 	s.closeOnce.Do(func() {
+		close(s.stopWatchCh)
 		if s.ptmx != nil {
 			closeErr = s.ptmx.Close()
 		}

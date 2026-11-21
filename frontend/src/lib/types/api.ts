@@ -639,15 +639,56 @@ export interface FileContentResult {
 	mod_time: string;
 }
 
+export interface TerminalTargetUser {
+	username: string;
+	uid: number;
+	gid: number;
+	home_dir: string;
+	shell: string;
+	is_root: boolean;
+}
+
 export interface TerminalInfo {
 	hostname: string;
 	os_name: string;
 	user: string;
+	default_user: string;
+	available_users: TerminalTargetUser[];
+	is_daemon_root: boolean;
 	shell: string;
 	available_shells: string[];
 	home_dir: string;
 	server_mode?: string;
 	active_sessions: number;
 	max_sessions: number;
+	idle_timeout_seconds: number;
+	is_https: boolean;
+	root_unlocked: boolean;
+	root_unlock_expires_at?: string;
+	step_up_always_required: boolean;
+}
+
+export interface TerminalUnlockResponse {
+	status: string;
+	token: string;
+	expires_in: number;
+	user: string;
+	is_root: boolean;
+	root_unlocked: boolean;
+	root_unlock_expires_at?: string;
+}
+
+export interface TerminalAuditRecord {
+	id: number;
+	session_id: string;
+	panel_user: string;
+	target_user: string;
+	shell: string;
+	cwd: string;
+	client_ip: string;
+	status: string;
+	exit_code: number;
+	started_at: string;
+	ended_at?: string;
 }
 

@@ -1018,4 +1018,113 @@ func TestTerminalInfoAndWebSocketPTY(t *testing.T) {
 	if !strings.Contains(combined.String(), "__WS_PTY_PASS__") || !seenExit {
 		t.Fatalf("expected __WS_PTY_PASS__ and exit event, seenExit=%v output=%q", seenExit, combined.String())
 	}
+
+	// 4. Audit log must record the session
+	reqAudit := httptest.NewRequest(http.MethodGet, "/api/terminal/audit?limit=10", nil)
+	reqAudit.AddCookie(sessionCookie)
+	recAudit := httptest.NewRecorder()
+	handler.ServeHTTP(recAudit, reqAudit)
+	if recAudit.Code != http.StatusOK || !strings.Contains(recAudit.Body.String(), `"target_user"`) {
+		t.Fatalf("GET /api/terminal/audit = %d, body=%s", recAudit.Code, recAudit.Body.String())
+	}
+
+	// 5. Step-Up Verification (/api/terminal/unlock & /api/terminal/lock & single-use ticket)
+	_ = authMgr.SetPassword("StrongPass#2026")
+	freshToken, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshCookie := &http.Cookie{Name: auth.CookieSessionName, Value: freshToken}
+	srv.ensureTermSec().requireAll = true
+
+	// Step-up enabled: WS without token/grant must return 403 terminal_unlock_required
+	stepHeaders := http.Header{}
+	stepHeaders.Set("Cookie", freshCookie.String())
+	stepHeaders.Set("Origin", "http://"+tsURL.Host)
+	if cLocked, respLocked, err := websocket.DefaultDialer.Dial(wsURL, stepHeaders); err == nil {
+		_ = cLocked.Close()
+		t.Fatal("expected WS without unlock token to fail with 403")
+	} else if respLocked == nil || respLocked.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 terminal_unlock_required, got resp=%+v err=%v", respLocked, err)
+	}
+
+	// Even with auth_enabled=false, VerifyAdminPassword stays strict
+	_ = authMgr.SetAuthEnabled(false)
+	if authMgr.VerifyAdminPassword("wrong-password") {
+		t.Fatal("VerifyAdminPassword must reject wrong password even when auth_enabled=false")
+	}
+	if !authMgr.VerifyAdminPassword("StrongPass#2026") {
+		t.Fatal("VerifyAdminPassword must accept valid password")
+	}
+	_ = authMgr.SetAuthEnabled(true)
+
+	// Wrong unlock password returns 401
+	doPOST := func(path, body string, cookie *http.Cookie) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader(body))
+		req.Header.Set("Origin", "http://"+tsURL.Host)
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		resp, derr := http.DefaultClient.Do(req)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	if code, body := doPOST("/api/terminal/unlock", `{"password":"wrong","user":""}`, freshCookie); code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong unlock password, got %d (%s)", code, string(body))
+	}
+
+	// Valid unlock password returns single-use launch token (without remember)
+	codeGood, bodyGood := doPOST("/api/terminal/unlock", `{"password":"StrongPass#2026","remember":false}`, freshCookie)
+	if codeGood != http.StatusOK {
+		t.Fatalf("POST /api/terminal/unlock = %d, body=%s", codeGood, string(bodyGood))
+	}
+	var unlockResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(bodyGood, &unlockResp); err != nil || unlockResp.Token == "" {
+		t.Fatalf("invalid unlock JSON: %v body=%s", err, string(bodyGood))
+	}
+
+	// Dialing WITH ticket succeeds once, and replaying the same ticket fails (single-use)
+	wsURLWithToken := wsURL + "&token=" + url.QueryEscape(unlockResp.Token)
+	cUnlocked, _, err := websocket.DefaultDialer.Dial(wsURLWithToken, stepHeaders)
+	if err != nil {
+		t.Fatalf("WS dial with single-use unlock token failed: %v", err)
+	}
+	_ = cUnlocked.Close()
+
+	if cReplay, respReplay, err := websocket.DefaultDialer.Dial(wsURLWithToken, stepHeaders); err == nil {
+		_ = cReplay.Close()
+		t.Fatal("expected single-use unlock token replay to fail")
+	} else if respReplay == nil || respReplay.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 on replay, got %+v err=%v", respReplay, err)
+	}
+
+	// Unlock with remember=true allows follow-up dial until POST /api/terminal/lock revokes it
+	codeRem, bodyRem := doPOST("/api/terminal/unlock", `{"password":"StrongPass#2026","remember":true}`, freshCookie)
+	if codeRem != http.StatusOK || !strings.Contains(string(bodyRem), `"root_unlocked":true`) {
+		t.Fatalf("remember unlock failed: %d %s", codeRem, string(bodyRem))
+	}
+
+	cRem, _, err := websocket.DefaultDialer.Dial(wsURL, stepHeaders)
+	if err != nil {
+		t.Fatalf("WS dial under active root grant failed: %v", err)
+	}
+	_ = cRem.Close()
+
+	if codeLock, bodyLock := doPOST("/api/terminal/lock", "", freshCookie); codeLock != http.StatusOK {
+		t.Fatalf("POST /api/terminal/lock = %d (%s)", codeLock, string(bodyLock))
+	}
+
+	if cAfterLock, respAfterLock, err := websocket.DefaultDialer.Dial(wsURL, stepHeaders); err == nil {
+		_ = cAfterLock.Close()
+		t.Fatal("expected WS dial to fail after /api/terminal/lock")
+	} else if respAfterLock == nil || respAfterLock.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 after lock, got %+v err=%v", respAfterLock, err)
+	}
 }

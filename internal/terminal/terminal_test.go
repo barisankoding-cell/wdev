@@ -18,12 +18,21 @@ func TestResolveShellAndStartDir(t *testing.T) {
 		t.Fatalf("expected at least one usable shell")
 	}
 
-	sh, err := mgr.ResolveShell("")
+	target, err := mgr.ResolveTargetUser("")
+	if err != nil || target.Username == "" {
+		t.Fatalf("ResolveTargetUser default failed: target=%+v err=%v", target, err)
+	}
+
+	if _, err := mgr.ResolveTargetUser("nonexistent_wdev_user_xyz"); err == nil {
+		t.Fatalf("expected nonexistent target user to be rejected")
+	}
+
+	sh, err := mgr.ResolveShell("", target.Shell)
 	if err != nil || sh == "" {
 		t.Fatalf("ResolveShell default failed: sh=%q err=%v", sh, err)
 	}
 
-	if _, err := mgr.ResolveShell("/bin/rm"); err == nil {
+	if _, err := mgr.ResolveShell("/bin/rm", target.Shell); err == nil {
 		t.Fatalf("expected non-shell binary /bin/rm to be rejected")
 	}
 
@@ -33,18 +42,18 @@ func TestResolveShellAndStartDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gotDir, note := mgr.ResolveStartDir(dir)
+	gotDir, note := mgr.ResolveStartDir(dir, target)
 	if gotDir != dir || note != "" {
 		t.Fatalf("ResolveStartDir(dir) = (%q, %q), want (%q, \"\")", gotDir, note, dir)
 	}
 
-	gotFileParent, _ := mgr.ResolveStartDir(filePath)
+	gotFileParent, _ := mgr.ResolveStartDir(filePath, target)
 	if gotFileParent != dir {
 		t.Fatalf("ResolveStartDir(file) = %q, want parent %q", gotFileParent, dir)
 	}
 
 	missing := filepath.Join(dir, "does-not-exist")
-	gotFallback, fbNote := mgr.ResolveStartDir(missing)
+	gotFallback, fbNote := mgr.ResolveStartDir(missing, target)
 	if gotFallback == missing || fbNote == "" {
 		t.Fatalf("expected fallback and reason for missing dir, got (%q, %q)", gotFallback, fbNote)
 	}
@@ -123,5 +132,39 @@ func TestPTYSessionStartReadWriteResizeAndCleanup(t *testing.T) {
 
 	if info := mgr.SystemInfo(); info.ActiveSessions != 0 {
 		t.Fatalf("expected 0 active sessions after exit, got %d", info.ActiveSessions)
+	}
+}
+
+func TestPTYSessionIdleTimeoutClosesShell(t *testing.T) {
+	workDir := t.TempDir()
+	mgr := New(&config.Config{WebRootBase: workDir}, nil)
+
+	sess, _, err := mgr.StartSession(StartOptions{
+		Cwd:         workDir,
+		Shell:       "/bin/sh",
+		IdleTimeout: 120 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+	defer sess.Close()
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = sess.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected idle PTY session to auto-close")
+	}
+
+	if sess.Reason() != "idle_timeout" {
+		t.Fatalf("expected close reason idle_timeout, got %q", sess.Reason())
+	}
+	if info := mgr.SystemInfo(); info.ActiveSessions != 0 {
+		t.Fatalf("expected 0 active sessions after idle timeout, got %d", info.ActiveSessions)
 	}
 }

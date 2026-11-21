@@ -13,9 +13,11 @@
 		status: TerminalPaneStatus;
 		sessionId?: string;
 		user?: string;
+		isRoot?: boolean;
 		host?: string;
 		shell?: string;
 		cwd?: string;
+		idleTimeoutSeconds?: number;
 		exitCode?: number;
 		error?: string;
 	}
@@ -23,15 +25,21 @@
 	let {
 		cwd = '',
 		shell = '',
+		user = '',
+		token = '',
 		fontSize = 14,
 		active = true,
-		onMeta
+		onMeta,
+		onUnlockRequired
 	}: {
 		cwd?: string;
 		shell?: string;
+		user?: string;
+		token?: string;
 		fontSize?: number;
 		active?: boolean;
 		onMeta?: (meta: TerminalPaneMeta) => void;
+		onUnlockRequired?: () => void;
 	} = $props();
 
 	let hostEl = $state<HTMLDivElement | null>(null);
@@ -91,16 +99,25 @@
 		}
 	}
 
-	function connectWS() {
+	let activeToken = '';
+
+	function connectWS(overrideToken?: string) {
 		if (disposed || !term) return;
 		closeSocket();
 
 		fitNow();
 		emitMeta({ status: 'connecting', error: undefined, exitCode: undefined });
 
+		const useToken = overrideToken !== undefined ? overrideToken : activeToken || token;
+		if (overrideToken !== undefined) {
+			activeToken = ''; // token peluncuran satu kali pakai
+		}
+
 		const wsUrl = api.terminalWsUrl({
 			cwd: currentMeta.cwd || cwd,
 			shell: shell || undefined,
+			user: user || undefined,
+			token: useToken || undefined,
 			cols: term.cols,
 			rows: term.rows
 		});
@@ -108,9 +125,11 @@
 		const ws = new WebSocket(wsUrl);
 		ws.binaryType = 'arraybuffer';
 		socket = ws;
+		let wasOpened = false;
 
 		ws.onopen = () => {
 			if (socket !== ws || disposed) return;
+			wasOpened = true;
 			fitNow();
 			if (term) {
 				sendResize(term.cols, term.rows);
@@ -133,7 +152,9 @@
 						cwd?: string;
 						shell?: string;
 						user?: string;
+						is_root?: boolean;
 						host?: string;
+						idle_timeout_seconds?: number;
 						code?: number;
 						message?: string;
 					};
@@ -144,7 +165,9 @@
 							cwd: msg.cwd || currentMeta.cwd,
 							shell: msg.shell || currentMeta.shell,
 							user: msg.user,
-							host: msg.host
+							isRoot: Boolean(msg.is_root),
+							host: msg.host,
+							idleTimeoutSeconds: msg.idle_timeout_seconds
 						});
 					} else if (msg.type === 'exit') {
 						const code = typeof msg.code === 'number' ? msg.code : 0;
@@ -171,6 +194,14 @@
 		ws.onclose = (ev) => {
 			if (socket !== ws || disposed) return;
 			socket = null;
+			if (!wasOpened) {
+				emitMeta({
+					status: 'error',
+					error: 'Sesi membutuhkan konfirmasi password atau ditolak server.'
+				});
+				onUnlockRequired?.();
+				return;
+			}
 			if (currentMeta.status === 'connected' || currentMeta.status === 'connecting') {
 				emitMeta({
 					status: ev.wasClean ? 'exited' : 'error',
@@ -347,10 +378,10 @@
 		}
 	}
 
-	export function reconnect() {
+	export function reconnect(overrideToken?: string) {
 		if (!term) return;
 		term.writeln('\r\n\x1b[36m[Menghubungkan ulang sesi PTY...]\x1b[0m');
-		connectWS();
+		connectWS(overrideToken);
 	}
 </script>
 

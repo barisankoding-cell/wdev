@@ -329,6 +329,19 @@ func (m *Manager) ValidateCredentials(user, pass string) bool {
 	return userMatch && passMatch
 }
 
+// VerifyAdminPassword selalu memeriksa kata sandi panel secara ketat tanpa terpengaruh status auth_enabled.
+// Digunakan sebagai verifikasi langkah kedua (step-up) sebelum membuka shell terminal root.
+func (m *Manager) VerifyAdminPassword(pass string) bool {
+	if m == nil || m.store == nil || pass == "" {
+		return false
+	}
+	hash, err := m.store.GetSetting(SettingPasswordHash)
+	if err != nil || hash == "" {
+		return false
+	}
+	return VerifyPassword(pass, hash)
+}
+
 func (m *Manager) pruneAttemptsLocked(now time.Time) {
 	if len(m.attempts) < maxTrackedIPs/2 {
 		return
