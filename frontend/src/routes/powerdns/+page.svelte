@@ -12,6 +12,7 @@
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
@@ -49,6 +50,12 @@
 	let zonesError = $state('');
 	let exposuresError = $state('');
 	let glueGuideOpen = $state(false);
+	let refreshingAll = $state(false);
+	let refreshingExposures = $state(false);
+	let startingPDNS = $state(false);
+	let zonePending = $state<Record<string, 'doctor' | 'repair' | 'delete'>>({});
+	let unexposingPending = $state<Record<string, boolean>>({});
+	let recordPending = $state<Record<string, boolean>>({});
 
 	// Add Zone Dialog
 	let addZoneOpen = $state(false);
@@ -59,6 +66,10 @@
 	let reportOpen = $state(false);
 	let reportTitle = $state('');
 	let reportData = $state<ZoneDoctorReport | null>(null);
+	let reportLoading = $state(false);
+	let reportLoadingMessage = $state('');
+	let reportError = $state('');
+	let reportRequestSeq = 0;
 
 	// DNS Records Dialog
 	let recordsOpen = $state(false);
@@ -106,7 +117,8 @@
 		zones.length > 0 ? zones[0].name.replace(/\.$/, '') : 'example.com'
 	);
 
-	async function loadAll() {
+	async function loadAll(showProgress = false) {
+		if (showProgress) refreshingAll = true;
 		try {
 			const st = await api.getPDNSStatus();
 			edge = st;
@@ -118,6 +130,8 @@
 			if (st.agent_port) connAgentPort = st.agent_port;
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal memuat status PowerDNS');
+		} finally {
+			refreshingAll = false;
 		}
 
 		await Promise.all([
@@ -137,14 +151,30 @@
 		}
 	}
 
-	async function loadExposures() {
+	async function loadExposures(showProgress = false) {
+		if (showProgress) refreshingExposures = true;
 		exposuresError = '';
 		try {
 			exposures = (await api.listPDNSExposures()) ?? [];
 		} catch (err) {
 			exposures = [];
 			exposuresError = err instanceof Error ? err.message : 'Edge VPS tidak dapat dihubungi';
+		} finally {
+			refreshingExposures = false;
 		}
+	}
+
+	async function startLocalPDNS() {
+		startingPDNS = true;
+		try {
+			await api.controlService('pdns', 'restart');
+			toast.success('Layanan PowerDNS dijalankan.');
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : 'Gagal menjalankan PowerDNS');
+		} finally {
+			startingPDNS = false;
+		}
+		await loadAll();
 	}
 
 	async function loadLocalSites() {
@@ -262,12 +292,17 @@
 			destructive: true
 		});
 		if (!ok) return;
+		unexposingPending = { ...unexposingPending, [domain]: true };
 		try {
 			await api.unexposePDNS(domain, false);
 			toast.success(`Ekspos untuk '${domain}' berhasil dihapus.`);
 			await loadAll();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menghapus ekspos');
+		} finally {
+			const next = { ...unexposingPending };
+			delete next[domain];
+			unexposingPending = next;
 		}
 	}
 
@@ -293,13 +328,30 @@
 	}
 
 	async function runZoneDoctor(zoneName: string) {
+		const reqId = ++reportRequestSeq;
+		zonePending = { ...zonePending, [zoneName]: 'doctor' };
+		reportTitle = `Doctor Zone — ${zoneName}`;
+		reportData = null;
+		reportError = '';
+		reportLoadingMessage = `Memeriksa NS, SOA, glue record, dan resolusi DNS untuk ${zoneName}...`;
+		reportLoading = true;
+		reportOpen = true;
 		try {
 			const res = await api.doctorPDNSZone(zoneName);
-			reportTitle = `Doctor Zone — ${zoneName}`;
+			if (reqId !== reportRequestSeq) return;
 			reportData = res;
-			reportOpen = true;
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menjalankan doctor zone');
+			if (reqId !== reportRequestSeq) return;
+			const msg = err instanceof Error ? err.message : 'Gagal menjalankan doctor zone';
+			reportError = msg;
+			toast.error(msg);
+		} finally {
+			const next = { ...zonePending };
+			delete next[zoneName];
+			zonePending = next;
+			if (reqId === reportRequestSeq) {
+				reportLoading = false;
+			}
 		}
 	}
 
@@ -310,14 +362,31 @@
 			confirmText: 'Repair Zone'
 		});
 		if (!ok) return;
+		const reqId = ++reportRequestSeq;
+		zonePending = { ...zonePending, [zoneName]: 'repair' };
+		reportTitle = `Repair Zone — ${zoneName}`;
+		reportData = null;
+		reportError = '';
+		reportLoadingMessage = `Memperbaiki SOA/NS, glue ns1/ns2, dan konfigurasi zone ${zoneName}...`;
+		reportLoading = true;
+		reportOpen = true;
 		try {
 			const res = await api.repairPDNSZone(zoneName);
-			reportTitle = `Repair Zone — ${zoneName}`;
+			if (reqId !== reportRequestSeq) return;
 			reportData = res.report ?? res;
-			reportOpen = true;
 			await loadZones();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memperbaiki zone');
+			if (reqId !== reportRequestSeq) return;
+			const msg = err instanceof Error ? err.message : 'Gagal memperbaiki zone';
+			reportError = msg;
+			toast.error(msg);
+		} finally {
+			const next = { ...zonePending };
+			delete next[zoneName];
+			zonePending = next;
+			if (reqId === reportRequestSeq) {
+				reportLoading = false;
+			}
 		}
 	}
 
@@ -329,12 +398,17 @@
 			destructive: true
 		});
 		if (!ok) return;
+		zonePending = { ...zonePending, [zoneName]: 'delete' };
 		try {
 			await api.deletePDNSZone(zoneName);
 			toast.success(`Zone DNS '${zoneName}' berhasil dihapus.`);
 			await loadZones();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menghapus zone');
+		} finally {
+			const next = { ...zonePending };
+			delete next[zoneName];
+			zonePending = next;
 		}
 	}
 
@@ -396,12 +470,18 @@
 		});
 		recordsOpen = true;
 		if (!ok) return;
+		const key = `${name}:${type}`;
+		recordPending = { ...recordPending, [key]: true };
 		try {
 			await api.deletePDNSRecord(currentZone, name, type);
 			toast.success(`Record ${type} untuk ${name} dihapus.`);
 			await loadRecords(currentZone);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menghapus record');
+		} finally {
+			const next = { ...recordPending };
+			delete next[key];
+			recordPending = next;
 		}
 	}
 
@@ -553,19 +633,13 @@
 				</span>
 				<div class="flex flex-wrap gap-2">
 					{#if edge.has_local_pdns}
-						<Button
-							size="xs"
-							onclick={async () => {
-								try {
-									await api.controlService('pdns', 'restart');
-									toast.success('Layanan PowerDNS dijalankan.');
-								} catch (err) {
-									toast.error(err instanceof Error ? err.message : 'Gagal menjalankan PowerDNS');
-								}
-								await loadAll();
-							}}
-						>
-							Nyalakan PowerDNS
+						<Button size="xs" disabled={startingPDNS} onclick={startLocalPDNS}>
+							{#if startingPDNS}
+								<Spinner data-icon="inline-start" />
+								Menjalankan...
+							{:else}
+								Nyalakan PowerDNS
+							{/if}
 						</Button>
 					{/if}
 					<Button size="xs" variant={edge.has_local_pdns ? 'outline' : 'default'} onclick={() => cp.triggerInstall('pdns')}>
@@ -719,6 +793,7 @@
 						</Table.Row>
 					{:else}
 						{#each zones as z (z.name)}
+							{@const zPending = zonePending[z.name]}
 							<Table.Row>
 								<Table.Cell data-label="Zone" class="font-semibold">{z.name}</Table.Cell>
 								<Table.Cell data-label="Tipe">{z.kind}</Table.Cell>
@@ -728,21 +803,56 @@
 								</Table.Cell>
 								<Table.Cell data-label="Aksi">
 									<div class="flex flex-wrap justify-end gap-1.5">
-										<Button variant="outline" size="xs" onclick={() => openRecordsModal(z.name)}>
+										<Button
+											variant="outline"
+											size="xs"
+											disabled={Boolean(zPending)}
+											onclick={() => openRecordsModal(z.name)}
+										>
 											<ListIcon data-icon="inline-start" />
 											Record
 										</Button>
-										<Button variant="outline" size="xs" onclick={() => runZoneDoctor(z.name)}>
-											<StethoscopeIcon data-icon="inline-start" />
-											Doctor
+										<Button
+											variant="outline"
+											size="xs"
+											disabled={Boolean(zPending)}
+											onclick={() => runZoneDoctor(z.name)}
+										>
+											{#if zPending === 'doctor'}
+												<Spinner data-icon="inline-start" />
+												Memeriksa...
+											{:else}
+												<StethoscopeIcon data-icon="inline-start" />
+												Doctor
+											{/if}
 										</Button>
-										<Button variant="outline" size="xs" onclick={() => runZoneRepair(z.name)}>
-											<WrenchIcon data-icon="inline-start" />
-											Repair
+										<Button
+											variant="outline"
+											size="xs"
+											disabled={Boolean(zPending)}
+											onclick={() => runZoneRepair(z.name)}
+										>
+											{#if zPending === 'repair'}
+												<Spinner data-icon="inline-start" />
+												Memperbaiki...
+											{:else}
+												<WrenchIcon data-icon="inline-start" />
+												Repair
+											{/if}
 										</Button>
-										<Button variant="destructive" size="xs" onclick={() => deleteZone(z.name)}>
-											<Trash2Icon data-icon="inline-start" />
-											Hapus
+										<Button
+											variant="destructive"
+											size="xs"
+											disabled={Boolean(zPending)}
+											onclick={() => deleteZone(z.name)}
+										>
+											{#if zPending === 'delete'}
+												<Spinner data-icon="inline-start" />
+												Menghapus...
+											{:else}
+												<Trash2Icon data-icon="inline-start" />
+												Hapus
+											{/if}
 										</Button>
 									</div>
 								</Table.Cell>
@@ -764,9 +874,20 @@
 					Pemetaan virtual host lokal ke domain publik VPS Edge Gateway.
 				</p>
 			</div>
-			<Button variant="outline" size="sm" class="w-full sm:w-auto" onclick={loadAll}>
-				<RefreshCwIcon data-icon="inline-start" />
-				Perbarui Status
+			<Button
+				variant="outline"
+				size="sm"
+				class="w-full sm:w-auto"
+				disabled={refreshingAll}
+				onclick={() => loadAll(true)}
+			>
+				{#if refreshingAll}
+					<Spinner data-icon="inline-start" />
+					Memperbarui...
+				{:else}
+					<RefreshCwIcon data-icon="inline-start" />
+					Perbarui Status
+				{/if}
 			</Button>
 		</div>
 
@@ -844,9 +965,15 @@
 											<Button
 												variant="destructive"
 												size="xs"
+												disabled={Boolean(unexposingPending[s.exposed_to])}
 												onclick={() => unexposeDomain(s.exposed_to)}
 											>
-												Putus Ekspos
+												{#if unexposingPending[s.exposed_to]}
+													<Spinner data-icon="inline-start" />
+													Memutus...
+												{:else}
+													Putus Ekspos
+												{/if}
 											</Button>
 										{:else}
 											<Button size="xs" onclick={() => openExposeModal('site', s.domain)}>
@@ -874,9 +1001,19 @@
 				</p>
 			</div>
 			<div class="grid grid-cols-2 gap-2 sm:flex sm:items-center">
-				<Button variant="outline" size="sm" onclick={loadExposures}>
-					<RefreshCwIcon data-icon="inline-start" />
-					Segarkan
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={refreshingExposures}
+					onclick={() => loadExposures(true)}
+				>
+					{#if refreshingExposures}
+						<Spinner data-icon="inline-start" />
+						Menyegarkan...
+					{:else}
+						<RefreshCwIcon data-icon="inline-start" />
+						Segarkan
+					{/if}
 				</Button>
 				<Button size="sm" onclick={() => openExposeModal('site')}>
 					<PlusIcon data-icon="inline-start" />
@@ -942,9 +1079,19 @@
 									<code class="block break-all text-xs text-muted-foreground sm:truncate">{exp.config_file || '-'}</code>
 								</Table.Cell>
 								<Table.Cell data-label="Aksi" class="text-right">
-									<Button variant="destructive" size="xs" onclick={() => unexposeDomain(exp.domain)}>
-										<Trash2Icon data-icon="inline-start" />
-										Hapus Ekspos
+									<Button
+										variant="destructive"
+										size="xs"
+										disabled={Boolean(unexposingPending[exp.domain])}
+										onclick={() => unexposeDomain(exp.domain)}
+									>
+										{#if unexposingPending[exp.domain]}
+											<Spinner data-icon="inline-start" />
+											Menghapus...
+										{:else}
+											<Trash2Icon data-icon="inline-start" />
+											Hapus Ekspos
+										{/if}
 									</Button>
 								</Table.Cell>
 							</Table.Row>
@@ -1005,7 +1152,32 @@
 				</Dialog.Description>
 			{/if}
 		</Dialog.Header>
-		{#if reportData}
+		{#if reportLoading}
+			<div class="flex flex-col gap-3 py-1" role="status" aria-live="polite">
+				<div class="flex items-center gap-2 text-xs text-muted-foreground">
+					<Spinner />
+					<span>{reportLoadingMessage}</span>
+				</div>
+				<div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+					<div class="h-full w-2/3 animate-pulse rounded-full bg-primary"></div>
+				</div>
+				<div class="flex flex-col gap-2">
+					{#each [0, 1, 2] as idx (idx)}
+						<div class="flex items-center justify-between gap-3 rounded-md border p-2.5">
+							<div class="flex flex-1 flex-col gap-1.5">
+								<Skeleton class="h-3.5 w-28" />
+								<Skeleton class="h-3 w-full max-w-xs" />
+							</div>
+							<Skeleton class="h-5 w-12 rounded-full" />
+						</div>
+					{/each}
+				</div>
+			</div>
+		{:else if reportError}
+			<Alert.Root variant="destructive">
+				<Alert.Description>{reportError}</Alert.Description>
+			</Alert.Root>
+		{:else if reportData}
 			<div class="flex max-h-[55dvh] flex-col gap-2 overflow-y-auto">
 				{#each reportData.checks || [] as chk, idx (idx)}
 					<div class="flex items-start justify-between gap-3 rounded-md border p-2.5 text-xs">
@@ -1091,7 +1263,10 @@
 						{#if recordsLoading}
 							<Table.Row>
 								<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-									Memuat record DNS...
+									<div class="inline-flex items-center justify-center gap-2">
+										<Spinner />
+										<span>Memuat record DNS...</span>
+									</div>
 								</Table.Cell>
 							</Table.Row>
 						{:else if rrsets.length === 0}
@@ -1127,10 +1302,16 @@
 												<Button
 													variant="destructive"
 													size="xs"
+													disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
 													onclick={() => deleteRecord(rr.name, rr.type)}
 												>
-													<Trash2Icon data-icon="inline-start" />
-													Hapus
+													{#if recordPending[`${rr.name}:${rr.type}`]}
+														<Spinner data-icon="inline-start" />
+														Menghapus...
+													{:else}
+														<Trash2Icon data-icon="inline-start" />
+														Hapus
+													{/if}
 												</Button>
 											{/if}
 										</Table.Cell>

@@ -23,6 +23,7 @@
 	let publicHost = $state('');
 	let profile = $state('');
 	let submitting = $state(false);
+	let exposureDeleting = $state<Record<string, boolean>>({});
 
 	async function loadCloudflare() {
 		try {
@@ -66,12 +67,17 @@
 			destructive: true
 		});
 		if (!ok) return;
+		exposureDeleting = { ...exposureDeleting, [domain]: true };
 		try {
 			await api.unexposeCF(domain);
 			toast.success(`Eksposur Cloudflare untuk ${domain} berhasil dihapus.`);
 			await loadCloudflare();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menghapus eksposur');
+		} finally {
+			const next = { ...exposureDeleting };
+			delete next[domain];
+			exposureDeleting = next;
 		}
 	}
 </script>
@@ -190,9 +196,19 @@
 									<Badge variant="outline">{exp.profile}</Badge>
 								</Table.Cell>
 								<Table.Cell data-label="Aksi" class="text-right">
-									<Button variant="destructive" size="xs" onclick={() => unexpose(exp.local_domain)}>
-										<Trash2Icon data-icon="inline-start" />
-										Hapus
+									<Button
+										variant="destructive"
+										size="xs"
+										disabled={Boolean(exposureDeleting[exp.local_domain])}
+										onclick={() => unexpose(exp.local_domain)}
+									>
+										{#if exposureDeleting[exp.local_domain]}
+											<Spinner data-icon="inline-start" />
+											Menghapus...
+										{:else}
+											<Trash2Icon data-icon="inline-start" />
+											Hapus
+										{/if}
 									</Button>
 								</Table.Cell>
 							</Table.Row>

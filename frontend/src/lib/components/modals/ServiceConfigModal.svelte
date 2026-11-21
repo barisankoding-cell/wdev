@@ -4,6 +4,7 @@
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
+	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { cn } from '#lib/utils.js';
@@ -42,6 +43,7 @@
 	let inspectError = $state('');
 	let inspectSuccess = $state('');
 	let creatingDB = $state(false);
+	let flushingDB = $state<number | null>(null);
 
 	let logsText = $state('');
 	let logsUnit = $state('');
@@ -176,6 +178,7 @@
 			destructive: true
 		});
 		if (!confirmed) return;
+		flushingDB = dbIndex;
 		inspectError = '';
 		try {
 			const res = await cp.runWithSudoRetry(
@@ -187,6 +190,8 @@
 			await loadInspect();
 		} catch (err) {
 			inspectError = err instanceof Error ? err.message : 'Gagal melakukan flush DB';
+		} finally {
+			flushingDB = null;
 		}
 	}
 
@@ -291,6 +296,7 @@
 								inspectData={redisInspect}
 								{inspectLoading}
 								{inspectError}
+								{flushingDB}
 								{saving}
 								{formError}
 								onSave={saveConfig}
@@ -344,6 +350,7 @@
 									inspectData={redisInspect}
 									{inspectLoading}
 									{inspectError}
+									{flushingDB}
 									{saving}
 									{formError}
 									onSave={saveConfig}
@@ -379,8 +386,13 @@
 									{logsUnit ? `Log Layanan (${logsUnit})` : 'Log Layanan'}
 								</h4>
 								<Button type="button" variant="outline" size="sm" disabled={logsLoading} onclick={loadLogs}>
-									<RefreshCwIcon data-icon="inline-start" />
-									Muat Ulang Log
+									{#if logsLoading}
+										<Spinner data-icon="inline-start" />
+										Memuat...
+									{:else}
+										<RefreshCwIcon data-icon="inline-start" />
+										Muat Ulang Log
+									{/if}
 								</Button>
 							</div>
 							<pre

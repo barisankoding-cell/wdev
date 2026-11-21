@@ -29,6 +29,7 @@
 	let sites = $state<SiteRecord[]>([]);
 	let loading = $state(true);
 	let searchQuery = $state('');
+	let siteDeleting = $state<Record<string, boolean>>({});
 
 	let createOpen = $state(false);
 	let creating = $state(false);
@@ -133,12 +134,17 @@
 		});
 		if (!confirmed) return;
 
+		siteDeleting = { ...siteDeleting, [siteDomain]: true };
 		try {
 			await api.deleteSite(siteDomain);
 			toast.success(`Virtual host ${siteDomain} berhasil dihapus.`);
 			await loadSites();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menghapus virtual host');
+		} finally {
+			const next = { ...siteDeleting };
+			delete next[siteDomain];
+			siteDeleting = next;
 		}
 	}
 </script>
@@ -279,10 +285,16 @@
 								<Button
 									variant="destructive"
 									size="xs"
+									disabled={Boolean(siteDeleting[site.domain])}
 									onclick={() => deleteSite(site.domain)}
 								>
-									<Trash2Icon data-icon="inline-start" />
-									Hapus
+									{#if siteDeleting[site.domain]}
+										<Spinner data-icon="inline-start" />
+										Menghapus...
+									{:else}
+										<Trash2Icon data-icon="inline-start" />
+										Hapus
+									{/if}
 								</Button>
 							</Table.Cell>
 						</Table.Row>

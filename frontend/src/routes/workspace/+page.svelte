@@ -28,7 +28,7 @@
 	let workspace = $state<WorkspaceStatus | null>(null);
 	let loading = $state(true);
 	let refreshing = $state(false);
-	let controllingOrca = $state(false);
+	let orcaActionPending = $state<'start' | 'stop' | 'restart' | null>(null);
 	let pairModalOpen = $state(false);
 
 	async function loadWorkspace(forceRefresh = false) {
@@ -52,7 +52,7 @@
 	});
 
 	async function controlOrca(action: 'start' | 'stop' | 'restart') {
-		controllingOrca = true;
+		orcaActionPending = action;
 		try {
 			await api.controlService('orca', action);
 			toast.success(`Layanan Orca ADE berhasil di-${action}.`);
@@ -60,7 +60,7 @@
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal mengontrol layanan Orca');
 		} finally {
-			controllingOrca = false;
+			orcaActionPending = null;
 		}
 	}
 
@@ -216,29 +216,44 @@
 							<Button
 								variant="outline"
 								size="sm"
-								disabled={controllingOrca}
+								disabled={Boolean(orcaActionPending)}
 								onclick={() => controlOrca('restart')}
 							>
-								<RotateCwIcon data-icon="inline-start" />
-								Restart
+								{#if orcaActionPending === 'restart'}
+									<Spinner data-icon="inline-start" />
+									Memulai ulang...
+								{:else}
+									<RotateCwIcon data-icon="inline-start" />
+									Restart
+								{/if}
 							</Button>
 							<Button
 								variant="destructive"
 								size="sm"
-								disabled={controllingOrca}
+								disabled={Boolean(orcaActionPending)}
 								onclick={() => controlOrca('stop')}
 							>
-								<SquareIcon data-icon="inline-start" />
-								Stop
+								{#if orcaActionPending === 'stop'}
+									<Spinner data-icon="inline-start" />
+									Menghentikan...
+								{:else}
+									<SquareIcon data-icon="inline-start" />
+									Stop
+								{/if}
 							</Button>
 						{:else}
 							<Button
 								size="sm"
-								disabled={controllingOrca}
+								disabled={Boolean(orcaActionPending)}
 								onclick={() => controlOrca('start')}
 							>
-								<PlayIcon data-icon="inline-start" />
-								Mulai Layanan
+								{#if orcaActionPending === 'start'}
+									<Spinner data-icon="inline-start" />
+									Menjalankan...
+								{:else}
+									<PlayIcon data-icon="inline-start" />
+									Mulai Layanan
+								{/if}
 							</Button>
 						{/if}
 						<Button

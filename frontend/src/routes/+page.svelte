@@ -41,6 +41,7 @@
 	let servicePending = $state<Record<string, boolean>>({});
 	let updaterStatus = $state<UpdaterStatus | null>(null);
 	let checkingSelfUpdate = $state(false);
+	let applyingUpdate = $state(false);
 	let coresOpen = $state(true);
 
 	const configurableServices = new Set<string>(['redis', 'postgresql', 'php-fpm', 'nginx']);
@@ -123,6 +124,7 @@
 			confirmText: 'Perbarui Sekarang'
 		});
 		if (!ok) return;
+		applyingUpdate = true;
 		try {
 			const res = await cp.runWithSudoRetry(
 				'Pembaruan biner wdev memerlukan hak akses administrator (sudo).',
@@ -133,6 +135,8 @@
 			}
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal memperbarui wdev');
+		} finally {
+			applyingUpdate = false;
 		}
 	}
 
@@ -205,9 +209,19 @@
 				</div>
 			</div>
 			<div class="flex items-center gap-2 self-end sm:self-auto shrink-0">
-				<Button size="sm" class="bg-amber-600 text-white hover:bg-amber-700" onclick={applySelfUpdate}>
-					<ArrowUpCircleIcon data-icon="inline-start" />
-					Perbarui Sekarang
+				<Button
+					size="sm"
+					class="bg-amber-600 text-white hover:bg-amber-700"
+					disabled={applyingUpdate}
+					onclick={applySelfUpdate}
+				>
+					{#if applyingUpdate}
+						<Spinner data-icon="inline-start" />
+						Memperbarui...
+					{:else}
+						<ArrowUpCircleIcon data-icon="inline-start" />
+						Perbarui Sekarang
+					{/if}
 				</Button>
 			</div>
 		</div>
@@ -581,9 +595,19 @@
 								{/if}
 							</Button>
 							{#if updaterStatus?.has_update}
-								<Button size="xs" class="bg-amber-600 text-white hover:bg-amber-700" onclick={applySelfUpdate}>
-									<ArrowUpCircleIcon data-icon="inline-start" />
-									Update
+								<Button
+									size="xs"
+									class="bg-amber-600 text-white hover:bg-amber-700"
+									disabled={applyingUpdate}
+									onclick={applySelfUpdate}
+								>
+									{#if applyingUpdate}
+										<Spinner data-icon="inline-start" />
+										Memperbarui...
+									{:else}
+										<ArrowUpCircleIcon data-icon="inline-start" />
+										Update
+									{/if}
 								</Button>
 							{/if}
 						</div>
@@ -763,7 +787,11 @@
 										disabled={busy}
 										onclick={() => handleServiceAction(svc, 'stop')}
 									>
-										<SquareIcon data-icon="inline-start" />
+										{#if busy}
+											<Spinner data-icon="inline-start" />
+										{:else}
+											<SquareIcon data-icon="inline-start" />
+										{/if}
 										Stop
 									</Button>
 								{:else}

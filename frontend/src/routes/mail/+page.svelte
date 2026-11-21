@@ -40,6 +40,9 @@
 	let zones = $state<ZoneInfo[]>([]);
 	let domainFilter = $state('');
 	let accountsError = $state('');
+	let refreshing = $state(false);
+	let domainPending = $state<Record<string, 'unset-relay' | 'reset-admin' | 'repair'>>({});
+	let accountPending = $state<Record<string, boolean>>({});
 
 	// Add Email Account Modal
 	let addAccOpen = $state(false);
@@ -105,26 +108,31 @@
 		setupDomainChoice === '__custom__' ? setupCustomDomain.trim() : setupDomainChoice.trim()
 	);
 
-	async function loadMail() {
-		const [stRes, accRes, zoneRes] = await Promise.allSettled([
-			api.getMailStatus(),
-			api.getMailAccounts(),
-			api.listPDNSZones()
-		]);
-		if (stRes.status === 'fulfilled') {
-			mailStatus = stRes.value;
-		} else {
-			toast.error(stRes.reason instanceof Error ? stRes.reason.message : 'Gagal memuat status mail');
-		}
-		if (accRes.status === 'fulfilled') {
-			domainGroups = accRes.value ?? [];
-			accountsError = '';
-		} else {
-			domainGroups = [];
-			accountsError = accRes.reason instanceof Error ? accRes.reason.message : 'Gagal memuat akun';
-		}
-		if (zoneRes.status === 'fulfilled') {
-			zones = zoneRes.value ?? [];
+	async function loadMail(showProgress = false) {
+		if (showProgress) refreshing = true;
+		try {
+			const [stRes, accRes, zoneRes] = await Promise.allSettled([
+				api.getMailStatus(),
+				api.getMailAccounts(),
+				api.listPDNSZones()
+			]);
+			if (stRes.status === 'fulfilled') {
+				mailStatus = stRes.value;
+			} else {
+				toast.error(stRes.reason instanceof Error ? stRes.reason.message : 'Gagal memuat status mail');
+			}
+			if (accRes.status === 'fulfilled') {
+				domainGroups = accRes.value ?? [];
+				accountsError = '';
+			} else {
+				domainGroups = [];
+				accountsError = accRes.reason instanceof Error ? accRes.reason.message : 'Gagal memuat akun';
+			}
+			if (zoneRes.status === 'fulfilled') {
+				zones = zoneRes.value ?? [];
+			}
+		} finally {
+			if (showProgress) refreshing = false;
 		}
 	}
 
@@ -173,12 +181,17 @@
 			destructive: true
 		});
 		if (!ok) return;
+		accountPending = { ...accountPending, [email]: true };
 		try {
 			const res = await api.deleteMailAccount(email);
 			toast.success(res.message || `Akun ${email} dihapus.`);
 			await loadMail();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menghapus akun email');
+		} finally {
+			const next = { ...accountPending };
+			delete next[email];
+			accountPending = next;
 		}
 	}
 
@@ -216,11 +229,16 @@
 			confirmText: 'Perbaiki Sekarang'
 		});
 		if (!ok) return;
+		domainPending = { ...domainPending, [domain]: 'repair' };
 		try {
 			await api.repairMailDomain(domain);
 			cp.openTerminal(`Perbaiki Domain Mail: ${domain}`);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal memulai perbaikan domain');
+		} finally {
+			const next = { ...domainPending };
+			delete next[domain];
+			domainPending = next;
 		}
 	}
 
@@ -231,12 +249,17 @@
 			confirmText: 'Reset Password'
 		});
 		if (!ok) return;
+		domainPending = { ...domainPending, [domain]: 'reset-admin' };
 		try {
 			await api.resetMailAdmin(domain);
 			toast.success(`Password admin untuk ${domain} berhasil direset.`);
 			await loadMail();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal mereset password admin');
+		} finally {
+			const next = { ...domainPending };
+			delete next[domain];
+			domainPending = next;
 		}
 	}
 
@@ -377,12 +400,17 @@
 			destructive: true
 		});
 		if (!ok) return;
+		domainPending = { ...domainPending, [domain]: 'unset-relay' };
 		try {
 			await api.removeMailRelay(domain);
 			toast.success(`Override relay ${domain} dihapus.`);
 			await loadMail();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menghapus override relay');
+		} finally {
+			const next = { ...domainPending };
+			delete next[domain];
+			domainPending = next;
 		}
 	}
 
@@ -510,9 +538,19 @@
 			{/if}
 		</div>
 		<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-			<Button variant="outline" size="sm" onclick={loadMail}>
-				<RefreshCwIcon data-icon="inline-start" />
-				Segarkan
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={refreshing}
+				onclick={() => loadMail(true)}
+			>
+				{#if refreshing}
+					<Spinner data-icon="inline-start" />
+					Menyegarkan...
+				{:else}
+					<RefreshCwIcon data-icon="inline-start" />
+					Segarkan
+				{/if}
 			</Button>
 			<Button variant="outline" size="sm" onclick={() => openRelayModal('global')}>
 				<SettingsIcon data-icon="inline-start" />
@@ -709,18 +747,44 @@
 											<Button
 												variant="outline"
 												size="xs"
+												disabled={Boolean(domainPending[dom.domain])}
 												onclick={() => removeRelayOverride(dom.domain)}
 											>
-												Hapus Override
+												{#if domainPending[dom.domain] === 'unset-relay'}
+													<Spinner data-icon="inline-start" />
+													Menghapus...
+												{:else}
+													Hapus Override
+												{/if}
 											</Button>
 										{/if}
-										<Button variant="outline" size="xs" onclick={() => resetAdmin(dom.domain)}>
-											<KeyRoundIcon data-icon="inline-start" />
-											Reset Admin
+										<Button
+											variant="outline"
+											size="xs"
+											disabled={Boolean(domainPending[dom.domain])}
+											onclick={() => resetAdmin(dom.domain)}
+										>
+											{#if domainPending[dom.domain] === 'reset-admin'}
+												<Spinner data-icon="inline-start" />
+												Mereset...
+											{:else}
+												<KeyRoundIcon data-icon="inline-start" />
+												Reset Admin
+											{/if}
 										</Button>
-										<Button variant="outline" size="xs" onclick={() => repairDomain(dom.domain)}>
-											<WrenchIcon data-icon="inline-start" />
-											Perbaiki
+										<Button
+											variant="outline"
+											size="xs"
+											disabled={Boolean(domainPending[dom.domain])}
+											onclick={() => repairDomain(dom.domain)}
+										>
+											{#if domainPending[dom.domain] === 'repair'}
+												<Spinner data-icon="inline-start" />
+												Memperbaiki...
+											{:else}
+												<WrenchIcon data-icon="inline-start" />
+												Perbaiki
+											{/if}
 										</Button>
 										<Button
 											variant="destructive"
@@ -839,9 +903,15 @@
 												<Button
 													variant="destructive"
 													size="xs"
+													disabled={Boolean(accountPending[acc.email])}
 													onclick={() => deleteAccount(acc.email)}
 												>
-													Hapus
+													{#if accountPending[acc.email]}
+														<Spinner data-icon="inline-start" />
+														Menghapus...
+													{:else}
+														Hapus
+													{/if}
 												</Button>
 											{/if}
 										</div>
@@ -1123,7 +1193,10 @@
 
 		<form id="mail-setup-form" onsubmit={submitSetupMail} class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
 			{#if preflightLoading}
-				<p class="text-xs text-muted-foreground">Memeriksa prasyarat mail...</p>
+				<div class="flex items-center gap-2 text-xs text-muted-foreground">
+					<Spinner />
+					<span>Memeriksa prasyarat mail...</span>
+				</div>
 			{:else if preflight}
 				{#if preflight.blockers?.length}
 					<Alert.Root variant="destructive">

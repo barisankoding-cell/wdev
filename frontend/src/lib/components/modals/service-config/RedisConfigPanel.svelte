@@ -21,6 +21,7 @@
 		inspectData = null,
 		inspectLoading = false,
 		inspectError = '',
+		flushingDB = null,
 		saving = false,
 		formError = '',
 		onSave,
@@ -33,6 +34,7 @@
 		inspectData: RedisInspectResult | null;
 		inspectLoading: boolean;
 		inspectError: string;
+		flushingDB?: number | null;
 		saving: boolean;
 		formError: string;
 		onSave: (payload: Record<string, unknown>) => void;
@@ -332,8 +334,13 @@
 		<div class="flex flex-wrap items-center justify-between gap-2">
 			<h4 class="text-sm font-semibold">Ringkasan Runtime &amp; Memori</h4>
 			<Button type="button" variant="outline" size="sm" disabled={inspectLoading} onclick={onRefreshInspect}>
-				<RefreshCwIcon data-icon="inline-start" />
-				Segarkan
+				{#if inspectLoading}
+					<Spinner data-icon="inline-start" />
+					Menyegarkan...
+				{:else}
+					<RefreshCwIcon data-icon="inline-start" />
+					Segarkan
+				{/if}
 			</Button>
 		</div>
 
@@ -414,10 +421,16 @@
 											type="button"
 											variant="destructive"
 											size="xs"
+											disabled={flushingDB === ks.index}
 											onclick={() => onFlushDB(ks.index)}
 										>
-											<Trash2Icon data-icon="inline-start" />
-											Flush {ks.db}
+											{#if flushingDB === ks.index}
+												<Spinner data-icon="inline-start" />
+												Mengosongkan...
+											{:else}
+												<Trash2Icon data-icon="inline-start" />
+												Flush {ks.db}
+											{/if}
 										</Button>
 									</Table.Cell>
 								</Table.Row>
