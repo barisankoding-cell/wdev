@@ -526,10 +526,15 @@ class ControlPlaneStore {
 		};
 		const label = labels[type] ?? type.toUpperCase();
 
+		const confirmDescription =
+			type === 'pg'
+				? `Beralih ke PostgreSQL ${version}? Seluruh role dan database dari versi aktif akan dibackup dan dimigrasikan secara otomatis (cluster lama tetap disimpan aman).`
+				: `Beralih versi runtime ${label} ke versi ${version}?`;
+
 		try {
 			const ok = await this.confirm({
 				title: 'Konfirmasi Pengalihan Runtime',
-				description: `Beralih versi runtime ${label} ke versi ${version}?`,
+				description: confirmDescription,
 				confirmText: 'Beralih Sekarang'
 			});
 			if (!ok) return;

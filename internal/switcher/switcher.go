@@ -1,12 +1,18 @@
 package switcher
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"wdev/internal/config"
+	"wdev/internal/installer"
+
+	"github.com/mattn/go-isatty"
 )
 
 type RuntimeInfo struct {
@@ -16,10 +22,24 @@ type RuntimeInfo struct {
 	AvailableVersions []string `json:"available_versions"`
 }
 
-type Manager struct{}
+type Manager struct {
+	inst *installer.Installer
+}
 
 func New() *Manager {
 	return &Manager{}
+}
+
+func NewWithInstaller(inst *installer.Installer) *Manager {
+	return &Manager{inst: inst}
+}
+
+func (m *Manager) getInstaller() *installer.Installer {
+	if m.inst != nil {
+		return m.inst
+	}
+	m.inst = installer.New(config.Load(), nil)
+	return m.inst
 }
 
 func (m *Manager) GetAll() map[string]RuntimeInfo {
@@ -206,8 +226,12 @@ func (m *Manager) SwitchPHP(ver string) error {
 func (m *Manager) GetPGInfo() RuntimeInfo {
 	active := "None"
 	activeMajor := ""
+	pgMajors := []string{"19", "18", "17", "16", "15", "14"}
+
+	var lsOut string
 	if out, err := exec.Command("pg_lsclusters", "-h").Output(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
+		lsOut = string(out)
+		for _, line := range strings.Split(lsOut, "\n") {
 			fields := strings.Fields(line)
 			if len(fields) >= 4 && fields[2] == "5432" && fields[3] == "online" {
 				active = fmt.Sprintf("PG %s (Port 5432)", fields[0])
@@ -217,8 +241,8 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 		}
 	}
 	if active == "None" {
-		// Deteksi unit PGDG RPM (Fedora/RHEL: postgresql-16 .. postgresql-19)
-		for _, v := range []string{"19", "18", "17", "16", "15", "14"} {
+		// Deteksi unit PGDG RPM aktif (Fedora/RHEL: postgresql-14 .. postgresql-19)
+		for _, v := range pgMajors {
 			if exec.Command("systemctl", "is-active", "--quiet", "postgresql-"+v).Run() == nil {
 				activeMajor = v
 				if out, err := exec.Command(fmt.Sprintf("/usr/pgsql-%s/bin/postgres", v), "--version").Output(); err == nil {
@@ -234,7 +258,7 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 			}
 		}
 	}
-	if active == "None" {
+	if active == "None" && exec.Command("systemctl", "is-active", "--quiet", "postgresql").Run() == nil {
 		if out, err := exec.Command("/usr/bin/postgres", "--version").Output(); err == nil {
 			parts := strings.Fields(string(out))
 			if len(parts) >= 3 {
@@ -243,12 +267,47 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 			}
 		}
 	}
+
+	// Jika semua service berhenti, cek cluster yang sedang dipilih (port 5432 / enabled / state file)
+	if active == "None" && lsOut != "" {
+		for _, line := range strings.Split(lsOut, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 4 && fields[2] == "5432" {
+				activeMajor = fields[0]
+				active = fmt.Sprintf("PG %s (Stopped)", fields[0])
+				break
+			}
+		}
+	}
 	if active == "None" {
-		if out, err := exec.Command("psql", "--version").Output(); err == nil {
+		for _, v := range pgMajors {
+			if exec.Command("systemctl", "is-enabled", "--quiet", "postgresql-"+v).Run() == nil {
+				activeMajor = v
+				active = fmt.Sprintf("PG %s (Stopped)", v)
+				break
+			}
+		}
+	}
+	if active == "None" {
+		if stateData, err := os.ReadFile("/etc/wdev/pg-active-major"); err == nil {
+			v := strings.TrimSpace(string(stateData))
+			if installer.IsValidPGMajor(v) {
+				if _, sErr := os.Stat(fmt.Sprintf("/usr/pgsql-%s/bin/postgres", v)); sErr == nil {
+					activeMajor = v
+					active = fmt.Sprintf("PG %s (Stopped)", v)
+				} else if _, sErr := os.Stat(fmt.Sprintf("/etc/postgresql/%s/main/postgresql.conf", v)); sErr == nil {
+					activeMajor = v
+					active = fmt.Sprintf("PG %s (Stopped)", v)
+				}
+			}
+		}
+	}
+	if active == "None" {
+		if out, err := exec.Command("/usr/bin/postgres", "--version").Output(); err == nil {
 			parts := strings.Fields(string(out))
 			if len(parts) >= 3 {
-				active = parts[2]
 				activeMajor = strings.Split(parts[2], ".")[0]
+				active = fmt.Sprintf("%s (Stopped)", parts[2])
 			}
 		}
 	}
@@ -260,7 +319,7 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 				return
 			}
 		}
-		if v != "" {
+		if installer.IsValidPGMajor(v) {
 			available = append(available, v)
 		}
 	}
@@ -278,6 +337,11 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 			}
 		}
 	}
+	sort.Slice(available, func(i, j int) bool {
+		ai, _ := strconv.Atoi(available[i])
+		aj, _ := strconv.Atoi(available[j])
+		return ai < aj
+	})
 
 	return RuntimeInfo{
 		Name:              "PostgreSQL",
@@ -287,67 +351,34 @@ func (m *Manager) GetPGInfo() RuntimeInfo {
 	}
 }
 
+func ensureInteractiveSudoForCLI(inst *installer.Installer) {
+	if os.Geteuid() == 0 {
+		return
+	}
+	if !isatty.IsTerminal(os.Stdin.Fd()) || !isatty.IsTerminal(os.Stdout.Fd()) {
+		return
+	}
+	req, _ := inst.CheckSudoRequired()
+	if !req {
+		return
+	}
+	cmd := exec.Command("sudo", "-v")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
+}
+
 func (m *Manager) SwitchPG(ver string) error {
 	cleanVer := strings.TrimSpace(ver)
-
-	runSys := func(name string, args ...string) error {
-		cmd := exec.Command(name, args...)
-		if os.Geteuid() != 0 {
-			cmd = exec.Command("sudo", append([]string{name}, args...)...)
-		}
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("%s %s gagal: %s", name, strings.Join(args, " "), strings.TrimSpace(string(out)))
-		}
-		return nil
+	if !installer.IsValidPGMajor(cleanVer) {
+		return fmt.Errorf("versi mayor PostgreSQL tidak valid: %q", ver)
 	}
-
-	// Jalur RPM / PGDG (Fedora/RHEL)
-	pgdgBin := fmt.Sprintf("/usr/pgsql-%s/bin/postgres", cleanVer)
-	if _, err := os.Stat(pgdgBin); err == nil {
-		for _, other := range []string{"19", "18", "17", "16", "15", "14"} {
-			if other != cleanVer {
-				_ = runSys("systemctl", "stop", "postgresql-"+other)
-				_ = runSys("systemctl", "disable", "postgresql-"+other)
-			}
-		}
-		_ = runSys("systemctl", "stop", "postgresql")
-		_ = runSys("systemctl", "disable", "postgresql")
-
-		pgdgUnit := "postgresql-" + cleanVer
-		if err := runSys("systemctl", "enable", pgdgUnit); err != nil {
-			return err
-		}
-		if err := runSys("systemctl", "restart", pgdgUnit); err != nil {
-			return err
-		}
-		pgdgPsql := fmt.Sprintf("/usr/pgsql-%s/bin/psql", cleanVer)
-		if _, pErr := os.Stat(pgdgPsql); pErr == nil {
-			_ = runSys("update-alternatives", "--set", "pgsql-psql", pgdgPsql)
-		}
-		return nil
-	}
-
-	// Jalur Debian/Ubuntu (postgresql-common)
-	clusterConf := fmt.Sprintf("/etc/postgresql/%s/main/postgresql.conf", cleanVer)
-	if _, err := os.Stat(clusterConf); os.IsNotExist(err) {
-		return fmt.Errorf("cluster postgresql %s belum terpasang (tidak ditemukan %s maupun %s)", cleanVer, clusterConf, pgdgBin)
-	}
-
-	content, err := os.ReadFile(clusterConf)
-	if err == nil {
-		lines := strings.Split(string(content), "\n")
-		for i, line := range lines {
-			if strings.HasPrefix(strings.TrimSpace(line), "port =") {
-				lines[i] = "port = 5432"
-				break
-			}
-		}
-		_ = os.WriteFile(clusterConf, []byte(strings.Join(lines, "\n")), 0644)
-	}
-
-	_ = runSys("systemctl", "restart", fmt.Sprintf("postgresql@%s-main", cleanVer))
-	_ = runSys("systemctl", "restart", "postgresql")
-	return nil
+	inst := m.getInstaller()
+	ensureInteractiveSudoForCLI(inst)
+	return inst.SwitchPostgres(context.Background(), func(line string) {
+		fmt.Println(line)
+	}, cleanVer)
 }
 
 // Java

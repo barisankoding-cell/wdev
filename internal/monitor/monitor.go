@@ -941,13 +941,20 @@ func parsePostgresMajorFromVersion(out string) string {
 func GetActivePostgresMajor() string {
 	// 1. Debian/Ubuntu (pg_lsclusters)
 	if out, err := exec.Command("pg_lsclusters", "-h").Output(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
 			fields := strings.Fields(line)
 			if len(fields) >= 4 && fields[2] == "5432" && fields[3] == "online" {
 				return fields[0]
 			}
 		}
-		for _, line := range strings.Split(string(out), "\n") {
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) >= 4 && fields[2] == "5432" {
+				return fields[0]
+			}
+		}
+		for _, line := range lines {
 			fields := strings.Fields(line)
 			if len(fields) >= 1 && fields[0] != "" {
 				return fields[0]
@@ -955,36 +962,86 @@ func GetActivePostgresMajor() string {
 		}
 	}
 
-	// 2. Fedora/RHEL PGDG systemd units (postgresql-19 .. postgresql-14)
+	return resolveActivePostgresMajorFromProbes(
+		isSystemdServiceActive,
+		isSystemdServiceEnabled,
+		readPGActiveStateFile,
+		fileExists,
+		runCmdVersion,
+	)
+}
+
+func isSystemdServiceEnabled(name string) bool {
+	return exec.Command("systemctl", "is-enabled", "--quiet", name).Run() == nil
+}
+
+func readPGActiveStateFile() string {
+	data, err := os.ReadFile("/etc/wdev/pg-active-major")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func resolveActivePostgresMajorFromProbes(
+	isActive func(string) bool,
+	isEnabled func(string) bool,
+	readState func() string,
+	exists func(string) bool,
+	cmdVersion func(string, ...string) string,
+) string {
+	// 2. Fedora/RHEL PGDG systemd units aktif (postgresql-19 .. postgresql-14)
 	for _, v := range supportedPostgresMajors {
-		if isSystemdServiceActive("postgresql-" + v) {
+		if isActive("postgresql-" + v) {
 			return v
 		}
 	}
 
-	// 3. Fedora/RHEL distro unit (postgresql.service)
-	if isSystemdServiceActive("postgresql") {
-		if out := runCmdVersion("/usr/bin/postgres", "--version"); out != "" {
+	// 3. Fedora/RHEL distro unit aktif (postgresql.service)
+	if isActive("postgresql") {
+		if out := cmdVersion("/usr/bin/postgres", "--version"); out != "" {
 			if m := parsePostgresMajorFromVersion(out); m != "" {
 				return m
 			}
 		}
 	}
 
-	// 4. Biner PGDG terpasang di /usr/pgsql-<major>
+	// 4. Unit PGDG yang enabled saat service sedang berhenti (agar tidak kembali ke versi lebih tinggi saat stop/downgrade)
 	for _, v := range supportedPostgresMajors {
-		if fileExists(fmt.Sprintf("/usr/pgsql-%s/bin/postgres", v)) {
+		if isEnabled("postgresql-" + v) {
+			return v
+		}
+	}
+	if isEnabled("postgresql") {
+		if out := cmdVersion("/usr/bin/postgres", "--version"); out != "" {
+			if m := parsePostgresMajorFromVersion(out); m != "" {
+				return m
+			}
+		}
+	}
+
+	// 5. State terakhir yang dicatat wdev saat switch/install
+	if state := readState(); state != "" {
+		if exists(fmt.Sprintf("/usr/pgsql-%s/bin/postgres", state)) ||
+			exists(fmt.Sprintf("/etc/postgresql/%s/main/postgresql.conf", state)) {
+			return state
+		}
+	}
+
+	// 6. Biner PGDG terpasang di /usr/pgsql-<major>
+	for _, v := range supportedPostgresMajors {
+		if exists(fmt.Sprintf("/usr/pgsql-%s/bin/postgres", v)) {
 			return v
 		}
 	}
 
-	// 5. Fallback dari postgres / psql di PATH
-	if out := runCmdVersion("/usr/bin/postgres", "--version"); out != "" {
+	// 7. Fallback dari postgres / psql di PATH
+	if out := cmdVersion("/usr/bin/postgres", "--version"); out != "" {
 		if m := parsePostgresMajorFromVersion(out); m != "" {
 			return m
 		}
 	}
-	if out := runCmdVersion("psql", "--version"); out != "" {
+	if out := cmdVersion("psql", "--version"); out != "" {
 		if m := parsePostgresMajorFromVersion(out); m != "" {
 			return m
 		}
@@ -1357,11 +1414,16 @@ func getRuntimeVersions() map[string]string {
 
 	// PostgreSQL
 	pgMajor := GetActivePostgresMajor()
-	pgPsqlOut, pgPsqlErr := runToolVersion("psql", "--version")
-	if pgPsqlErr != nil {
-		pgdgPsql := fmt.Sprintf("/usr/pgsql-%s/bin/psql", pgMajor)
-		if out := runCmdVersion(pgdgPsql, "--version"); out != "" {
+	var pgPsqlOut string
+	var pgPsqlErr error = fmt.Errorf("not found")
+	for _, candidate := range []string{
+		fmt.Sprintf("/usr/pgsql-%s/bin/psql", pgMajor),
+		fmt.Sprintf("/usr/lib/postgresql/%s/bin/psql", pgMajor),
+		"psql",
+	} {
+		if out, err := runToolVersion(candidate, "--version"); err == nil && out != "" {
 			pgPsqlOut, pgPsqlErr = out, nil
+			break
 		}
 	}
 	if pgPsqlErr == nil {

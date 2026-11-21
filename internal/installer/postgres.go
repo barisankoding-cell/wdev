@@ -213,8 +213,13 @@ func (inst *Installer) runQuietSudo(ctx context.Context, name string, args ...st
 }
 
 func (inst *Installer) runQuietSudoOutput(ctx context.Context, name string, args ...string) (string, error) {
+	baseCmd := filepath.Base(name)
 	if os.Geteuid() == 0 {
-		out, err := exec.CommandContext(ctx, name, args...).Output()
+		cmd := exec.CommandContext(ctx, name, args...)
+		if baseCmd == "runuser" || baseCmd == "su" {
+			cmd.Dir = "/"
+		}
+		out, err := cmd.Output()
 		return string(out), err
 	}
 	pass := inst.GetSudoPassword()
@@ -226,6 +231,9 @@ func (inst *Installer) runQuietSudoOutput(ctx context.Context, name string, args
 	} else {
 		sudoArgs := append([]string{"-n", name}, args...)
 		cmd = exec.CommandContext(ctx, "sudo", sudoArgs...)
+	}
+	if baseCmd == "runuser" || baseCmd == "su" {
+		cmd.Dir = "/"
 	}
 	out, err := cmd.Output()
 	return string(out), err
@@ -439,17 +447,13 @@ func (inst *Installer) finalizeRPMPostgresService(ctx context.Context, cb LogCal
 			return fmt.Errorf("gagal menjalankan ulang service %s: %w", pgdgUnit, err)
 		}
 
-		// Pastikan alternatif psql mengarah ke versi PGDG ini bila tersedia.
-		pgdgPsql := fmt.Sprintf("/usr/pgsql-%s/bin/psql", ver)
-		if _, err := os.Stat(pgdgPsql); err == nil {
-			if exec.CommandContext(ctx, "update-alternatives", "--display", "pgsql-psql").Run() == nil {
-				_ = inst.runCmd(ctx, cb, "update-alternatives", "--set", "pgsql-psql", pgdgPsql)
-			}
-		}
+		// Pastikan seluruh alternatif client PGDG (psql, pg_dump, pg_dumpall, dll.) mengarah ke versi ini.
+		inst.setPGDGAlternatives(ctx, cb, ver)
 
 		if !inst.waitPostgresReady(ctx, ver) {
 			return fmt.Errorf("service %s aktif tetapi belum merespons pg_isready dalam 10 detik", pgdgUnit)
 		}
+		inst.writePGActiveState(ctx, cb, ver)
 		return nil
 	}
 
@@ -466,6 +470,7 @@ func (inst *Installer) finalizeRPMPostgresService(ctx context.Context, cb LogCal
 	if err := inst.runCmd(ctx, cb, "systemctl", "restart", "postgresql"); err != nil {
 		return fmt.Errorf("gagal menjalankan ulang service postgresql: %w", err)
 	}
+	inst.writePGActiveState(ctx, cb, ver)
 	return nil
 }
 

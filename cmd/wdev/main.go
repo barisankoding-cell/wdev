@@ -155,7 +155,7 @@ func main() {
 	runMgr := runner.New(db)
 	inst := installer.New(cfg, db)
 	siteMgr := site.New(cfg, db)
-	swMgr := switcher.New()
+	swMgr := switcher.NewWithInstaller(inst)
 	cfMgr := cloudflare.New(cfg, db)
 	pdnsMgr := pdns.New(cfg, db)
 	mailMgr := mail.New(cfg, db, pdnsMgr)

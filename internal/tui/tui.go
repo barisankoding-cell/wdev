@@ -280,12 +280,9 @@ func (t *TUI) menuMultiVersion() {
 		case "3":
 			ver := t.prompt("Masukkan versi PostgreSQL (contoh: 16, 17, 18): ")
 			if ver != "" {
-				if err := t.swMgr.SwitchPG(ver); err != nil {
-					fmt.Printf("Gagal ganti versi PostgreSQL: %v\n", err)
-				} else {
-					fmt.Printf("✓ Berhasil beralih ke PostgreSQL %s\n", ver)
-				}
-				t.waitEnter()
+				t.runTask("Switch PostgreSQL "+ver, func(ctx context.Context, cb installer.LogCallback) error {
+					return t.inst.SwitchPostgres(ctx, cb, ver)
+				})
 			}
 		case "4":
 			ver := t.prompt("Masukkan versi Java OpenJDK (contoh: 17, 21): ")

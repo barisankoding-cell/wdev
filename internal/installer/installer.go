@@ -109,7 +109,7 @@ func needsSudo(name string, args ...string) bool {
 		return true
 	}
 	switch base {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot", "runuser", "su":
 		return true
 	case "sqlite3":
 		for _, arg := range args {
@@ -232,6 +232,10 @@ func (inst *Installer) runCmdStdin(ctx context.Context, cb LogCallback, stdinDat
 
 	if stdinData != "" && stdinPipe == nil {
 		cmd.Stdin = strings.NewReader(stdinData)
+	}
+	baseCmd := filepath.Base(name)
+	if baseCmd == "runuser" || baseCmd == "su" {
+		cmd.Dir = "/"
 	}
 
 	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "COMPOSER_ALLOW_SUPERUSER=1", "COMPOSER_NO_INTERACTION=1", "NEEDRESTART_MODE=a", "CARGO_HOME=/usr/local/cargo", "RUSTUP_HOME=/usr/local/rustup")
@@ -779,6 +783,9 @@ func (inst *Installer) InstallPostgres(ctx context.Context, cb LogCallback, ver 
 	if ver == "" || ver == "system" {
 		ver = "16"
 	}
+	if !IsValidPGMajor(ver) {
+		return fmt.Errorf("versi PostgreSQL tidak valid: %q", ver)
+	}
 
 	if inst.isDebian {
 		pkg := fmt.Sprintf("postgresql-%s", ver)
@@ -792,10 +799,14 @@ func (inst *Installer) InstallPostgres(ctx context.Context, cb LogCallback, ver 
 		if out, err := exec.CommandContext(ctx, "pg_lsclusters", "-h").CombinedOutput(); err == nil {
 			hasVer := false
 			isOnline := false
+			activePort := 0
 			for _, line := range strings.Split(string(out), "\n") {
 				fields := strings.Fields(line)
 				if len(fields) >= 4 && fields[0] == ver {
 					hasVer = true
+					if fields[2] == "5432" {
+						activePort = 5432
+					}
 					if fields[3] == "online" {
 						isOnline = true
 					}
@@ -807,8 +818,22 @@ func (inst *Installer) InstallPostgres(ctx context.Context, cb LogCallback, ver 
 			} else if !isOnline {
 				_ = inst.runCmd(ctx, cb, "pg_ctlcluster", ver, "main", "start")
 			}
+			if activePort == 5432 || inst.readPGActiveState() == "" {
+				inst.writePGActiveState(ctx, cb, ver)
+			}
 		}
 	} else {
+		// Jika di sistem RPM sudah ada cluster PostgreSQL versi mayor lain yang aktif/terinisialisasi,
+		// alihkan melalui SwitchPostgres agar seluruh database dimigrasi aman dan port 5432 tidak bentrok.
+		clusters := inst.listPGClusters(ctx, pgPlatformRPM)
+		stateMajor := inst.readPGActiveState()
+		if src := pickSourcePGCluster(clusters, ver, stateMajor, func(unit string) bool {
+			return exec.CommandContext(ctx, "systemctl", "is-enabled", "--quiet", unit).Run() == nil
+		}); src != nil {
+			cb(fmt.Sprintf("[INFO] Mendeteksi cluster PostgreSQL %s yang sudah ada (%s); memigrasikan database secara aman ke PostgreSQL %s...", src.Major, src.Unit, ver))
+			return inst.SwitchPostgres(ctx, cb, ver)
+		}
+
 		pkgServer := fmt.Sprintf("postgresql%s-server", ver)
 		pkgClient := fmt.Sprintf("postgresql%s", ver)
 		wasInstalled := rpmIsInstalled(ctx, pkgServer)
@@ -825,6 +850,9 @@ func (inst *Installer) InstallPostgres(ctx context.Context, cb LogCallback, ver 
 					_ = inst.runCmd(ctx, cb, "systemctl", "start", "postgresql")
 				}
 				return fmt.Errorf("gagal memperbarui %s: %w", pkgServer, err)
+			}
+			if hasPGDGRepoForMajor(ctx, ver) {
+				return fmt.Errorf("gagal memasang %s dari repositori PGDG: %w", pkgServer, err)
 			}
 			cb(fmt.Sprintf("[WARN] Paket %s gagal (%v), mencoba postgresql-server...", pkgServer, err))
 			if errFallback := inst.installOrUpgradeRPM(ctx, cb, "postgresql-server", "postgresql"); errFallback != nil {

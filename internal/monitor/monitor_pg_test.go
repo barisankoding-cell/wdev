@@ -85,3 +85,31 @@ func TestParsePHPVersionIgnoresWarnings(t *testing.T) {
 		t.Fatalf("parsePHPVersionFromOutput(plain) = %q, want v8.4.27", got)
 	}
 }
+
+func TestResolveActivePostgresMajorFromProbes(t *testing.T) {
+	t.Run("stopped downgraded cluster uses enabled unit instead of highest binary", func(t *testing.T) {
+		got := resolveActivePostgresMajorFromProbes(
+			func(string) bool { return false },
+			func(u string) bool { return u == "postgresql-16" },
+			func() string { return "" },
+			func(p string) bool { return p == "/usr/pgsql-18/bin/postgres" || p == "/usr/pgsql-16/bin/postgres" },
+			func(string, ...string) string { return "" },
+		)
+		if got != "16" {
+			t.Fatalf("got %q, want 16", got)
+		}
+	})
+
+	t.Run("stopped cluster uses state file when no enabled unit", func(t *testing.T) {
+		got := resolveActivePostgresMajorFromProbes(
+			func(string) bool { return false },
+			func(string) bool { return false },
+			func() string { return "16" },
+			func(p string) bool { return p == "/usr/pgsql-18/bin/postgres" || p == "/usr/pgsql-16/bin/postgres" },
+			func(string, ...string) string { return "" },
+		)
+		if got != "16" {
+			t.Fatalf("got %q, want 16", got)
+		}
+	})
+}
