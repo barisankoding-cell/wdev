@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 	"wdev/internal/config"
 	"wdev/internal/store"
@@ -456,5 +457,138 @@ func TestDeleteSiteRemovesConfVariantsExposuresAndDoesNotResurrectOnSyncFromDisk
 	}
 	if len(sites) != 0 {
 		t.Fatalf("expected 0 sites after SyncFromDisk following DeleteSite, got: %+v", sites)
+	}
+}
+
+func TestPHPVHostTemplatePortableWithoutDebianSnippets(t *testing.T) {
+	mgr, cfg, _ := newTestSiteManager(t)
+
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:     "appsone.test",
+		Framework:  "laravel",
+		PHPVersion: "8.4",
+	}); err != nil {
+		t.Fatalf("CreateSite laravel failed: %v", err)
+	}
+
+	confBytes, err := os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "appsone.test"))
+	if err != nil {
+		t.Fatalf("expected vhost file: %v", err)
+	}
+	confStr := string(confBytes)
+	if strings.Contains(confStr, "snippets/fastcgi-php.conf") {
+		t.Fatalf("PHP vhost must not reference Debian-only snippets/fastcgi-php.conf:\n%s", confStr)
+	}
+	for _, want := range []string{
+		"try_files $uri $uri/ /index.php?$query_string;",
+		"fastcgi_split_path_info ^(.+?\\.php)(/.*)$;",
+		"set $path_info $fastcgi_path_info;",
+		"try_files $fastcgi_script_name =404;",
+		"include fastcgi_params;",
+		"fastcgi_param PATH_INFO $path_info;",
+		"fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;",
+		"fastcgi_pass ",
+	} {
+		if !strings.Contains(confStr, want) {
+			t.Fatalf("PHP vhost missing portable directive %q:\n%s", want, confStr)
+		}
+	}
+
+	// Render template directly with TCP fastcgi_pass to verify non-unix target formatting.
+	tpl, err := template.New("nginx").Parse(nginxVHostTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tcpBuf strings.Builder
+	if err := tpl.Execute(&tcpBuf, TemplateData{
+		Domain:         "tcp.test",
+		ServerNames:    "tcp.test",
+		EffectiveRoot:  "/var/www/tcp.test/public",
+		Framework:      "laravel",
+		PHPFastCGIPass: "127.0.0.1:9000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tcpBuf.String(), "fastcgi_pass 127.0.0.1:9000;") {
+		t.Fatalf("expected TCP fastcgi_pass, got:\n%s", tcpBuf.String())
+	}
+}
+
+func TestResolvePHPFastCGIPassCrossDistro(t *testing.T) {
+	noStat := func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	noGlob := func(string) ([]string, error) { return nil, nil }
+	noRead := func(string) ([]byte, error) { return nil, os.ErrNotExist }
+
+	statSet := func(paths ...string) func(string) (os.FileInfo, error) {
+		m := make(map[string]bool, len(paths))
+		for _, p := range paths {
+			m[p] = true
+		}
+		return func(p string) (os.FileInfo, error) {
+			if m[p] {
+				return nil, nil
+			}
+			return nil, os.ErrNotExist
+		}
+	}
+
+	// 1. Debian/Ubuntu multi-PHP layout
+	pass, sock := resolvePHPFastCGIPassWithFS("8.3", fsProbe{
+		statFn: statSet("/etc/php", "/run/php/php8.3-fpm.sock"),
+		globFn: noGlob,
+		readFn: noRead,
+	})
+	if pass != "unix:/run/php/php8.3-fpm.sock" || sock != "/run/php/php8.3-fpm.sock" {
+		t.Fatalf("debian 8.3 got (%q, %q)", pass, sock)
+	}
+
+	// 2. Fedora/RHEL layout with /etc/php-fpm.d/www.conf -> /run/php-fpm/www.sock
+	pass, sock = resolvePHPFastCGIPassWithFS("8.4", fsProbe{
+		statFn: statSet("/etc/php-fpm.d/www.conf", "/run/php-fpm/www.sock"),
+		globFn: noGlob,
+		readFn: func(p string) ([]byte, error) {
+			if p == "/etc/php-fpm.d/www.conf" {
+				return []byte("[www]\nuser = apache\n;listen = 127.0.0.1:9000\nlisten = /run/php-fpm/www.sock\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+	if pass != "unix:/run/php-fpm/www.sock" || sock != "/run/php-fpm/www.sock" {
+		t.Fatalf("fedora www.sock got (%q, %q)", pass, sock)
+	}
+
+	// 3. Remi SCL multi-PHP on Fedora/RHEL
+	pass, sock = resolvePHPFastCGIPassWithFS("8.2", fsProbe{
+		statFn: statSet("/var/opt/remi/php82/run/php-fpm/www.sock"),
+		globFn: noGlob,
+		readFn: noRead,
+	})
+	if pass != "unix:/var/opt/remi/php82/run/php-fpm/www.sock" || sock != "/var/opt/remi/php82/run/php-fpm/www.sock" {
+		t.Fatalf("remi scl got (%q, %q)", pass, sock)
+	}
+
+	// 4. Fedora/RHEL configured to listen via TCP
+	pass, sock = resolvePHPFastCGIPassWithFS("8.4", fsProbe{
+		statFn: statSet("/etc/php-fpm.d/www.conf"),
+		globFn: noGlob,
+		readFn: func(p string) ([]byte, error) {
+			if p == "/etc/php-fpm.d/www.conf" {
+				return []byte("[www]\nlisten = 127.0.0.1:9000\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+	if pass != "127.0.0.1:9000" || sock != "" {
+		t.Fatalf("tcp listen got (%q, %q)", pass, sock)
+	}
+
+	// 5. Fallback when nothing exists on disk
+	pass, sock = resolvePHPFastCGIPassWithFS("8.4", fsProbe{
+		statFn: noStat,
+		globFn: noGlob,
+		readFn: noRead,
+	})
+	if pass != "unix:/run/php/php8.4-fpm.sock" || sock != "/run/php/php8.4-fpm.sock" {
+		t.Fatalf("fallback got (%q, %q)", pass, sock)
 	}
 }

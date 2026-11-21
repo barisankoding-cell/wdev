@@ -85,10 +85,14 @@ server {
     error_log  /var/log/nginx/{{.Domain}}-error.log error;
 
     location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:{{.PHPSocket}};
-        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+        set $path_info $fastcgi_path_info;
+        try_files $fastcgi_script_name =404;
+        fastcgi_index index.php;
         include fastcgi_params;
+        fastcgi_param PATH_INFO $path_info;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_pass {{if .PHPFastCGIPass}}{{.PHPFastCGIPass}}{{else}}unix:{{.PHPSocket}}{{end}};
     }
 
     location ~ /\.(?!well-known).* {

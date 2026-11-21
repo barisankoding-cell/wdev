@@ -11,6 +11,7 @@
 	import type {
 		NginxConfig,
 		PHPConfig,
+		PHPInspectResult,
 		PostgresConfig,
 		PostgresCreateDBPayload,
 		PostgresDeleteRolePayload,
@@ -41,6 +42,7 @@
 
 	let redisInspect = $state<RedisInspectResult | null>(null);
 	let pgInspect = $state<PostgresInspectResult | null>(null);
+	let phpInspect = $state<PHPInspectResult | null>(null);
 	let inspectLoading = $state(false);
 	let inspectError = $state('');
 	let inspectSuccess = $state('');
@@ -54,7 +56,9 @@
 	let logsLoading = $state(false);
 
 	const hasInspect = $derived(
-		cp.serviceConfigTarget === 'redis' || cp.serviceConfigTarget === 'postgresql'
+		cp.serviceConfigTarget === 'redis' ||
+			cp.serviceConfigTarget === 'postgresql' ||
+			cp.serviceConfigTarget === 'php-fpm'
 	);
 
 	const modalTitle = $derived(
@@ -86,6 +90,9 @@
 	$effect(() => {
 		if (cp.serviceConfigOpen) {
 			activeTab = 'settings';
+			redisInspect = null;
+			pgInspect = null;
+			phpInspect = null;
 			loadConfig(cp.serviceConfigVersion);
 		}
 	});
@@ -114,6 +121,9 @@
 				pgCfg = res.config as PostgresConfig;
 			} else if (cp.serviceConfigTarget === 'php-fpm') {
 				phpCfg = res.config as PHPConfig;
+				if (activeTab === 'inspect') {
+					void loadInspect(phpCfg.version);
+				}
 			} else if (cp.serviceConfigTarget === 'nginx') {
 				nginxCfg = res.config as NginxConfig;
 			}
@@ -144,13 +154,24 @@
 		}
 	}
 
-	async function loadInspect() {
-		if (cp.serviceConfigTarget !== 'redis' && cp.serviceConfigTarget !== 'postgresql') return;
+	async function loadInspect(overrideVer = '') {
+		if (
+			cp.serviceConfigTarget !== 'redis' &&
+			cp.serviceConfigTarget !== 'postgresql' &&
+			cp.serviceConfigTarget !== 'php-fpm'
+		) {
+			return;
+		}
 		inspectLoading = true;
 		inspectError = '';
 		inspectSuccess = '';
-		const ver = cp.serviceConfigTarget === 'postgresql' ? pgCfg?.version || '' : '';
 		const svc = cp.serviceConfigTarget;
+		const ver =
+			svc === 'postgresql'
+				? overrideVer || pgCfg?.version || ''
+				: svc === 'php-fpm'
+					? overrideVer || phpCfg?.version || ''
+					: '';
 		try {
 			const res = await cp.runWithSudoRetry(
 				'Inspeksi layanan ini memerlukan hak akses administrator (sudo).',
@@ -164,8 +185,10 @@
 			if (!res) return;
 			if (svc === 'redis') {
 				redisInspect = res.inspect as RedisInspectResult;
-			} else {
+			} else if (svc === 'postgresql') {
 				pgInspect = res.inspect as PostgresInspectResult;
+			} else {
+				phpInspect = res.inspect as PHPInspectResult;
 			}
 		} catch (err) {
 			inspectError = err instanceof Error ? err.message : 'Gagal mengambil data inspeksi';
@@ -337,7 +360,13 @@
 					<Tabs.Trigger value="settings">Pengaturan</Tabs.Trigger>
 					{#if hasInspect}
 						<Tabs.Trigger value="inspect">
-							<span class="truncate">{cp.serviceConfigTarget === 'redis' ? 'Inspeksi' : 'Database & Roles'}</span>
+							<span class="truncate">
+								{cp.serviceConfigTarget === 'redis'
+									? 'Inspeksi'
+									: cp.serviceConfigTarget === 'php-fpm'
+										? 'Info PHP & Ekstensi'
+										: 'Database & Roles'}
+							</span>
 						</Tabs.Trigger>
 					{/if}
 					<Tabs.Trigger value="logs">Log</Tabs.Trigger>
@@ -383,12 +412,17 @@
 							/>
 						{:else if cp.serviceConfigTarget === 'php-fpm' && phpCfg}
 							<PhpConfigPanel
+								mode="settings"
 								bind:config={phpCfg}
+								inspectData={phpInspect}
+								{inspectLoading}
+								{inspectError}
 								{saving}
 								{formError}
 								onVersionChange={(v) => loadConfig(v)}
 								onSave={saveConfig}
 								onCancel={() => (cp.serviceConfigOpen = false)}
+								onRefreshInspect={() => loadInspect()}
 							/>
 						{:else if cp.serviceConfigTarget === 'nginx' && nginxCfg}
 							<NginxConfigPanel
@@ -438,6 +472,20 @@
 									onCreateDB={handleCreatePostgresDB}
 									onSaveRole={handleSavePostgresRole}
 									onDeleteRole={handleDeletePostgresRole}
+								/>
+							{:else if cp.serviceConfigTarget === 'php-fpm' && phpCfg}
+								<PhpConfigPanel
+									mode="inspect"
+									bind:config={phpCfg}
+									inspectData={phpInspect}
+									{inspectLoading}
+									{inspectError}
+									{saving}
+									{formError}
+									onVersionChange={(v) => loadConfig(v)}
+									onSave={saveConfig}
+									onCancel={() => (cp.serviceConfigOpen = false)}
+									onRefreshInspect={() => loadInspect()}
 								/>
 							{/if}
 						</Tabs.Content>

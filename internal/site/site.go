@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -88,16 +89,17 @@ type StaticVHostResult struct {
 }
 
 type TemplateData struct {
-	Domain        string
-	ServerNames   string
-	EffectiveRoot string
-	Framework     string
-	ProxyPort     int
-	SSLEnabled    bool
-	IPv6Enabled   bool
-	CertFile      string
-	KeyFile       string
-	PHPSocket     string
+	Domain         string
+	ServerNames    string
+	EffectiveRoot  string
+	Framework      string
+	ProxyPort      int
+	SSLEnabled     bool
+	IPv6Enabled    bool
+	CertFile       string
+	KeyFile        string
+	PHPSocket      string
+	PHPFastCGIPass string
 }
 
 func New(cfg *config.Config, s *store.Store) *Manager {
@@ -324,8 +326,9 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 	}
 
 	phpSocket := ""
+	phpFastCGIPass := ""
 	if opts.PHPVersion != "" {
-		phpSocket = fmt.Sprintf("/run/php/php%s-fpm.sock", opts.PHPVersion)
+		phpFastCGIPass, phpSocket = resolvePHPFastCGIPass(opts.PHPVersion)
 	}
 
 	tpl, err := template.New("nginx").Parse(nginxVHostTemplate)
@@ -334,16 +337,17 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 	}
 
 	data := TemplateData{
-		Domain:        opts.Domain,
-		ServerNames:   serverNames,
-		EffectiveRoot: effectiveRoot,
-		Framework:     opts.Framework,
-		ProxyPort:     opts.ProxyPort,
-		SSLEnabled:    opts.SSLEnabled,
-		IPv6Enabled:   hasIPv6(),
-		CertFile:      certFile,
-		KeyFile:       keyFile,
-		PHPSocket:     phpSocket,
+		Domain:         opts.Domain,
+		ServerNames:    serverNames,
+		EffectiveRoot:  effectiveRoot,
+		Framework:      opts.Framework,
+		ProxyPort:      opts.ProxyPort,
+		SSLEnabled:     opts.SSLEnabled,
+		IPv6Enabled:    hasIPv6(),
+		CertFile:       certFile,
+		KeyFile:        keyFile,
+		PHPSocket:      phpSocket,
+		PHPFastCGIPass: phpFastCGIPass,
 	}
 
 	var buf bytes.Buffer
@@ -562,26 +566,190 @@ func (m *Manager) generateSSL(domain, certFile, keyFile string) error {
 	if err := ValidateDomain(domain); err != nil {
 		return err
 	}
+	tmpDir, err := os.MkdirTemp("", "wdev-local-ssl-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpCert := filepath.Join(tmpDir, "cert.pem")
+	tmpKey := filepath.Join(tmpDir, "key.pem")
+
+	generated := false
 	// Try mkcert first
 	if _, err := exec.LookPath("mkcert"); err == nil {
-		cmd := exec.Command("mkcert", "-cert-file", certFile, "-key-file", keyFile, "--", domain)
+		cmd := exec.Command("mkcert", "-cert-file", tmpCert, "-key-file", tmpKey, "--", domain)
 		if err := cmd.Run(); err == nil {
-			_ = os.Chmod(keyFile, 0600)
-			return nil
+			generated = true
 		}
 	}
 
 	// Fallback to OpenSSL self-signed
-	cmd := exec.Command("openssl", "req", "-x509", "-nodes", "-days", "365",
-		"-newkey", "rsa:2048",
-		"-keyout", keyFile,
-		"-out", certFile,
-		"-subj", fmt.Sprintf("/CN=%s", domain))
-	if err := cmd.Run(); err != nil {
+	if !generated {
+		cmd := exec.Command("openssl", "req", "-x509", "-nodes", "-days", "365",
+			"-newkey", "rsa:2048",
+			"-keyout", tmpKey,
+			"-out", tmpCert,
+			"-subj", fmt.Sprintf("/CN=%s", domain))
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
+
+	certBytes, err := os.ReadFile(tmpCert)
+	if err != nil {
 		return err
 	}
-	_ = os.Chmod(keyFile, 0600)
-	return nil
+	keyBytes, err := os.ReadFile(tmpKey)
+	if err != nil {
+		return err
+	}
+	if err := m.writeFile(certFile, certBytes, 0644); err != nil {
+		return err
+	}
+	return m.writeFile(keyFile, keyBytes, 0600)
+}
+
+type fsProbe struct {
+	statFn func(string) (os.FileInfo, error)
+	globFn func(string) ([]string, error)
+	readFn func(string) ([]byte, error)
+}
+
+func resolvePHPFastCGIPass(phpVersion string) (string, string) {
+	return resolvePHPFastCGIPassWithFS(phpVersion, fsProbe{
+		statFn: os.Stat,
+		globFn: filepath.Glob,
+		readFn: os.ReadFile,
+	})
+}
+
+func resolvePHPFastCGIPassWithFS(phpVersion string, probe fsProbe) (string, string) {
+	ver := strings.TrimSpace(phpVersion)
+	verNoDot := strings.ReplaceAll(ver, ".", "")
+
+	// 1. Socket spesifik versi PHP target (Debian/Ubuntu, Remi Multi-PHP SCL, dll.)
+	var versionedCandidates []string
+	if ver != "" {
+		versionedCandidates = []string{
+			fmt.Sprintf("/run/php/php%s-fpm.sock", ver),
+			fmt.Sprintf("/var/opt/remi/php%s/run/php-fpm/www.sock", verNoDot),
+			fmt.Sprintf("/run/php%s-php-fpm/www.sock", verNoDot),
+			fmt.Sprintf("/run/php-fpm/php%s-fpm.sock", ver),
+			fmt.Sprintf("/run/php-fpm/php%s-www.sock", verNoDot),
+		}
+	}
+	for _, cand := range versionedCandidates {
+		if _, err := probe.statFn(cand); err == nil {
+			return "unix:" + cand, cand
+		}
+	}
+
+	// 2. Pool SCL Remi untuk versi spesifik bila memakai TCP/socket kustom
+	if verNoDot != "" {
+		for _, poolConf := range []string{
+			fmt.Sprintf("/var/opt/remi/php%s/php-fpm.d/www.conf", verNoDot),
+			fmt.Sprintf("/etc/opt/remi/php%s/php-fpm.d/www.conf", verNoDot),
+		} {
+			if pass, sock := parsePHPPoolListenFile(poolConf, probe.readFn); pass != "" {
+				return pass, sock
+			}
+		}
+	}
+
+	// 3. Konfigurasi pool PHP-FPM standar Fedora/RHEL/Arch (/etc/php-fpm.d/www.conf)
+	_, debErr := probe.statFn("/etc/php")
+	hasDebianPHPLayout := debErr == nil
+	if !hasDebianPHPLayout {
+		if pass, sock := parsePHPPoolListenFile("/etc/php-fpm.d/www.conf", probe.readFn); pass != "" {
+			return pass, sock
+		}
+	}
+
+	// 4. Socket PHP-FPM generik yang aktif di disk
+	for _, cand := range []string{
+		"/run/php-fpm/www.sock",
+		"/run/php-fpm/php-fpm.sock",
+		"/run/php/php-fpm.sock",
+	} {
+		if _, err := probe.statFn(cand); err == nil {
+			return "unix:" + cand, cand
+		}
+	}
+	if matches, err := probe.globFn("/run/php-fpm/*.sock"); err == nil && len(matches) > 0 {
+		sort.Strings(matches)
+		return "unix:" + matches[0], matches[0]
+	}
+	if matches, err := probe.globFn("/run/php/*fpm.sock"); err == nil && len(matches) > 0 {
+		sort.Slice(matches, func(i, j int) bool { return matches[i] > matches[j] })
+		return "unix:" + matches[0], matches[0]
+	}
+
+	// 5. Fallback bila service PHP-FPM belum aktif
+	if pass, sock := parsePHPPoolListenFile("/etc/php-fpm.d/www.conf", probe.readFn); pass != "" {
+		return pass, sock
+	}
+	if _, err := probe.statFn("/etc/php-fpm.d/www.conf"); err == nil {
+		return "unix:/run/php-fpm/www.sock", "/run/php-fpm/www.sock"
+	}
+	fallbackSock := fmt.Sprintf("/run/php/php%s-fpm.sock", ver)
+	if ver == "" {
+		fallbackSock = "/run/php/php-fpm.sock"
+	}
+	return "unix:" + fallbackSock, fallbackSock
+}
+
+func parsePHPPoolListenFile(confPath string, readFn func(string) ([]byte, error)) (string, string) {
+	data, err := readFn(confPath)
+	if err != nil {
+		return "", ""
+	}
+	var listenVal string
+	inTargetPool := true
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			inTargetPool = strings.EqualFold(section, "www") || strings.EqualFold(section, "global")
+			continue
+		}
+		if !inTargetPool {
+			continue
+		}
+		key, val, ok := strings.Cut(trimmed, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "listen") {
+			continue
+		}
+		if idx := strings.IndexAny(val, ";#"); idx >= 0 {
+			val = val[:idx]
+		}
+		if v := strings.TrimSpace(val); v != "" {
+			listenVal = v
+		}
+	}
+	if listenVal == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(listenVal, "/") {
+		return "unix:" + listenVal, listenVal
+	}
+	if strings.HasPrefix(listenVal, ":") {
+		return "127.0.0.1" + listenVal, ""
+	}
+	isPortOnly := true
+	for _, r := range listenVal {
+		if r < '0' || r > '9' {
+			isPortOnly = false
+			break
+		}
+	}
+	if isPortOnly {
+		return "127.0.0.1:" + listenVal, ""
+	}
+	return listenVal, ""
 }
 
 func (m *Manager) addHostsEntry(domain string) {

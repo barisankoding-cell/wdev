@@ -362,3 +362,81 @@ func TestParsePostgresRolesAndBuildRoleSQL(t *testing.T) {
 		t.Fatalf("unexpected alter SQL: %s", sqlAlter)
 	}
 }
+
+func TestParsePHPInspectJSONAndModulesFallback(t *testing.T) {
+	raw := `{
+		"cli_version": "8.4.5",
+		"sapi": "cli",
+		"zend_version": "4.4.5",
+		"loaded_ini": "/etc/php/8.4/cli/php.ini",
+		"additional_ini_files": ["/etc/php/8.4/cli/conf.d/10-opcache.ini", "/etc/php/8.4/cli/conf.d/99-wdev.ini"],
+		"extension_dir": "/usr/lib/php/20240924",
+		"include_path": ".:/usr/share/php",
+		"memory_limit": "512M",
+		"max_execution_time": "0",
+		"upload_max_filesize": "64M",
+		"post_max_size": "64M",
+		"timezone": "Asia/Jakarta",
+		"opcache_enabled": true,
+		"opcache_cli_enabled": false,
+		"disabled_functions": [],
+		"extensions": ["Core", "curl", "mbstring", "pdo_pgsql", "Zend OPcache"]
+	}`
+	parsed, err := ParsePHPInspectJSON(raw)
+	if err != nil {
+		t.Fatalf("ParsePHPInspectJSON failed: %v", err)
+	}
+	if parsed.CLIVersion != "8.4.5" || parsed.Timezone != "Asia/Jakarta" || !parsed.OpcacheEnabled || len(parsed.Extensions) != 5 {
+		t.Fatalf("unexpected parsed PHPInspectResult: %+v", parsed)
+	}
+	if len(parsed.AdditionalINIFiles) != 2 || parsed.LoadedINI != "/etc/php/8.4/cli/php.ini" {
+		t.Fatalf("unexpected INI info: %+v", parsed)
+	}
+
+	mods := parsePHPModulesOutput("[PHP Modules]\nxml\ncurl\nCore\n\n[Zend Modules]\nZend OPcache\n")
+	if len(mods) != 4 || mods[0] != "Core" || mods[3] != "Zend OPcache" {
+		t.Fatalf("unexpected fallback modules parse: %+v", mods)
+	}
+	if v := parseVersionBanner("PHP 8.4.5 (fpm-fcgi) (built: Mar 12 2025)"); v != "8.4.5" {
+		t.Fatalf("unexpected FPM banner version: %q", v)
+	}
+}
+
+func TestDetectServicePresets(t *testing.T) {
+	if got := DetectNginxPreset(NginxConfig{WorkerProcesses: "auto", WorkerConnections: 1024, ClientMaxBodySize: "64M", KeepaliveTimeout: 65, Gzip: true, ServerTokens: true}); got != "Dev Standar (64M)" {
+		t.Fatalf("nginx dev preset = %q", got)
+	}
+	if got := DetectNginxPreset(NginxConfig{WorkerProcesses: "auto", WorkerConnections: 4096, ClientMaxBodySize: "64m", KeepaliveTimeout: 65, Gzip: true, ServerTokens: false}); got != "Production Hardened" {
+		t.Fatalf("nginx prod preset = %q", got)
+	}
+	if got := DetectNginxPreset(NginxConfig{WorkerProcesses: "2", WorkerConnections: 1024, ClientMaxBodySize: "64M", KeepaliveTimeout: 65, Gzip: true}); got != PresetCustom {
+		t.Fatalf("nginx custom = %q, want Custom", got)
+	}
+
+	if got := DetectPHPPreset(PHPConfig{Timezone: "Asia/Jakarta", MemoryLimit: "512M", UploadMaxFilesize: "128M", PostMaxSize: "128M", MaxExecutionTime: 300, MaxInputVars: 5000, DisplayErrors: true, OpcacheEnable: true, OpcacheMemoryConsumption: 128, PM: "ondemand", PMMaxChildren: 10, PMMaxRequests: 500}); got != "Development (Debug On)" {
+		t.Fatalf("php dev preset = %q", got)
+	}
+	if got := DetectPHPPreset(PHPConfig{Timezone: "Asia/Jakarta", MemoryLimit: "256M"}); got != PresetCustom {
+		t.Fatalf("php custom = %q, want Custom", got)
+	}
+
+	if got := DetectPostgresPreset(PostgresConfig{MaxConnections: 50, SharedBuffers: "128MB", EffectiveCacheSize: "512MB", WorkMem: "4MB", MaintenanceWorkMem: "64MB", LogMinDurationStatement: 250}); got != "Dev Hemat RAM" {
+		t.Fatalf("pg dev preset = %q", got)
+	}
+	if got := DetectPostgresPreset(PostgresConfig{MaxConnections: 150, SharedBuffers: "512MB", EffectiveCacheSize: "2GB", WorkMem: "16MB", MaintenanceWorkMem: "128MB", Timezone: "Asia/Jakarta", LogMinDurationStatement: 500}); got != "Balanced (2-4GB RAM)" {
+		t.Fatalf("pg balanced preset = %q", got)
+	}
+	if got := DetectPostgresPreset(PostgresConfig{MaxConnections: 100, SharedBuffers: "128MB"}); got != PresetCustom {
+		t.Fatalf("pg custom = %q, want Custom", got)
+	}
+
+	if got := DetectRedisPreset(RedisConfig{Port: 6379, Bind: "127.0.0.1 -::1", ProtectedMode: "yes", MaxMemory: "256mb", MaxMemoryPolicy: "noeviction", PersistenceMode: "rdb"}); got != "Dev Lokal" {
+		t.Fatalf("redis local preset = %q", got)
+	}
+	if got := DetectRedisPreset(RedisConfig{MaxMemory: "256mb", MaxMemoryPolicy: "allkeys-lru", PersistenceMode: "none"}); got != "Cache LRU (256MB)" {
+		t.Fatalf("redis cache preset = %q", got)
+	}
+	if got := DetectRedisPreset(RedisConfig{Port: 6380, MaxMemory: "1gb", MaxMemoryPolicy: "noeviction", PersistenceMode: "rdb"}); got != PresetCustom {
+		t.Fatalf("redis custom = %q, want Custom", got)
+	}
+}

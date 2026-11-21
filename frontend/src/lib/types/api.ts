@@ -11,6 +11,7 @@ export interface ServiceStatus {
 	latest_version?: string;
 	has_update: boolean;
 	install_component?: string;
+	config_preset?: string;
 }
 
 export interface CPUCoreUsage {
@@ -544,6 +545,33 @@ export interface PHPConfig {
 	pm_max_spare_servers: number;
 	pm_max_requests: number;
 	restart?: boolean;
+}
+
+export interface PHPInspectResult {
+	target_version: string;
+	available_versions: string[];
+	cli_binary: string;
+	cli_version: string;
+	default_cli_binary: string;
+	default_cli_version: string;
+	sapi: string;
+	zend_version: string;
+	fpm_binary: string;
+	fpm_version: string;
+	composer_version: string;
+	loaded_ini: string;
+	additional_ini_files: string[];
+	extension_dir: string;
+	include_path: string;
+	memory_limit: string;
+	max_execution_time: string;
+	upload_max_filesize: string;
+	post_max_size: string;
+	timezone: string;
+	opcache_enabled: boolean;
+	opcache_cli_enabled: boolean;
+	disabled_functions: string[];
+	extensions: string[];
 }
 
 export interface NginxConfig {

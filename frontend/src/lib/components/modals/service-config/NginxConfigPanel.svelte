@@ -4,10 +4,29 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import type { NginxConfig } from '#lib/types/api.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
+
+	function getActivePreset(): string {
+		const wp = workerProcesses.trim().toLowerCase();
+		const conn = Number.parseInt(workerConnectionsStr.trim(), 10);
+		const maxBody = clientMaxBodySize.trim().toLowerCase();
+		const keepalive = Number.parseInt(keepaliveTimeoutStr.trim(), 10);
+
+		if (wp === 'auto' && conn === 1024 && maxBody === '64m' && keepalive === 65 && gzip && serverTokens) {
+			return 'Dev Standar (64M)';
+		}
+		if (wp === 'auto' && conn === 2048 && maxBody === '256m' && keepalive === 120 && gzip && !serverTokens) {
+			return 'Upload Besar (256M)';
+		}
+		if (wp === 'auto' && conn === 4096 && maxBody === '64m' && keepalive === 65 && gzip && !serverTokens) {
+			return 'Production Hardened';
+		}
+		return 'Custom';
+	}
 
 	let {
 		config = $bindable(),
@@ -91,15 +110,33 @@
 
 	<div class="flex flex-wrap items-center gap-2">
 		<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
-		<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('dev')}>
+		<Button
+			type="button"
+			variant={getActivePreset() === 'Dev Standar (64M)' ? 'default' : 'outline'}
+			size="xs"
+			onclick={() => applyPreset('dev')}
+		>
 			Dev Standar (64M)
 		</Button>
-		<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('upload')}>
+		<Button
+			type="button"
+			variant={getActivePreset() === 'Upload Besar (256M)' ? 'default' : 'outline'}
+			size="xs"
+			onclick={() => applyPreset('upload')}
+		>
 			Upload Besar (256M)
 		</Button>
-		<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('prod')}>
+		<Button
+			type="button"
+			variant={getActivePreset() === 'Production Hardened' ? 'default' : 'outline'}
+			size="xs"
+			onclick={() => applyPreset('prod')}
+		>
 			Production Hardened
 		</Button>
+		{#if getActivePreset() === 'Custom'}
+			<Badge variant="outline">Custom</Badge>
+		{/if}
 	</div>
 
 	<Field.FieldSet>

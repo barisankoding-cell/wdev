@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
@@ -603,6 +604,26 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if s.svcCfgMgr != nil && stats != nil {
+		var wg sync.WaitGroup
+		for i := range stats.Services {
+			svc := &stats.Services[i]
+			if !svc.Installed {
+				continue
+			}
+			switch svc.Name {
+			case "nginx", "php-fpm", "postgresql", "redis":
+				wg.Add(1)
+				go func(target *monitor.ServiceStatus) {
+					defer wg.Done()
+					if preset := s.svcCfgMgr.DetectServicePreset(r.Context(), target.Name); preset != "" {
+						target.ConfigPreset = preset
+					}
+				}(svc)
+			}
+		}
+		wg.Wait()
+	}
 	writeJSON(w, http.StatusOK, stats)
 }
 
@@ -679,6 +700,8 @@ func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {
 				res, err = s.svcCfgMgr.InspectRedis(r.Context())
 			case "postgresql", "postgres":
 				res, err = s.svcCfgMgr.InspectPostgres(r.Context(), ver)
+			case "php-fpm", "php":
+				res, err = s.svcCfgMgr.InspectPHP(r.Context(), ver)
 			default:
 				writeError(w, http.StatusBadRequest, "Inspeksi tidak didukung untuk layanan: "+service)
 				return

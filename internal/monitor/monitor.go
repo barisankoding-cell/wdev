@@ -71,6 +71,7 @@ type ServiceStatus struct {
 	LatestVersion    string `json:"latest_version,omitempty"`
 	HasUpdate        bool   `json:"has_update"`
 	InstallComponent string `json:"install_component,omitempty"`
+	ConfigPreset     string `json:"config_preset,omitempty"`
 }
 
 type serviceVersionCache struct {

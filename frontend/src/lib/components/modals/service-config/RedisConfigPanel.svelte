@@ -7,6 +7,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
@@ -17,6 +18,34 @@
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+
+	function getActivePreset(): string {
+		const port = Number.parseInt(portStr.trim(), 10);
+		const cleanBind = bind.trim();
+		const isLocalBind = cleanBind === '127.0.0.1 -::1' || cleanBind === '127.0.0.1 ::1' || cleanBind === '127.0.0.1';
+		const pm = protectedMode.trim().toLowerCase();
+		const maxmem = maxmemory.trim().toLowerCase();
+		const policy = maxmemoryPolicy.trim().toLowerCase();
+		const pers = persistenceMode.trim().toLowerCase();
+
+		if (
+			port === 6379 &&
+			isLocalBind &&
+			pm === 'yes' &&
+			maxmem === '256mb' &&
+			policy === 'noeviction' &&
+			pers === 'rdb'
+		) {
+			return 'Dev Lokal';
+		}
+		if (maxmem === '256mb' && policy === 'allkeys-lru' && pers === 'none') {
+			return 'Cache LRU (256MB)';
+		}
+		if (maxmem === '512mb' && policy === 'noeviction' && pers === 'aof') {
+			return 'Queue / Laravel Horizon';
+		}
+		return 'Custom';
+	}
 
 	let {
 		mode,
@@ -148,15 +177,33 @@
 
 		<div class="flex flex-wrap items-center gap-2">
 			<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
-			<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('local')}>
+			<Button
+				type="button"
+				variant={getActivePreset() === 'Dev Lokal' ? 'default' : 'outline'}
+				size="xs"
+				onclick={() => applyPreset('local')}
+			>
 				Dev Lokal
 			</Button>
-			<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('cache')}>
+			<Button
+				type="button"
+				variant={getActivePreset() === 'Cache LRU (256MB)' ? 'default' : 'outline'}
+				size="xs"
+				onclick={() => applyPreset('cache')}
+			>
 				Cache LRU (256MB)
 			</Button>
-			<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('queue')}>
+			<Button
+				type="button"
+				variant={getActivePreset() === 'Queue / Laravel Horizon' ? 'default' : 'outline'}
+				size="xs"
+				onclick={() => applyPreset('queue')}
+			>
 				Queue / Laravel Horizon
 			</Button>
+			{#if getActivePreset() === 'Custom'}
+				<Badge variant="outline">Custom</Badge>
+			{/if}
 		</div>
 
 		<Field.FieldSet>

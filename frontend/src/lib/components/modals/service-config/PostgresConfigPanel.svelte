@@ -280,6 +280,43 @@
 			rolePass = '';
 		}
 	}
+
+	const activePreset = $derived.by(() => {
+		const maxConn = Number.parseInt(maxConnectionsStr.trim(), 10);
+		const sb = sharedBuffers.trim().toLowerCase();
+		const ecs = effectiveCacheSize.trim().toLowerCase();
+		const wm = workMem.trim().toLowerCase();
+		const mwm = maintenanceWorkMem.trim().toLowerCase();
+		const tz = timezone.trim();
+		const slowLog = Number.parseInt(slowLogStr.trim(), 10);
+
+		if (maxConn === 50 && sb === '128mb' && ecs === '512mb' && wm === '4mb' && mwm === '64mb' && slowLog === 250) {
+			return 'Dev Hemat RAM';
+		}
+		if (
+			maxConn === 150 &&
+			sb === '512mb' &&
+			ecs === '2gb' &&
+			wm === '16mb' &&
+			mwm === '128mb' &&
+			tz === 'Asia/Jakarta' &&
+			slowLog === 500
+		) {
+			return 'Balanced (2-4GB RAM)';
+		}
+		if (
+			maxConn === 300 &&
+			sb === '1gb' &&
+			ecs === '4gb' &&
+			wm === '32mb' &&
+			mwm === '256mb' &&
+			tz === 'Asia/Jakarta' &&
+			slowLog === 1000
+		) {
+			return 'High Throughput';
+		}
+		return 'Custom';
+	});
 </script>
 
 {#if mode === 'settings'}
@@ -304,15 +341,33 @@
 
 		<div class="flex flex-wrap items-center gap-2">
 			<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
-			<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('dev')}>
+			<Button
+				type="button"
+				variant={activePreset === 'Dev Hemat RAM' ? 'default' : 'outline'}
+				size="xs"
+				onclick={() => applyPreset('dev')}
+			>
 				Dev Hemat RAM
 			</Button>
-			<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('balanced')}>
+			<Button
+				type="button"
+				variant={activePreset === 'Balanced (2-4GB RAM)' ? 'default' : 'outline'}
+				size="xs"
+				onclick={() => applyPreset('balanced')}
+			>
 				Balanced (2-4GB RAM)
 			</Button>
-			<Button type="button" variant="outline" size="xs" onclick={() => applyPreset('high')}>
+			<Button
+				type="button"
+				variant={activePreset === 'High Throughput' ? 'default' : 'outline'}
+				size="xs"
+				onclick={() => applyPreset('high')}
+			>
 				High Throughput
 			</Button>
+			{#if activePreset === 'Custom'}
+				<Badge variant="outline">Custom</Badge>
+			{/if}
 		</div>
 
 		<Field.FieldSet>

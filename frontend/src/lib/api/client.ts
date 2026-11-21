@@ -21,6 +21,7 @@ import type {
 	PanelDomainStatus,
 	PDNSExposePayload,
 	PHPConfig,
+	PHPInspectResult,
 	PostgresConfig,
 	PostgresCreateDBPayload,
 	PostgresDeleteRolePayload,
@@ -148,8 +149,8 @@ export const api = {
 			body: JSON.stringify(payload)
 		}),
 
-	inspectService: <T = RedisInspectResult | PostgresInspectResult>(
-		service: 'redis' | 'postgresql',
+	inspectService: <T = RedisInspectResult | PostgresInspectResult | PHPInspectResult>(
+		service: 'redis' | 'postgresql' | 'php-fpm',
 		version = ''
 	) => {
 		const qs = version ? `?version=${encodeURIComponent(version)}` : '';

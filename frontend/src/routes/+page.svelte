@@ -717,6 +717,18 @@
 										{svc.latest_version || svc.version || '-'}
 									</span>
 								</div>
+								{#if svc.installed && svc.config_preset}
+									<Separator />
+									<div class="flex items-center justify-between gap-2">
+										<span class="text-muted-foreground">Preset Konfigurasi</span>
+										<Badge
+											variant={svc.config_preset === 'Custom' ? 'outline' : 'secondary'}
+											class="max-w-full truncate"
+										>
+											{svc.config_preset}
+										</Badge>
+									</div>
+								{/if}
 							</div>
 						</Card.Content>
 
