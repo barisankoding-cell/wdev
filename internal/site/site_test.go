@@ -1,6 +1,13 @@
 package site
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"wdev/internal/config"
+	"wdev/internal/store"
+)
 
 func TestValidateDomain(t *testing.T) {
 	valid := []string{"app.test", "my-site.local", "sub.example.com", "a1.b2.io"}
@@ -46,5 +53,148 @@ func TestValidateRootPath(t *testing.T) {
 		if _, err := ValidateRootPath(p); err == nil {
 			t.Errorf("ValidateRootPath(%q) expected error, got nil", p)
 		}
+	}
+}
+
+func newTestSiteManager(t *testing.T) (*Manager, *config.Config, *store.Store) {
+	t.Helper()
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "wdev.db"))
+	if err != nil {
+		t.Fatalf("store.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	hostsPath := filepath.Join(tmp, "hosts")
+	if err := os.WriteFile(hostsPath, []byte("127.0.0.1 localhost\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		WdevEtc:          filepath.Join(tmp, "etc"),
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        hostsPath,
+	}
+	mgr := New(cfg, db)
+	mgr.SetSkipNginxExec(true)
+	return mgr, cfg, db
+}
+
+func TestEnsureDomainStaticVhostCreatesTemplateAndNginxConfig(t *testing.T) {
+	mgr, cfg, db := newTestSiteManager(t)
+
+	res, err := mgr.EnsureDomainStaticVhost("Example.COM.")
+	if err != nil {
+		t.Fatalf("EnsureDomainStaticVhost failed: %v", err)
+	}
+	if !res.Created || res.Status != "created" {
+		t.Fatalf("expected created status, got %+v", res)
+	}
+	wantRoot := filepath.Join(cfg.WebRootBase, "example.com")
+	if res.RootPath != wantRoot || res.URL != "http://example.com" {
+		t.Fatalf("unexpected vhost result: %+v", res)
+	}
+
+	indexBytes, err := os.ReadFile(filepath.Join(wantRoot, "index.html"))
+	if err != nil {
+		t.Fatalf("expected index.html to be created: %v", err)
+	}
+	indexHTML := string(indexBytes)
+	if !strings.Contains(indexHTML, "<!DOCTYPE html>") || !strings.Contains(indexHTML, "example.com") || !strings.Contains(indexHTML, wantRoot) {
+		t.Fatalf("unexpected default index.html content: %s", indexHTML)
+	}
+	if _, err := os.Stat(filepath.Join(wantRoot, "index.php")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect index.php for static vhost")
+	}
+
+	confBytes, err := os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "example.com"))
+	if err != nil {
+		t.Fatalf("expected nginx vhost file: %v", err)
+	}
+	confStr := string(confBytes)
+	for _, want := range []string{
+		"server_name example.com www.example.com;",
+		"root " + wantRoot + ";",
+		"index index.html index.htm;",
+		"try_files $uri $uri/ =404;",
+	} {
+		if !strings.Contains(confStr, want) {
+			t.Fatalf("nginx config missing %q:\n%s", want, confStr)
+		}
+	}
+	for _, unwanted := range []string{"fastcgi_pass", "snippets/fastcgi-php.conf", "return 301 https://"} {
+		if strings.Contains(confStr, unwanted) {
+			t.Fatalf("static nginx config should not contain %q:\n%s", unwanted, confStr)
+		}
+	}
+
+	linkTarget, err := os.Readlink(filepath.Join(cfg.NginxSitesEnable, "example.com"))
+	if err != nil || linkTarget != filepath.Join(cfg.NginxSitesAvail, "example.com") {
+		t.Fatalf("unexpected symlink target: %q err=%v", linkTarget, err)
+	}
+
+	hostsBytes, err := os.ReadFile(cfg.HostsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hostsBytes), "127.0.0.1 example.com www.example.com # wdev-managed") {
+		t.Fatalf("hosts file not updated: %s", string(hostsBytes))
+	}
+
+	sites, err := db.ListSites()
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("expected 1 site in store, got %+v err=%v", sites, err)
+	}
+	if sites[0].Domain != "example.com" || sites[0].Framework != "static" || sites[0].SSLEnabled || sites[0].PHPVersion != "" {
+		t.Fatalf("unexpected stored site record: %+v", sites[0])
+	}
+
+	// Panggilan kedua tidak boleh menimpa vhost yang sudah ada
+	res2, err := mgr.EnsureDomainStaticVhost("example.com")
+	if err != nil {
+		t.Fatalf("second EnsureDomainStaticVhost failed: %v", err)
+	}
+	if res2.Created || res2.Status != "exists" {
+		t.Fatalf("expected existing status on second call, got %+v", res2)
+	}
+}
+
+func TestEnsureDomainStaticVhostPreservesExistingIndexAndVhost(t *testing.T) {
+	mgr, cfg, _ := newTestSiteManager(t)
+
+	// 1. Pre-existing index.html in docroot without vhost config must not be overwritten
+	docRoot := filepath.Join(cfg.WebRootBase, "custom.test")
+	if err := os.MkdirAll(docRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	customHTML := "<h1>My Custom App</h1>"
+	if err := os.WriteFile(filepath.Join(docRoot, "index.html"), []byte(customHTML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := mgr.EnsureDomainStaticVhost("custom.test")
+	if err != nil || !res.Created {
+		t.Fatalf("EnsureDomainStaticVhost failed: res=%+v err=%v", res, err)
+	}
+	gotHTML, _ := os.ReadFile(filepath.Join(docRoot, "index.html"))
+	if string(gotHTML) != customHTML {
+		t.Fatalf("pre-existing index.html was overwritten: got %q", string(gotHTML))
+	}
+
+	// 2. DeleteSite cleans up nginx & hosts & store without deleting web files
+	if err := mgr.DeleteSite("custom.test"); err != nil {
+		t.Fatalf("DeleteSite failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.NginxSitesAvail, "custom.test")); !os.IsNotExist(err) {
+		t.Fatalf("expected sites-available file to be deleted")
+	}
+	if _, err := os.Stat(filepath.Join(docRoot, "index.html")); err != nil {
+		t.Fatalf("expected user web files to be preserved after DeleteSite: %v", err)
+	}
+	hostsBytes, _ := os.ReadFile(cfg.HostsFile)
+	if strings.Contains(string(hostsBytes), "custom.test") {
+		t.Fatalf("expected custom.test removed from hosts, got: %s", string(hostsBytes))
 	}
 }

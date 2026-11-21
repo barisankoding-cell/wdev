@@ -167,6 +167,19 @@ export interface ZoneInfo {
 	rrsets?: RRSet[];
 }
 
+export interface AddPDNSZoneResponse {
+	status: string;
+	zone: string;
+	nameservers: string[];
+	zone_ip?: string;
+	vhost_status?: 'created' | 'exists' | 'skipped' | 'error' | string;
+	vhost_created?: boolean;
+	vhost_root?: string;
+	vhost_url?: string;
+	edge_exposed?: boolean;
+	vhost_message?: string;
+}
+
 export interface DNSRecord {
 	content: string;
 	disabled: boolean;

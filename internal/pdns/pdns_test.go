@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 	"wdev/internal/config"
+	"wdev/internal/site"
 	"wdev/internal/store"
 )
 
@@ -249,5 +250,166 @@ func TestVPSModeNeverFallsBackToPrivateOrLoopbackIPInRepairAndDoctor(t *testing.
 	}
 	if !glueChecked {
 		t.Fatal("Glue A (zone) check missing from report")
+	}
+}
+
+func TestAddZoneWithVhostVPSAndEdgeModes(t *testing.T) {
+	restorePub := resetExternalPublicIPCacheForTest(func(ctx context.Context) string {
+		return "103.171.85.72"
+	})
+	defer restorePub()
+
+	type patchRec struct {
+		Name    string
+		Type    string
+		Content []string
+	}
+	var patches []patchRec
+	var proxyPosts []map[string]any
+
+	pdnsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"localhost"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost/zones":
+			_ = json.NewEncoder(w).Encode([]ZoneInfo{{Name: "example.com.", Kind: "Native"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/servers/localhost/zones":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"example.com."}`))
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/servers/localhost/zones/"):
+			var body struct {
+				RRSets []RRSet `json:"rrsets"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			for _, rr := range body.RRSets {
+				var vals []string
+				for _, rec := range rr.Records {
+					vals = append(vals, rec.Content)
+				}
+				patches = append(patches, patchRec{Name: rr.Name, Type: rr.Type, Content: vals})
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/metadata/"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/servers/localhost/zones/"):
+			_ = json.NewEncoder(w).Encode(ZoneInfo{
+				ID:     "example.com.",
+				Name:   "example.com.",
+				Kind:   "Native",
+				Serial: 1795239183,
+				RRsets: []RRSet{
+					{Name: "example.com.", Type: "SOA", TTL: 3600, Records: []Record{{Content: "ns1.example.com. hostmaster.example.com. 1795239183 10800 3600 604800 3600"}}},
+					{Name: "example.com.", Type: "NS", TTL: 3600, Records: []Record{{Content: "ns1.example.com."}, {Content: "ns2.example.com."}}},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer pdnsSrv.Close()
+	pdnsURL, _ := url.Parse(pdnsSrv.URL)
+
+	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/proxies" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			proxyPosts = append(proxyPosts, body)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"success":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer agentSrv.Close()
+	agentURL, _ := url.Parse(agentSrv.URL)
+
+	tmp := t.TempDir()
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	hostsFile := filepath.Join(tmp, "hosts")
+	_ = os.WriteFile(hostsFile, []byte("127.0.0.1 localhost\n"), 0644)
+
+	st, err := store.New(filepath.Join(tmp, "wdev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		WdevEtc:          etcDir,
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        hostsFile,
+	}
+	siteMgr := site.New(cfg, st)
+	siteMgr.SetSkipNginxExec(true)
+
+	mgr := New(cfg, st)
+	mgr.SetSiteManager(siteMgr)
+
+	// 1. VPS mode: zone + apex/www A records + static HTML vhost
+	if err := mgr.SetMode("vps"); err != nil {
+		t.Fatal(err)
+	}
+	confData := "VPS_NETBIRD_IP=\"" + pdnsURL.Hostname() + "\"\n" +
+		"VPS_PUBLIC_IP=\"103.171.85.72\"\n" +
+		"API_KEY=\"secret-test-key\"\n" +
+		"PDNS_PORT=\"" + pdnsURL.Port() + "\"\n" +
+		"AGENT_PORT=\"" + agentURL.Port() + "\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(confData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := mgr.AddZoneWithVhost("example.com")
+	if err != nil {
+		t.Fatalf("AddZoneWithVhost(vps) failed: %v", err)
+	}
+	if !res.VHostCreated || res.VHostStatus != "created" || res.ZoneIP != "103.171.85.72" {
+		t.Fatalf("unexpected AddZoneWithVhost result: %+v", res)
+	}
+
+	wantA := map[string]bool{
+		"ns1.example.com.": false,
+		"ns2.example.com.": false,
+		"example.com.":     false,
+		"www.example.com.": false,
+	}
+	for _, p := range patches {
+		if p.Type == "A" && len(p.Content) == 1 && p.Content[0] == "103.171.85.72" {
+			if _, ok := wantA[p.Name]; ok {
+				wantA[p.Name] = true
+			}
+		}
+	}
+	for name, seen := range wantA {
+		if !seen {
+			t.Fatalf("expected A record for %s -> 103.171.85.72, patches=%+v", name, patches)
+		}
+	}
+
+	indexHTML, err := os.ReadFile(filepath.Join(cfg.WebRootBase, "example.com", "index.html"))
+	if err != nil || !strings.Contains(string(indexHTML), "example.com") {
+		t.Fatalf("expected static index.html for example.com, err=%v", err)
+	}
+
+	// 2. Edge mode: creates local static vhost and exposes it to VPS Edge Agent
+	prevNB := detectLocalNetbirdIPFn
+	detectLocalNetbirdIPFn = func() string { return "100.64.0.42" }
+	defer func() { detectLocalNetbirdIPFn = prevNB }()
+
+	if err := mgr.SetMode("edge"); err != nil {
+		t.Fatal(err)
+	}
+	resEdge, err := mgr.AddZoneWithVhost("edgeapp.com")
+	if err != nil {
+		t.Fatalf("AddZoneWithVhost(edge) failed: %v", err)
+	}
+	if !resEdge.VHostCreated || !resEdge.EdgeExposed {
+		t.Fatalf("expected edge vhost created and exposed, got %+v", resEdge)
+	}
+	if len(proxyPosts) == 0 || proxyPosts[0]["domain"] != "edgeapp.com" || proxyPosts[0]["target_ip"] != "100.64.0.42" {
+		t.Fatalf("expected edge proxy POST for edgeapp.com, got %+v", proxyPosts)
 	}
 }

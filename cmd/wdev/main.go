@@ -154,10 +154,11 @@ func main() {
 
 	runMgr := runner.New(db)
 	inst := installer.New(cfg, db)
-	siteMgr := site.New(cfg, db)
+	siteMgr := site.NewWithSudo(cfg, db, inst.GetSudoPassword)
 	swMgr := switcher.NewWithInstaller(inst)
 	cfMgr := cloudflare.New(cfg, db)
 	pdnsMgr := pdns.New(cfg, db)
+	pdnsMgr.SetSiteManager(siteMgr)
 	mailMgr := mail.New(cfg, db, pdnsMgr)
 	authMgr := auth.New(cfg, db)
 
@@ -515,11 +516,17 @@ func main() {
 				if s.SSLEnabled {
 					sslText = "SSL"
 				}
+				runtimeText := "PHP " + s.PHPVersion
+				if s.Framework == "static" {
+					runtimeText = "Static HTML"
+				} else if s.Framework == "proxy" {
+					runtimeText = fmt.Sprintf("Port :%d", s.ProxyPort)
+				}
 				target := s.RootPath
 				if s.Framework == "proxy" {
 					target = fmt.Sprintf("Port :%d", s.ProxyPort)
 				}
-				fmt.Printf("%-24s %-12s %-10s %-8s %s\n", s.Domain, strings.ToUpper(s.Framework), "PHP "+s.PHPVersion, sslText, target)
+				fmt.Printf("%-24s %-12s %-12s %-8s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, sslText, target)
 			}
 
 		case "create", "add":
@@ -717,11 +724,19 @@ func main() {
 				}
 				fmt.Println("✓ Zone diperbaiki dan lolos doctor.")
 			} else if len(args) >= 4 && (args[2] == "add" || args[2] == "create") {
-				if err := pdnsMgr.AddZone(args[3]); err != nil {
+				res, err := pdnsMgr.AddZoneWithVhost(args[3])
+				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Printf("✓ Zone %s berhasil ditambahkan.\n", args[3])
+				fmt.Printf("✓ Zone %s berhasil ditambahkan (IP: %s).\n", res.Zone, res.ZoneIP)
+				if res.VHostCreated {
+					fmt.Printf("✓ VHost static HTML default dibuat: %s (%s)\n", res.VHostRoot, res.VHostURL)
+				} else if res.VHostStatus == "exists" {
+					fmt.Printf("• VHost untuk %s sudah ada (%s); konfigurasi dipertahankan.\n", res.Zone, res.VHostRoot)
+				} else if res.VHostMessage != "" {
+					fmt.Printf("! Catatan VHost: %s\n", res.VHostMessage)
+				}
 			} else if len(args) >= 4 && (args[2] == "rm" || args[2] == "delete" || args[2] == "del") {
 				if err := pdnsMgr.DeleteZone(args[3]); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)

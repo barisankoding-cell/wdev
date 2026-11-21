@@ -63,6 +63,9 @@ func New(
 	if authMgr == nil {
 		authMgr = auth.New(cfg, s)
 	}
+	if pdnsMgr != nil && siteMgr != nil {
+		pdnsMgr.SetSiteManager(siteMgr)
+	}
 	srv := &Server{
 		cfg:         cfg,
 		store:       s,
@@ -1285,7 +1288,9 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, zones)
 	case http.MethodPost:
 		var payload struct {
-			ZoneName string `json:"zone_name"`
+			ZoneName    string `json:"zone_name"`
+			CreateVHost *bool  `json:"create_vhost"`
+			SudoPass    string `json:"sudo_pass"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			writeError(w, http.StatusBadRequest, "Payload tidak valid")
@@ -1296,7 +1301,39 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := s.pdnsMgr.AddZone(zone); err != nil {
+		if payload.SudoPass != "" && s.installer != nil {
+			if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
+				writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+				return
+			}
+		}
+
+		createVHost := true
+		if payload.CreateVHost != nil {
+			createVHost = *payload.CreateVHost
+		}
+
+		if !createVHost {
+			if err := s.pdnsMgr.AddZone(zone); err != nil {
+				if strings.Contains(err.Error(), "sudah ada") {
+					writeError(w, http.StatusConflict, err.Error())
+					return
+				}
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":        "created",
+				"zone":          zone,
+				"nameservers":   []string{"ns1." + zone, "ns2." + zone},
+				"vhost_status":  "skipped",
+				"vhost_created": false,
+			})
+			return
+		}
+
+		res, err := s.pdnsMgr.AddZoneWithVhost(zone)
+		if err != nil {
 			if strings.Contains(err.Error(), "sudah ada") {
 				writeError(w, http.StatusConflict, err.Error())
 				return
@@ -1305,9 +1342,16 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":      "created",
-			"zone":        zone,
-			"nameservers": []string{"ns1." + zone, "ns2." + zone},
+			"status":        "created",
+			"zone":          res.Zone,
+			"nameservers":   res.Nameservers,
+			"zone_ip":       res.ZoneIP,
+			"vhost_status":  res.VHostStatus,
+			"vhost_created": res.VHostCreated,
+			"vhost_root":    res.VHostRoot,
+			"vhost_url":     res.VHostURL,
+			"edge_exposed":  res.EdgeExposed,
+			"vhost_message": res.VHostMessage,
 		})
 	case http.MethodDelete:
 		var payload struct {

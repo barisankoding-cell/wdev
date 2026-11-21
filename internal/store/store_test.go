@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -45,5 +46,49 @@ func TestTaskHistoryRunningAndFinishedScan(t *testing.T) {
 	}
 	if !tasks[1].FinishedAt.Equal(tasks[1].StartedAt) {
 		t.Fatalf("expected running task FinishedAt fallback to StartedAt, got started=%v finished=%v", tasks[1].StartedAt, tasks[1].FinishedAt)
+	}
+}
+
+func TestSyncFromDiskDetectsStaticAndIgnoresWWWAlias(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := New(filepath.Join(tmp, "sites.db"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer db.Close()
+
+	avail := filepath.Join(tmp, "sites-available")
+	if err := os.MkdirAll(avail, 0755); err != nil {
+		t.Fatal(err)
+	}
+	vhost := `server {
+    listen 80;
+    server_name portal.my.id www.portal.my.id;
+    root /var/www/portal.my.id;
+    index index.html index.htm;
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+`
+	if err := os.WriteFile(filepath.Join(avail, "portal.my.id"), []byte(vhost), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	db.SyncFromDisk(avail, filepath.Join(tmp, "exposures"))
+
+	sites, err := db.ListSites()
+	if err != nil {
+		t.Fatalf("ListSites failed: %v", err)
+	}
+	if len(sites) != 1 {
+		t.Fatalf("expected 1 site, got %d", len(sites))
+	}
+	s := sites[0]
+	if s.Domain != "portal.my.id" || s.Framework != "static" || s.PHPVersion != "" || s.RootPath != "/var/www/portal.my.id" {
+		t.Fatalf("unexpected site record from SyncFromDisk: %+v", s)
+	}
+	if s.ExposedTo != "" {
+		t.Fatalf("www.portal.my.id should not be treated as exposed_to, got %q", s.ExposedTo)
 	}
 }

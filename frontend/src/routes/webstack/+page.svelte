@@ -47,12 +47,14 @@
 		{ value: 'ci4', label: 'CodeIgniter 4 (root di /public)' },
 		{ value: 'ci3', label: 'CodeIgniter 3' },
 		{ value: 'symfony', label: 'Symfony (root di /public)' },
-		{ value: 'generic', label: 'Generic PHP / Static HTML' },
+		{ value: 'generic', label: 'Generic PHP' },
+		{ value: 'static', label: 'Static HTML (index.html)' },
 		{ value: 'proxy', label: 'Reverse Proxy (Node/Go/Python/Docker)' }
 	];
 
 	const phpVersions = ['8.4', '8.3', '8.2', '8.1'];
 	const isProxy = $derived(framework === 'proxy');
+	const isStatic = $derived(framework === 'static');
 	const domainInvalid = $derived(domainTouched && domain.trim().length === 0);
 
 	const filteredSites = $derived.by(() => {
@@ -110,7 +112,7 @@
 			await api.createSite({
 				domain: domain.trim(),
 				framework,
-				php_version: phpVersion,
+				php_version: isProxy || isStatic ? '' : phpVersion,
 				root_path: rootPath.trim(),
 				proxy_port: proxyPort,
 				ssl_enabled: sslEnabled
@@ -246,7 +248,11 @@
 								<Badge variant="secondary" class="uppercase">{site.framework}</Badge>
 							</Table.Cell>
 							<Table.Cell data-label="Target" class="font-mono text-xs">
-								{site.framework === 'proxy' ? `Forward :${site.proxy_port}` : `PHP ${site.php_version}`}
+								{site.framework === 'proxy'
+									? `Forward :${site.proxy_port}`
+									: site.framework === 'static'
+										? 'Static HTML'
+										: `PHP ${site.php_version || '8.4'}`}
 							</Table.Cell>
 							<Table.Cell data-label="Root" class="sm:max-w-52">
 								<code class="block break-all sm:truncate text-xs text-muted-foreground" title={site.root_path || '-'}>
@@ -370,19 +376,21 @@
 						<Field.FieldDescription>Contoh: 3000 (Node/Vite) atau 8080 (Go/Docker).</Field.FieldDescription>
 					</Field.Field>
 				{:else}
-					<Field.Field>
-						<Field.FieldLabel for="site-php-ver">Versi PHP Target</Field.FieldLabel>
-						<Select.Root type="single" bind:value={phpVersion}>
-							<Select.Trigger id="site-php-ver" class="w-full">PHP {phpVersion}</Select.Trigger>
-							<Select.Content>
-								<Select.Group>
-									{#each phpVersions as ver (ver)}
-										<Select.Item value={ver}>PHP {ver}</Select.Item>
-									{/each}
-								</Select.Group>
-							</Select.Content>
-						</Select.Root>
-					</Field.Field>
+					{#if !isStatic}
+						<Field.Field>
+							<Field.FieldLabel for="site-php-ver">Versi PHP Target</Field.FieldLabel>
+							<Select.Root type="single" bind:value={phpVersion}>
+								<Select.Trigger id="site-php-ver" class="w-full">PHP {phpVersion}</Select.Trigger>
+								<Select.Content>
+									<Select.Group>
+										{#each phpVersions as ver (ver)}
+											<Select.Item value={ver}>PHP {ver}</Select.Item>
+										{/each}
+									</Select.Group>
+								</Select.Content>
+							</Select.Root>
+						</Field.Field>
+					{/if}
 
 					<Field.Field>
 						<Field.FieldLabel for="site-root-path">Document Root (Opsional)</Field.FieldLabel>

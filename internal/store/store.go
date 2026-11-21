@@ -343,13 +343,16 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 				framework = "wordpress"
 			} else if strings.Contains(confStr, "proxy_pass") {
 				framework = "proxy"
+			} else if !strings.Contains(confStr, "fastcgi_pass") {
+				framework = "static"
+				phpVer = ""
 			}
 
 			// Extract root, php version, and server_name aliases
 			for _, line := range strings.Split(confStr, "\n") {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "root ") {
-					rootPath = strings.TrimSuffix(strings.TrimPrefix(line, "root "), ";")
+					rootPath = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "root "), ";"))
 				}
 				if strings.Contains(line, "php") && strings.Contains(line, "-fpm.sock") {
 					for _, v := range []string{"8.4", "8.3", "8.2", "8.1"} {
@@ -363,7 +366,7 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 					tokens := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(line, "server_name "), ";"))
 					for _, tok := range tokens {
 						tok = strings.TrimSpace(tok)
-						if tok != domain && tok != "*."+domain && !strings.HasSuffix(tok, ".test") && !strings.HasSuffix(tok, ".local") {
+						if tok != domain && tok != "*."+domain && tok != "www."+domain && !strings.HasSuffix(tok, ".test") && !strings.HasSuffix(tok, ".local") {
 							if exposedTo == "" || !strings.Contains(tok, "apps.") {
 								exposedTo = tok
 							}

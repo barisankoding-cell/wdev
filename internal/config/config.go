@@ -11,6 +11,7 @@ type Config struct {
 	DBPath           string
 	NginxSitesAvail  string
 	NginxSitesEnable string
+	WebRootBase      string
 	HostsFile        string
 	HTTPPort         string
 	HTTPHost         string
@@ -61,11 +62,17 @@ func Load() *Config {
 		host = "0.0.0.0"
 	}
 
+	wwwRoot := os.Getenv("WDEV_WWW_ROOT")
+	if wwwRoot == "" {
+		wwwRoot = "/var/www"
+	}
+
 	return &Config{
 		WdevEtc:          wdevEtc,
 		DBPath:           dbPath,
 		NginxSitesAvail:  "/etc/nginx/sites-available",
 		NginxSitesEnable: "/etc/nginx/sites-enabled",
+		WebRootBase:      wwwRoot,
 		HostsFile:        "/etc/hosts",
 		HTTPPort:         port,
 		HTTPHost:         host,

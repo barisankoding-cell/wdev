@@ -1,4 +1,5 @@
 import type {
+	AddPDNSZoneResponse,
 	AuthMeResponse,
 	ChangeCredentialsPayload,
 	CreateSitePayload,
@@ -237,10 +238,10 @@ export const api = {
 	// PowerDNS & Edge
 	getPDNSStatus: () => apiFetch<EdgeConfig>('/api/pdns/status'),
 	listPDNSZones: () => apiFetch<ZoneInfo[]>('/api/pdns/zones'),
-	addPDNSZone: (zone_name: string) =>
-		apiFetch<{ status: string; zone: string; nameservers: string[] }>('/api/pdns/zones', {
+	addPDNSZone: (zone_name: string, create_vhost = true) =>
+		apiFetch<AddPDNSZoneResponse>('/api/pdns/zones', {
 			method: 'POST',
-			body: JSON.stringify({ zone_name })
+			body: JSON.stringify({ zone_name, create_vhost })
 		}),
 	deletePDNSZone: (zone_name: string) =>
 		apiFetch<{ status: string }>('/api/pdns/zones', {

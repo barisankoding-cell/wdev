@@ -20,12 +20,27 @@ import (
 	"time"
 	"wdev/internal/config"
 	"wdev/internal/edge"
+	"wdev/internal/site"
 	"wdev/internal/store"
 )
 
 type Manager struct {
-	cfg   *config.Config
-	store *store.Store
+	cfg     *config.Config
+	store   *store.Store
+	siteMgr *site.Manager
+}
+
+// AddZoneResult merangkum hasil pembuatan zone PowerDNS dan vhost static HTML bawaan.
+type AddZoneResult struct {
+	Zone         string   `json:"zone"`
+	Nameservers  []string `json:"nameservers"`
+	ZoneIP       string   `json:"zone_ip"`
+	VHostStatus  string   `json:"vhost_status"` // "created", "exists", "skipped", "error"
+	VHostCreated bool     `json:"vhost_created"`
+	VHostRoot    string   `json:"vhost_root,omitempty"`
+	VHostURL     string   `json:"vhost_url,omitempty"`
+	EdgeExposed  bool     `json:"edge_exposed,omitempty"`
+	VHostMessage string   `json:"vhost_message,omitempty"`
 }
 
 type ConnectOptions struct {
@@ -102,6 +117,11 @@ type ExposeOptions struct {
 
 func New(cfg *config.Config, s *store.Store) *Manager {
 	return &Manager{cfg: cfg, store: s}
+}
+
+// SetSiteManager menyetel site.Manager agar penambahan domain PowerDNS otomatis menyiapkan vhost static HTML.
+func (m *Manager) SetSiteManager(sm *site.Manager) {
+	m.siteMgr = sm
 }
 
 // NormalizeMode menormalkan nama mode operasional server ("local", "edge", "vps").
@@ -628,7 +648,13 @@ func (m *Manager) LoadConfig() EdgeConfig {
 	return conf
 }
 
+var detectLocalNetbirdIPFn = detectLocalNetbirdIP
+
 func (m *Manager) GetLocalNetbirdIP() string {
+	return detectLocalNetbirdIPFn()
+}
+
+func detectLocalNetbirdIP() string {
 	// 1. Try wt0 interface
 	if iface, err := net.InterfaceByName("wt0"); err == nil {
 		if addrs, err := iface.Addrs(); err == nil {
@@ -778,17 +804,7 @@ func NormalizeZoneName(zoneName string) (string, error) {
 	return z, nil
 }
 
-// AddZone membuat zone Native lengkap dengan NS, glue A, dan SOA-EDIT-API
-// agar zone langsung valid dan serial otomatis naik saat record berubah.
-func (m *Manager) AddZone(zoneName string) error {
-	conf, err := m.requirePDNSConfig()
-	if err != nil {
-		return err
-	}
-	zone, err := NormalizeZoneName(zoneName)
-	if err != nil {
-		return err
-	}
+func resolveZoneTargetIP(conf EdgeConfig) string {
 	zoneIP := strings.TrimSpace(conf.VPSPublicIP)
 	switch conf.Mode {
 	case "local":
@@ -806,8 +822,75 @@ func (m *Manager) AddZone(zoneName string) error {
 			zoneIP = ""
 		}
 	}
+	return zoneIP
+}
+
+// AddZone membuat zone Native lengkap dengan NS, glue A, apex/www A, dan SOA-EDIT-API
+// agar zone langsung valid dan serial otomatis naik saat record berubah.
+func (m *Manager) AddZone(zoneName string) error {
+	_, _, err := m.addZoneCore(zoneName)
+	return err
+}
+
+// AddZoneWithVhost membuat zone di PowerDNS sekaligus menyiapkan vhost Nginx
+// dengan template HTML statis default agar domain dapat langsung diakses.
+func (m *Manager) AddZoneWithVhost(zoneName string) (AddZoneResult, error) {
+	zone, zoneIP, err := m.addZoneCore(zoneName)
+	if err != nil {
+		return AddZoneResult{}, err
+	}
+
+	res := AddZoneResult{
+		Zone:        zone,
+		Nameservers: []string{"ns1." + zone, "ns2." + zone},
+		ZoneIP:      zoneIP,
+		VHostStatus: "skipped",
+	}
+
+	if m.siteMgr == nil {
+		return res, nil
+	}
+
+	vh, vhErr := m.siteMgr.EnsureDomainStaticVhost(zone)
+	res.VHostStatus = vh.Status
+	res.VHostCreated = vh.Created
+	res.VHostRoot = vh.RootPath
+	res.VHostURL = vh.URL
+	res.VHostMessage = vh.Message
+	if vhErr != nil {
+		res.VHostStatus = "error"
+		res.VHostMessage = vhErr.Error()
+		return res, nil
+	}
+
+	if vh.Created && m.LoadConfig().Mode == "edge" {
+		if m.GetLocalNetbirdIP() != "" {
+			if expErr := m.ExposeSite(zone, zone, false); expErr != nil {
+				res.VHostMessage = fmt.Sprintf("VHost static HTML lokal dibuat di %s, namun ekspos otomatis ke VPS Edge gagal: %v", vh.RootPath, expErr)
+			} else {
+				res.EdgeExposed = true
+				res.VHostMessage = fmt.Sprintf("VHost static HTML dibuat di %s dan diekspos ke VPS Edge (%s)", vh.RootPath, vh.URL)
+			}
+		} else {
+			res.VHostMessage = fmt.Sprintf("VHost static HTML lokal dibuat di %s; aktifkan NetBird lalu ekspos ke VPS Edge agar dapat diakses publik.", vh.RootPath)
+		}
+	}
+
+	return res, nil
+}
+
+func (m *Manager) addZoneCore(zoneName string) (string, string, error) {
+	conf, err := m.requirePDNSConfig()
+	if err != nil {
+		return "", "", err
+	}
+	zone, err := NormalizeZoneName(zoneName)
+	if err != nil {
+		return "", "", err
+	}
+	zoneIP := resolveZoneTargetIP(conf)
 	if zoneIP == "" {
-		return fmt.Errorf("IP server untuk NS/glue zone belum tercatat; atur VPS_PUBLIC_IP atau jalankan 'wdev pdns connect'")
+		return "", "", fmt.Errorf("IP server untuk NS/glue zone belum tercatat; atur VPS_PUBLIC_IP atau jalankan 'wdev pdns connect'")
 	}
 
 	ns1 := "ns1." + zone
@@ -825,23 +908,23 @@ func (m *Manager) AddZone(zoneName string) error {
 	url := fmt.Sprintf("http://%s:%s/api/v1/servers/localhost/zones", conf.VPSNetbirdIP, conf.PDNSPort)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	req.Header.Set("X-API-Key", conf.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("gagal memanggil API PowerDNS: %w", err)
+		return "", "", fmt.Errorf("gagal memanggil API PowerDNS: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode == http.StatusConflict {
-		return fmt.Errorf("zone %s sudah ada di PowerDNS", zone)
+		return "", "", fmt.Errorf("zone %s sudah ada di PowerDNS", zone)
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("API PowerDNS merespons %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", "", fmt.Errorf("API PowerDNS merespons %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	rollback := func() { _ = m.DeleteZone(zone) }
@@ -852,28 +935,39 @@ func (m *Manager) AddZone(zoneName string) error {
 	soa := fmt.Sprintf("%s. hostmaster.%s. %d 10800 3600 604800 3600", ns1, zone, time.Now().Unix())
 	if err := m.patchRecords(zone, "@", "SOA", []string{soa}, 3600); err != nil {
 		rollback()
-		return fmt.Errorf("SOA gagal ditulis; zone dibatalkan: %w", err)
+		return "", "", fmt.Errorf("SOA gagal ditulis; zone dibatalkan: %w", err)
 	}
 
 	// Glue A untuk nameserver in-zone agar delegasi bisa di-resolve.
 	if err := m.patchRecords(zone, ns1, "A", []string{zoneIP}, 300); err != nil {
 		rollback()
-		return fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns1, err)
+		return "", "", fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns1, err)
 	}
 	if err := m.patchRecords(zone, ns2, "A", []string{zoneIP}, 300); err != nil {
 		rollback()
-		return fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns2, err)
+		return "", "", fmt.Errorf("glue %s gagal; zone dibatalkan: %w", ns2, err)
+	}
+	// Record A apex (@) dan www agar domain web langsung mengarah ke IP server.
+	if err := m.patchRecords(zone, "@", "A", []string{zoneIP}, 300); err != nil {
+		rollback()
+		return "", "", fmt.Errorf("record A apex %s gagal; zone dibatalkan: %w", zone, err)
+	}
+	if !strings.HasPrefix(zone, "www.") {
+		if err := m.patchRecords(zone, "www", "A", []string{zoneIP}, 300); err != nil {
+			rollback()
+			return "", "", fmt.Errorf("record A www.%s gagal; zone dibatalkan: %w", zone, err)
+		}
 	}
 	if err := m.setZoneMetadata(zone, "SOA-EDIT", []string{"INCEPTION-INCREMENT"}); err != nil {
 		rollback()
-		return fmt.Errorf("metadata SOA-EDIT gagal; zone dibatalkan: %w", err)
+		return "", "", fmt.Errorf("metadata SOA-EDIT gagal; zone dibatalkan: %w", err)
 	}
 
 	// Verifikasi zone benar-benar lengkap.
 	info, err := m.GetZone(zone)
 	if err != nil {
 		rollback()
-		return fmt.Errorf("zone gagal diverifikasi; dibatalkan: %w", err)
+		return "", "", fmt.Errorf("zone gagal diverifikasi; dibatalkan: %w", err)
 	}
 	hasSOA, hasNS := false, false
 	for _, rr := range info.RRsets {
@@ -892,9 +986,9 @@ func (m *Manager) AddZone(zoneName string) error {
 	}
 	if !hasSOA || !hasNS {
 		rollback()
-		return fmt.Errorf("zone %s tidak lengkap (SOA=%v NS=%v); dibatalkan", zone, hasSOA, hasNS)
+		return "", "", fmt.Errorf("zone %s tidak lengkap (SOA=%v NS=%v); dibatalkan", zone, hasSOA, hasNS)
 	}
-	return nil
+	return zone, zoneIP, nil
 }
 
 func (m *Manager) DeleteZone(zoneName string) error {
@@ -1343,11 +1437,15 @@ func (m *Manager) ExposeSite(localDomain, publicDomain string, useSSL bool) erro
 	}
 
 	// Check config file in sites-available
-	confPath := filepath.Join("/etc/nginx/sites-available", localDomain+".conf")
+	sitesAvailDir := "/etc/nginx/sites-available"
+	if m.cfg != nil && strings.TrimSpace(m.cfg.NginxSitesAvail) != "" {
+		sitesAvailDir = strings.TrimSpace(m.cfg.NginxSitesAvail)
+	}
+	confPath := filepath.Join(sitesAvailDir, localDomain+".conf")
 	if _, err := os.Stat(confPath); os.IsNotExist(err) {
-		confPath = filepath.Join("/etc/nginx/sites-available", localDomain)
+		confPath = filepath.Join(sitesAvailDir, localDomain)
 		if _, err := os.Stat(confPath); os.IsNotExist(err) {
-			return fmt.Errorf("konfigurasi vhost lokal untuk '%s' tidak ditemukan di /etc/nginx/sites-available", localDomain)
+			return fmt.Errorf("konfigurasi vhost lokal untuk '%s' tidak ditemukan di %s", localDomain, sitesAvailDir)
 		}
 	}
 
@@ -1356,13 +1454,17 @@ func (m *Manager) ExposeSite(localDomain, publicDomain string, useSSL bool) erro
 		return fmt.Errorf("gagal mengonfigurasi vhost lokal: %w", err)
 	}
 
-	// Reload nginx
-	if err := reloadNginx(); err != nil {
-		return fmt.Errorf("gagal me-reload Nginx lokal: %w", err)
+	// Reload nginx when managing system Nginx directory
+	if sitesAvailDir == "/etc/nginx/sites-available" {
+		if err := reloadNginx(); err != nil {
+			return fmt.Errorf("gagal me-reload Nginx lokal: %w", err)
+		}
 	}
 
 	// Update store with exposed_to
-	_ = m.store.SetSiteExposedTo(localDomain, publicDomain)
+	if m.store != nil {
+		_ = m.store.SetSiteExposedTo(localDomain, publicDomain)
+	}
 
 	// Expose via port 80 to Edge Gateway
 	return m.Expose(publicDomain, 80, useSSL, true)

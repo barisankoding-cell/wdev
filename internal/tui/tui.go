@@ -343,7 +343,7 @@ func (t *TUI) menuWebStack() {
 			dom := t.prompt("Masukkan nama domain (contoh: myapp.test): ")
 			root := t.prompt("Masukkan document root atau port (contoh: /var/www/myapp atau 3000): ")
 			ver := t.prompt("Versi PHP [8.4/8.3/proxy]: ")
-			fw := t.prompt("Framework [laravel/wordpress/ci4/generic/proxy]: ")
+			fw := t.prompt("Framework [laravel/wordpress/ci4/generic/static/proxy]: ")
 			if dom != "" {
 				err := t.siteMgr.CreateSite(site.CreateOptions{
 					Domain:     dom,
@@ -380,11 +380,17 @@ func (t *TUI) menuWebStack() {
 				if s.SSLEnabled {
 					ssl = "SSL"
 				}
+				runtimeText := "PHP " + s.PHPVersion
+				if s.Framework == "static" {
+					runtimeText = "Static HTML"
+				} else if s.Framework == "proxy" {
+					runtimeText = fmt.Sprintf("Port :%d", s.ProxyPort)
+				}
 				target := s.RootPath
 				if s.Framework == "proxy" {
 					target = fmt.Sprintf("Port :%d", s.ProxyPort)
 				}
-				fmt.Printf("%-24s %-12s %-10s %-8s %s\n", s.Domain, strings.ToUpper(s.Framework), "PHP "+s.PHPVersion, ssl, target)
+				fmt.Printf("%-24s %-12s %-12s %-8s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, ssl, target)
 			}
 			t.waitEnter()
 		case "5":
@@ -634,10 +640,16 @@ func (t *TUI) menuPowerDNS() {
 		case "3":
 			z := t.prompt("Masukkan nama domain zone (contoh: domainanda.com): ")
 			if z != "" {
-				if err := t.pdnsMgr.AddZone(z); err != nil {
+				res, err := t.pdnsMgr.AddZoneWithVhost(z)
+				if err != nil {
 					fmt.Printf("Gagal menambah zone: %v\n", err)
 				} else {
-					fmt.Printf("✓ Zone domain %s berhasil ditambahkan ke PowerDNS.\n", z)
+					fmt.Printf("✓ Zone domain %s berhasil ditambahkan ke PowerDNS (IP: %s).\n", res.Zone, res.ZoneIP)
+					if res.VHostCreated {
+						fmt.Printf("✓ VHost static HTML default dibuat di %s (%s).\n", res.VHostRoot, res.VHostURL)
+					} else if res.VHostMessage != "" {
+						fmt.Printf("! Catatan VHost: %s\n", res.VHostMessage)
+					}
 				}
 				t.waitEnter()
 			}

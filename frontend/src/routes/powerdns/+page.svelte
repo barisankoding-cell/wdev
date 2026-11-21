@@ -60,6 +60,7 @@
 	// Add Zone Dialog
 	let addZoneOpen = $state(false);
 	let newZoneName = $state('');
+	let createDefaultVhost = $state(true);
 	let addingZone = $state(false);
 
 	// Doctor / Repair Report Dialog
@@ -315,11 +316,27 @@
 		}
 		addingZone = true;
 		try {
-			await api.addPDNSZone(clean);
+			const res = await api.addPDNSZone(clean, createDefaultVhost);
 			addZoneOpen = false;
 			newZoneName = '';
-			toast.success(`Zone DNS ${clean} berhasil ditambahkan!`);
-			await loadZones();
+			createDefaultVhost = true;
+			if (res.vhost_created) {
+				toast.success(
+					`Zone DNS ${clean} & vhost static HTML berhasil dibuat (${res.vhost_root || `/var/www/${clean}`})!`
+				);
+			} else if (res.vhost_status === 'exists') {
+				toast.success(`Zone DNS ${clean} ditambahkan (vhost yang sudah ada dipertahankan).`);
+			} else {
+				toast.success(`Zone DNS ${clean} berhasil ditambahkan!`);
+				if (res.vhost_message && (res.vhost_status === 'error' || res.vhost_status === 'skipped')) {
+					toast.warning(res.vhost_message);
+				}
+			}
+			if (modeStore.mode === 'edge') {
+				await Promise.all([loadZones(), loadLocalSites(), loadExposures()]);
+			} else {
+				await loadZones();
+			}
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal menambahkan zone');
 		} finally {
@@ -924,7 +941,13 @@
 								</Table.Cell>
 								<Table.Cell data-label="Framework">
 									<Badge variant="secondary" class="uppercase">{s.framework || 'PHP'}</Badge>
-									<span class="ml-1 text-xs text-muted-foreground">PHP {s.php_version || '8.4'}</span>
+									<span class="ml-1 text-xs text-muted-foreground">
+										{s.framework === 'static'
+											? 'Static HTML'
+											: s.framework === 'proxy'
+												? `:${s.proxy_port}`
+												: `PHP ${s.php_version || '8.4'}`}
+									</span>
 								</Table.Cell>
 								<Table.Cell data-label="Status">
 									{#if s.exposed_to}
@@ -1109,7 +1132,9 @@
 	<Dialog.Content class="sm:max-w-md">
 		<Dialog.Header>
 			<Dialog.Title>Tambah Authoritative DNS Zone</Dialog.Title>
-			<Dialog.Description>Masukkan nama domain FQDN tanpa protokol (contoh: domainanda.com).</Dialog.Description>
+			<Dialog.Description>
+				Masukkan nama domain FQDN tanpa protokol (contoh: domainanda.com). Record DNS (@, www, ns1, ns2) akan dibuat otomatis.
+			</Dialog.Description>
 		</Dialog.Header>
 		<form onsubmit={submitAddZone} class="flex flex-col gap-4">
 			<Field.FieldGroup>
@@ -1124,6 +1149,12 @@
 						bind:value={newZoneName}
 						required
 					/>
+				</Field.Field>
+				<Field.Field orientation="horizontal">
+					<Checkbox id="pdns-create-vhost" bind:checked={createDefaultVhost} />
+					<Field.FieldLabel for="pdns-create-vhost" class="font-normal leading-snug">
+						Buatkan virtual host Nginx &amp; template HTML statis default agar langsung dapat diakses
+					</Field.FieldLabel>
 				</Field.Field>
 			</Field.FieldGroup>
 			<Dialog.Footer>

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
 	"wdev/internal/serviceconfig"
+	"wdev/internal/site"
 	"wdev/internal/store"
 )
 
@@ -499,5 +502,123 @@ func TestHandleModeSupportsLocalEdgeVPS(t *testing.T) {
 		if tc.want != "" && pdnsMgr.GetMode() != tc.want {
 			t.Fatalf("after POST %s, GetMode() = %q, want %q", tc.in, pdnsMgr.GetMode(), tc.want)
 		}
+	}
+}
+
+func TestHandlePDNSZonesPostCreatesStaticVHost(t *testing.T) {
+	pdnsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/servers/localhost":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"localhost"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/servers/localhost/zones":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"portal.my.id."}`))
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/servers/localhost/zones/"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/metadata/"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/servers/localhost/zones/"):
+			zone := strings.TrimPrefix(r.URL.Path, "/api/v1/servers/localhost/zones/")
+			_ = json.NewEncoder(w).Encode(pdns.ZoneInfo{
+				ID:     zone,
+				Name:   zone,
+				Kind:   "Native",
+				Serial: 1795239183,
+				RRsets: []pdns.RRSet{
+					{Name: zone, Type: "SOA", TTL: 3600, Records: []pdns.Record{{Content: "ns1." + zone + " hostmaster." + zone + " 1795239183 10800 3600 604800 3600"}}},
+					{Name: zone, Type: "NS", TTL: 3600, Records: []pdns.Record{{Content: "ns1." + zone}, {Content: "ns2." + zone}}},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer pdnsSrv.Close()
+	u, _ := url.Parse(pdnsSrv.URL)
+
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "wdev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	hostsFile := filepath.Join(tmp, "hosts")
+	_ = os.WriteFile(hostsFile, []byte("127.0.0.1 localhost\n"), 0644)
+
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          etcDir,
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        hostsFile,
+	}
+
+	pdnsMgr := pdns.New(cfg, db)
+	_ = pdnsMgr.SetMode("vps")
+	confData := "VPS_NETBIRD_IP=\"" + u.Hostname() + "\"\n" +
+		"VPS_PUBLIC_IP=\"103.171.85.72\"\n" +
+		"API_KEY=\"secret-test-key\"\n" +
+		"PDNS_PORT=\"" + u.Port() + "\"\n" +
+		"AGENT_PORT=\"8082\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(confData), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), inst, siteMgr, nil, nil, pdnsMgr, nil, authMgr)
+
+	// 1. Default POST /api/pdns/zones creates zone + static HTML vhost
+	req := httptest.NewRequest(http.MethodPost, "/api/pdns/zones", strings.NewReader(`{"zone_name":"portal.my.id"}`))
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/pdns/zones code = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status       string `json:"status"`
+		Zone         string `json:"zone"`
+		VHostStatus  string `json:"vhost_status"`
+		VHostCreated bool   `json:"vhost_created"`
+		VHostRoot    string `json:"vhost_root"`
+		VHostURL     string `json:"vhost_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "created" || resp.Zone != "portal.my.id" || !resp.VHostCreated || resp.VHostStatus != "created" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.WebRootBase, "portal.my.id", "index.html")); err != nil {
+		t.Fatalf("expected index.html to exist: %v", err)
+	}
+
+	// 2. Explicit create_vhost:false skips vhost creation
+	req2 := httptest.NewRequest(http.MethodPost, "/api/pdns/zones", strings.NewReader(`{"zone_name":"dnsonly.my.id","create_vhost":false}`))
+	rec2 := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("POST /api/pdns/zones (dnsonly) code = %d, body=%s", rec2.Code, rec2.Body.String())
+	}
+	var resp2 struct {
+		VHostStatus  string `json:"vhost_status"`
+		VHostCreated bool   `json:"vhost_created"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatal(err)
+	}
+	if resp2.VHostCreated || resp2.VHostStatus != "skipped" {
+		t.Fatalf("expected skipped vhost when create_vhost=false, got %+v", resp2)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.WebRootBase, "dnsonly.my.id", "index.html")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect index.html when create_vhost=false")
 	}
 }
