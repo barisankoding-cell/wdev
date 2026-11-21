@@ -242,6 +242,79 @@ func verifyChecksum(path, checksumURL string) error {
 	return nil
 }
 
+// stageInTargetDir menyalin file sumber ke berkas sementara di direktori target
+// agar os.Rename berikutnya selalu berada pada filesystem yang sama (menghindari EXDEV).
+func stageInTargetDir(srcPath, targetDir string) (string, error) {
+	tmpFile, err := os.CreateTemp(targetDir, ".wdev-stage-*")
+	if err != nil {
+		return "", err
+	}
+	stagedPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(stagedPath)
+		}
+	}()
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		_ = tmpFile.Close()
+		return "", err
+	}
+	if _, err := io.Copy(tmpFile, src); err != nil {
+		_ = src.Close()
+		_ = tmpFile.Close()
+		return "", err
+	}
+	_ = src.Close()
+	if err := tmpFile.Chmod(0755); err != nil {
+		_ = tmpFile.Close()
+		return "", err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return "", err
+	}
+	cleanup = false
+	return stagedPath, nil
+}
+
+// installBinary memasang biner baru ke dstPath secara atomik di filesystem tujuan
+// dengan backup & rollback otomatis bila penggantian gagal.
+func installBinary(srcPath, dstPath string) error {
+	targetDir := filepath.Dir(dstPath)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("gagal membuat direktori tujuan %s: %w", targetDir, err)
+	}
+	stagedPath, err := stageInTargetDir(srcPath, targetDir)
+	if err != nil {
+		return fmt.Errorf("gagal menyiapkan biner baru: %w", err)
+	}
+
+	backup := dstPath + ".bak"
+	hadExisting := false
+	if _, err := os.Lstat(dstPath); err == nil {
+		hadExisting = true
+		_ = os.Remove(backup)
+		if err := os.Rename(dstPath, backup); err != nil {
+			_ = os.Remove(stagedPath)
+			return fmt.Errorf("gagal membuat backup biner: %w", err)
+		}
+	}
+	if err := os.Rename(stagedPath, dstPath); err != nil {
+		_ = os.Remove(stagedPath)
+		if hadExisting {
+			_ = os.Rename(backup, dstPath)
+		}
+		return fmt.Errorf("gagal memasang biner baru: %w", err)
+	}
+	return os.Chmod(dstPath, 0755)
+}
+
 func restartService(ctx context.Context, unit string) error {
 	if out, err := exec.CommandContext(ctx, "systemctl", "cat", unit).CombinedOutput(); err != nil || len(out) == 0 {
 		return nil
@@ -294,18 +367,9 @@ func buildFromSource(ctx context.Context, dir, version string, cb func(string)) 
 	if out, err := build.CombinedOutput(); err != nil {
 		return res, fmt.Errorf("go build gagal: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	backup := BinaryPath + ".bak"
-	if _, err := os.Stat(BinaryPath); err == nil {
-		_ = os.Remove(backup)
-		if err := os.Rename(BinaryPath, backup); err != nil {
-			return res, err
-		}
-	}
-	if err := os.Rename(tmpBin, BinaryPath); err != nil {
-		_ = os.Rename(backup, BinaryPath)
+	if err := installBinary(tmpBin, BinaryPath); err != nil {
 		return res, err
 	}
-	_ = os.Chmod(BinaryPath, 0755)
 	cb("✓ Biner diperbarui ke v" + tag)
 	if err := restartService(ctx, "wdev.service"); err != nil {
 		return res, err
@@ -381,18 +445,7 @@ func Run(ctx context.Context, current string, opts Options, cb func(string)) (Re
 	}
 	cb("✓ Checksum SHA256 cocok")
 
-	backup := BinaryPath + ".bak"
-	if _, err := os.Stat(BinaryPath); err == nil {
-		_ = os.Remove(backup)
-		if err := os.Rename(BinaryPath, backup); err != nil {
-			return res, fmt.Errorf("gagal membuat backup biner: %w", err)
-		}
-	}
-	if err := os.Rename(tmpBin, BinaryPath); err != nil {
-		_ = os.Rename(backup, BinaryPath)
-		return res, fmt.Errorf("gagal memasang biner baru: %w", err)
-	}
-	if err := os.Chmod(BinaryPath, 0755); err != nil {
+	if err := installBinary(tmpBin, BinaryPath); err != nil {
 		return res, err
 	}
 	res.Installed = true
