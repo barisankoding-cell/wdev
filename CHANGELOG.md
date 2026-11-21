@@ -1,5 +1,95 @@
 # Changelog
 
+## [v2.4.0] - 2026-11-21
+
+### 🚀 Fitur Baru
+- feat: tambah inspeksi PHP dan deteksi preset konfigurasi (1cb881a)
+- feat: Tambahkan deteksi status komponen setup dan preset mode server (3ea96d0)
+- feat: Tambahkan pengelolaan eksposur Edge dan pemilih folder (3029985)
+- feat(mail): uji keterjangkauan port dari dalam dan luar VPS (be9a56d)
+- feat(mail): sinkronkan DNS relay Resend otomatis ke PowerDNS (550cfdf)
+- feat: Tambahkan HTTPS langsung untuk panel dengan sertifikat mandiri (9ef99b8)
+- feat: dukung pengikatan domain HTTPS untuk panel wdev (6ff6e89)
+- feat(terminal): tambahkan keamanan akses dan audit sesi PTY (6ac9117)
+- feat: tambahkan terminal PTY dan fitur lanjutan file manager (b75af3c)
+- feat: tambahkan File Manager untuk mengelola berkas situs (9ade4ce)
+- feat: tampilkan ringkasan status port Stalwart_mail (b308bf0)
+- feat: kelola role PostgreSQL dan ubah password akun email (2f2049d)
+- feat(mail): tampilkan status aksesibilitas port Stalwart (918ceb5)
+- feat: tambah pembuatan subdomain dan sinkronisasi DNS otomatis (cd11c3c)
+- feat: otomatis pasang Mail Stack dan tampilkan masa berlaku SSL (ce4ba8f)
+- feat(site): tambahkan penerbitan SSL Let's Encrypt untuk vhost VPS (0067278)
+- feat: Buat vhost HTML statis otomatis saat menambah zone DNS (2ba29fd)
+- feat(mail,ui,cli): dukung setup domain mail dengan SMTP lokal default tanpa wajib relay (94dc2de)
+- feat: tingkatkan tampilan metrik sistem di dashboard (43c61ea)
+- feat(mail,monitor,ui): perbaiki installer stalwart, persentase load per-core, dan deteksi ip mode vps (7ff6ffc)
+- feat(installer): migrasikan database saat beralih versi PostgreSQL (18fd382)
+- feat(pdns,mail,setup): dukung instalasi PowerDNS standalone serta mode lokal, edge, dan vps tanpa NetBird (7be023d)
+
+### 🐛 Perbaikan Bug
+- fix(site): hapus konfigurasi vhost dengan aman dan dukung sudo (74bedb1)
+- fix(mail): sesuaikan pemeriksaan port dengan mode edge dan lokal (fc222bd)
+- fix(mail): bedakan status port lokal dan akses publik (a627c82)
+- fix: cegah perubahan panel lokal saat layanan sistem aktif (321f46b)
+- fix(pdns): validasi dan cache IP publik VPS (ef18946)
+- fix(ui): tampilkan indikator proses pada aksi layanan dan pengelolaan data (9900202)
+- fix(frontend): pertahankan modal saat konfirmasi ditolak atau gagal (047974a)
+- fix(monitor,pdns): dukung deteksi floating ip publik dan cegah fallback ke ip privat (36cd1c0)
+
+### ⚡ Peningkatan & Refactoring
+- refactor(ui): rapikan topbar dan tata letak konfigurasi layanan (ed4b406)
+- refactor: rapikan aksi tabel ke menu dropdown responsif (31ccf3f)
+- refactor(mail): ringkas aksi domain dalam menu dropdown (f59ff04)
+
+### 🔧 Pemeliharaan & Tooling
+- test(mail): dukung nameserver saat membuat zona DNS palsu (0aefd8a)
+- test: sesuaikan argumen konstruktor server pada pengujian DNS mail relay (ce1280e)
+
+## [v2.4.0] - 2026-11-21
+
+### 🚀 Fitur Baru
+- feat: tambah inspeksi PHP dan deteksi preset konfigurasi (1cb881a)
+- feat: Tambahkan deteksi status komponen setup dan preset mode server (3ea96d0)
+- feat: Tambahkan pengelolaan eksposur Edge dan pemilih folder (3029985)
+- feat(mail): uji keterjangkauan port dari dalam dan luar VPS (be9a56d)
+- feat(mail): sinkronkan DNS relay Resend otomatis ke PowerDNS (550cfdf)
+- feat: Tambahkan HTTPS langsung untuk panel dengan sertifikat mandiri (9ef99b8)
+- feat: dukung pengikatan domain HTTPS untuk panel wdev (6ff6e89)
+- feat(terminal): tambahkan keamanan akses dan audit sesi PTY (6ac9117)
+- feat: tambahkan terminal PTY dan fitur lanjutan file manager (b75af3c)
+- feat: tambahkan File Manager untuk mengelola berkas situs (9ade4ce)
+- feat: tampilkan ringkasan status port Stalwart_mail (b308bf0)
+- feat: kelola role PostgreSQL dan ubah password akun email (2f2049d)
+- feat(mail): tampilkan status aksesibilitas port Stalwart (918ceb5)
+- feat: tambah pembuatan subdomain dan sinkronisasi DNS otomatis (cd11c3c)
+- feat: otomatis pasang Mail Stack dan tampilkan masa berlaku SSL (ce4ba8f)
+- feat(site): tambahkan penerbitan SSL Let's Encrypt untuk vhost VPS (0067278)
+- feat: Buat vhost HTML statis otomatis saat menambah zone DNS (2ba29fd)
+- feat(mail,ui,cli): dukung setup domain mail dengan SMTP lokal default tanpa wajib relay (94dc2de)
+- feat: tingkatkan tampilan metrik sistem di dashboard (43c61ea)
+- feat(mail,monitor,ui): perbaiki installer stalwart, persentase load per-core, dan deteksi ip mode vps (7ff6ffc)
+- feat(installer): migrasikan database saat beralih versi PostgreSQL (18fd382)
+- feat(pdns,mail,setup): dukung instalasi PowerDNS standalone serta mode lokal, edge, dan vps tanpa NetBird (7be023d)
+
+### 🐛 Perbaikan Bug
+- fix(site): hapus konfigurasi vhost dengan aman dan dukung sudo (74bedb1)
+- fix(mail): sesuaikan pemeriksaan port dengan mode edge dan lokal (fc222bd)
+- fix(mail): bedakan status port lokal dan akses publik (a627c82)
+- fix: cegah perubahan panel lokal saat layanan sistem aktif (321f46b)
+- fix(pdns): validasi dan cache IP publik VPS (ef18946)
+- fix(ui): tampilkan indikator proses pada aksi layanan dan pengelolaan data (9900202)
+- fix(frontend): pertahankan modal saat konfirmasi ditolak atau gagal (047974a)
+- fix(monitor,pdns): dukung deteksi floating ip publik dan cegah fallback ke ip privat (36cd1c0)
+
+### ⚡ Peningkatan & Refactoring
+- refactor(ui): rapikan topbar dan tata letak konfigurasi layanan (ed4b406)
+- refactor: rapikan aksi tabel ke menu dropdown responsif (31ccf3f)
+- refactor(mail): ringkas aksi domain dalam menu dropdown (f59ff04)
+
+### 🔧 Pemeliharaan & Tooling
+- test(mail): dukung nameserver saat membuat zona DNS palsu (0aefd8a)
+- test: sesuaikan argumen konstruktor server pada pengujian DNS mail relay (ce1280e)
+
 ## [v2.3.0] - 2026-11-21
 
 ### 🚀 Fitur Baru
