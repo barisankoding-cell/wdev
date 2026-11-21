@@ -4,4 +4,4 @@
 package version
 
 // Version adalah versi rilis wdev saat ini.
-var Version = "2.2.0"
+var Version = "2.2.1"

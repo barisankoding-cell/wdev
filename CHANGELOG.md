@@ -1,5 +1,18 @@
 # Changelog
 
+## [v2.2.1] - 2026-11-21
+
+### 🚀 Fitur Baru
+- feat(netbird,installer): pisahkan instalasi dan update NetBird mandiri tanpa PowerDNS (da3e3d2)
+- feat(updater): auto-check rilis GitHub, cache in-memory, banner notifikasi dan changelog di dashboard (760005b)
+
+### 🐛 Perbaikan Bug
+- fix(security): perkuat autentikasi, validasi input, izin file, dan proteksi HTTP panel (0e29aeb)
+- fix(terminal,sse,store): pulihkan log live SSE, snapshot tugas aktif, dan scan riwayat SQLite (fc78a19)
+
+### 🔧 Pemeliharaan & Tooling
+- chore(gitignore): perluas ignore artefak build, test, dan rilis (c8badfb)
+
 ## [v2.2.0] - 2026-11-21
 
 ### 🚀 Fitur Baru
