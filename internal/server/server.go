@@ -137,6 +137,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/sudo/verify", s.handleSudoVerify)
 	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
 	s.mux.HandleFunc("/api/workspace/status", s.handleWorkspaceStatus)
+	s.mux.HandleFunc("/api/setup/components", s.handleSetupComponents)
 	s.mux.HandleFunc("/api/install", s.handleInstall)
 	s.mux.HandleFunc("/api/tasks", s.handleTasks)
 	s.mux.HandleFunc("/api/tasks/events", s.handleSSEEvents)
@@ -1894,6 +1895,18 @@ func (s *Server) handleToolchains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleSetupComponents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.installer == nil {
+		writeError(w, http.StatusServiceUnavailable, "Installer tidak tersedia")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.installer.GetComponentStatuses(r.Context()))
 }
 
 type installItemPayload struct {

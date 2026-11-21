@@ -39,6 +39,7 @@ import type {
 	TerminalAuditRecord,
 	TerminalInfo,
 	TerminalUnlockResponse,
+	SetupComponentStatus,
 	SetupMailPayload,
 	SiteRecord,
 	SwitchersMap,
@@ -235,7 +236,8 @@ export const api = {
 			body: JSON.stringify(sudoPass ? { version, sudo_pass: sudoPass } : { version })
 		}),
 
-	// Toolchains & Env
+	// Toolchains & Env & Setup Components
+	getSetupComponents: () => apiFetch<Record<string, SetupComponentStatus>>('/api/setup/components'),
 	getToolchains: (refresh = false) =>
 		apiFetch<ToolchainStatus[]>(refresh ? '/api/toolchains?refresh=1' : '/api/toolchains'),
 	getEnvStatus: () => apiFetch<EnvStatusResponse>('/api/env'),

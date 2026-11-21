@@ -59,8 +59,6 @@
 	let proxyPortStr = $state('3000');
 	let sslEnabled = $state(true);
 	let edgeExposeEnabled = $state(true);
-	let edgeLocalExposeEnabled = $state(false);
-	let edgePublicDomain = $state('');
 	let edgeSSLEnabled = $state(true);
 	let addLocalHosts = $state(false);
 
@@ -141,24 +139,25 @@
 		subdomainPrefix.trim().replace(/^\.+|\.+$/g, '').toLowerCase()
 	);
 	const effectiveDomain = $derived(
-		supportsDNS && domainMode === 'subdomain'
+		isEdge
 			? !parentDomain
 				? ''
 				: cleanSubPrefix
 					? `${cleanSubPrefix}.${parentDomain}`
-					: isEdge
-						? parentDomain
-						: ''
-			: domain.trim().replace(/^\.+|\.+$/g, '').toLowerCase()
-	);
-	const effectiveIsLocalDomain = $derived(
-		effectiveDomain.length > 0 && isLocalOnlyDomain(effectiveDomain)
+					: parentDomain
+			: isVPS && domainMode === 'subdomain'
+				? cleanSubPrefix && parentDomain
+					? `${cleanSubPrefix}.${parentDomain}`
+					: ''
+				: domain.trim().replace(/^\.+|\.+$/g, '').toLowerCase()
 	);
 	const domainInvalid = $derived(
 		domainTouched &&
-			(supportsDNS && domainMode === 'subdomain'
-				? !parentDomain || (!isEdge && cleanSubPrefix.length === 0)
-				: effectiveDomain.length === 0)
+			(isEdge
+				? !parentDomain
+				: isVPS && domainMode === 'subdomain'
+					? cleanSubPrefix.length === 0 || !parentDomain
+					: effectiveDomain.length === 0)
 	);
 
 	const filteredSites = $derived.by(() => {
@@ -182,17 +181,6 @@
 			zones = (await api.listPDNSZones()) ?? [];
 			if (!parentDomain && domainChoices.length > 0) {
 				parentDomain = domainChoices[0];
-			}
-			if (
-				createOpen &&
-				isEdge &&
-				domainMode === 'custom' &&
-				!domain.trim() &&
-				!subdomainPrefix.trim() &&
-				pdnsZones.length > 0
-			) {
-				domainMode = 'subdomain';
-				parentDomain = pdnsZones[0];
 			}
 		} catch {
 			// PowerDNS belum terhubung / opsional
@@ -246,7 +234,7 @@
 	});
 
 	function openCreate() {
-		domainMode = isEdge && pdnsZones.length > 0 ? 'subdomain' : 'custom';
+		domainMode = isEdge ? 'subdomain' : 'custom';
 		domain = '';
 		subdomainPrefix = '';
 		parentDomain = domainChoices[0] ?? '';
@@ -257,8 +245,6 @@
 		proxyPortStr = '3000';
 		sslEnabled = isLocal;
 		edgeExposeEnabled = isEdge;
-		edgeLocalExposeEnabled = false;
-		edgePublicDomain = '';
 		edgeSSLEnabled = true;
 		addLocalHosts = false;
 		createOpen = true;
@@ -394,11 +380,11 @@
 	async function submitCreate(e: SubmitEvent) {
 		e.preventDefault();
 		domainTouched = true;
-		if (supportsDNS && domainMode === 'subdomain') {
+		if (isEdge || (isVPS && domainMode === 'subdomain')) {
 			if (!parentDomain) {
 				toast.warning(
 					isEdge
-						? 'Pilih domain PowerDNS terlebih dahulu atau gunakan Input Manual.'
+						? 'Tambahkan domain/zone di menu PowerDNS & Edge terlebih dahulu.'
 						: 'Pilih domain induk terlebih dahulu atau gunakan mode Domain Utama.'
 				);
 				return;
@@ -422,14 +408,8 @@
 
 		const cleanIsLocal = isLocalOnlyDomain(cleanDomain);
 		const wantVPSLetsEncrypt = isVPS && sslEnabled && !cleanIsLocal;
-		const wantEdgeTunnel = isEdge && (cleanIsLocal ? edgeLocalExposeEnabled : edgeExposeEnabled);
-		const resolvedEdgeDomain = cleanIsLocal
-			? edgePublicDomain.trim().replace(/\.$/, '').toLowerCase()
-			: cleanDomain;
-		if (wantEdgeTunnel && (!resolvedEdgeDomain || isLocalOnlyDomain(resolvedEdgeDomain))) {
-			toast.warning('Untuk mengekspos via VPS Edge, masukkan domain publik FQDN yang valid (bukan .test/.local).');
-			return;
-		}
+		const wantEdgeTunnel = isEdge && edgeExposeEnabled;
+		const resolvedEdgeDomain = cleanDomain;
 
 		creating = true;
 		try {
@@ -440,7 +420,7 @@
 				root_path: rootPath.trim(),
 				proxy_port: proxyPort,
 				ssl_enabled: wantVPSLetsEncrypt || wantEdgeTunnel ? false : sslEnabled,
-				...(isEdge && !cleanIsLocal ? { add_hosts: addLocalHosts } : {}),
+				...(isEdge ? { add_hosts: addLocalHosts } : {}),
 				...(wantEdgeTunnel
 					? {
 							expose_edge: true,
@@ -892,7 +872,7 @@
 				{#if isVPS}
 					Membuat konfigurasi Nginx (<code>wdev site create</code>) langsung aktif di VPS publik.
 				{:else if isEdge}
-					Membuat virtual host Nginx lokal dan (untuk domain publik) mengeksposnya via NetBird Tunnel beserta DNS PowerDNS &amp; SSL Let's Encrypt di VPS Edge.
+					Membuat virtual host Nginx memakai domain / subdomain PowerDNS dan mengeksposnya via NetBird Tunnel + SSL Let's Encrypt di VPS Edge.
 				{:else}
 					Membuat konfigurasi Nginx (<code>wdev site create</code>), entri <code>/etc/hosts</code>, dan sertifikat SSL lokal.
 				{/if}
@@ -903,80 +883,61 @@
 			<Field.FieldGroup>
 				<Field.Field data-invalid={domainInvalid ? 'true' : undefined}>
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<Field.FieldLabel for={supportsDNS && domainMode === 'subdomain' ? 'site-sub-prefix' : 'site-domain'}>
-							{isLocal ? 'Domain Lokal' : 'Domain'}
+						<Field.FieldLabel for={isEdge || (isVPS && domainMode === 'subdomain') ? 'site-sub-prefix' : 'site-domain'}>
+							{isLocal ? 'Domain Lokal' : isEdge ? 'Domain PowerDNS' : 'Domain'}
 						</Field.FieldLabel>
-						{#if supportsDNS}
+						{#if isEdge}
+							<Badge variant="outline" class="text-[11px] font-medium">
+								Zone PowerDNS ({domainChoices.length})
+							</Badge>
+						{:else if isVPS}
 							<div class="inline-flex rounded-lg border bg-muted p-0.5 text-xs" role="group" aria-label="Mode input domain">
-								{#if isEdge}
-									<button
-										type="button"
-										class={domainMode === 'subdomain'
-											? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
-											: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
-										onclick={() => {
-											domainMode = 'subdomain';
-											domainTouched = false;
-											if (!parentDomain && domainChoices.length > 0) {
-												parentDomain = domainChoices[0];
-											}
-											void refreshZonesQuiet();
-										}}
-									>
-										PowerDNS ({domainChoices.length})
-									</button>
-									<button
-										type="button"
-										class={domainMode === 'custom'
-											? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
-											: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
-										onclick={() => {
-											domainMode = 'custom';
-											domainTouched = false;
-										}}
-									>
-										Manual / .test
-									</button>
-								{:else}
-									<button
-										type="button"
-										class={domainMode === 'custom'
-											? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
-											: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
-										onclick={() => {
-											domainMode = 'custom';
-											domainTouched = false;
-										}}
-									>
-										Domain Utama
-									</button>
-									<button
-										type="button"
-										class={domainMode === 'subdomain'
-											? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
-											: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
-										onclick={() => {
-											domainMode = 'subdomain';
-											domainTouched = false;
-											if (!parentDomain && domainChoices.length > 0) {
-												parentDomain = domainChoices[0];
-											}
-											void refreshZonesQuiet();
-										}}
-									>
-										Subdomain ({domainChoices.length})
-									</button>
-								{/if}
+								<button
+									type="button"
+									class={domainMode === 'custom'
+										? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
+										: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
+									onclick={() => {
+										domainMode = 'custom';
+										domainTouched = false;
+									}}
+								>
+									Domain Utama
+								</button>
+								<button
+									type="button"
+									class={domainMode === 'subdomain'
+										? 'rounded-md bg-background px-2.5 py-1 font-medium text-foreground shadow-xs'
+										: 'rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground'}
+									onclick={() => {
+										domainMode = 'subdomain';
+										domainTouched = false;
+										if (!parentDomain && domainChoices.length > 0) {
+											parentDomain = domainChoices[0];
+										}
+										void refreshZonesQuiet();
+									}}
+								>
+									Subdomain ({domainChoices.length})
+								</button>
 							</div>
 						{/if}
 					</div>
 
-					{#if supportsDNS && domainMode === 'subdomain'}
+					{#if isEdge || (isVPS && domainMode === 'subdomain')}
 						{#if domainChoices.length === 0}
-							<div class="rounded-md border border-dashed bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
-								{isEdge
-									? 'Belum ada zone di PowerDNS VPS Edge. Tambahkan zone di menu PowerDNS & Edge terlebih dahulu, atau pilih Manual / .test.'
-									: 'Belum ada domain atau zone PowerDNS yang tersedia sebagai induk subdomain. Tambahkan zone di menu PowerDNS terlebih dahulu atau pilih Domain Utama.'}
+							<div class="flex flex-col gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-3 text-xs text-muted-foreground">
+								{#if isEdge}
+									<p>Belum ada zone di PowerDNS VPS Edge. Tambahkan domain zone di menu <strong>PowerDNS &amp; Edge</strong> terlebih dahulu sebelum membuat Virtual Host.</p>
+									<div>
+										<Button size="xs" variant="outline" href="/powerdns">
+											<NetworkIcon data-icon="inline-start" />
+											Kelola Zone PowerDNS
+										</Button>
+									</div>
+								{:else}
+									<p>Belum ada domain atau zone PowerDNS yang tersedia sebagai induk subdomain. Tambahkan zone di menu PowerDNS terlebih dahulu atau pilih <strong>Domain Utama</strong>.</p>
+								{/if}
 							</div>
 						{:else}
 							<div class="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
@@ -1046,23 +1007,19 @@
 					{/if}
 
 					<Field.FieldDescription>
-						{#if supportsDNS && domainMode === 'subdomain'}
-							{#if isVPS}
-								Pilih domain induk dan isi awalan subdomain. Record DNS A otomatis dibuat bila zone dikelola PowerDNS lokal.
-							{:else}
-								Pilih zone PowerDNS lalu isi awalan subdomain (atau kosongkan awalan untuk memakai domain utama zone). Otomatis diekspos via VPS Edge Tunnel beserta SSL Let's Encrypt.
-							{/if}
+						{#if isEdge}
+							Pilih zone PowerDNS lalu isi awalan subdomain (atau kosongkan awalan untuk memakai domain utama zone).
+						{:else if isVPS && domainMode === 'subdomain'}
+							Pilih domain induk dan isi awalan subdomain. Record DNS A otomatis dibuat bila zone dikelola PowerDNS lokal.
 						{:else if isVPS}
 							Masukkan domain FQDN yang mengarah ke IP publik VPS ini.
-						{:else if isEdge}
-							Masukkan domain publik (mis. <code>app.domainanda.com</code>) untuk langsung diekspos lewat VPS Edge, atau akhiran <code>.test</code> untuk pengembangan lokal saja.
 						{:else}
 							Akhiran <code>.test</code> disarankan untuk pengembangan lokal.
 						{/if}
 					</Field.FieldDescription>
 					{#if domainInvalid}
 						<Field.FieldError
-							errors={[{ message: supportsDNS && domainMode === 'subdomain' ? (isEdge ? 'Pilih zone PowerDNS terlebih dahulu.' : 'Awalan subdomain dan domain induk wajib diisi.') : 'Domain wajib diisi.' }]}
+							errors={[{ message: isEdge ? 'Pilih zone PowerDNS terlebih dahulu.' : isVPS && domainMode === 'subdomain' ? 'Awalan subdomain dan domain induk wajib diisi.' : 'Domain wajib diisi.' }]}
 						/>
 					{/if}
 				</Field.Field>
@@ -1147,79 +1104,38 @@
 				{/if}
 
 				{#if isEdge}
-					{#if effectiveIsLocalDomain}
-						<div class="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
+					<div class="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
+						<Field.Field orientation="horizontal">
+							<Checkbox id="site-edge-expose" bind:checked={edgeExposeEnabled} />
+							<Field.FieldLabel for="site-edge-expose" class="font-normal">
+								Ekspos ke internet &amp; sinkronkan DNS via VPS Edge Tunnel (NetBird{modeStore.publicIP ? ` → ${modeStore.publicIP}` : ''})
+							</Field.FieldLabel>
+						</Field.Field>
+
+						{#if edgeExposeEnabled}
+							<div class="flex flex-col gap-2.5 pl-6">
+								<Field.Field orientation="horizontal">
+									<Checkbox id="site-edge-ssl" bind:checked={edgeSSLEnabled} />
+									<Field.FieldLabel for="site-edge-ssl" class="font-normal">
+										Terbitkan SSL Let's Encrypt (HTTPS) di VPS Edge Gateway
+									</Field.FieldLabel>
+								</Field.Field>
+								<Field.Field orientation="horizontal">
+									<Checkbox id="site-add-hosts" bind:checked={addLocalHosts} />
+									<Field.FieldLabel for="site-add-hosts" class="font-normal">
+										Tambahkan juga ke <code>/etc/hosts</code> lokal (opsional, untuk akses langsung 127.0.0.1)
+									</Field.FieldLabel>
+								</Field.Field>
+							</div>
+						{:else}
 							<Field.Field orientation="horizontal">
 								<Checkbox id="site-ssl" bind:checked={sslEnabled} />
 								<Field.FieldLabel for="site-ssl" class="font-normal">
 									Aktifkan Sertifikat SSL Lokal (HTTPS mkcert)
 								</Field.FieldLabel>
 							</Field.Field>
-
-							<Field.Field orientation="horizontal">
-								<Checkbox id="site-edge-local-expose" bind:checked={edgeLocalExposeEnabled} />
-								<Field.FieldLabel for="site-edge-local-expose" class="font-normal">
-									Sekalian ekspos domain lokal ini ke domain publik via VPS Edge Tunnel
-								</Field.FieldLabel>
-							</Field.Field>
-
-							{#if edgeLocalExposeEnabled}
-								<div class="flex flex-col gap-3 pl-6">
-									<Field.Field>
-										<Field.FieldLabel for="site-edge-pub-dom">Domain Publik Target</Field.FieldLabel>
-										<Input
-											id="site-edge-pub-dom"
-											placeholder={parentDomains[0] ? `app.${parentDomains[0]}` : 'app.domainanda.com'}
-											autocorrect="off"
-											autocapitalize="none"
-											spellcheck={false}
-											bind:value={edgePublicDomain}
-											required
-										/>
-									</Field.Field>
-									<Field.Field orientation="horizontal">
-										<Checkbox id="site-edge-ssl" bind:checked={edgeSSLEnabled} />
-										<Field.FieldLabel for="site-edge-ssl" class="font-normal">
-											Terbitkan SSL Let's Encrypt (HTTPS) di VPS Edge
-										</Field.FieldLabel>
-									</Field.Field>
-								</div>
-							{/if}
-						</div>
-					{:else}
-						<div class="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
-							<Field.Field orientation="horizontal">
-								<Checkbox id="site-edge-expose" bind:checked={edgeExposeEnabled} />
-								<Field.FieldLabel for="site-edge-expose" class="font-normal">
-									Ekspos ke internet &amp; sinkronkan DNS via VPS Edge Tunnel (NetBird{modeStore.publicIP ? ` → ${modeStore.publicIP}` : ''})
-								</Field.FieldLabel>
-							</Field.Field>
-
-							{#if edgeExposeEnabled}
-								<div class="flex flex-col gap-2.5 pl-6">
-									<Field.Field orientation="horizontal">
-										<Checkbox id="site-edge-ssl" bind:checked={edgeSSLEnabled} />
-										<Field.FieldLabel for="site-edge-ssl" class="font-normal">
-											Terbitkan SSL Let's Encrypt (HTTPS) di VPS Edge Gateway
-										</Field.FieldLabel>
-									</Field.Field>
-									<Field.Field orientation="horizontal">
-										<Checkbox id="site-add-hosts" bind:checked={addLocalHosts} />
-										<Field.FieldLabel for="site-add-hosts" class="font-normal">
-											Tambahkan juga ke <code>/etc/hosts</code> lokal (opsional, untuk akses langsung 127.0.0.1)
-										</Field.FieldLabel>
-									</Field.Field>
-								</div>
-							{:else}
-								<Field.Field orientation="horizontal">
-									<Checkbox id="site-ssl" bind:checked={sslEnabled} />
-									<Field.FieldLabel for="site-ssl" class="font-normal">
-										Aktifkan Sertifikat SSL Lokal (HTTPS mkcert)
-									</Field.FieldLabel>
-								</Field.Field>
-							{/if}
-						</div>
-					{/if}
+						{/if}
+					</div>
 				{:else if isVPS}
 					<Field.Field orientation="horizontal">
 						<Checkbox id="site-ssl" bind:checked={sslEnabled} />
@@ -1239,7 +1155,7 @@
 
 			<Dialog.Footer>
 				<Button type="button" variant="outline" onclick={() => (createOpen = false)}>Batal</Button>
-				<Button type="submit" disabled={creating}>
+				<Button type="submit" disabled={creating || (isEdge && domainChoices.length === 0)}>
 					{#if creating}
 						<Spinner data-icon="inline-start" />
 						Membuat...

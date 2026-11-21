@@ -632,6 +632,12 @@ export interface InstallItemPayload {
 	version?: string;
 }
 
+export interface SetupComponentStatus {
+	component: string;
+	installed: boolean;
+	version?: string;
+}
+
 export interface FileRootInfo {
 	name: string;
 	path: string;

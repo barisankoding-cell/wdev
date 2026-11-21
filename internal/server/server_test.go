@@ -1687,3 +1687,33 @@ func TestHandleSitesEdgeModeAutoExposesAndDeletesCleanly(t *testing.T) {
 		t.Fatalf("unexpected default edge proxy payload: %s", proxyCreateBody)
 	}
 }
+
+func TestHandleSetupComponentsEndpoint(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "setup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: filepath.Join(tmp, "etc")}
+	_ = os.MkdirAll(cfg.WdevEtc, 0755)
+	inst := installer.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), inst, nil, nil, nil, nil, nil, auth.New(cfg, db))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/setup/components", nil)
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/setup/components = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]installer.SetupComponentStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"base", "nginx", "php", "pdns", "mail", "netbird", "php-stack", "zsh"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("missing key %q in /api/setup/components response", key)
+		}
+	}
+}
