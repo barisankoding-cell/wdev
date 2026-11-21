@@ -2528,17 +2528,10 @@ func (s *Server) handleUpdaterStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 		return
 	}
-	check := r.URL.Query().Get("check") == "1" || r.URL.Query().Get("check") == "true"
-	if !check {
-		writeJSON(w, http.StatusOK, updater.Result{
-			Current: version.Version,
-			Latest:  version.Version,
-		})
-		return
-	}
+	force := r.URL.Query().Get("check") == "1" || r.URL.Query().Get("check") == "true" || r.URL.Query().Get("force") == "1"
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	res, err := updater.Run(ctx, version.Version, updater.Options{CheckOnly: true}, nil)
+	res, err := updater.Run(ctx, version.Version, updater.Options{CheckOnly: true, Force: force}, nil)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"current":    version.Version,

@@ -494,6 +494,7 @@ export interface UpdaterStatus {
 	asset_name?: string;
 	message?: string;
 	error?: string;
+	changelog?: string;
 }
 
 export interface AuthMeResponse {

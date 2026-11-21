@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,8 +25,16 @@ const (
 	checksumTag = ".sha256"
 )
 
+var (
+	cacheMu   sync.Mutex
+	cachedRel Release
+	cachedAt  time.Time
+	cacheTTL  = 15 * time.Minute
+)
+
 type Release struct {
 	Tag    string  `json:"tag_name"`
+	Body   string  `json:"body"`
 	Assets []Asset `json:"assets"`
 }
 
@@ -50,6 +59,7 @@ type Result struct {
 	AssetName  string `json:"asset_name,omitempty"`
 	Message    string `json:"message,omitempty"`
 	EdgeUpdate string `json:"edge_update,omitempty"`
+	Changelog  string `json:"changelog,omitempty"`
 }
 
 func FetchLatest(ctx context.Context) (Release, error) {
@@ -79,6 +89,33 @@ func FetchLatest(ctx context.Context) (Release, error) {
 	if strings.TrimSpace(rel.Tag) == "" {
 		return Release{}, fmt.Errorf("rilis terbaru tidak memiliki tag")
 	}
+	return rel, nil
+}
+
+// FetchLatestCached mengambil rilis terbaru dengan caching in-memory untuk menghemat kuota API GitHub.
+func FetchLatestCached(ctx context.Context, force bool) (Release, error) {
+	cacheMu.Lock()
+	if !force && !cachedAt.IsZero() && time.Since(cachedAt) < cacheTTL && cachedRel.Tag != "" {
+		rel := cachedRel
+		cacheMu.Unlock()
+		return rel, nil
+	}
+	cacheMu.Unlock()
+
+	rel, err := FetchLatest(ctx)
+	if err != nil {
+		cacheMu.Lock()
+		defer cacheMu.Unlock()
+		if cachedRel.Tag != "" {
+			return cachedRel, nil
+		}
+		return Release{}, err
+	}
+
+	cacheMu.Lock()
+	cachedRel = rel
+	cachedAt = time.Now()
+	cacheMu.Unlock()
 	return rel, nil
 }
 
@@ -209,7 +246,8 @@ func restartService(ctx context.Context, unit string) error {
 	if out, err := exec.CommandContext(ctx, "systemctl", "cat", unit).CombinedOutput(); err != nil || len(out) == 0 {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, "systemctl", "restart", unit)
+	// Menggunakan --no-block agar pemanggilan restart dari dalam proses daemon tidak deadlock
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "--no-block", unit)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restart %s gagal: %w (%s)", unit, err, strings.TrimSpace(string(out)))
 	}
@@ -286,12 +324,19 @@ func Run(ctx context.Context, current string, opts Options, cb func(string)) (Re
 	if strings.TrimSpace(opts.SourceDir) != "" {
 		return buildFromSource(ctx, opts.SourceDir, current, cb)
 	}
-	rel, err := FetchLatest(ctx)
+	var rel Release
+	var err error
+	if opts.Force {
+		rel, err = FetchLatest(ctx)
+	} else {
+		rel, err = FetchLatestCached(ctx, false)
+	}
 	if err != nil {
 		return res, err
 	}
 	res.Latest = strings.TrimPrefix(strings.TrimSpace(rel.Tag), "v")
 	res.HasUpdate = compare(res.Latest, current) > 0
+	res.Changelog = rel.Body
 	if !res.HasUpdate && !opts.Force {
 		res.Message = "wdev sudah versi terbaru"
 		cb("✓ " + res.Message)

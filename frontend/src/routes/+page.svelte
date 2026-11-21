@@ -81,9 +81,12 @@
 	}
 
 	async function applySelfUpdate() {
+		const changelogSnippet = updaterStatus?.changelog
+			? `\n\nCatatan Rilis (v${updaterStatus.latest}):\n${updaterStatus.changelog.trim().slice(0, 300)}${updaterStatus.changelog.trim().length > 300 ? '...' : ''}`
+			: '';
 		const ok = await cp.confirm({
-			title: 'Perbarui Biner wdev',
-			description: 'Unduh dan pasang rilis wdev terbaru lalu restart layanan wdev?',
+			title: `Perbarui Biner wdev ke v${updaterStatus?.latest || 'Terbaru'}`,
+			description: `Unduh dan pasang rilis wdev terbaru lalu restart layanan wdev?${changelogSnippet}`,
 			confirmText: 'Perbarui Sekarang'
 		});
 		if (!ok) return;
@@ -145,6 +148,37 @@
 			</Button>
 		</div>
 	</div>
+
+	<!-- Notifikasi Rilis Pembaruan wdev Panel (aaPanel Style) -->
+	{#if updaterStatus?.has_update}
+		<div
+			class="relative flex flex-col gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-card-foreground shadow-sm dark:bg-amber-950/25 sm:flex-row sm:items-center sm:justify-between"
+			role="alert"
+		>
+			<div class="flex items-start gap-3">
+				<div class="rounded-lg bg-amber-500/20 p-2 text-amber-600 dark:text-amber-400 shrink-0">
+					<ArrowUpCircleIcon class="size-5" />
+				</div>
+				<div>
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="font-semibold text-foreground">Pembaruan wdev Control Plane Tersedia!</span>
+						<Badge variant="default" class="bg-amber-600 font-mono text-xs text-white hover:bg-amber-700">
+							v{updaterStatus.latest}
+						</Badge>
+					</div>
+					<p class="mt-0.5 text-xs text-muted-foreground sm:text-sm">
+						Versi baru wdev siap dipasang (saat ini: v{updaterStatus.current}). Dapatkan fitur dan perbaikan terbaru dengan satu klik.
+					</p>
+				</div>
+			</div>
+			<div class="flex items-center gap-2 self-end sm:self-auto shrink-0">
+				<Button size="sm" class="bg-amber-600 text-white hover:bg-amber-700" onclick={applySelfUpdate}>
+					<ArrowUpCircleIcon data-icon="inline-start" />
+					Perbarui Sekarang
+				</Button>
+			</div>
+		</div>
+	{/if}
 
 	{#if cp.statusError}
 		<Alert.Root variant="destructive">
@@ -310,8 +344,17 @@
 					<div class="flex flex-wrap items-center justify-between gap-2">
 						<div class="min-w-0">
 							<Card.Description>Biner wdev Control Plane</Card.Description>
-							<Card.Title class="mt-0.5 font-mono text-base">
-								v{st.wdev_version || updaterStatus?.current || '-'}
+							<Card.Title class="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-base">
+								<span>v{st.wdev_version || updaterStatus?.current || '-'}</span>
+								{#if updaterStatus?.has_update}
+									<span class="inline-flex items-center gap-1.5 font-sans text-xs font-medium text-amber-600 dark:text-amber-400">
+										<span class="relative flex size-2">
+											<span class="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-75"></span>
+											<span class="relative inline-flex size-2 rounded-full bg-amber-500"></span>
+										</span>
+										v{updaterStatus.latest} tersedia
+									</span>
+								{/if}
 							</Card.Title>
 						</div>
 						<div class="flex flex-wrap items-center gap-1.5">
@@ -329,7 +372,7 @@
 								{/if}
 							</Button>
 							{#if updaterStatus?.has_update}
-								<Button size="xs" onclick={applySelfUpdate}>
+								<Button size="xs" class="bg-amber-600 text-white hover:bg-amber-700" onclick={applySelfUpdate}>
 									<ArrowUpCircleIcon data-icon="inline-start" />
 									Update
 								</Button>
