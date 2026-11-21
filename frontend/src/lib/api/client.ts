@@ -195,6 +195,19 @@ export const api = {
 				...(sudoPass ? { sudo_pass: sudoPass } : {})
 			})
 		}),
+	triggerBatchInstall: (
+		items: { component: string; version?: string }[],
+		label?: string,
+		sudoPass?: string
+	) =>
+		apiFetch<{ status: string; task_id?: number; message?: string }>('/api/install', {
+			method: 'POST',
+			body: JSON.stringify({
+				items,
+				...(label ? { label } : {}),
+				...(sudoPass ? { sudo_pass: sudoPass } : {})
+			})
+		}),
 	getTasks: (limit = 30) => apiFetch<TasksResponse>(`/api/tasks?limit=${limit}`),
 	getUpdaterStatus: (check = false) =>
 		apiFetch<UpdaterStatus>(check ? '/api/updater/status?check=1' : '/api/updater/status'),

@@ -177,6 +177,77 @@ func TestResolveInstallTaskNetbirdIndependent(t *testing.T) {
 	if _, _, ok := srv.resolveInstallTask("does-not-exist", ""); ok {
 		t.Fatalf("expected unknown component to return ok=false")
 	}
+
+	mailName, mailFn, ok := srv.resolveInstallTask("mail", "")
+	if !ok || mailFn == nil || mailName == "" {
+		t.Fatalf("expected mail component to resolve to an install task")
+	}
+}
+
+func TestBatchInstallValidationAndOrdering(t *testing.T) {
+	srv := newTestServer()
+	srv.mux.HandleFunc("/api/install", srv.handleInstall)
+
+	// 1. Urutan dependensi dan deduplikasi alias (ssl & mkcert, zsh & zsh-agnoster)
+	steps, needsSudo, errMsg := srv.resolveInstallSteps([]installItemPayload{
+		{Component: "zsh", Version: "powerlevel10k"},
+		{Component: "mkcert"},
+		{Component: "php", Version: "8.4"},
+		{Component: "nginx"},
+		{Component: "base"},
+		{Component: "ssl"},
+		{Component: "node", Version: "22"},
+	})
+	if errMsg != "" {
+		t.Fatalf("unexpected error: %s", errMsg)
+	}
+	if !needsSudo {
+		t.Fatalf("expected needsSudo=true for privileged web/runtime components")
+	}
+	wantOrder := []string{"base", "node", "nginx", "php", "ssl", "zsh"}
+	if len(steps) != len(wantOrder) {
+		t.Fatalf("got %d steps, want %d", len(steps), len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if steps[i].canonical != want {
+			t.Fatalf("step[%d] = %q, want %q", i, steps[i].canonical, want)
+		}
+	}
+
+	// 2. Non-privileged only batch must not force sudo
+	nonPrivSteps, nonPrivSudo, errMsg := srv.resolveInstallSteps([]installItemPayload{
+		{Component: "pdns"},
+		{Component: "cf-doctor"},
+	})
+	if errMsg != "" || len(nonPrivSteps) != 2 || nonPrivSudo {
+		t.Fatalf("unexpected non-priv batch result: steps=%d sudo=%v err=%q", len(nonPrivSteps), nonPrivSudo, errMsg)
+	}
+
+	// 3. Batch label dan single-item label fallback
+	batchName, _, _, errMsg := srv.buildInstallBatch([]installItemPayload{
+		{Component: "nginx"},
+		{Component: "php", Version: "8.3"},
+	}, "Preset Hanya Hosting\n")
+	if errMsg != "" || batchName != "Preset Hanya Hosting" {
+		t.Fatalf("unexpected batchName=%q err=%q", batchName, errMsg)
+	}
+
+	// 4. HTTP POST /api/install menolak batch kosong, komponen asing, atau versi berbahaya
+	badBodies := []string{
+		`{}`,
+		`{"items":[]}`,
+		`{"items":[{"component":"nginx"},{"component":"not-exists"}]}`,
+		`{"items":[{"component":"php","version":"8.4; rm -rf /"}]}`,
+		`{"items":[{"component":"zsh","version":"evil-theme"}]}`,
+	}
+	for _, body := range badBodies {
+		req := httptest.NewRequest(http.MethodPost, "/api/install", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("POST /api/install with %s status = %d, want 400", body, rec.Code)
+		}
+	}
 }
 
 func TestTasksAndSSEReplayMidProcess(t *testing.T) {

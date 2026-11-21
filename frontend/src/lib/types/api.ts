@@ -519,3 +519,8 @@ export interface ChangeCredentialsPayload {
 	new_password?: string;
 }
 
+export interface InstallItemPayload {
+	component: string;
+	version?: string;
+}
+

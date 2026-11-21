@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1666,36 +1667,259 @@ func (s *Server) handleToolchains(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+type installItemPayload struct {
+	Component string `json:"component"`
+	Version   string `json:"version"`
+}
+
+type resolvedInstallStep struct {
+	canonical string
+	component string
+	taskName  string
+	fn        func(ctx context.Context, cb func(string)) error
+	order     int
+	inputIdx  int
+}
+
+var nonPrivilegedInstallComponents = map[string]bool{
+	"check-updates": true,
+	"check_updates": true,
+	"updates":       true,
+	"orca-pair":     true,
+	"orca-ai":       true,
+	"cf-doctor":     true,
+	"doctor":        true,
+	"pdns":          true,
+}
+
+func canonicalInstallComponent(component string) string {
+	switch component {
+	case "full-install":
+		return "all"
+	case "mkcert":
+		return "ssl"
+	case "mail-stack":
+		return "mail"
+	case "zsh-p10k", "zsh-agnoster", "zsh-robbyrussell":
+		return "zsh"
+	case "orca":
+		return "orca-desktop"
+	case "audit-toolchain":
+		return "audit"
+	case "repair-toolchain":
+		return "audit-fix"
+	case "check_updates", "updates":
+		return "check-updates"
+	case "doctor":
+		return "cf-doctor"
+	case "sync":
+		return "sync-hosts"
+	default:
+		return component
+	}
+}
+
+func installComponentOrder(canonical string) int {
+	switch canonical {
+	case "base":
+		return 10
+	case "node":
+		return 20
+	case "rust":
+		return 30
+	case "go":
+		return 40
+	case "java":
+		return 50
+	case "android":
+		return 60
+	case "flutter":
+		return 70
+	case "postgres":
+		return 80
+	case "redis":
+		return 90
+	case "nginx":
+		return 100
+	case "php":
+		return 110
+	case "composer":
+		return 120
+	case "ssl":
+		return 130
+	case "php-stack":
+		return 140
+	case "mail":
+		return 150
+	case "cloudflare":
+		return 160
+	case "netbird":
+		return 170
+	case "pdns":
+		return 180
+	case "zsh":
+		return 190
+	case "orca-desktop":
+		return 200
+	case "orca-headless":
+		return 210
+	default:
+		return 500
+	}
+}
+
+func validateInstallItem(rawComponent, rawVersion string) (component, reqVersion string, errMsg string) {
+	component = strings.TrimSpace(rawComponent)
+	reqVersion = strings.TrimSpace(rawVersion)
+	if component == "" {
+		return "", "", "Nama komponen wajib diisi"
+	}
+	if reqVersion == "" {
+		return component, "", ""
+	}
+	switch component {
+	case "node", "java", "postgres", "php", "php-stack":
+		if !runtimeVerRe.MatchString(strings.TrimPrefix(reqVersion, "v")) {
+			return "", "", "Format parameter version tidak valid"
+		}
+	case "zsh", "zsh-p10k":
+		switch strings.ToLower(reqVersion) {
+		case "powerlevel10k", "p10k", "agnoster", "robbyrussell":
+		default:
+			return "", "", "Tema Zsh tidak valid (pilihan: powerlevel10k, agnoster, robbyrussell)"
+		}
+	}
+	return component, reqVersion, ""
+}
+
+func (s *Server) resolveInstallSteps(items []installItemPayload) (steps []resolvedInstallStep, needsSudo bool, errMsg string) {
+	if len(items) == 0 {
+		return nil, false, "Pilih minimal satu komponen untuk dipasang"
+	}
+	if len(items) > 32 {
+		return nil, false, "Terlalu banyak komponen dalam satu antrean (maksimal 32)"
+	}
+
+	seen := make(map[string]bool, len(items))
+	steps = make([]resolvedInstallStep, 0, len(items))
+
+	for idx, raw := range items {
+		comp, ver, vErr := validateInstallItem(raw.Component, raw.Version)
+		if vErr != "" {
+			return nil, false, vErr
+		}
+		canon := canonicalInstallComponent(comp)
+		if seen[canon] {
+			continue
+		}
+		seen[canon] = true
+
+		stepName, stepFn, ok := s.resolveInstallTask(comp, ver)
+		if !ok {
+			return nil, false, "Komponen tidak dikenal: " + comp
+		}
+		if !nonPrivilegedInstallComponents[comp] && !nonPrivilegedInstallComponents[canon] {
+			needsSudo = true
+		}
+		steps = append(steps, resolvedInstallStep{
+			canonical: canon,
+			component: comp,
+			taskName:  stepName,
+			fn:        stepFn,
+			order:     installComponentOrder(canon),
+			inputIdx:  idx,
+		})
+	}
+
+	if len(steps) == 0 {
+		return nil, false, "Pilih minimal satu komponen untuk dipasang"
+	}
+
+	sort.SliceStable(steps, func(i, j int) bool {
+		if steps[i].order != steps[j].order {
+			return steps[i].order < steps[j].order
+		}
+		return steps[i].inputIdx < steps[j].inputIdx
+	})
+
+	return steps, needsSudo, ""
+}
+
+func (s *Server) buildInstallBatch(items []installItemPayload, customLabel string) (taskName string, fn func(ctx context.Context, cb func(string)) error, needsSudo bool, errMsg string) {
+	steps, needsSudo, errMsg := s.resolveInstallSteps(items)
+	if errMsg != "" {
+		return "", nil, false, errMsg
+	}
+
+	cleanLabel := strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(customLabel))
+	if runes := []rune(cleanLabel); len(runes) > 80 {
+		cleanLabel = string(runes[:80])
+	}
+
+	if len(steps) == 1 && cleanLabel == "" {
+		return steps[0].taskName, steps[0].fn, needsSudo, ""
+	}
+
+	taskName = cleanLabel
+	if taskName == "" {
+		taskName = fmt.Sprintf("Instalasi Modular (%d Komponen)", len(steps))
+	}
+
+	fn = func(ctx context.Context, cb func(string)) error {
+		total := len(steps)
+		cb(fmt.Sprintf("==> Memulai %s (%d komponen)...", taskName, total))
+		for idx, st := range steps {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			cb("")
+			cb(fmt.Sprintf(">>> [%d/%d] Memasang: %s", idx+1, total, st.taskName))
+			if err := st.fn(ctx, cb); err != nil {
+				return fmt.Errorf("%s: %w", st.taskName, err)
+			}
+		}
+		cb("")
+		cb(fmt.Sprintf("✓ Selesai: %d komponen berhasil diproses.", total))
+		return nil
+	}
+
+	return taskName, fn, needsSudo, ""
+}
+
 func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 		return
 	}
 	var payload struct {
-		Component string `json:"component"`
-		Version   string `json:"version"`
-		SudoPass  string `json:"sudo_pass"`
+		Component string               `json:"component"`
+		Version   string               `json:"version"`
+		Items     []installItemPayload `json:"items"`
+		Label     string               `json:"label"`
+		SudoPass  string               `json:"sudo_pass"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
-	reqVersion := strings.TrimSpace(payload.Version)
-	if reqVersion != "" {
-		switch payload.Component {
-		case "node", "java", "postgres", "php", "php-stack":
-			if !runtimeVerRe.MatchString(strings.TrimPrefix(reqVersion, "v")) {
-				writeError(w, http.StatusBadRequest, "Format parameter version tidak valid")
-				return
-			}
-		case "zsh", "zsh-p10k":
-			switch strings.ToLower(reqVersion) {
-			case "powerlevel10k", "p10k", "agnoster", "robbyrussell":
-			default:
-				writeError(w, http.StatusBadRequest, "Tema Zsh tidak valid (pilihan: powerlevel10k, agnoster, robbyrussell)")
-				return
-			}
-		}
+
+	items := payload.Items
+	if len(items) == 0 && strings.TrimSpace(payload.Component) != "" {
+		items = []installItemPayload{{
+			Component: payload.Component,
+			Version:   payload.Version,
+		}}
+	}
+
+	taskName, fn, needsSudo, errMsg := s.buildInstallBatch(items, payload.Label)
+	if errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
 	}
 
 	if payload.SudoPass != "" {
@@ -1705,19 +1929,7 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check if this action requires sudo and if password is required
-	nonPrivileged := map[string]bool{
-		"check-updates": true,
-		"check_updates": true,
-		"updates":       true,
-		"orca-pair":     true,
-		"orca-ai":       true,
-		"cf-doctor":     true,
-		"doctor":        true,
-		"pdns":          true,
-	}
-
-	if !nonPrivileged[payload.Component] {
+	if needsSudo {
 		if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":  "sudo_required",
@@ -1725,12 +1937,6 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-	}
-
-	taskName, fn, ok := s.resolveInstallTask(payload.Component, reqVersion)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "Komponen tidak dikenal: "+payload.Component)
-		return
 	}
 
 	taskID, err := s.runner.StartNativeTask(taskName, fn)
@@ -1875,6 +2081,11 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 				return err
 			}
 			return s.installer.InstallMkcert(ctx, cb)
+		}
+	case "mail", "mail-stack":
+		taskName = "Mail Server Stack (Stalwart + SnappyMail)"
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.installer.InstallMailStack(ctx, cb)
 		}
 	case "cloudflare":
 		taskName = "Cloudflare Tunnel (cloudflared)"

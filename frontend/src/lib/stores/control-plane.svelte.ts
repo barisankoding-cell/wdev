@@ -452,31 +452,64 @@ class ControlPlaneStore {
 		}
 	}
 
-	async triggerInstall(component: string, version?: string) {
+	private async runInstallWithConfirm(
+		terminalLabel: string,
+		confirmDescription: string,
+		invoke: (sudoPass?: string) => Promise<{ status: string; task_id?: number; message?: string }>
+	) {
 		if (this.isPrivilegedPending) return;
 		this.isPrivilegedPending = true;
 		try {
-			const friendly = COMPONENT_TITLES[component] ?? component;
-			const label = version ? `${friendly} (${version})` : friendly;
 			const ok = await this.confirm({
 				title: 'Konfirmasi Instalasi / Pembaruan',
-				description: `Jalankan operasi instalasi / pembaruan untuk: ${label}?`,
+				description: confirmDescription,
 				confirmText: 'Lanjutkan'
 			});
 			if (!ok) return;
 
 			const res = await this.runWithSudoRetry(
 				'Operasi pemeliharaan/instalasi ini memerlukan hak akses administrator (sudo).',
-				(sudoPass) => api.triggerInstall(component, version, sudoPass)
+				invoke
 			);
 			if (res) {
-				this.openTerminal(label);
+				this.openTerminal(terminalLabel);
 			}
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal memulai tugas instalasi');
 		} finally {
 			this.isPrivilegedPending = false;
 		}
+	}
+
+	async triggerInstall(component: string, version?: string) {
+		const friendly = COMPONENT_TITLES[component] ?? component;
+		const label = version ? `${friendly} (${version})` : friendly;
+		await this.runInstallWithConfirm(
+			label,
+			`Jalankan operasi instalasi / pembaruan untuk: ${label}?`,
+			(sudoPass) => api.triggerInstall(component, version, sudoPass)
+		);
+	}
+
+	async triggerBatchInstall(
+		label: string,
+		items: { component: string; version?: string }[]
+	) {
+		if (items.length === 0) {
+			toast.error('Pilih minimal satu komponen untuk dipasang.');
+			return;
+		}
+		const summary = items
+			.map((it) => {
+				const friendly = COMPONENT_TITLES[it.component] ?? it.component;
+				return it.version ? `${friendly} (${it.version})` : friendly;
+			})
+			.join(', ');
+		await this.runInstallWithConfirm(
+			label,
+			`Jalankan ${label} secara berurutan (${items.length} komponen): ${summary}?`,
+			(sudoPass) => api.triggerBatchInstall(items, label, sudoPass)
+		);
 	}
 
 	async switchRuntime(type: string, version: string) {
