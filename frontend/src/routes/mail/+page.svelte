@@ -109,6 +109,8 @@
 				]
 	);
 
+	const openPortCount = $derived(stalwartPorts.filter((p) => p.open).length);
+
 	const filteredGroups = $derived(
 		domainFilter ? domainGroups.filter((g) => g.domain === domainFilter) : domainGroups
 	);
@@ -657,9 +659,14 @@
 					/>
 				</div>
 			</Card.Header>
-			<Card.Content>
-				<div class="flex flex-wrap items-center gap-1.5" aria-label="Status port Stalwart">
-					<span class="text-xs text-muted-foreground">Port:</span>
+			<Card.Content class="flex flex-col gap-1.5">
+				<div class="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+					<span>Status Port</span>
+					<span class="font-mono tabular-nums">
+						{mailStatus ? `${openPortCount}/${stalwartPorts.length} aktif` : '...'}
+					</span>
+				</div>
+				<div class="grid grid-cols-3 gap-1 sm:flex sm:flex-wrap sm:gap-1.5" aria-label="Status port Stalwart">
 					{#each stalwartPorts as item (item.port)}
 						<span
 							title={!mailStatus
@@ -672,19 +679,19 @@
 											: 'Belum terbuka / tidak dapat diakses'
 									}`}
 							class={!mailStatus
-								? 'inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] font-medium text-secondary-foreground'
+								? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-border bg-secondary px-1 py-0.5 font-mono text-[10.5px] font-medium text-secondary-foreground tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
 								: item.open
-									? 'inline-flex items-center gap-1 rounded-md border border-success/35 bg-success/15 px-1.5 py-0.5 font-mono text-[11px] font-medium text-success'
-									: 'inline-flex items-center gap-1 rounded-md border border-destructive/35 bg-destructive/15 px-1.5 py-0.5 font-mono text-[11px] font-medium text-destructive'}
+									? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-success/35 bg-success/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-success tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
+									: 'inline-flex items-center justify-center gap-0.5 rounded-md border border-destructive/35 bg-destructive/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-destructive tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'}
 						>
 							<span
 								class={!mailStatus
-									? 'size-1.5 rounded-full bg-muted-foreground/60'
+									? 'size-1.5 shrink-0 rounded-full bg-muted-foreground/60'
 									: item.open
-										? 'size-1.5 rounded-full bg-success'
-										: 'size-1.5 rounded-full bg-destructive'}
+										? 'size-1.5 shrink-0 rounded-full bg-success'
+										: 'size-1.5 shrink-0 rounded-full bg-destructive'}
 							></span>
-							{item.port}
+							<span>{item.port}</span>
 						</span>
 					{/each}
 				</div>
