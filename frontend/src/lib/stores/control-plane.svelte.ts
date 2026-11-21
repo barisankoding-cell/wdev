@@ -59,6 +59,18 @@ export const COMPONENT_TITLES: Record<string, string> = {
 	'cf-doctor': 'Diagnostik Cloudflare Tunnel'
 };
 
+const TERMINAL_STORAGE_KEY = 'wdev:terminal:v1';
+const MAX_TERMINAL_LOGS = 1500;
+
+interface PersistedTerminalState {
+	instanceId: string;
+	lastSeq: number;
+	clearedSeq: number;
+	currentTaskName: string;
+	lastTaskStatus: 'idle' | 'running' | 'success' | 'failed';
+	logs: TerminalLogEntry[];
+}
+
 class ControlPlaneStore {
 	systemStatus = $state<SystemStats | null>(null);
 	statusLoading = $state(false);
@@ -100,8 +112,78 @@ class ControlPlaneStore {
 
 	private eventSource: EventSource | null = null;
 	private logSeq = 1;
+	private instanceId = '';
+	private lastSeq = 0;
+	private clearedSeq = 0;
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
 	private isPrivilegedPending = false;
+
+	constructor() {
+		this.restoreTerminalState();
+	}
+
+	private restoreTerminalState() {
+		if (typeof window === 'undefined') return;
+		try {
+			const raw = window.localStorage.getItem(TERMINAL_STORAGE_KEY);
+			if (!raw) return;
+			const parsed = JSON.parse(raw) as Partial<PersistedTerminalState>;
+			if (typeof parsed.instanceId === 'string') this.instanceId = parsed.instanceId;
+			if (typeof parsed.lastSeq === 'number' && parsed.lastSeq >= 0) this.lastSeq = parsed.lastSeq;
+			if (typeof parsed.clearedSeq === 'number' && parsed.clearedSeq >= 0) {
+				this.clearedSeq = parsed.clearedSeq;
+			}
+			if (typeof parsed.currentTaskName === 'string' && parsed.currentTaskName) {
+				this.currentTaskName = parsed.currentTaskName;
+			}
+			if (
+				parsed.lastTaskStatus === 'idle' ||
+				parsed.lastTaskStatus === 'running' ||
+				parsed.lastTaskStatus === 'success' ||
+				parsed.lastTaskStatus === 'failed'
+			) {
+				this.lastTaskStatus = parsed.lastTaskStatus;
+			}
+			if (Array.isArray(parsed.logs)) {
+				const validLogs = parsed.logs
+					.filter(
+						(entry): entry is TerminalLogEntry =>
+							Boolean(entry) && typeof entry.message === 'string' && typeof entry.type === 'string'
+					)
+					.slice(-MAX_TERMINAL_LOGS);
+				this.terminalLogs = validLogs;
+				let maxId = 0;
+				for (const item of validLogs) {
+					if (typeof item.id === 'number' && item.id > maxId) maxId = item.id;
+				}
+				this.logSeq = maxId + 1;
+			}
+		} catch {
+			// Ignore malformed persisted terminal state
+		}
+	}
+
+	private saveTerminalState() {
+		if (typeof window === 'undefined') return;
+		try {
+			const payload: PersistedTerminalState = {
+				instanceId: this.instanceId,
+				lastSeq: this.lastSeq,
+				clearedSeq: this.clearedSeq,
+				currentTaskName: this.currentTaskName,
+				lastTaskStatus: this.lastTaskStatus,
+				logs: this.terminalLogs.slice(-MAX_TERMINAL_LOGS)
+			};
+			window.localStorage.setItem(TERMINAL_STORAGE_KEY, JSON.stringify(payload));
+		} catch {
+			// Ignore storage quota / privacy mode errors
+		}
+	}
+
+	private appendTerminalLog(entry: Omit<TerminalLogEntry, 'id'>) {
+		const next = [...this.terminalLogs, { ...entry, id: this.logSeq++ }];
+		this.terminalLogs = next.length > MAX_TERMINAL_LOGS ? next.slice(-MAX_TERMINAL_LOGS) : next;
+	}
 
 	async loadStatus(refreshUpdates = false) {
 		this.statusLoading = true;
@@ -124,6 +206,17 @@ class ControlPlaneStore {
 				this.isTaskRunning = true;
 				this.lastTaskStatus = 'running';
 				this.currentTaskName = res.active_task.command;
+			} else {
+				this.isTaskRunning = false;
+				if (this.lastTaskStatus === 'running') {
+					const latest = this.recentTasks[0];
+					if (latest?.status === 'success' || latest?.status === 'failed') {
+						this.lastTaskStatus = latest.status;
+					} else {
+						this.lastTaskStatus = 'idle';
+					}
+					this.saveTerminalState();
+				}
 			}
 		} catch {
 			// Ignore background poll error
@@ -134,7 +227,9 @@ class ControlPlaneStore {
 		if (typeof window === 'undefined') return;
 		this.loadStatus();
 		this.loadTasks();
-		this.connectSSE();
+		if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
+			this.connectSSE();
+		}
 
 		if (!this.pollTimer) {
 			this.pollTimer = setInterval(() => {
@@ -161,7 +256,11 @@ class ControlPlaneStore {
 		if (this.eventSource) {
 			this.eventSource.close();
 		}
-		const es = new EventSource('/api/tasks/events');
+		const params = new URLSearchParams();
+		if (this.lastSeq > 0) params.set('last_seq', String(this.lastSeq));
+		if (this.instanceId) params.set('instance_id', this.instanceId);
+		const qs = params.toString();
+		const es = new EventSource(qs ? `/api/tasks/events?${qs}` : '/api/tasks/events');
 		this.eventSource = es;
 
 		es.onopen = () => {
@@ -173,6 +272,12 @@ class ControlPlaneStore {
 				const data = JSON.parse(event.data) as TaskEvent;
 				if (data.type === 'ping') {
 					this.sseConnected = true;
+					if (data.instance_id && data.instance_id !== this.instanceId) {
+						this.instanceId = data.instance_id;
+						this.lastSeq = 0;
+						this.clearedSeq = 0;
+						this.saveTerminalState();
+					}
 					return;
 				}
 				this.handleTaskEvent(data);
@@ -187,6 +292,13 @@ class ControlPlaneStore {
 	}
 
 	private handleTaskEvent(evt: TaskEvent) {
+		if (typeof evt.seq === 'number' && evt.seq > 0) {
+			if (evt.seq <= this.clearedSeq || evt.seq <= this.lastSeq) {
+				return;
+			}
+			this.lastSeq = evt.seq;
+		}
+
 		const timeStr = evt.timestamp
 			? new Date(evt.timestamp).toLocaleTimeString('id-ID')
 			: new Date().toLocaleTimeString('id-ID');
@@ -198,34 +310,32 @@ class ControlPlaneStore {
 			if (cleanTask) {
 				this.currentTaskName = cleanTask;
 			}
-			this.terminalOpen = true;
-			this.terminalLogs = [
-				...this.terminalLogs,
-				{
-					id: this.logSeq++,
-					type: 'start',
-					message: `>>> [${timeStr}] ${evt.message}`,
-					timestamp: timeStr
-				}
-			];
+			if (!evt.replay) {
+				this.terminalOpen = true;
+			}
+			this.appendTerminalLog({
+				type: 'start',
+				message: `>>> [${timeStr}] ${evt.message}`,
+				timestamp: timeStr
+			});
+			this.saveTerminalState();
 		} else if (evt.type === 'finish') {
 			this.isTaskRunning = false;
 			const ok = evt.status === 'success';
 			this.lastTaskStatus = ok ? 'success' : 'failed';
-			this.terminalLogs = [
-				...this.terminalLogs,
-				{
-					id: this.logSeq++,
-					type: 'finish',
-					status: evt.status,
-					message: `<<< [${timeStr}] ${evt.message}`,
-					timestamp: timeStr
+			this.appendTerminalLog({
+				type: 'finish',
+				status: evt.status,
+				message: `<<< [${timeStr}] ${evt.message}`,
+				timestamp: timeStr
+			});
+			this.saveTerminalState();
+			if (!evt.replay) {
+				if (ok) {
+					toast.success(`Tugas selesai: ${this.currentTaskName}`);
+				} else {
+					toast.error(`Tugas gagal: ${this.currentTaskName}`);
 				}
-			];
-			if (ok) {
-				toast.success(`Tugas selesai: ${this.currentTaskName}`);
-			} else {
-				toast.error(`Tugas gagal: ${this.currentTaskName}`);
 			}
 			setTimeout(() => {
 				this.loadStatus(false);
@@ -234,18 +344,12 @@ class ControlPlaneStore {
 			}, 800);
 		} else {
 			if (!evt.message || evt.message.startsWith(': heartbeat')) return;
-			if (!this.terminalOpen && this.isTaskRunning) {
-				this.terminalOpen = true;
-			}
-			this.terminalLogs = [
-				...this.terminalLogs,
-				{
-					id: this.logSeq++,
-					type: 'log',
-					message: evt.message,
-					timestamp: timeStr
-				}
-			];
+			this.appendTerminalLog({
+				type: 'log',
+				message: evt.message,
+				timestamp: timeStr
+			});
+			this.saveTerminalState();
 		}
 	}
 
@@ -258,6 +362,11 @@ class ControlPlaneStore {
 
 	clearTerminal() {
 		this.terminalLogs = [];
+		this.clearedSeq = this.lastSeq;
+		if (!this.isTaskRunning) {
+			this.lastTaskStatus = 'idle';
+		}
+		this.saveTerminalState();
 	}
 
 	confirm(opts: ConfirmOptions): Promise<boolean> {

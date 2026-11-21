@@ -454,10 +454,13 @@ export interface NginxConfig {
 export type ServiceConfigKey = 'redis' | 'postgresql' | 'php-fpm' | 'nginx';
 
 export interface TaskEvent {
+	seq?: number;
 	task_id: number;
 	type: 'log' | 'start' | 'finish' | 'ping';
 	message: string;
 	status?: string;
+	replay?: boolean;
+	instance_id?: string;
 	timestamp?: string;
 }
 
@@ -474,6 +477,7 @@ export interface ActiveTask {
 	id: number;
 	command: string;
 	started_at: string;
+	log_output?: string;
 }
 
 export interface TasksResponse {

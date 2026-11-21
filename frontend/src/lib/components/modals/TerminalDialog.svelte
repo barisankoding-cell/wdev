@@ -37,6 +37,12 @@
 	$effect(() => {
 		if (cp.terminalOpen && activeTab === 'history') {
 			cp.loadTasks();
+			if (cp.isTaskRunning) {
+				const timer = setInterval(() => {
+					cp.loadTasks();
+				}, 2000);
+				return () => clearInterval(timer);
+			}
 		}
 	});
 

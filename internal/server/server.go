@@ -1903,11 +1903,33 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	ch := s.runner.Subscribe()
+	clientInstanceID := strings.TrimSpace(r.URL.Query().Get("instance_id"))
+	var lastSeq int64
+	if raw := strings.TrimSpace(r.Header.Get("Last-Event-ID")); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			lastSeq = v
+		}
+	} else if raw := strings.TrimSpace(r.URL.Query().Get("last_seq")); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			lastSeq = v
+		}
+	}
+
+	replay, ch := s.runner.SubscribeFrom(clientInstanceID, lastSeq)
 	defer s.runner.Unsubscribe(ch)
 
-	// Send initial ping
-	fmt.Fprintf(w, "data: {\"type\":\"ping\",\"message\":\"connected\"}\n\n")
+	// Send initial ping with runner instance_id and replay any missed live/latest events
+	pingPayload, _ := json.Marshal(map[string]any{
+		"type":        "ping",
+		"message":     "connected",
+		"instance_id": s.runner.InstanceID(),
+	})
+	fmt.Fprintf(w, "data: %s\n\n", pingPayload)
+	for _, evt := range replay {
+		if bytes, err := json.Marshal(evt); err == nil {
+			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", evt.Seq, string(bytes))
+		}
+	}
 	flusher.Flush()
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -1926,7 +1948,7 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			bytes, err := json.Marshal(evt)
 			if err == nil {
-				fmt.Fprintf(w, "data: %s\n\n", string(bytes))
+				fmt.Fprintf(w, "id: %d\ndata: %s\n\n", evt.Seq, string(bytes))
 				flusher.Flush()
 			}
 		}
@@ -2454,12 +2476,17 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var active any
+	var activeID int64
+	var activeLog string
 	if s.runner != nil {
-		if t := s.runner.GetActiveTask(); t != nil {
+		if t, logOut := s.runner.GetActiveTaskSnapshot(); t != nil {
+			activeID = t.ID
+			activeLog = logOut
 			active = map[string]any{
 				"id":         t.ID,
 				"command":    t.Command,
 				"started_at": t.StartedAt,
+				"log_output": logOut,
 			}
 		}
 	}
@@ -2473,6 +2500,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		if list != nil {
 			tasks = list
+		}
+	}
+
+	if activeID != 0 && activeLog != "" {
+		for i := range tasks {
+			if tasks[i].ID == activeID && tasks[i].LogOutput == "" {
+				tasks[i].LogOutput = activeLog
+			}
 		}
 	}
 

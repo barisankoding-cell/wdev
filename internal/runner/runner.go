@@ -15,21 +15,29 @@ const (
 	EventLog    EventType = "log"
 	EventStart  EventType = "start"
 	EventFinish EventType = "finish"
+
+	maxLiveEvents = 5000
 )
 
 type TaskEvent struct {
+	Seq       int64     `json:"seq"`
 	TaskID    int64     `json:"task_id"`
 	Type      EventType `json:"type"`
 	Message   string    `json:"message"`
 	Status    string    `json:"status,omitempty"`
+	Replay    bool      `json:"replay,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
 type Runner struct {
 	store       *store.Store
+	instanceID  string
 	mu          sync.RWMutex
 	subscribers map[chan TaskEvent]struct{}
 	activeTask  *ActiveTask
+	activeLog   strings.Builder
+	liveEvents  []TaskEvent
+	seq         int64
 }
 
 type ActiveTask struct {
@@ -41,16 +49,41 @@ type ActiveTask struct {
 func New(s *store.Store) *Runner {
 	return &Runner{
 		store:       s,
+		instanceID:  fmt.Sprintf("%d", time.Now().UnixNano()),
 		subscribers: make(map[chan TaskEvent]struct{}),
 	}
 }
 
+func (r *Runner) InstanceID() string {
+	return r.instanceID
+}
+
 func (r *Runner) Subscribe() chan TaskEvent {
+	_, ch := r.SubscribeFrom("", 0)
+	return ch
+}
+
+// SubscribeFrom secara atomik mengambil snapshot event yang belum diterima klien
+// (berdasarkan instanceID dan lastSeq) serta mendaftarkan channel live baru.
+func (r *Runner) SubscribeFrom(clientInstanceID string, lastSeq int64) ([]TaskEvent, chan TaskEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	ch := make(chan TaskEvent, 100)
+
+	if clientInstanceID != "" && clientInstanceID != r.instanceID {
+		lastSeq = 0
+	}
+
+	var replay []TaskEvent
+	for _, ev := range r.liveEvents {
+		if ev.Seq > lastSeq {
+			ev.Replay = true
+			replay = append(replay, ev)
+		}
+	}
+
+	ch := make(chan TaskEvent, 256)
 	r.subscribers[ch] = struct{}{}
-	return ch
+	return replay, ch
 }
 
 func (r *Runner) Unsubscribe(ch chan TaskEvent) {
@@ -60,16 +93,56 @@ func (r *Runner) Unsubscribe(ch chan TaskEvent) {
 	close(ch)
 }
 
-func (r *Runner) broadcast(event TaskEvent) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+func (r *Runner) emit(taskID int64, typ EventType, message, status string, clearActive bool) {
+	r.mu.Lock()
+	evt := r.appendAndBroadcastLocked(taskID, typ, message, status, clearActive)
+	_ = evt
+	r.mu.Unlock()
+}
+
+func (r *Runner) appendAndBroadcastLocked(taskID int64, typ EventType, message, status string, clearActive bool) TaskEvent {
+	r.seq++
+	evt := TaskEvent{
+		Seq:       r.seq,
+		TaskID:    taskID,
+		Type:      typ,
+		Message:   message,
+		Status:    status,
+		Timestamp: time.Now(),
+	}
+
+	if typ == EventStart {
+		r.liveEvents = append([]TaskEvent(nil), evt)
+		r.activeLog.Reset()
+	} else {
+		if typ == EventLog {
+			r.activeLog.WriteString(message + "\n")
+		}
+		if len(r.liveEvents) >= maxLiveEvents {
+			if len(r.liveEvents) > 1 && r.liveEvents[0].Type == EventStart {
+				copy(r.liveEvents[1:], r.liveEvents[2:])
+				r.liveEvents[len(r.liveEvents)-1] = evt
+			} else {
+				copy(r.liveEvents, r.liveEvents[1:])
+				r.liveEvents[len(r.liveEvents)-1] = evt
+			}
+		} else {
+			r.liveEvents = append(r.liveEvents, evt)
+		}
+	}
+
+	if clearActive {
+		r.activeTask = nil
+	}
+
 	for ch := range r.subscribers {
 		select {
-		case ch <- event:
+		case ch <- evt:
 		default:
 			// Buffer full, skip to prevent blocking
 		}
 	}
+	return evt
 }
 
 // StartNativeTask runs a native Go function while broadcasting logs
@@ -80,10 +153,14 @@ func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb fu
 		return 0, fmt.Errorf("ada tugas yang sedang berjalan: %s", r.activeTask.Command)
 	}
 
-	taskID, err := r.store.CreateTask(name)
-	if err != nil {
-		r.mu.Unlock()
-		return 0, err
+	var taskID int64
+	if r.store != nil {
+		var err error
+		taskID, err = r.store.CreateTask(name)
+		if err != nil {
+			r.mu.Unlock()
+			return 0, err
+		}
 	}
 
 	r.activeTask = &ActiveTask{
@@ -91,14 +168,8 @@ func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb fu
 		Command:   name,
 		StartedAt: time.Now(),
 	}
+	r.appendAndBroadcastLocked(taskID, EventStart, fmt.Sprintf("Memulai: %s", name), "", false)
 	r.mu.Unlock()
-
-	r.broadcast(TaskEvent{
-		TaskID:    taskID,
-		Type:      EventStart,
-		Message:   fmt.Sprintf("Memulai: %s", name),
-		Timestamp: time.Now(),
-	})
 
 	go func() {
 		ctx := context.Background()
@@ -110,12 +181,7 @@ func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb fu
 			logBuf.WriteString(line + "\n")
 			logMu.Unlock()
 
-			r.broadcast(TaskEvent{
-				TaskID:    taskID,
-				Type:      EventLog,
-				Message:   line,
-				Timestamp: time.Now(),
-			})
+			r.emit(taskID, EventLog, line, "", false)
 		}
 
 		err := fn(ctx, cb)
@@ -126,19 +192,10 @@ func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb fu
 			msg = fmt.Sprintf("Gagal dengan error: %v", err)
 		}
 
-		r.mu.Lock()
-		r.activeTask = nil
-		r.mu.Unlock()
-
-		_ = r.store.FinishTask(taskID, status, logBuf.String())
-
-		r.broadcast(TaskEvent{
-			TaskID:    taskID,
-			Type:      EventFinish,
-			Status:    status,
-			Message:   msg,
-			Timestamp: time.Now(),
-		})
+		if r.store != nil {
+			_ = r.store.FinishTask(taskID, status, logBuf.String())
+		}
+		r.emit(taskID, EventFinish, msg, status, true)
 	}()
 
 	return taskID, nil
@@ -147,5 +204,20 @@ func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb fu
 func (r *Runner) GetActiveTask() *ActiveTask {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.activeTask
+	if r.activeTask == nil {
+		return nil
+	}
+	cp := *r.activeTask
+	return &cp
+}
+
+// GetActiveTaskSnapshot mengembalikan metadata tugas aktif beserta log sementara yang sudah terkumpul.
+func (r *Runner) GetActiveTaskSnapshot() (*ActiveTask, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.activeTask == nil {
+		return nil, ""
+	}
+	cp := *r.activeTask
+	return &cp, r.activeLog.String()
 }

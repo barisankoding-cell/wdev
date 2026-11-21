@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"wdev/internal/config"
 	"wdev/internal/installer"
 	"wdev/internal/runner"
@@ -171,5 +174,115 @@ func TestResolveInstallTaskNetbirdIndependent(t *testing.T) {
 
 	if _, _, ok := srv.resolveInstallTask("does-not-exist", ""); ok {
 		t.Fatalf("expected unknown component to return ok=false")
+	}
+}
+
+func TestTasksAndSSEReplayMidProcess(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "sse.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200"}
+	run := runner.New(db)
+	srv := &Server{
+		cfg:       cfg,
+		store:     db,
+		runner:    run,
+		installer: installer.New(cfg, db),
+		mux:       http.NewServeMux(),
+	}
+	srv.mux.HandleFunc("/api/tasks", srv.handleTasks)
+	srv.mux.HandleFunc("/api/tasks/events", srv.handleSSEEvents)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	_, err = run.StartNativeTask("Simulasi Tugas", func(ctx context.Context, cb func(string)) error {
+		cb("langkah-awal")
+		close(started)
+		<-release
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StartNativeTask failed: %v", err)
+	}
+	<-started
+
+	// 1. GET /api/tasks must include accumulated active log_output even before FinishTask
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?limit=10", nil)
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/tasks status = %d, want 200", rec.Code)
+	}
+	var tasksPayload struct {
+		ActiveTask *struct {
+			ID        int64  `json:"id"`
+			Command   string `json:"command"`
+			LogOutput string `json:"log_output"`
+		} `json:"active_task"`
+		Tasks []store.TaskRecord `json:"tasks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &tasksPayload); err != nil {
+		t.Fatalf("invalid JSON from /api/tasks: %v", err)
+	}
+	if tasksPayload.ActiveTask == nil || !strings.Contains(tasksPayload.ActiveTask.LogOutput, "langkah-awal") {
+		t.Fatalf("expected active_task.log_output to contain langkah-awal, got %+v", tasksPayload.ActiveTask)
+	}
+	if len(tasksPayload.Tasks) == 0 || !strings.Contains(tasksPayload.Tasks[0].LogOutput, "langkah-awal") {
+		t.Fatalf("expected running task in tasks list to contain langkah-awal, got %+v", tasksPayload.Tasks)
+	}
+
+	// 2. Reconnecting to /api/tasks/events must replay missed start + log events immediately
+	ts := httptest.NewServer(srv.mux)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sseReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/tasks/events", nil)
+	resp, err := http.DefaultClient.Do(sseReq)
+	if err != nil {
+		t.Fatalf("SSE connect failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	var seenPing, seenStart, seenLog bool
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		raw := strings.TrimPrefix(line, "data: ")
+		var evt struct {
+			Type       string `json:"type"`
+			Message    string `json:"message"`
+			InstanceID string `json:"instance_id"`
+			Replay     bool   `json:"replay"`
+		}
+		if err := json.Unmarshal([]byte(raw), &evt); err != nil {
+			continue
+		}
+		if evt.Type == "ping" && evt.InstanceID != "" {
+			seenPing = true
+		} else if evt.Type == "start" && evt.Replay {
+			seenStart = true
+		} else if evt.Type == "log" && evt.Message == "langkah-awal" && evt.Replay {
+			seenLog = true
+			break
+		}
+	}
+	close(release)
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if run.GetActiveTask() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !seenPing || !seenStart || !seenLog {
+		t.Fatalf("missing SSE replay events: ping=%v start=%v log=%v", seenPing, seenStart, seenLog)
 	}
 }

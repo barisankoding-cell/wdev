@@ -23,15 +23,7 @@
 
 	onMount(() => {
 		themeStore.init();
-		authStore.checkAuth().then(async (isAuth) => {
-			if (isAuth) {
-				cp.startPollingAndSSE();
-				const m = await modeStore.fetchMode();
-				if (m && !m.is_set) {
-					modeStore.openModal();
-				}
-			}
-		});
+		authStore.checkAuth();
 
 		return () => {
 			cp.stopPollingAndSSE();

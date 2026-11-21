@@ -242,7 +242,7 @@ func (s *Store) ListRecentTasks(limit int) ([]TaskRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, command, status, started_at, COALESCE(finished_at, started_at), log_output FROM task_history ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := s.db.Query(`SELECT id, command, status, started_at, finished_at, log_output FROM task_history ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -251,8 +251,14 @@ func (s *Store) ListRecentTasks(limit int) ([]TaskRecord, error) {
 	var result []TaskRecord
 	for rows.Next() {
 		var t TaskRecord
-		if err := rows.Scan(&t.ID, &t.Command, &t.Status, &t.StartedAt, &t.FinishedAt, &t.LogOutput); err != nil {
+		var finishedAt sql.NullTime
+		if err := rows.Scan(&t.ID, &t.Command, &t.Status, &t.StartedAt, &finishedAt, &t.LogOutput); err != nil {
 			return nil, err
+		}
+		if finishedAt.Valid {
+			t.FinishedAt = finishedAt.Time
+		} else {
+			t.FinishedAt = t.StartedAt
 		}
 		result = append(result, t)
 	}
