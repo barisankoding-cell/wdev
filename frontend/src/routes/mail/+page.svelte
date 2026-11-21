@@ -457,12 +457,16 @@
 			}
 		}
 
+		setupOpen = false;
 		const ok = await cp.confirm({
 			title: 'Konfirmasi Setup Mail Server',
 			description: `Mulai setup otomatis Mail Server & DNS untuk domain "${domain}"?`,
 			confirmText: 'Mulai Setup'
 		});
-		if (!ok) return;
+		if (!ok) {
+			setupOpen = true;
+			return;
+		}
 
 		settingUp = true;
 		try {
@@ -475,10 +479,10 @@
 				relay_user: relayUser,
 				relay_pass: relayPass
 			});
-			setupOpen = false;
 			cp.openTerminal(`Setup Mail Server: ${domain}`);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal memulai setup mail');
+			setupOpen = true;
 		} finally {
 			settingUp = false;
 		}

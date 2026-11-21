@@ -223,12 +223,16 @@
 			}
 		}
 
+		exposeOpen = false;
 		const ok = await cp.confirm({
 			title: 'Konfirmasi Ekspos VPS',
 			description: `Ekspos '${pubDomain}' ke internet via VPS Edge Gateway?`,
 			confirmText: 'Ekspos Sekarang'
 		});
-		if (!ok) return;
+		if (!ok) {
+			exposeOpen = true;
+			return;
+		}
 
 		exposing = true;
 		try {
@@ -240,11 +244,11 @@
 				use_ssl: exposeSSL,
 				websocket: exposeWS
 			});
-			exposeOpen = false;
 			toast.success(`Domain '${pubDomain}' berhasil diekspos ke internet!`);
 			await loadAll();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal ekspos ke VPS');
+			exposeOpen = true;
 		} finally {
 			exposing = false;
 		}
@@ -383,12 +387,14 @@
 	}
 
 	async function deleteRecord(name: string, type: string) {
+		recordsOpen = false;
 		const ok = await cp.confirm({
 			title: 'Hapus Record DNS',
 			description: `Hapus record DNS ${type} untuk '${name}'?`,
 			confirmText: 'Hapus',
 			destructive: true
 		});
+		recordsOpen = true;
 		if (!ok) return;
 		try {
 			await api.deletePDNSRecord(currentZone, name, type);
@@ -411,12 +417,16 @@
 		}
 		const port = parseInt(deployPortStr, 10) || 22;
 		const user = deployUser.trim() || 'root';
+		deployOpen = false;
 		const ok = await cp.confirm({
 			title: 'Konfirmasi Deploy VPS',
 			description: `Mulai deployment otomatis ke VPS ${user}@${deployHost.trim()}:${port}? Skrip instalasi PowerDNS, Nginx, dan Edge Gateway akan dijalankan di VPS via SSH.`,
 			confirmText: 'Mulai Deploy'
 		});
-		if (!ok) return;
+		if (!ok) {
+			deployOpen = true;
+			return;
+		}
 
 		deploying = true;
 		try {
@@ -428,10 +438,10 @@
 				password: deployPassword,
 				key_path: deployKeyPath.trim()
 			});
-			deployOpen = false;
 			cp.openTerminal('Deploy VPS Edge Gateway');
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal memulai deploy VPS');
+			deployOpen = true;
 		} finally {
 			deploying = false;
 		}

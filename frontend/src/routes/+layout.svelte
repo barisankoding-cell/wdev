@@ -79,9 +79,9 @@
 	</Sidebar.Provider>
 
 	<TerminalDialog />
-	<SudoDialog />
-	<ConfirmDialog />
 	<ServiceConfigModal />
 	<ChangeCredsModal />
 	<ModeSwitchModal />
+	<SudoDialog />
+	<ConfirmDialog />
 {/if}
