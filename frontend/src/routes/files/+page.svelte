@@ -1247,7 +1247,7 @@
 			</div>
 		{/if}
 
-		<CardHeader class="flex flex-col gap-3 pb-3">
+		<CardHeader class="flex flex-col gap-3 pb-4">
 			<!-- Toolbar Row: Up / Home / Refresh / Breadcrumb or Jump Path / Hidden Toggle / Search -->
 			<div class="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
 				<div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
@@ -1559,7 +1559,7 @@
 					</CardTitle>
 				{:else if listing}
 					<CardDescription class="text-xs">
-						{listing.total_dirs} folder, {listing.total_files} file • Total: {formatBytes(listing.total_size)}<span class="fm-pointer-fine-only"> • Tips: klik kanan baris untuk Open Terminal &amp; aksi cepat, atau seret file ke tabel untuk mengunggah.</span><span class="fm-pointer-coarse-only"> • Ketuk berkas untuk membuka, ketuk ⋮ untuk menu aksi.</span>
+						{listing.total_dirs} folder, {listing.total_files} file • Total: {formatBytes(listing.total_size)}<span class="fm-pointer-fine-only ml-1">• Tips: klik kanan baris untuk Open Terminal &amp; aksi cepat, atau seret file ke tabel untuk mengunggah.</span><span class="fm-pointer-coarse-only ml-1">• Ketuk berkas untuk membuka, ketuk ⋮ untuk menu aksi.</span>
 					</CardDescription>
 				{/if}
 			</div>
@@ -1833,9 +1833,10 @@
 					</div>
 
 					<!-- Mobile Ergonomic Card List View (@container < 44rem) -->
-					<div class="fm-mobile-view flex flex-col gap-2">
-						<!-- Mobile Control Bar: Select All + Sort -->
-						<div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-2.5 py-1.5">
+					<div class="fm-mobile-view">
+						<div class="flex flex-col gap-3">
+							<!-- Mobile Control Bar: Select All + Sort -->
+							<div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-3 py-2">
 							<label
 								for="fm-mobile-select-all"
 								class="fm-touch-check cursor-pointer gap-2 px-1 text-xs font-medium text-foreground select-none"
@@ -1950,6 +1951,7 @@
 								</li>
 							{/each}
 						</ul>
+						</div>
 					</div>
 				</div>
 			{/if}
