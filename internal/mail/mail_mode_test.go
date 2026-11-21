@@ -285,6 +285,12 @@ func TestGetStatusDetectsStalwartPortAccessibility(t *testing.T) {
 		if p.Open != exp.open || p.Public != exp.pub {
 			t.Fatalf("port %d status = %+v, want open=%v public=%v", p.Port, p, exp.open, exp.pub)
 		}
+		if p.Port == 8080 && !p.InternalOnly {
+			t.Fatalf("expected port 8080 InternalOnly=true, got %+v", p)
+		}
+	}
+	if !st.BehindNAT {
+		t.Fatalf("expected BehindNAT=true for unattached test IP 203.0.113.10")
 	}
 }
 

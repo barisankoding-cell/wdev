@@ -118,11 +118,14 @@
 					{ port: 465, label: 'SMTPS', open: false, public: false },
 					{ port: 587, label: 'Submission', open: false, public: false },
 					{ port: 993, label: 'IMAPS', open: false, public: false },
-					{ port: 8080, label: 'Admin HTTP', open: false, public: false }
+					{ port: 8080, label: 'Admin HTTP', open: false, public: false, internal_only: true }
 				]
 	);
 
 	const openPortCount = $derived(stalwartPorts.filter((p) => p.open).length);
+	const hasUnverifiedPublicMailPorts = $derived(
+		stalwartPorts.some((p) => p.open && !p.internal_only && p.port !== 8080 && (!p.public || mailStatus?.behind_nat))
+	);
 
 	const filteredGroups = $derived(
 		domainFilter ? domainGroups.filter((g) => g.domain === domainFilter) : domainGroups
@@ -726,40 +729,58 @@
 			</Card.Header>
 			<Card.Content class="flex flex-col gap-1.5">
 				<div class="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-					<span>Status Port</span>
+					<span>Listener VPS</span>
 					<span class="font-mono tabular-nums">
-						{mailStatus ? `${openPortCount}/${stalwartPorts.length} aktif` : '...'}
+						{mailStatus ? `${openPortCount}/${stalwartPorts.length} listen` : '...'}
 					</span>
 				</div>
 				<div class="grid grid-cols-3 gap-1 sm:flex sm:flex-wrap sm:gap-1.5" aria-label="Status port Stalwart">
 					{#each stalwartPorts as item (item.port)}
+						{@const isInternal = Boolean(item.internal_only || item.port === 8080)}
+						{@const isVerifiedDirectPublic = item.open && !isInternal && Boolean(item.public) && !mailStatus?.behind_nat}
+						{@const isLocalOrNATOnly = item.open && !isInternal && !isVerifiedDirectPublic}
 						<span
 							title={!mailStatus
 								? `${item.label} (Port ${item.port}): Memeriksa status port...`
-								: `${item.label} (Port ${item.port}): ${
-										item.open
-											? item.public
-												? 'Terbuka & dapat diakses (lokal + publik)'
-												: 'Terbuka / dapat diakses'
-											: 'Belum terbuka / tidak dapat diakses'
-									}`}
+								: !item.open
+									? `${item.label} (Port ${item.port}): Mati / tidak listen di server`
+									: isInternal
+										? `${item.label} (Port ${item.port}): Aktif internal (dipakai lokal / Nginx reverse proxy)`
+										: isVerifiedDirectPublic
+											? `${item.label} (Port ${item.port}): Listen lokal & IP VPS langsung terjangkau (pastikan firewall/Security Group cloud luar juga dibuka)`
+											: !item.public
+												? `${item.label} (Port ${item.port}): Hanya listen lokal (127.0.0.1) — tidak terjangkau via IP publik (cek Firewall / Security Group cloud)`
+												: `${item.label} (Port ${item.port}): Listen lokal & loopback NAT OK, tetapi VPS di belakang NAT Cloud — bisa tetap terblokir dari internet oleh Security Group / ISP (seperti IDCloudHost)`}
 							class={!mailStatus
 								? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-border bg-secondary px-1 py-0.5 font-mono text-[10.5px] font-medium text-secondary-foreground tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
-								: item.open
-									? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-success/35 bg-success/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-success tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
-									: 'inline-flex items-center justify-center gap-0.5 rounded-md border border-destructive/35 bg-destructive/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-destructive tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'}
+								: !item.open
+									? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-destructive/35 bg-destructive/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-destructive tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
+									: isInternal
+										? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-border bg-secondary px-1 py-0.5 font-mono text-[10.5px] font-medium text-secondary-foreground tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
+										: isLocalOrNATOnly
+											? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-amber-500/35 bg-amber-500/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-amber-700 dark:text-amber-400 tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
+											: 'inline-flex items-center justify-center gap-0.5 rounded-md border border-success/35 bg-success/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-success tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'}
 						>
 							<span
 								class={!mailStatus
 									? 'size-1.5 shrink-0 rounded-full bg-muted-foreground/60'
-									: item.open
-										? 'size-1.5 shrink-0 rounded-full bg-success'
-										: 'size-1.5 shrink-0 rounded-full bg-destructive'}
+									: !item.open
+										? 'size-1.5 shrink-0 rounded-full bg-destructive'
+										: isInternal
+											? 'size-1.5 shrink-0 rounded-full bg-muted-foreground'
+											: isLocalOrNATOnly
+												? 'size-1.5 shrink-0 rounded-full bg-amber-500'
+												: 'size-1.5 shrink-0 rounded-full bg-success'}
 							></span>
 							<span>{item.port}</span>
 						</span>
 					{/each}
 				</div>
+				{#if mailStatus && hasUnverifiedPublicMailPorts}
+					<p class="text-[10.5px] leading-snug text-amber-600 dark:text-amber-400">
+						Kuning = uji dari dalam VPS (lokal/NAT). Port publik tetap bisa terblokir Security Group / ISP cloud (IDCloudHost).
+					</p>
+				{/if}
 			</Card.Content>
 		</Card.Root>
 

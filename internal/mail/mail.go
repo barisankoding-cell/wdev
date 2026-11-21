@@ -63,14 +63,17 @@ func (m *Manager) LastRelayDNSReport() RelayDNSReport {
 }
 
 type PortStatus struct {
-	Port   int    `json:"port"`
-	Label  string `json:"label"`
-	Open   bool   `json:"open"`
-	Public bool   `json:"public,omitempty"`
+	Port         int    `json:"port"`
+	Label        string `json:"label"`
+	Open         bool   `json:"open"`
+	Local        bool   `json:"local,omitempty"`
+	Public       bool   `json:"public,omitempty"`
+	InternalOnly bool   `json:"internal_only,omitempty"`
 }
 
 type MailStatus struct {
 	Mode             string                 `json:"mode"`
+	BehindNAT        bool                   `json:"behind_nat,omitempty"`
 	StalwartActive   bool                   `json:"stalwart_active"`
 	StalwartPorts    []PortStatus           `json:"stalwart_ports,omitempty"`
 	SnappyMailActive bool                   `json:"snappymail_active"`
@@ -1336,10 +1339,12 @@ func (m *Manager) checkStalwartPorts() []PortStatus {
 				pubOpen = probe(publicIP, p, 300*time.Millisecond)
 			}
 			results[idx] = PortStatus{
-				Port:   p,
-				Label:  lbl,
-				Open:   localOpen || pubOpen,
-				Public: pubOpen,
+				Port:         p,
+				Label:        lbl,
+				Open:         localOpen || pubOpen,
+				Local:        localOpen,
+				Public:       pubOpen,
+				InternalOnly: p == 8080,
 			}
 		}(i, d.port, d.label)
 	}
@@ -1347,13 +1352,45 @@ func (m *Manager) checkStalwartPorts() []PortStatus {
 	return results
 }
 
+func isPublicIPBehindNAT(publicIP string) bool {
+	publicIP = strings.TrimSpace(publicIP)
+	if publicIP == "" {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip == nil || ip.IsLoopback() {
+			continue
+		}
+		if ip4 := ip.To4(); ip4 != nil && ip4.String() == publicIP {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Manager) GetStatus() (MailStatus, error) {
 	mode := "edge"
+	var behindNAT bool
 	if m.pdnsMgr != nil {
 		mode = m.pdnsMgr.GetMode()
+		if mode == "vps" {
+			behindNAT = isPublicIPBehindNAT(m.pdnsMgr.LoadConfig().VPSPublicIP)
+		}
 	}
 	status := MailStatus{
 		Mode:         mode,
+		BehindNAT:    behindNAT,
 		DomainRelays: make(map[string]RelayConfig),
 		Domains:      make([]DomainSummary, 0),
 	}

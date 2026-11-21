@@ -267,11 +267,14 @@ export interface MailPortStatus {
 	port: number;
 	label: string;
 	open: boolean;
+	local?: boolean;
 	public?: boolean;
+	internal_only?: boolean;
 }
 
 export interface MailStatus {
 	mode?: ServerMode;
+	behind_nat?: boolean;
 	stalwart_active: boolean;
 	stalwart_ports?: MailPortStatus[];
 	snappymail_active: boolean;
