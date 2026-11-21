@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
@@ -35,6 +36,7 @@
 	import WrenchIcon from '@lucide/svelte/icons/wrench';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import InfoIcon from '@lucide/svelte/icons/info';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	let mailStatus = $state<MailStatus | null>(null);
 	let domainGroups = $state<DomainAccounts[]>([]);
@@ -902,62 +904,79 @@
 										<ExternalLinkIcon data-icon="inline-end" />
 									</Button>
 								</Table.Cell>
-								<Table.Cell data-label="Aksi">
-									<div class="flex flex-wrap justify-end gap-1.5">
-										<Button size="xs" onclick={() => openRelayModal(dom.domain)}>
-											{isOverride ? 'Ubah Relay' : 'Setel Relay'}
-										</Button>
-										{#if isOverride}
-											<Button
-												variant="outline"
-												size="xs"
-												disabled={Boolean(domainPending[dom.domain])}
-												onclick={() => removeRelayOverride(dom.domain)}
-											>
-												{#if domainPending[dom.domain] === 'unset-relay'}
-													<Spinner data-icon="inline-start" />
-													Menghapus...
-												{:else}
-													Hapus Override
-												{/if}
-											</Button>
-										{/if}
-										<Button
-											variant="outline"
-											size="xs"
-											disabled={Boolean(domainPending[dom.domain])}
-											onclick={() => resetAdmin(dom.domain)}
-										>
-											{#if domainPending[dom.domain] === 'reset-admin'}
-												<Spinner data-icon="inline-start" />
-												Mereset...
-											{:else}
-												<KeyRoundIcon data-icon="inline-start" />
-												Reset Admin
-											{/if}
-										</Button>
-										<Button
-											variant="outline"
-											size="xs"
-											disabled={Boolean(domainPending[dom.domain])}
-											onclick={() => repairDomain(dom.domain)}
-										>
-											{#if domainPending[dom.domain] === 'repair'}
-												<Spinner data-icon="inline-start" />
-												Memperbaiki...
-											{:else}
-												<WrenchIcon data-icon="inline-start" />
-												Perbaiki
-											{/if}
-										</Button>
-										<Button
-											variant="destructive"
-											size="xs"
-											onclick={() => openDeleteDomainModal(dom.domain)}
-										>
-											<Trash2Icon data-icon="inline-start" />
-											Hapus
-										</Button>
+								<Table.Cell data-label="Aksi" class="text-right">
+									{@const pendingAction = domainPending[dom.domain]}
+									<div class="flex justify-end">
+										<DropdownMenu.Root>
+											<DropdownMenu.Trigger>
+												{#snippet child({ props })}
+													<Button
+														variant="outline"
+														size="xs"
+														disabled={Boolean(pendingAction)}
+														{...props}
+													>
+														{#if pendingAction === 'repair'}
+															<Spinner data-icon="inline-start" />
+															Memperbaiki...
+														{:else if pendingAction === 'reset-admin'}
+															<Spinner data-icon="inline-start" />
+															Mereset...
+														{:else if pendingAction === 'unset-relay'}
+															<Spinner data-icon="inline-start" />
+															Menghapus...
+														{:else}
+															Aksi
+															<ChevronDownIcon data-icon="inline-end" />
+														{/if}
+													</Button>
+												{/snippet}
+											</DropdownMenu.Trigger>
+											<DropdownMenu.Content align="end" class="w-48">
+												<DropdownMenu.Group>
+													<DropdownMenu.Label class="text-xs text-muted-foreground">
+														{dom.domain}
+													</DropdownMenu.Label>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item onclick={() => openRelayModal(dom.domain)}>
+														<SettingsIcon />
+														<span>{isOverride ? 'Ubah Relay' : 'Setel Relay'}</span>
+													</DropdownMenu.Item>
+													{#if isOverride}
+														<DropdownMenu.Item
+															disabled={Boolean(pendingAction)}
+															onclick={() => removeRelayOverride(dom.domain)}
+														>
+															<RefreshCwIcon />
+															<span>Hapus Override</span>
+														</DropdownMenu.Item>
+													{/if}
+													<DropdownMenu.Item
+														disabled={Boolean(pendingAction)}
+														onclick={() => resetAdmin(dom.domain)}
+													>
+														<KeyRoundIcon />
+														<span>Reset Admin</span>
+													</DropdownMenu.Item>
+													<DropdownMenu.Item
+														disabled={Boolean(pendingAction)}
+														onclick={() => repairDomain(dom.domain)}
+													>
+														<WrenchIcon />
+														<span>Perbaiki</span>
+													</DropdownMenu.Item>
+													<DropdownMenu.Separator />
+													<DropdownMenu.Item
+														variant="destructive"
+														disabled={Boolean(pendingAction)}
+														onclick={() => openDeleteDomainModal(dom.domain)}
+													>
+														<Trash2Icon />
+														<span>Hapus Domain</span>
+													</DropdownMenu.Item>
+												</DropdownMenu.Group>
+											</DropdownMenu.Content>
+										</DropdownMenu.Root>
 									</div>
 								</Table.Cell>
 							</Table.Row>
