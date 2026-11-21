@@ -31,6 +31,7 @@ import type {
 	RedisConfig,
 	RedisInspectResult,
 	RelayDNSReport,
+	ResendSyncResult,
 	RRSet,
 	ServerMode,
 	ServiceConfigKey,
@@ -370,6 +371,11 @@ export const api = {
 		apiFetch<RelayDNSReport>('/api/mail/relay/dns', {
 			method: 'POST',
 			body: JSON.stringify({ domain, provider, records })
+		}),
+	syncMailRelayDNS: (domain: string, api_key = '', provider = 'resend') =>
+		apiFetch<ResendSyncResult>('/api/mail/relay/dns/sync', {
+			method: 'POST',
+			body: JSON.stringify({ domain, api_key, provider })
 		}),
 	resetMailAdmin: (domain: string) =>
 		apiFetch<{ status: string; message: string }>('/api/mail/admin-reset', {

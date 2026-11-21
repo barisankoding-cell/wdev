@@ -25,11 +25,12 @@ import (
 )
 
 type Manager struct {
-	cfg           *config.Config
-	store         *store.Store
-	pdnsMgr       *pdns.Manager
-	ensureStackFn func(ctx context.Context, cb func(string), domain string) error
-	portProbeFn   func(host string, port int, timeout time.Duration) bool
+	cfg              *config.Config
+	store            *store.Store
+	pdnsMgr          *pdns.Manager
+	ensureStackFn    func(ctx context.Context, cb func(string), domain string) error
+	portProbeFn      func(host string, port int, timeout time.Duration) bool
+	resendAPIBaseURL string
 
 	// LastRelayDNS menyimpan hasil rekonsiliasi DNS dari operasi relay terakhir
 	// agar handler HTTP/CLI bisa melaporkan record yang dihapus & dibuat.
@@ -1849,8 +1850,15 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 	switch prov {
 	case "resend":
 		if pass == "" {
-			if prev, ok := m.loadDomainRelayCred(cleanDom); ok && strings.EqualFold(prev.Provider, "resend") {
-				pass = prev.Password
+			if cleanDom != RelayScopeAll {
+				if prev, ok := m.loadDomainRelayCred(cleanDom); ok && strings.EqualFold(prev.Provider, "resend") {
+					pass = prev.Password
+				}
+			}
+			if pass == "" {
+				if prev, ok := m.loadGlobalRelayCred(); ok && strings.EqualFold(prev.Provider, "resend") {
+					pass = prev.Password
+				}
 			}
 		}
 		if pass == "" {
@@ -1892,14 +1900,74 @@ func (m *Manager) SetRelay(opts SetRelayOptions) error {
 	}
 
 	previous := ""
-	if prev, ok := m.loadDomainRelayCred(cleanDom); ok {
+	if cleanDom == RelayScopeAll {
+		if prev, ok := m.loadGlobalRelayCred(); ok {
+			previous = strings.ToLower(prev.Provider)
+		}
+	} else if prev, ok := m.loadDomainRelayCred(cleanDom); ok {
 		previous = strings.ToLower(prev.Provider)
 	}
 	if err := m.applyRelay(adminEmail, adminPass, cleanDom, prov, host, port, implicitTLS, user, pass); err != nil {
 		return err
 	}
-	m.setLastRelayDNS(m.reconcileRelayDNS(cleanDom, previous, prov))
+	if cleanDom == RelayScopeAll {
+		agg := RelayDNSReport{
+			Domain:           RelayScopeAll,
+			PreviousProvider: previous,
+			Provider:         prov,
+			Removed:          []string{},
+			Added:            []string{},
+			Kept:             []string{},
+			Manual:           []string{},
+		}
+		for _, dom := range m.configuredMailDomains() {
+			if strings.EqualFold(m.ActiveRelayProvider(dom), prov) {
+				dRep := m.reconcileRelayDNS(dom, previous, prov)
+				m.syncProviderRelayDNS(dom, prov, pass, &dRep)
+				agg.Removed = append(agg.Removed, dRep.Removed...)
+				agg.Added = append(agg.Added, dRep.Added...)
+				agg.Kept = append(agg.Kept, dRep.Kept...)
+				agg.Manual = append(agg.Manual, dRep.Manual...)
+				if dRep.VerificationTriggered {
+					agg.VerificationTriggered = true
+				}
+			}
+		}
+		m.setLastRelayDNS(agg)
+	} else {
+		rep := m.reconcileRelayDNS(cleanDom, previous, prov)
+		m.syncProviderRelayDNS(cleanDom, prov, pass, &rep)
+		m.setLastRelayDNS(rep)
+	}
 	return nil
+}
+
+func (m *Manager) configuredMailDomains() []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(d string) {
+		d = cleanMailDomain(d)
+		if d != "" && d != RelayScopeAll && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	for d := range m.getAdminCredMap() {
+		add(d)
+	}
+	for d := range m.loadDomainsState() {
+		add(d)
+	}
+	if data, err := readRootFile(m.domainRelayCredPath()); err == nil {
+		var rMap map[string]relayCredential
+		if json.Unmarshal(data, &rMap) == nil {
+			for d := range rMap {
+				add(d)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // AdminCredential mengembalikan kredensial admin domain tanpa mencetaknya ke log.
@@ -2218,14 +2286,35 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 			return fmt.Errorf("relay outbound gagal dikonfigurasi: %w", err)
 		}
 		cb(fmt.Sprintf(" ✓ Outbound relay %s berhasil dikonfigurasi", relayProv))
-		for _, line := range relayDNSPlan(relayProv, cleanDom) {
+		dnsRep := m.LastRelayDNSReport()
+		for _, item := range dnsRep.Added {
+			cb("   + DNS Relay dibuat: " + item)
+		}
+		for _, item := range dnsRep.Kept {
+			cb("   = DNS Relay sudah ada: " + item)
+		}
+		if dnsRep.VerificationTriggered {
+			cb("   ✓ Verifikasi domain Resend dipicu otomatis")
+		}
+		for _, line := range dnsRep.Manual {
 			cb("   " + line)
 		}
 	default:
 		if _, err := m.ensureDefaultRelay(adminUser, adminPass); err == nil {
 			cb(" ✓ Domain memakai relay default yang sudah ada")
 			if cred, ok := m.loadGlobalRelayCred(); ok {
-				for _, line := range relayDNSPlan(cred.Provider, cleanDom) {
+				rep := RelayDNSReport{Domain: cleanDom, Provider: strings.ToLower(cred.Provider)}
+				m.syncProviderRelayDNS(cleanDom, cred.Provider, cred.Password, &rep)
+				for _, item := range rep.Added {
+					cb("   + DNS Relay dibuat: " + item)
+				}
+				for _, item := range rep.Kept {
+					cb("   = DNS Relay sudah ada: " + item)
+				}
+				if rep.VerificationTriggered {
+					cb("   ✓ Verifikasi domain Resend dipicu otomatis")
+				}
+				for _, line := range rep.Manual {
 					cb("   " + line)
 				}
 			}

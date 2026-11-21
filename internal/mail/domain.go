@@ -347,6 +347,18 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 
 	mode := m.pdnsMgr.GetMode()
 	zone, err := m.pdnsMgr.FindMatchingZone(domain)
+	if err != nil && strings.Contains(err.Error(), "tidak ditemukan") {
+		pdnsCfg := m.pdnsMgr.LoadConfig()
+		if pdnsCfg.Configured && pdnsCfg.HasAPIKey {
+			if addErr := m.pdnsMgr.AddZone(domain); addErr == nil {
+				cb(fmt.Sprintf("✓ Zone DNS otomatis dibuat di PowerDNS: %s", domain))
+				rep.add("Zone DNS", actionFixed, "zone "+domain+" otomatis dibuat di PowerDNS")
+				zone, err = m.pdnsMgr.FindMatchingZone(domain)
+			} else {
+				cb(fmt.Sprintf("! Gagal membuat zone DNS otomatis (%s): %v", domain, addErr))
+			}
+		}
+	}
 	if err != nil {
 		if mode != "local" {
 			rep.add("Zone DNS", actionFail, err.Error())
@@ -469,17 +481,52 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 	// 5. Pastikan routing relay outbound konsisten.
 	m.repairRelayRouting(domain, adminUser, adminPass, &rep)
 
-	// 6. Pasang ulang record DNS relay yang tercatat milik provider aktif.
-	if cred, ok := m.loadDomainRelayCred(domain); ok {
-		dnsRep := m.EnsureManagedRelayDNS(domain, cred.Provider)
-		for _, a := range dnsRep.Added {
-			rep.add("DNS relay", actionFixed, a)
-		}
-		for _, warn := range dnsRep.Manual {
-			rep.add("DNS relay", actionWarn, warn)
-		}
-		if len(dnsRep.Added) == 0 && len(dnsRep.Manual) == 0 {
-			rep.add("DNS relay", actionOK, "record relay terkelola sudah sesuai")
+	// 6. Sinkronkan & pasang ulang record DNS relay aktif (termasuk DKIM/SPF/MX dari Resend API).
+	if cred, ok := m.effectiveRelayCred(domain); ok {
+		prov := strings.ToLower(strings.TrimSpace(cred.Provider))
+		if prov == "resend" && strings.TrimSpace(cred.Password) != "" {
+			syncRes, syncErr := m.SyncResendDomainDNS(domain, cred.Password, true)
+			for _, rem := range syncRes.Report.Removed {
+				rep.add("DNS Resend", actionFixed, "hapus record lama: "+rem)
+				cb("✓ Record DNS Resend lama dibersihkan: " + rem)
+			}
+			for _, a := range syncRes.Report.Added {
+				rep.add("DNS Resend", actionFixed, a+" (dibuat)")
+				cb("✓ Record DNS Resend dibuat: " + a)
+			}
+			if syncRes.VerificationTriggered {
+				rep.add("Verifikasi Resend", actionOK, "permintaan verifikasi DNS dikirim ke Resend")
+				cb("✓ Permintaan verifikasi domain Resend dikirim")
+			}
+			if syncErr != nil {
+				rep.add("DNS Resend", actionWarn, syncErr.Error())
+				cb("! Sinkronisasi Resend API: " + syncErr.Error())
+				// Fallback pasang ulang record terkelola lokal bila sudah pernah tersimpan.
+				dnsRep := m.EnsureManagedRelayDNS(domain, prov)
+				for _, a := range dnsRep.Added {
+					rep.add("DNS relay", actionFixed, a)
+					cb("✓ Record DNS relay dibuat ulang: " + a)
+				}
+			} else if len(syncRes.Report.Added) == 0 && len(syncRes.Report.Removed) == 0 {
+				if len(syncRes.Report.Kept) > 0 {
+					rep.add("DNS Resend", actionOK, fmt.Sprintf("%d record Resend sudah lengkap di PowerDNS", len(syncRes.Report.Kept)))
+				}
+			}
+			for _, warn := range syncRes.Report.Manual {
+				rep.add("DNS Resend", actionWarn, warn)
+			}
+		} else {
+			dnsRep := m.EnsureManagedRelayDNS(domain, prov)
+			for _, a := range dnsRep.Added {
+				rep.add("DNS relay", actionFixed, a)
+				cb("✓ Record DNS relay dibuat ulang: " + a)
+			}
+			for _, warn := range dnsRep.Manual {
+				rep.add("DNS relay", actionWarn, warn)
+			}
+			if len(dnsRep.Added) == 0 && len(dnsRep.Manual) == 0 {
+				rep.add("DNS relay", actionOK, "record relay terkelola sudah sesuai")
+			}
 		}
 	}
 
@@ -495,6 +542,11 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb func(string)) {
 	conf := m.pdnsMgr.LoadConfig()
 	publicIP := strings.TrimSpace(conf.VPSPublicIP)
+	if conf.Mode == "vps" && !pdns.IsPublicIPv4String(publicIP) {
+		if pub := pdns.DetectPublicIP(); pdns.IsPublicIPv4String(pub) {
+			publicIP = pub
+		}
+	}
 	if publicIP == "" && conf.Mode == "local" {
 		if lan := pdns.DetectLocalLANIP(); lan != "" {
 			publicIP = lan
@@ -526,6 +578,7 @@ func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb f
 		}
 		if len(existing) == 0 {
 			rep.add("A "+fqdn, actionFixed, publicIP+" (dibuat)")
+			cb(fmt.Sprintf("✓ Record A dibuat: %s -> %s", fqdn, publicIP))
 		} else {
 			rep.add("A "+fqdn, actionFixed, publicIP+" (mengganti "+strings.Join(existing, ", ")+")")
 			cb(fmt.Sprintf("Perbaiki A %s: %s -> %s", fqdn, strings.Join(existing, ", "), publicIP))
@@ -544,6 +597,7 @@ func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb f
 			rep.add("MX "+domain, actionFail, err.Error())
 		} else if len(mx) == 0 {
 			rep.add("MX "+domain, actionFixed, wantMX+" (dibuat)")
+			cb(fmt.Sprintf("✓ Record MX dibuat: %s -> %s", domain, wantMX))
 		} else {
 			rep.add("MX "+domain, actionFixed, wantMX+" (mengganti "+strings.Join(mx, ", ")+")")
 			cb(fmt.Sprintf("Perbaiki MX %s: %s -> %s", domain, strings.Join(mx, ", "), wantMX))
@@ -566,6 +620,7 @@ func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb f
 			rep.add("SPF", actionFail, err.Error())
 		} else {
 			rep.add("SPF", actionFixed, wantSPF+" (dibuat)")
+			cb(fmt.Sprintf("✓ Record TXT SPF dibuat: %s -> %s", domain, wantSPF))
 		}
 	}
 
@@ -581,6 +636,7 @@ func (m *Manager) syncMailDNS(zone, domain string, rep *DomainActionReport, cb f
 			rep.add("DMARC", actionFail, err.Error())
 		} else {
 			rep.add("DMARC", actionFixed, value+" (dibuat)")
+			cb(fmt.Sprintf("✓ Record TXT DMARC dibuat: _dmarc.%s", domain))
 		}
 	}
 }

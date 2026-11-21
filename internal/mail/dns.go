@@ -7,9 +7,55 @@ import (
 	"wdev/internal/pdns"
 )
 
+// normalizeTXTContent menggabungkan chunk TXT PowerDNS ("bagian1" "bagian2")
+// menjadi satu string tanpa tanda kutip pembungkus agar DKIM/SPF > 255 byte dapat dibandingkan akurat.
+func normalizeTXTContent(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if !strings.Contains(s, `"`) {
+		return s
+	}
+	var out strings.Builder
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && (ch == ' ' || ch == '\t') {
+			continue
+		}
+		out.WriteByte(ch)
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// normalizeDNSRecordValue menormalkan nilai DNS berdasarkan tipenya untuk perbandingan idempoten.
+func normalizeDNSRecordValue(rtype, raw string) string {
+	rtype = strings.ToUpper(strings.TrimSpace(rtype))
+	switch rtype {
+	case "TXT":
+		return normalizeTXTContent(raw)
+	case "CNAME":
+		return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(raw), "."))
+	case "MX":
+		fields := strings.Fields(strings.TrimSpace(strings.Trim(raw, `"`)))
+		if len(fields) >= 2 {
+			fields[len(fields)-1] = strings.ToLower(strings.TrimSuffix(fields[len(fields)-1], "."))
+			return strings.Join(fields, " ")
+		}
+		return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(raw), "."))
+	default:
+		return strings.TrimSpace(strings.Trim(raw, `"`))
+	}
+}
+
 func containsSPF(records []string) bool {
 	for _, r := range records {
-		v := strings.ToLower(strings.Trim(r, `"`))
+		v := strings.ToLower(normalizeTXTContent(r))
 		if strings.HasPrefix(v, "v=spf1") {
 			return true
 		}
@@ -18,9 +64,26 @@ func containsSPF(records []string) bool {
 }
 
 func recordContentExists(records []string, want string) bool {
-	want = strings.TrimSpace(strings.Trim(want, `"`))
+	return recordContentMatches("", records, want)
+}
+
+func recordContentMatches(rtype string, records []string, want string) bool {
+	wantNorm := normalizeDNSRecordValue(rtype, want)
+	if rtype == "" {
+		wantNorm = normalizeTXTContent(want)
+	}
 	for _, r := range records {
-		if strings.TrimSpace(strings.Trim(r, `"`)) == want {
+		gotNorm := normalizeDNSRecordValue(rtype, r)
+		if rtype == "" {
+			gotNorm = normalizeTXTContent(r)
+		}
+		if strings.EqualFold(rtype, "MX") || strings.EqualFold(rtype, "CNAME") {
+			if strings.EqualFold(gotNorm, wantNorm) {
+				return true
+			}
+			continue
+		}
+		if gotNorm == wantNorm {
 			return true
 		}
 	}

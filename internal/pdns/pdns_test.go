@@ -413,3 +413,25 @@ func TestAddZoneWithVhostVPSAndEdgeModes(t *testing.T) {
 		t.Fatalf("expected edge proxy POST for edgeapp.com, got %+v", proxyPosts)
 	}
 }
+
+func TestFormatTXTRecordContentAndMXRecordContent(t *testing.T) {
+	short := formatTXTRecordContent("v=spf1 -all")
+	if short != `"v=spf1 -all"` {
+		t.Fatalf("short TXT = %q", short)
+	}
+
+	rawLong := "p=" + strings.Repeat("X", 300)
+	formatted := formatTXTRecordContent(rawLong)
+	if !strings.Contains(formatted, `" "`) {
+		t.Fatalf("expected TXT > 255 bytes to split into multi-chunk quotes, got %q", formatted)
+	}
+	for _, chunk := range strings.Split(formatted[1:len(formatted)-1], `" "`) {
+		if len(chunk) > 255 {
+			t.Fatalf("TXT chunk exceeded 255 bytes: %d", len(chunk))
+		}
+	}
+
+	if mx := formatMXRecordContent("10 feedback-smtp.us-east-1.amazonses.com"); mx != "10 feedback-smtp.us-east-1.amazonses.com." {
+		t.Fatalf("formatMXRecordContent = %q", mx)
+	}
+}

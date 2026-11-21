@@ -74,7 +74,18 @@
 	let relayUser = $state('');
 	let relayPass = $state('');
 	let relayDNSText = $state('');
+	let relayDNSBaseline = $state('');
 	let savingRelay = $state(false);
+	let syncingRelayDNS = $state(false);
+	let relaySyncNotice = $state<{ tone: 'info' | 'warn'; text: string } | null>(null);
+
+	const hasStoredRelayKey = $derived.by(() => {
+		const existing =
+			relayTargetDomain === 'global'
+				? mailStatus?.global_relay
+				: mailStatus?.domain_relays?.[relayTargetDomain] ?? mailStatus?.global_relay;
+		return Boolean(existing?.host && existing.provider?.toLowerCase() === relayProvider);
+	});
 
 	// Setup Domain Mail Modal
 	let setupOpen = $state(false);
@@ -318,21 +329,26 @@
 	async function loadRelayDNSRecords(domain: string, provider: string) {
 		if (!domain || domain === 'global' || provider === 'local') {
 			relayDNSText = '';
+			relayDNSBaseline = '';
 			return;
 		}
 		try {
 			const list = await api.listMailRelayDNS(domain);
-			relayDNSText = (list ?? [])
+			const formatted = (list ?? [])
 				.filter((r) => !provider || r.provider.toLowerCase() === provider)
 				.map((r) => `${r.type} ${r.name} ${r.content}`)
 				.join('\n');
+			relayDNSText = formatted;
+			relayDNSBaseline = formatted;
 		} catch {
 			relayDNSText = '';
+			relayDNSBaseline = '';
 		}
 	}
 
 	function openRelayModal(domain = 'global') {
 		relayTargetDomain = domain || 'global';
+		relaySyncNotice = null;
 		const outboundRoute =
 			relayTargetDomain === 'global' ? '' : mailStatus?.outbound_routes?.[relayTargetDomain];
 		const existing =
@@ -367,9 +383,45 @@
 		if (!dns) return '';
 		const parts: string[] = [];
 		if (dns.removed?.length) parts.push(`${dns.removed.length} record lama dihapus`);
-		if (dns.added?.length) parts.push(`${dns.added.length} record baru ditambahkan`);
-		if (dns.manual?.length) parts.push(`${dns.manual.length} record perlu manual`);
-		return parts.join(', ');
+		if (dns.added?.length) parts.push(`${dns.added.length} record baru dibuat`);
+		if (dns.kept?.length) parts.push(`${dns.kept.length} record terpasang`);
+		if (dns.verification_triggered) parts.push('verifikasi Resend dipicu');
+		if (dns.manual?.length && !dns.added?.length && !dns.kept?.length) {
+			parts.push(dns.manual[0]);
+		} else if (dns.manual?.length && dns.manual[0].toLowerCase().includes('api key')) {
+			parts.push(dns.manual[0]);
+		}
+		return parts.join('; ');
+	}
+
+	async function handleSyncResendDNS() {
+		if (relayTargetDomain === 'global' || relayProvider !== 'resend') return;
+		syncingRelayDNS = true;
+		relaySyncNotice = null;
+		try {
+			const res = await api.syncMailRelayDNS(relayTargetDomain, relaySecret.trim(), 'resend');
+			await loadRelayDNSRecords(relayTargetDomain, 'resend');
+			const rep = res.report;
+			const parts: string[] = [];
+			if (rep?.added?.length) parts.push(`${rep.added.length} record DNS dibuat di PowerDNS`);
+			if (rep?.kept?.length) parts.push(`${rep.kept.length} record sudah sesuai`);
+			if (rep?.removed?.length) parts.push(`${rep.removed.length} record usang dibersihkan`);
+			if (res.verification_triggered) parts.push('verifikasi domain Resend dipicu');
+			const msg = parts.join(', ') || 'Sinkronisasi Resend selesai';
+			const warnNote = rep?.manual?.find((m) => m.toLowerCase().includes('gagal') || m.toLowerCase().includes('menunggu'));
+			relaySyncNotice = {
+				tone: warnNote ? 'warn' : 'info',
+				text: warnNote ? `${msg}. (${warnNote})` : `${msg} (status Resend: ${res.domain_status || 'pending'}).`
+			};
+			toast.success(`DNS Resend ${relayTargetDomain}: ${msg}`);
+			await loadMail();
+		} catch (err) {
+			const text = err instanceof Error ? err.message : 'Gagal menyinkronkan DNS Resend';
+			relaySyncNotice = { tone: 'warn', text };
+			toast.error(text);
+		} finally {
+			syncingRelayDNS = false;
+		}
 	}
 
 	async function submitRelay(e: SubmitEvent) {
@@ -389,11 +441,14 @@
 		if (relayProvider === 'local') {
 			// Menggunakan SMTP lokal Stalwart (direct MX); tidak butuh host/kredensial relay eksternal.
 		} else if (relayProvider === 'resend' || relayProvider === 'brevo') {
-			if (!relaySecret.trim()) {
+			const typed = relaySecret.trim();
+			if (!typed && !hasStoredRelayKey) {
 				toast.warning(`API / SMTP Key untuk ${relayProvider.toUpperCase()} wajib diisi.`);
 				return;
 			}
-			payload.password = relaySecret.trim();
+			if (typed) {
+				payload.password = typed;
+			}
 		} else {
 			if (!relayHost.trim()) {
 				toast.warning('Host SMTP wajib diisi untuk custom relay.');
@@ -412,7 +467,12 @@
 				.split('\n')
 				.map((l) => l.trim())
 				.filter(Boolean);
-			if (relayProvider !== 'local' && lines.length > 0 && relayTargetDomain !== 'global') {
+			if (
+				relayProvider !== 'local' &&
+				lines.length > 0 &&
+				relayTargetDomain !== 'global' &&
+				relayDNSText.trim() !== relayDNSBaseline.trim()
+			) {
 				const parsed = lines.map((line) => {
 					const parts = line.split(/\s+/);
 					if (parts.length < 3) {
@@ -432,6 +492,9 @@
 					? `Outbound ${relayTargetDomain === 'global' ? 'default' : relayTargetDomain} diarahkan ke SMTP lokal Stalwart.${dnsNote ? ` (${dnsNote})` : ''}`
 					: `Relay domain ${relayTargetDomain} berhasil disimpan.${dnsNote ? ` (${dnsNote})` : ''}`
 			);
+			if (res.dns?.manual?.some((m) => m.includes('API Key Resend tidak diizinkan') || m.includes('gagal terhubung'))) {
+				toast.warning(res.dns.manual[0]);
+			}
 			relayOpen = false;
 			await loadMail();
 		} catch (err) {
@@ -1260,12 +1323,16 @@
 							id="mail-relay-secret"
 							canGenerate={false}
 							autocomplete="current-password"
-							placeholder={relayProvider === 'resend' ? 're_123456789...' : 'xkeysib-123456789...'}
+							placeholder={hasStoredRelayKey
+								? 'Kosongkan untuk tetap memakai key tersimpan'
+								: relayProvider === 'resend'
+									? 're_123456789...'
+									: 'xkeysib-123456789...'}
 							bind:value={relaySecret}
 						/>
 						<Field.FieldDescription>
 							{relayProvider === 'resend'
-								? 'Port 465 (Implicit TLS). Username otomatis disetel ke "resend".'
+								? 'Port 465 (Implicit TLS). Username otomatis disetel ke "resend". Dengan API Key Resend Full Access, record DNS DKIM/SPF/MX otomatis dibangun di PowerDNS saat disimpan.'
 								: 'Port 587 (STARTTLS). Username otomatis diambil dari akun Brevo Anda.'}
 						</Field.FieldDescription>
 					</Field.Field>
@@ -1292,17 +1359,44 @@
 
 				{#if relayProvider !== 'local'}
 					<Field.Field>
-						<Field.FieldLabel for="mail-relay-dns">Record DNS Relay (dikelola wdev)</Field.FieldLabel>
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<Field.FieldLabel for="mail-relay-dns">Record DNS Relay (dikelola wdev)</Field.FieldLabel>
+							{#if relayProvider === 'resend' && relayTargetDomain !== 'global'}
+								<Button
+									type="button"
+									variant="outline"
+									size="xs"
+									disabled={syncingRelayDNS || savingRelay}
+									onclick={handleSyncResendDNS}
+								>
+									{#if syncingRelayDNS}
+										<Spinner data-icon="inline-start" />
+										Menyinkronkan...
+									{:else}
+										<RefreshCwIcon data-icon="inline-start" />
+										Sinkronkan DNS Resend
+									{/if}
+								</Button>
+							{/if}
+						</div>
+						{#if relaySyncNotice}
+							<Alert.Root variant={relaySyncNotice.tone === 'warn' ? 'destructive' : 'default'} class="my-1 py-2">
+								<InfoIcon class="size-4" />
+								<Alert.Description class="text-xs">{relaySyncNotice.text}</Alert.Description>
+							</Alert.Root>
+						{/if}
 						<Textarea
 							id="mail-relay-dns"
 							rows={4}
 							spellcheck={false}
 							class="font-mono text-xs"
-							placeholder="CNAME brevo1._domainkey.domain.com b1.domain.com.dkim.brevo.com"
+							placeholder={relayProvider === 'resend'
+								? 'Terisi otomatis dari Resend API saat Simpan / Sinkronkan DNS (TXT resend._domainkey, MX send, TXT send)'
+								: 'CNAME brevo1._domainkey.domain.com b1.domain.com.dkim.brevo.com'}
 							bind:value={relayDNSText}
 						/>
 						<Field.FieldDescription>
-							Satu record per baris: <code>TYPE NAMA NILAI</code>. Otomatis dibersihkan bila provider diganti.
+							Satu record per baris: <code>TYPE NAMA NILAI</code>. Otomatis disinkronkan dari Resend API atau dibersihkan bila provider diganti.
 						</Field.FieldDescription>
 					</Field.Field>
 				{/if}

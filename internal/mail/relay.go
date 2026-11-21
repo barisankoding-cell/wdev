@@ -568,6 +568,60 @@ func (m *Manager) ActiveRelayProvider(domain string) string {
 	return "local"
 }
 
+// effectiveRelayCred mengembalikan kredensial relay aktif untuk satu domain
+// (memprioritaskan override domain, kecuali domain dipaksa 'mx' lokal, lalu global).
+func (m *Manager) effectiveRelayCred(domain string) (relayCredential, bool) {
+	domain = cleanMailDomain(domain)
+	if domain != "" && domain != RelayScopeAll {
+		if cred, ok := m.loadDomainRelayCred(domain); ok {
+			return cred, true
+		}
+		if adminEmail, adminPass, err := m.pickValidAdminCred(domain); err == nil {
+			if route, err := m.loadOutboundRoute(adminEmail, adminPass); err == nil {
+				if routeBranchTarget(route, domain) == LocalSMTPRoute {
+					return relayCredential{}, false
+				}
+			}
+		}
+	}
+	return m.loadGlobalRelayCred()
+}
+
+// syncProviderRelayDNS menyelaraskan record DNS khusus provider relay (seperti Resend)
+// ke PowerDNS dan menggabungkannya ke laporan DNS relay.
+func (m *Manager) syncProviderRelayDNS(domain, provider, apiKey string, rep *RelayDNSReport) {
+	domain = cleanMailDomain(domain)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if rep == nil || provider != "resend" || domain == "" || domain == RelayScopeAll {
+		return
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		if cred, ok := m.effectiveRelayCred(domain); ok && strings.EqualFold(cred.Provider, "resend") {
+			apiKey = cred.Password
+		}
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		return
+	}
+	syncRes, err := m.SyncResendDomainDNS(domain, apiKey, true)
+	rep.Removed = append(rep.Removed, syncRes.Report.Removed...)
+	rep.Added = append(rep.Added, syncRes.Report.Added...)
+	rep.Kept = append(rep.Kept, syncRes.Report.Kept...)
+	if syncRes.VerificationTriggered {
+		rep.VerificationTriggered = true
+	}
+	if err != nil {
+		// Pertahankan fallback checklist manual disertai pesan penyebab agar jelas di UI/CLI.
+		filtered := []string{err.Error()}
+		for _, item := range rep.Manual {
+			filtered = append(filtered, item)
+		}
+		rep.Manual = filtered
+		return
+	}
+	rep.Manual = append([]string{}, syncRes.Report.Manual...)
+}
+
 // GetOutboundRoutes mengembalikan kondisi routing efektif dari Stalwart.
 func (m *Manager) GetOutboundRoutes() (OutboundRouteInfo, error) {
 	info := OutboundRouteInfo{Domains: make(map[string]string)}
@@ -735,7 +789,7 @@ func (m *Manager) EnsureManagedRelayDNS(domain, provider string) RelayDNSReport 
 			rep.Manual = append(rep.Manual, fmt.Sprintf("gagal membaca %s %s: %v", r.Type, r.Name, err))
 			continue
 		}
-		if recordContentExists(existing, r.Content) {
+		if recordContentMatches(r.Type, existing, r.Content) {
 			rep.Kept = append(rep.Kept, fmt.Sprintf("%s %s", r.Type, r.Name))
 			continue
 		}

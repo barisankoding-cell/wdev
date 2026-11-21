@@ -1091,6 +1091,59 @@ func mergeRecordContents(existing []string, content string) []string {
 	return append(existing, content)
 }
 
+func formatTXTRecordContent(raw string) string {
+	c := strings.TrimSpace(raw)
+	if c == "" {
+		return `""`
+	}
+	// Jika sudah berbentuk multi-chunk "... ..." dan tiap chunk <= 255 byte, pertahankan.
+	if strings.HasPrefix(c, `"`) && strings.HasSuffix(c, `"`) && strings.Contains(c, `" "`) {
+		inner := c
+		parts := strings.Split(inner[1:len(inner)-1], `" "`)
+		validChunks := len(parts) > 0
+		for _, p := range parts {
+			if len(p) > 255 {
+				validChunks = false
+				break
+			}
+		}
+		if validChunks {
+			return c
+		}
+	}
+	if strings.HasPrefix(c, `"`) && strings.HasSuffix(c, `"`) && len(c) >= 2 {
+		c = c[1 : len(c)-1]
+	}
+	if len(c) <= 255 {
+		return `"` + c + `"`
+	}
+	// PowerDNS API menolak string TXT tunggal > 255 byte; pecah per <= 255 byte sesuai RFC 1035.
+	var chunks []string
+	for len(c) > 0 {
+		n := 255
+		if len(c) < n {
+			n = len(c)
+		}
+		chunks = append(chunks, `"`+c[:n]+`"`)
+		c = c[n:]
+	}
+	return strings.Join(chunks, " ")
+}
+
+func formatMXRecordContent(raw string) string {
+	c := strings.TrimSpace(raw)
+	if c == "" {
+		return c
+	}
+	fields := strings.Fields(c)
+	if len(fields) == 1 {
+		target := strings.TrimSuffix(fields[0], ".") + "."
+		return "10 " + target
+	}
+	fields[len(fields)-1] = strings.TrimSuffix(fields[len(fields)-1], ".") + "."
+	return strings.Join(fields, " ")
+}
+
 func (m *Manager) patchRecords(zone, name, rtype string, contents []string, ttl int) error {
 	conf, err := m.requirePDNSConfig()
 	if err != nil {
@@ -1109,13 +1162,13 @@ func (m *Manager) patchRecords(zone, name, rtype string, contents []string, ttl 
 	for _, c := range contents {
 		c = strings.TrimSpace(c)
 		if rtype == "TXT" {
-			if !strings.HasPrefix(c, "\"") || !strings.HasSuffix(c, "\"") {
-				c = `"` + c + `"`
-			}
+			c = formatTXTRecordContent(c)
 		} else if rtype == "CNAME" {
 			if !strings.HasSuffix(c, ".") {
 				c = c + "."
 			}
+		} else if rtype == "MX" {
+			c = formatMXRecordContent(c)
 		}
 		records = append(records, map[string]any{"content": c, "disabled": false})
 	}

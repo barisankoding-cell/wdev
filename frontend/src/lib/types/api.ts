@@ -335,6 +335,17 @@ export interface RelayDNSReport {
 	added: string[];
 	kept: string[];
 	manual: string[];
+	verification_triggered?: boolean;
+}
+
+export interface ResendSyncResult {
+	domain: string;
+	domain_id?: string;
+	domain_status?: string;
+	verification_triggered?: boolean;
+	records: ManagedRelayRecord[];
+	skipped?: string[];
+	report: RelayDNSReport;
 }
 
 export interface DomainCheck {

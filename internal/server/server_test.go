@@ -20,6 +20,7 @@ import (
 	"wdev/internal/auth"
 	"wdev/internal/config"
 	"wdev/internal/installer"
+	"wdev/internal/mail"
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
 	"wdev/internal/serviceconfig"
@@ -1467,5 +1468,52 @@ func TestPanelDirectSSLMultiplexAndRedirect(t *testing.T) {
 		if !strings.HasPrefix(u, "https://") {
 			t.Fatalf("expected https:// access URL in GetPanelAccessInfo when Panel SSL enabled, got %q", u)
 		}
+	}
+}
+
+func TestHandleMailRelayDNSSyncEndpointValidation(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "mail-sync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{
+		HTTPHost: "127.0.0.1",
+		HTTPPort: "3200",
+		WdevEtc:  filepath.Join(tmp, "etc"),
+	}
+	_ = os.MkdirAll(cfg.WdevEtc, 0755)
+	pdnsMgr := pdns.New(cfg, db)
+	mailMgr := mail.New(cfg, db, pdnsMgr)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), installer.New(cfg, db), nil, pdnsMgr, nil, mailMgr, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	reqMissing := httptest.NewRequest(http.MethodPost, "/api/mail/relay/dns/sync", strings.NewReader(`{"domain":""}`))
+	reqMissing.Host = "127.0.0.1:3200"
+	reqMissing.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqMissing.AddCookie(sessCookie)
+	recMissing := httptest.NewRecorder()
+	handler.ServeHTTP(recMissing, reqMissing)
+	if recMissing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when domain empty, got %d (%s)", recMissing.Code, recMissing.Body.String())
+	}
+
+	reqLocal := httptest.NewRequest(http.MethodPost, "/api/mail/relay/dns/sync", strings.NewReader(`{"domain":"nikaget.my.id","provider":"local"}`))
+	reqLocal.Host = "127.0.0.1:3200"
+	reqLocal.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqLocal.AddCookie(sessCookie)
+	recLocal := httptest.NewRecorder()
+	handler.ServeHTTP(recLocal, reqLocal)
+	if recLocal.Code != http.StatusOK || !strings.Contains(recLocal.Body.String(), `"nikaget.my.id"`) {
+		t.Fatalf("expected 200 for non-Resend provider sync report, got %d (%s)", recLocal.Code, recLocal.Body.String())
 	}
 }

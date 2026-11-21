@@ -1208,6 +1208,22 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Printf("✓ Relay untuk domain %s berhasil disetel ke %s!\n", dom, prov)
+			dnsRep := mailMgr.LastRelayDNSReport()
+			for _, item := range dnsRep.Added {
+				fmt.Printf("  + DNS Relay dibuat   : %s\n", item)
+			}
+			for _, item := range dnsRep.Kept {
+				fmt.Printf("  = DNS Relay terpasang: %s\n", item)
+			}
+			for _, item := range dnsRep.Removed {
+				fmt.Printf("  - DNS Relay dihapus  : %s\n", item)
+			}
+			if dnsRep.VerificationTriggered {
+				fmt.Println("  ✓ Verifikasi domain Resend dipicu otomatis")
+			}
+			for _, m := range dnsRep.Manual {
+				fmt.Printf("  ! Catatan DNS        : %s\n", m)
+			}
 
 		case "admin-cred":
 			if len(args) < 3 {

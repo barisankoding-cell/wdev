@@ -21,13 +21,14 @@ type ManagedRelayRecord struct {
 
 // RelayDNSReport merangkum rekonsiliasi DNS saat relay berubah.
 type RelayDNSReport struct {
-	Domain           string   `json:"domain"`
-	PreviousProvider string   `json:"previous_provider,omitempty"`
-	Provider         string   `json:"provider,omitempty"`
-	Removed          []string `json:"removed"`
-	Added            []string `json:"added"`
-	Kept             []string `json:"kept"`
-	Manual           []string `json:"manual"`
+	Domain                string   `json:"domain"`
+	PreviousProvider      string   `json:"previous_provider,omitempty"`
+	Provider              string   `json:"provider,omitempty"`
+	Removed               []string `json:"removed"`
+	Added                 []string `json:"added"`
+	Kept                  []string `json:"kept"`
+	Manual                []string `json:"manual"`
+	VerificationTriggered bool     `json:"verification_triggered,omitempty"`
 }
 
 func (r *RelayDNSReport) summary() string {
@@ -115,7 +116,6 @@ func (m *Manager) AddRelayDNS(domain, provider string, records []ManagedRelayRec
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	added := 0
 	for _, r := range records {
 		r.Name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Name), "."))
 		r.Type = strings.ToUpper(strings.TrimSpace(r.Type))
@@ -123,26 +123,93 @@ func (m *Manager) AddRelayDNS(domain, provider string, records []ManagedRelayRec
 		if r.Name == "" || r.Type == "" || r.Content == "" {
 			return rep, fmt.Errorf("record relay tidak lengkap (name/type/content wajib)")
 		}
-		if index[relayRecordKey(r)] {
+		name := recordNameForZone(zone, r.Name)
+		liveExisting, lErr := m.pdnsMgr.LookupRecords(zone, name, r.Type)
+		alreadyTracked := index[relayRecordKey(r)]
+		if lErr == nil && recordContentMatches(r.Type, liveExisting, r.Content) {
+			if !alreadyTracked {
+				r.Provider = provider
+				r.CreatedAt = now
+				existing = append(existing, r)
+				index[relayRecordKey(r)] = true
+			}
 			rep.Kept = append(rep.Kept, fmt.Sprintf("%s %s %s", r.Type, r.Name, r.Content))
 			continue
 		}
-		name := recordNameForZone(zone, r.Name)
 		if err := m.pdnsMgr.AddRecordKeep(zone, name, r.Type, r.Content, 300); err != nil {
 			return rep, fmt.Errorf("gagal menulis record %s %s: %w", r.Type, r.Name, err)
 		}
-		r.Provider = provider
-		r.CreatedAt = now
-		existing = append(existing, r)
-		index[relayRecordKey(r)] = true
+		if !alreadyTracked {
+			r.Provider = provider
+			r.CreatedAt = now
+			existing = append(existing, r)
+			index[relayRecordKey(r)] = true
+		}
 		rep.Added = append(rep.Added, fmt.Sprintf("%s %s %s", r.Type, r.Name, r.Content))
-		added++
 	}
 	all[domain] = existing
 	if err := m.saveRelayDNS(all); err != nil {
 		return rep, err
 	}
 	return rep, nil
+}
+
+// ReconcileProviderRelayDNS menyelaraskan record DNS terkelola milik provider aktif:
+// menghapus record lama milik provider yang tidak lagi ada di desired, lalu
+// memastikan seluruh desired terpasang di PowerDNS dan tercatat di mail-relay-dns.json.
+func (m *Manager) ReconcileProviderRelayDNS(domain, provider string, desired []ManagedRelayRecord) (RelayDNSReport, error) {
+	domain = cleanMailDomain(domain)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	rep := RelayDNSReport{Domain: domain, Provider: provider, Removed: []string{}, Added: []string{}, Kept: []string{}, Manual: []string{}}
+	if domain == "" || !validMailDomain(domain) {
+		return rep, fmt.Errorf("domain tidak valid: %s", domain)
+	}
+	zone, err := m.pdnsMgr.FindMatchingZone(domain)
+	if err != nil {
+		return rep, err
+	}
+
+	wantSet := make(map[string]bool, len(desired))
+	for _, r := range desired {
+		r.Name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Name), "."))
+		r.Type = strings.ToUpper(strings.TrimSpace(r.Type))
+		r.Content = strings.TrimSpace(r.Content)
+		wantSet[relayRecordKey(r)] = true
+	}
+
+	all := m.loadRelayDNS()
+	current := all[domain]
+	kept := make([]ManagedRelayRecord, 0, len(current))
+	staleRemoved := false
+	for _, r := range current {
+		if !strings.EqualFold(r.Provider, provider) || wantSet[relayRecordKey(r)] {
+			kept = append(kept, r)
+			continue
+		}
+		name := recordNameForZone(zone, r.Name)
+		if delErr := m.deleteRelayRecordValue(zone, name, r.Type, r.Content); delErr == nil {
+			rep.Removed = append(rep.Removed, fmt.Sprintf("%s %s %s", r.Type, r.Name, r.Content))
+			staleRemoved = true
+		} else {
+			kept = append(kept, r)
+		}
+	}
+	if staleRemoved {
+		if len(kept) == 0 {
+			delete(all, domain)
+		} else {
+			all[domain] = kept
+		}
+		if err := m.saveRelayDNS(all); err != nil {
+			return rep, err
+		}
+	}
+
+	addRep, addErr := m.AddRelayDNS(domain, provider, desired)
+	rep.Added = append(rep.Added, addRep.Added...)
+	rep.Kept = append(rep.Kept, addRep.Kept...)
+	rep.Manual = append(rep.Manual, addRep.Manual...)
+	return rep, addErr
 }
 
 // DeleteRelayDNS menghapus record DNS relay terkelola (opsional hanya milik
@@ -192,11 +259,11 @@ func (m *Manager) deleteRelayRecordValue(zone, name, rtype, content string) erro
 	if err != nil {
 		return err
 	}
-	want := strings.TrimSpace(strings.Trim(content, `"`))
+	wantNorm := normalizeDNSRecordValue(rtype, content)
 	rest := make([]string, 0, len(current))
 	found := false
 	for _, c := range current {
-		if strings.EqualFold(strings.TrimSpace(strings.Trim(c, `"`)), want) {
+		if strings.EqualFold(normalizeDNSRecordValue(rtype, c), wantNorm) {
 			found = true
 			continue
 		}

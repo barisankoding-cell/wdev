@@ -128,6 +128,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/mail/routes", s.handleMailRoutes)
 	s.mux.HandleFunc("/api/mail/relay/remove", s.handleMailRelayRemove)
 	s.mux.HandleFunc("/api/mail/relay/dns", s.handleMailRelayDNS)
+	s.mux.HandleFunc("/api/mail/relay/dns/sync", s.handleMailRelayDNSSync)
 	s.mux.HandleFunc("/api/mail/admin-reset", s.handleMailAdminReset)
 	s.mux.HandleFunc("/api/mail/setup", s.handleMailSetup)
 	s.mux.HandleFunc("/api/mail/domain/delete", s.handleMailDomainDelete)
@@ -2659,6 +2660,52 @@ func (s *Server) handleMailRelayDNS(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 	}
+}
+
+func (s *Server) handleMailRelayDNSSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Domain   string `json:"domain"`
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	dom := strings.TrimSpace(payload.Domain)
+	if dom == "" {
+		writeError(w, http.StatusBadRequest, "Parameter domain diperlukan")
+		return
+	}
+	prov := strings.ToLower(strings.TrimSpace(payload.Provider))
+	if prov == "" {
+		prov = s.mailMgr.ActiveRelayProvider(dom)
+	}
+	if prov != "resend" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"domain":   dom,
+			"provider": prov,
+			"report":   s.mailMgr.EnsureManagedRelayDNS(dom, prov),
+		})
+		return
+	}
+	res, err := s.mailMgr.SyncResendDomainDNS(dom, payload.APIKey, true)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  err.Error(),
+			"result": res,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleMailAdminReset(w http.ResponseWriter, r *http.Request) {
