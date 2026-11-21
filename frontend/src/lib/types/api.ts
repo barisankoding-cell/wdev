@@ -700,6 +700,9 @@ export interface PanelDomainStatus {
 	ssl_provider?: string;
 	ssl_expires_at?: string;
 	ssl_days_left?: number;
+	panel_ssl_enabled: boolean;
+	panel_ssl_expires_at?: string;
+	panel_ssl_days_left?: number;
 	panel_port: number;
 	entrance_path: string;
 	public_ip?: string;

@@ -66,6 +66,7 @@ type PanelAccessInfo struct {
 	PublicURL        string `json:"public_url"`
 	NetbirdURL       string `json:"netbird_url"`
 	LocalURL         string `json:"local_url"`
+	PanelSSLEnabled  bool   `json:"panel_ssl_enabled"`
 	PanelDomain      string `json:"panel_domain,omitempty"`
 	PanelDomainURL   string `json:"panel_domain_url,omitempty"`
 	PanelDomainSSL   bool   `json:"panel_domain_ssl"`
@@ -648,15 +649,21 @@ func (m *Manager) GetPanelAccessInfo(publicIP, netbirdIP string) PanelAccessInfo
 		entrancePath = "/" + entrance
 	}
 
-	localURL := fmt.Sprintf("http://127.0.0.1:%s%s", port, entrancePath)
+	panelSSLActive := m.IsPanelSSLEnabled()
+	ipScheme := "http"
+	if panelSSLActive {
+		ipScheme = "https"
+	}
+
+	localURL := fmt.Sprintf("%s://127.0.0.1:%s%s", ipScheme, port, entrancePath)
 	pubURL := ""
 	if publicIP != "" {
-		pubURL = fmt.Sprintf("http://%s:%s%s", publicIP, port, entrancePath)
+		pubURL = fmt.Sprintf("%s://%s:%s%s", ipScheme, publicIP, port, entrancePath)
 	}
 
 	netbirdURL := ""
 	if netbirdIP != "" && netbirdIP != "-" {
-		netbirdURL = fmt.Sprintf("http://%s:%s%s", netbirdIP, port, entrancePath)
+		netbirdURL = fmt.Sprintf("%s://%s:%s%s", ipScheme, netbirdIP, port, entrancePath)
 	}
 
 	panelDomain, panelSSL, blockDirectIP := m.PanelDomainConfig()
@@ -673,6 +680,7 @@ func (m *Manager) GetPanelAccessInfo(publicIP, netbirdIP string) PanelAccessInfo
 		PublicURL:        pubURL,
 		NetbirdURL:       netbirdURL,
 		LocalURL:         localURL,
+		PanelSSLEnabled:  panelSSLActive,
 		PanelDomain:      panelDomain,
 		PanelDomainURL:   panelDomainURL,
 		PanelDomainSSL:   panelSSL,

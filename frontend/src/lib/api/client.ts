@@ -419,6 +419,17 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ block })
 		}),
+	setPanelSSL: (enabled: boolean, hosts: string[] = []) =>
+		apiFetch<{
+			status: string;
+			panel_ssl_enabled: boolean;
+			panel_ssl_expires_at?: string;
+			panel_ssl_days_left?: number;
+			redirect_url?: string;
+		}>('/api/panel/ssl', {
+			method: 'POST',
+			body: JSON.stringify({ enabled, hosts })
+		}),
 	unbindPanelDomain: (remove_vhost = true) =>
 		apiFetch<{ status: string; message: string }>('/api/panel/domain', {
 			method: 'DELETE',

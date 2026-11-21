@@ -150,6 +150,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/change-credentials", s.handleAuthChangeCredentials)
 	s.mux.HandleFunc("/api/panel/domain", s.handlePanelDomain)
 	s.mux.HandleFunc("/api/panel/domain/block-ip", s.handlePanelDomainBlockIP)
+	s.mux.HandleFunc("/api/panel/ssl", s.handlePanelSSL)
 	s.registerFileManagerRoutes()
 	s.registerTerminalRoutes()
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
@@ -528,6 +529,11 @@ func (s *Server) Start() error {
 	}
 
 	useTLS := s.cfg.TLSCert != "" && s.cfg.TLSKey != ""
+	if !useTLS && s.authMgr != nil && s.authMgr.IsPanelSSLEnabled() {
+		if _, _, genErr := s.authMgr.EnsurePanelSelfSignedCert(s.panelExtraSANHosts()...); genErr == nil {
+			useTLS = true
+		}
+	}
 	scheme := "http"
 	if useTLS {
 		scheme = "https"
@@ -553,24 +559,14 @@ func (s *Server) Start() error {
 	} else {
 		fmt.Printf("✓ URL Akses Panel             : %s://localhost:%s\n", scheme, s.cfg.HTTPPort)
 	}
-	if !useTLS && (s.cfg.HTTPHost == "0.0.0.0" || s.cfg.HTTPHost == "::") {
-		fmt.Println("⚠ PERINGATAN: Panel berjalan tanpa TLS di semua antarmuka. Gunakan reverse proxy HTTPS atau --tls-cert/--tls-key untuk produksi.")
+	if !useTLS && info.PanelDomain == "" && (s.cfg.HTTPHost == "0.0.0.0" || s.cfg.HTTPHost == "::") {
+		fmt.Println("⚠ PERINGATAN: Panel berjalan tanpa TLS. Aktifkan dengan 'wdev panel ssl on' atau ikat domain dengan 'wdev panel domain <domain>'.")
 	}
 	fmt.Println("✓ Info Kredensial & Security URL: jalankan 'wdev panel default'")
 	fmt.Println("==================================================================")
 
 	handler := s.wrapSecurityHeaders(s.wrapPanelDomain(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.mux)))))
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
-	if useTLS {
-		return srv.ServeTLS(ln, s.cfg.TLSCert, s.cfg.TLSKey)
-	}
-	return srv.Serve(ln)
+	return s.listenAndServeMux(ln, handler)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

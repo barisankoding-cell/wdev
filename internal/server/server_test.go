@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1326,5 +1328,144 @@ func TestPanelDomainBindingSSLAndBlockIP(t *testing.T) {
 	handler.ServeHTTP(recIPAfter, reqIPAfter)
 	if recIPAfter.Code != http.StatusOK {
 		t.Fatalf("expected IP access restored after unbind, got %d", recIPAfter.Code)
+	}
+}
+
+func TestPanelDirectSSLMultiplexAndRedirect(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "panel-ssl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         portStr,
+		WdevEtc:          filepath.Join(tmp, "etc"),
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+	}
+
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	run := runner.New(db)
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, run, inst, siteMgr, nil, nil, nil, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
+
+	go func() {
+		_ = srv.listenAndServeMux(ln, handler)
+	}()
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+	baseHTTP := "http://" + ln.Addr().String()
+	baseHTTPS := "https://" + ln.Addr().String()
+
+	noRedirectHTTP := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// 1. Sebelum Panel SSL diaktifkan, HTTP ke port panel tetap dilayani normal (200 OK)
+	reqBefore, _ := http.NewRequest(http.MethodGet, baseHTTP+"/api/panel/domain", nil)
+	reqBefore.AddCookie(sessCookie)
+	respBefore, err := noRedirectHTTP.Do(reqBefore)
+	if err != nil {
+		t.Fatalf("HTTP GET before Panel SSL failed: %v", err)
+	}
+	respBefore.Body.Close()
+	if respBefore.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 before Panel SSL, got %d", respBefore.StatusCode)
+	}
+
+	// 2. Aktifkan Direct Panel SSL via POST /api/panel/ssl
+	reqEnable, _ := http.NewRequest(http.MethodPost, baseHTTP+"/api/panel/ssl", strings.NewReader(`{"enabled":true,"hosts":["103.171.85.72"]}`))
+	reqEnable.Header.Set("Origin", baseHTTP)
+	reqEnable.AddCookie(sessCookie)
+	respEnable, err := noRedirectHTTP.Do(reqEnable)
+	if err != nil {
+		t.Fatalf("POST /api/panel/ssl failed: %v", err)
+	}
+	enableBody, _ := io.ReadAll(respEnable.Body)
+	respEnable.Body.Close()
+	if respEnable.StatusCode != http.StatusOK || !strings.Contains(string(enableBody), `"panel_ssl_enabled":true`) {
+		t.Fatalf("POST /api/panel/ssl = %d, body=%s", respEnable.StatusCode, string(enableBody))
+	}
+
+	// Verifikasi file sertifikat & private key panel otomatis terbuat
+	certPath, keyPath := authMgr.PanelSSLPaths()
+	if _, err := os.Stat(certPath); err != nil {
+		t.Fatalf("expected panel-ssl.crt at %s: %v", certPath, err)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("expected panel-ssl.key at %s: %v", keyPath, err)
+	}
+
+	// 3. Setelah Panel SSL aktif, request HTTP biasa pada port yang sama wajib dialihkan (308 -> https://...)
+	reqHTTPAfter, _ := http.NewRequest(http.MethodGet, baseHTTP+"/api/panel/domain", nil)
+	reqHTTPAfter.AddCookie(sessCookie)
+	respHTTPAfter, err := noRedirectHTTP.Do(reqHTTPAfter)
+	if err != nil {
+		t.Fatalf("HTTP GET after Panel SSL failed: %v", err)
+	}
+	respHTTPAfter.Body.Close()
+	if respHTTPAfter.StatusCode != http.StatusPermanentRedirect {
+		t.Fatalf("expected 308 Permanent Redirect from HTTP->HTTPS, got %d", respHTTPAfter.StatusCode)
+	}
+	loc := respHTTPAfter.Header.Get("Location")
+	if !strings.HasPrefix(loc, baseHTTPS+"/") {
+		t.Fatalf("expected HTTPS redirect Location starting with %s/, got %q", baseHTTPS, loc)
+	}
+
+	// 4. Koneksi HTTPS langsung pada port yang sama dilayani dengan TLS ECDSA (200 OK + HSTS)
+	httpsClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	reqHTTPS, _ := http.NewRequest(http.MethodGet, baseHTTPS+"/api/panel/domain", nil)
+	reqHTTPS.AddCookie(sessCookie)
+	respHTTPS, err := httpsClient.Do(reqHTTPS)
+	if err != nil {
+		t.Fatalf("HTTPS GET failed: %v", err)
+	}
+	httpsBody, _ := io.ReadAll(respHTTPS.Body)
+	respHTTPS.Body.Close()
+	if respHTTPS.StatusCode != http.StatusOK || !strings.Contains(string(httpsBody), `"panel_ssl_enabled":true`) {
+		t.Fatalf("HTTPS GET /api/panel/domain = %d, body=%s", respHTTPS.StatusCode, string(httpsBody))
+	}
+	if respHTTPS.Header.Get("Strict-Transport-Security") == "" {
+		t.Fatalf("expected Strict-Transport-Security header on HTTPS response")
+	}
+
+	// 5. GetPanelAccessInfo (sumber output wdev panel default) mengembalikan https:// untuk IP lokal/publik/NetBird
+	info := authMgr.GetPanelAccessInfo("103.171.85.72", "100.64.0.10")
+	if !info.PanelSSLEnabled {
+		t.Fatalf("expected info.PanelSSLEnabled=true")
+	}
+	for _, u := range []string{info.LocalURL, info.PublicURL, info.NetbirdURL} {
+		if !strings.HasPrefix(u, "https://") {
+			t.Fatalf("expected https:// access URL in GetPanelAccessInfo when Panel SSL enabled, got %q", u)
+		}
 	}
 }

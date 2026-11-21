@@ -133,6 +133,30 @@
 		}
 	}
 
+	async function togglePanelSSL(nextSSL: boolean) {
+		busy = true;
+		errorMsg = null;
+		try {
+			const hosts = window.location.hostname ? [window.location.hostname] : [];
+			const res = await api.setPanelSSL(nextSSL, hosts);
+			toast.success(
+				nextSSL
+					? 'Panel SSL (Force HTTPS) diaktifkan. Koneksi HTTP ke port panel sekarang dialihkan ke HTTPS.'
+					: 'Panel SSL (Force HTTPS) dinonaktifkan.'
+			);
+			if (nextSSL && res.redirect_url && window.location.protocol === 'http:') {
+				pendingTargetURL = res.redirect_url;
+				window.location.href = res.redirect_url;
+				return;
+			}
+			await loadStatus();
+		} catch (err) {
+			errorMsg = err instanceof ApiError || err instanceof Error ? err.message : 'Gagal mengubah status Panel SSL';
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function handleUnbind() {
 		const ok = await cp.confirm({
 			title: 'Lepas Domain Panel',
@@ -222,6 +246,43 @@
 				<Spinner class="mr-2 size-4" /> Memuat status domain panel...
 			</div>
 		{:else if status}
+			<div class="bg-muted/30 space-y-2.5 rounded-lg border p-3.5 text-xs">
+				<div class="flex flex-wrap items-center justify-between gap-2">
+					<div class="flex items-center gap-2">
+						<LockIcon class="size-4 text-primary" />
+						<span class="font-semibold">Force HTTPS Langsung (Panel SSL - Port {status.panel_port})</span>
+					</div>
+					<Badge variant={status.panel_ssl_enabled ? 'default' : 'secondary'} class="text-[11px]">
+						{status.panel_ssl_enabled ? 'HTTPS Wajib (Self-Signed)' : 'HTTP (Non-SSL)'}
+					</Badge>
+				</div>
+				<p class="text-muted-foreground leading-relaxed">
+					Enkripsi akses langsung port <code class="font-mono">:{status.panel_port}</code> (termasuk akses via nomor IP) dengan sertifikat ECDSA self-signed dan alihkan otomatis <code class="font-mono">http://</code> &rarr; <code class="font-mono">https://</code> (cocok jika belum memakai domain).
+				</p>
+				{#if status.panel_ssl_expires_at}
+					<p class="text-muted-foreground">
+						Masa berlaku sertifikat panel hingga <strong class="text-foreground">{formatExpiry(status.panel_ssl_expires_at)}</strong>
+						{#if typeof status.panel_ssl_days_left === 'number'}
+							({status.panel_ssl_days_left} hari lagi)
+						{/if}
+					</p>
+				{/if}
+				<div class="flex flex-wrap items-center gap-2 pt-0.5">
+					<Button
+						size="sm"
+						variant={status.panel_ssl_enabled ? 'outline' : 'default'}
+						class="h-7 text-xs"
+						disabled={busy}
+						onclick={() => togglePanelSSL(!status?.panel_ssl_enabled)}
+					>
+						{#if busy}
+							<Spinner class="mr-1.5 size-3.5" />
+						{/if}
+						{status.panel_ssl_enabled ? 'Matikan Force HTTPS Langsung' : 'Aktifkan Force HTTPS (Self-Signed)'}
+					</Button>
+				</div>
+			</div>
+
 			{#if status.domain}
 				<div class="bg-muted/40 space-y-3 rounded-lg border p-3.5 text-xs">
 					<div class="flex flex-wrap items-center justify-between gap-2">

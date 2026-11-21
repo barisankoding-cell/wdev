@@ -42,6 +42,7 @@ ANTARMUKA:
 
 PANEL & KEAMANAN (AAPANEL SECURITY STYLE):
   wdev panel default, info  Tampilkan URL akses panel, domain, security entrance, username & password
+  wdev panel ssl <on|off>   Paksa HTTPS langsung pada port panel (self-signed ECDSA + redirect HTTP->HTTPS)
   wdev panel domain <d|off> Ikat & forward domain HTTPS ke panel (dan blokir akses langsung IP)
   wdev panel block-ip <on|off> Aktifkan / nonaktifkan pemblokiran akses via nomor IP
   wdev panel password <pw>  Ubah kata sandi admin panel
@@ -1594,7 +1595,8 @@ func main() {
 		_, etcStatErr := os.Stat("/etc/wdev/wdev.db")
 		etcDBActive := etcStatErr == nil || os.IsPermission(etcStatErr) || exec.Command("systemctl", "is-active", "--quiet", "wdev").Run() == nil
 		if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" && etcDBActive {
-			if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" || sub == "domain" || sub == "block-ip" {
+			isSSLReadOnly := (sub == "ssl" || sub == "https") && (len(args) < 3 || strings.ToLower(strings.TrimSpace(args[2])) == "status")
+			if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" || sub == "domain" || sub == "block-ip" || ((sub == "ssl" || sub == "https") && !isSSLReadOnly) {
 				fmt.Fprintf(os.Stderr, "⚠️  Service sistem wdev aktif menggunakan /etc/wdev/wdev.db.\n")
 				fmt.Fprintf(os.Stderr, "   Jalankan dengan sudo agar perubahan berlaku ke panel aktif: sudo wdev panel %s ...\n", sub)
 				os.Exit(1)
@@ -1791,6 +1793,71 @@ func main() {
 			} else {
 				fmt.Println("✓ Akses panel via IP kembali diizinkan.")
 			}
+		case "ssl", "https":
+			arg := ""
+			if len(args) >= 3 {
+				arg = strings.ToLower(strings.TrimSpace(args[2]))
+			}
+			if arg == "" || arg == "status" {
+				activeAuth := authMgr
+				if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" && etcDBActive {
+					sysStore, sErr := store.New("/etc/wdev/wdev.db")
+					if sErr != nil {
+						fmt.Fprintf(os.Stderr, "Error: database panel sistem (/etc/wdev/wdev.db) hanya dapat dibaca sebagai root.\n")
+						fmt.Fprintf(os.Stderr, "Jalankan 'sudo wdev panel ssl status' untuk memeriksa status SSL panel aktif.\n")
+						os.Exit(1)
+					}
+					activeAuth = auth.New(cfg, sysStore)
+					defer sysStore.Close()
+				}
+				exp, days := activeAuth.GetPanelCertExpiry()
+				if activeAuth.IsPanelSSLEnabled() {
+					fmt.Println("Status Panel SSL (Force HTTPS): AKTIF")
+					if exp != nil && days != nil {
+						fmt.Printf("Masa berlaku sertifikat       : %s (%d hari lagi)\n", exp.Local().Format("2006-01-02"), *days)
+					}
+				} else {
+					fmt.Println("Status Panel SSL (Force HTTPS): NONAKTIF (HTTP)")
+				}
+				fmt.Println("Penggunaan: wdev panel ssl <on|off>")
+				return
+			}
+			if arg != "on" && arg != "1" && arg != "true" && arg != "off" && arg != "0" && arg != "false" {
+				fmt.Println("Penggunaan: wdev panel ssl <on|off>")
+				return
+			}
+			on := arg == "on" || arg == "1" || arg == "true"
+			if on {
+				var extraHosts []string
+				conf := pdnsMgr.LoadConfig()
+				if conf.VPSPublicIP != "" {
+					extraHosts = append(extraHosts, conf.VPSPublicIP)
+				}
+				if nb := pdnsMgr.GetLocalNetbirdIP(); nb != "" && nb != "-" {
+					extraHosts = append(extraHosts, nb)
+				}
+				if dom := authMgr.GetPanelDomain(); dom != "" {
+					extraHosts = append(extraHosts, dom)
+				}
+				certP, _, certErr := authMgr.EnsurePanelSelfSignedCert(extraHosts...)
+				if certErr != nil {
+					fmt.Fprintf(os.Stderr, "Gagal menyiapkan sertifikat HTTPS panel: %v\n", certErr)
+					os.Exit(1)
+				}
+				fmt.Printf("✓ Sertifikat HTTPS panel siap (%s)\n", certP)
+			}
+			if err := authMgr.SetPanelSSLEnabled(on); err != nil {
+				fmt.Fprintf(os.Stderr, "Gagal memperbarui konfigurasi SSL panel: %v\n", err)
+				os.Exit(1)
+			}
+			if on {
+				fmt.Println("✓ Panel SSL (Force HTTPS) DIAKTIFKAN. Akses HTTP akan dialihkan otomatis ke https://.")
+			} else {
+				fmt.Println("✓ Panel SSL (Force HTTPS) DINONAKTIFKAN.")
+			}
+			pubIP := pdnsMgr.LoadConfig().VPSPublicIP
+			nbIP := pdnsMgr.GetLocalNetbirdIP()
+			printPanelInfo(authMgr.GetPanelAccessInfo(pubIP, nbIP))
 		default:
 			printPanelHelp()
 		}
@@ -1877,6 +1944,7 @@ func main() {
 func printPanelHelp() {
 	fmt.Println(`Penggunaan wdev panel (aaPanel Security Entrance, Domain Binding & Auth):
   wdev panel default, info    Tampilkan URL akses, Domain Panel, Security Entrance, username & password
+  wdev panel ssl on|off       Paksa HTTPS langsung di port panel (sertifikat self-signed + redirect HTTP->HTTPS)
   wdev panel domain <dom|off> Ikat & forward domain HTTPS ke panel (dan blokir akses langsung IP)
   wdev panel block-ip on|off  Aktifkan / nonaktifkan pemblokiran akses IP saat domain diikat
   wdev panel password <pw>    Ubah kata sandi login panel
@@ -1898,13 +1966,20 @@ func printPanelInfo(info auth.PanelAccessInfo) {
 			fmt.Println("  Akses via IP     : DIBLOKIR (hanya lewat domain resmi)")
 		}
 	}
-	if info.PublicURL != "" {
-		fmt.Printf("  URL Publik       : %s\n", info.PublicURL)
+	if info.PanelSSLEnabled {
+		fmt.Println("  Panel SSL (Port) : Aktif (Force HTTPS + Redirect HTTP->HTTPS)")
+	} else {
+		fmt.Println("  Panel SSL (Port) : Nonaktif (HTTP — aktifkan: sudo wdev panel ssl on)")
 	}
-	if info.NetbirdURL != "" {
-		fmt.Printf("  URL NetBird      : %s\n", info.NetbirdURL)
+	if !(info.BlockDirectIP && info.PanelDomainURL != "") {
+		if info.PublicURL != "" {
+			fmt.Printf("  URL Publik       : %s\n", info.PublicURL)
+		}
+		if info.NetbirdURL != "" {
+			fmt.Printf("  URL NetBird      : %s\n", info.NetbirdURL)
+		}
+		fmt.Printf("  URL Lokal        : %s\n", info.LocalURL)
 	}
-	fmt.Printf("  URL Lokal        : %s\n", info.LocalURL)
 	fmt.Printf("  Username         : %s\n", info.Username)
 	fmt.Printf("  Password         : %s\n", info.Password)
 	if info.SecurityEntrance != "" {

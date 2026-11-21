@@ -174,19 +174,25 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 			domains = []string{}
 		}
 
+		panelSSLEnabled := s.authMgr.IsPanelSSLEnabled()
+		panelSSLExp, panelSSLDays := s.authMgr.GetPanelCertExpiry()
+
 		writeJSON(w, http.StatusOK, map[string]any{
-			"domain":            domain,
-			"domain_url":        domainURL,
-			"ssl_enabled":       sslEnabled,
-			"block_direct_ip":   blockIP,
-			"ssl_provider":      sslProvider,
-			"ssl_expires_at":    sslExpiresAt,
-			"ssl_days_left":     sslDaysLeft,
-			"panel_port":        port,
-			"entrance_path":     entrancePath,
-			"public_ip":         pubIP,
-			"server_mode":       mode,
-			"available_domains": domains,
+			"domain":               domain,
+			"domain_url":           domainURL,
+			"ssl_enabled":          sslEnabled,
+			"block_direct_ip":      blockIP,
+			"ssl_provider":         sslProvider,
+			"ssl_expires_at":       sslExpiresAt,
+			"ssl_days_left":        sslDaysLeft,
+			"panel_ssl_enabled":    panelSSLEnabled,
+			"panel_ssl_expires_at": panelSSLExp,
+			"panel_ssl_days_left":  panelSSLDays,
+			"panel_port":           port,
+			"entrance_path":        entrancePath,
+			"public_ip":            pubIP,
+			"server_mode":          mode,
+			"available_domains":    domains,
 		})
 
 	case http.MethodPost:
@@ -358,6 +364,56 @@ func (s *Server) handlePanelDomainBlockIP(w http.ResponseWriter, r *http.Request
 		"status":          "updated",
 		"domain":          boundDomain,
 		"block_direct_ip": payload.Block,
+	})
+}
+
+func (s *Server) handlePanelSSL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		Enabled bool     `json:"enabled"`
+		Hosts   []string `json:"hosts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload JSON tidak valid")
+		return
+	}
+
+	if payload.Enabled {
+		hosts := append(s.panelExtraSANHosts(), payload.Hosts...)
+		if _, _, err := s.authMgr.EnsurePanelSelfSignedCert(hosts...); err != nil {
+			writeError(w, http.StatusInternalServerError, "Gagal menyiapkan sertifikat HTTPS panel: "+err.Error())
+			return
+		}
+	}
+	if err := s.authMgr.SetPanelSSLEnabled(payload.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	exp, days := s.authMgr.GetPanelCertExpiry()
+	entrance := s.authMgr.GetSecurityEntrance()
+	entrancePath := ""
+	if entrance != "" {
+		entrancePath = "/" + entrance
+	}
+	scheme := "http"
+	if s.authMgr.IsPanelSSLEnabled() {
+		scheme = "https"
+	}
+	hostForURL := r.Host
+	if hostForURL == "" {
+		hostForURL = fmt.Sprintf("127.0.0.1:%d", s.panelPortNumber())
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":               "updated",
+		"panel_ssl_enabled":    s.authMgr.IsPanelSSLEnabled(),
+		"panel_ssl_expires_at": exp,
+		"panel_ssl_days_left":  days,
+		"redirect_url":         fmt.Sprintf("%s://%s%s", scheme, hostForURL, entrancePath),
 	})
 }
 
