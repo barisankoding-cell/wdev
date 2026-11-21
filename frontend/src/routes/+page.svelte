@@ -16,6 +16,7 @@
 	import { cn } from '#lib/utils.js';
 	import type {
 		CPUCoreUsage,
+		MountDriveInfo,
 		ServiceConfigKey,
 		ServiceStatus,
 		UpdaterStatus
@@ -36,6 +37,8 @@
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import ArrowUpCircleIcon from '@lucide/svelte/icons/arrow-up-circle';
 	import CopyIcon from '@lucide/svelte/icons/copy';
+	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
+	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 
 	let refreshingServices = $state(false);
 	let servicePending = $state<Record<string, boolean>>({});
@@ -67,6 +70,13 @@
 			avg: Math.round(sum / cores.length),
 			peak
 		};
+	}
+
+	function formatMountSize(bytes: number | undefined, gb: number): string {
+		if (gb >= 1) return `${gb} GB`;
+		const b = bytes ?? 0;
+		if (b >= 1024 * 1024) return `${Math.round(b / (1024 * 1024))} MB`;
+		return '0 GB';
 	}
 
 	async function copyAddress(val: string, label: string) {
@@ -405,6 +415,101 @@
 				</Card.Content>
 			</Card.Root>
 		</div>
+
+		<!-- Drive Tambahan (/mnt) -->
+		{#if st.mount_drives && st.mount_drives.length > 0}
+			<section aria-labelledby="mount-drives-heading" class="flex flex-col gap-3">
+				<div class="flex flex-wrap items-center justify-between gap-2">
+					<div class="flex flex-wrap items-center gap-2">
+						<HardDriveIcon class="size-4 text-primary" aria-hidden="true" />
+						<h2 id="mount-drives-heading" class="text-base font-semibold tracking-tight sm:text-lg">
+							Drive Tambahan (/mnt)
+						</h2>
+						<Badge variant="outline" class="font-mono text-[10px]">
+							{st.mount_drives.length} Terdeteksi
+						</Badge>
+					</div>
+					<Button variant="ghost" size="sm" href="/files">
+						File Manager
+						<ChevronRightIcon data-icon="inline-end" />
+					</Button>
+				</div>
+
+				<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 sm:gap-4">
+					{#each st.mount_drives as drv (drv.mount_point)}
+						{@const usedLabel = formatMountSize(drv.used_bytes, drv.used_gb)}
+						{@const totalLabel = formatMountSize(drv.total_bytes, drv.total_gb)}
+						{@const freeBytes = drv.total_bytes > drv.used_bytes ? drv.total_bytes - drv.used_bytes : 0}
+						{@const freeLabel = formatMountSize(freeBytes, drv.free_gb)}
+						<Card.Root>
+							<Card.Header>
+								<div class="flex flex-wrap items-center justify-between gap-2">
+									<Card.Description class="font-medium text-foreground">{drv.name}</Card.Description>
+									<div class="flex flex-wrap items-center gap-1">
+										{#if drv.fs_type}
+											<Badge variant="secondary" class="font-mono text-[10px] uppercase">
+												{drv.fs_type}
+											</Badge>
+										{/if}
+										<Badge variant="outline" class="font-mono text-[10px]">
+											{drv.mount_point}
+										</Badge>
+									</div>
+								</div>
+								<Card.Title
+									class={cn(
+										'font-mono text-xl font-semibold tracking-tight tabular-nums',
+										drv.percent >= 90 ? 'text-destructive' : drv.percent >= 80 && 'text-warning'
+									)}
+								>
+									{drv.percent}%
+								</Card.Title>
+							</Card.Header>
+							<Card.Content class="mt-auto flex flex-col gap-2.5">
+								<Progress
+									value={Math.min(drv.percent, 100)}
+									max={100}
+									aria-label={`Penggunaan drive ${drv.mount_point}`}
+								/>
+								<div class="flex flex-col gap-1 rounded-md border bg-muted/40 px-2.5 py-2 text-xs">
+									<div class="flex items-center justify-between gap-2">
+										<span class="text-muted-foreground">Terpakai</span>
+										<span class="font-mono text-[11px] font-medium tabular-nums">
+											{usedLabel} / {totalLabel}
+										</span>
+									</div>
+									<div class="flex items-center justify-between gap-2">
+										<span class="text-muted-foreground">Tersedia</span>
+										<span class="font-mono text-[11px] text-muted-foreground tabular-nums">
+											{freeLabel}
+										</span>
+									</div>
+									{#if drv.device}
+										<div class="flex items-center justify-between gap-2">
+											<span class="shrink-0 text-muted-foreground">Perangkat</span>
+											<span class="truncate font-mono text-[11px] text-muted-foreground">
+												{drv.device}
+											</span>
+										</div>
+									{/if}
+								</div>
+							</Card.Content>
+							<Card.Footer>
+								<Button
+									variant="outline"
+									size="xs"
+									class="fm-touch-btn w-full"
+									href={`/files?path=${encodeURIComponent(drv.mount_point)}`}
+								>
+									<FolderOpenIcon data-icon="inline-start" />
+									Buka di File Manager
+								</Button>
+							</Card.Footer>
+						</Card.Root>
+					{/each}
+				</div>
+			</section>
+		{/if}
 
 		<!-- Per-Core CPU Utilization Strip -->
 		{#if st.cpu_cores_usage && st.cpu_cores_usage.length > 1}

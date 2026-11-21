@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"wdev/internal/config"
+	"wdev/internal/monitor"
 )
 
 func newTestFM(t *testing.T) (*Manager, string, string) {
@@ -285,5 +286,52 @@ func TestUploadFoldersOverwriteAndRemoteFetchDownload(t *testing.T) {
 	}
 	if len(zr.File) < 3 {
 		t.Fatalf("expected directory & file entries in downloaded zip, got %d", len(zr.File))
+	}
+}
+
+func TestAllowedRootsIncludesDetectedMountDrives(t *testing.T) {
+	tmp := t.TempDir()
+	webRoot := filepath.Join(tmp, "www")
+	mntDrive := filepath.Join(tmp, "mnt", "data")
+	if err := os.MkdirAll(webRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mntDrive, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDetect := detectMountDrivesFn
+	detectMountDrivesFn = func() []monitor.MountDriveInfo {
+		return []monitor.MountDriveInfo{
+			{
+				Name:       "Drive data (" + mntDrive + ")",
+				MountPoint: mntDrive,
+			},
+		}
+	}
+	t.Cleanup(func() {
+		detectMountDrivesFn = origDetect
+	})
+
+	mgr := New(&config.Config{WebRootBase: webRoot}, nil)
+	roots := mgr.AllowedRoots()
+
+	var foundDrive bool
+	for _, r := range roots {
+		if r.Path == mntDrive && r.Kind == "drive" {
+			foundDrive = true
+			break
+		}
+	}
+	if !foundDrive {
+		t.Fatalf("expected detected drive %q (kind=drive) in AllowedRoots, got %+v", mntDrive, roots)
+	}
+
+	resolved, err := mgr.ResolvePath(filepath.Join(mntDrive, "project"), false)
+	if err != nil {
+		t.Fatalf("expected path inside detected drive to resolve cleanly, got err=%v", err)
+	}
+	if resolved != filepath.Join(mntDrive, "project") {
+		t.Fatalf("unexpected resolved path: %q", resolved)
 	}
 }

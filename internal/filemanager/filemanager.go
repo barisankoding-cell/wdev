@@ -17,8 +17,11 @@ import (
 	"time"
 	"unicode/utf8"
 	"wdev/internal/config"
+	"wdev/internal/monitor"
 	"wdev/internal/store"
 )
+
+var detectMountDrivesFn = monitor.DetectMountDrives
 
 const (
 	MaxReadBytes   int64 = 4 << 20   // 4 MiB untuk editor teks
@@ -48,7 +51,7 @@ var (
 type RootInfo struct {
 	Name   string `json:"name"`
 	Path   string `json:"path"`
-	Kind   string `json:"kind"` // "webroot", "vhost", "home", "custom"
+	Kind   string `json:"kind"` // "webroot", "vhost", "home", "drive", "custom"
 	Domain string `json:"domain,omitempty"`
 }
 
@@ -180,6 +183,9 @@ func (m *Manager) AllowedRoots() []RootInfo {
 		if info, err := os.Stat(homeDir); err == nil && info.IsDir() {
 			addRoot(homeDir, "Home ("+filepath.Base(homeDir)+")", "home", "")
 		}
+	}
+	for _, drv := range detectMountDrivesFn() {
+		addRoot(drv.MountPoint, drv.Name, "drive", "")
 	}
 	if extra := strings.TrimSpace(os.Getenv("WDEV_FM_ROOTS")); extra != "" {
 		for _, item := range strings.Split(extra, ":") {

@@ -22,9 +22,10 @@
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
-	import type { SiteRecord, ZoneInfo } from '#lib/types/api.js';
+	import type { FileRootInfo, SiteRecord, ZoneInfo } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
+	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -40,6 +41,7 @@
 
 	let sites = $state<SiteRecord[]>([]);
 	let zones = $state<ZoneInfo[]>([]);
+	let fileRoots = $state<FileRootInfo[]>([]);
 	let loading = $state(true);
 	let searchQuery = $state('');
 	let siteDeleting = $state<Record<string, boolean>>({});
@@ -101,6 +103,21 @@
 	const isEdge = $derived(modeStore.mode === 'edge');
 	const isLocal = $derived(modeStore.mode === 'local');
 	const supportsDNS = $derived(isVPS || isEdge);
+
+	const detectedDrives = $derived.by(() => {
+		const byPath = new Map<string, { name: string; path: string }>();
+		for (const r of fileRoots) {
+			if (r.kind === 'drive') {
+				byPath.set(r.path, { name: r.name, path: r.path });
+			}
+		}
+		for (const d of cp.systemStatus?.mount_drives ?? []) {
+			if (!byPath.has(d.mount_point)) {
+				byPath.set(d.mount_point, { name: d.name, path: d.mount_point });
+			}
+		}
+		return Array.from(byPath.values());
+	});
 
 	function isLocalOnlyDomain(dom: string): boolean {
 		const clean = dom.trim().replace(/\.$/, '').toLowerCase();
@@ -250,6 +267,12 @@
 		edgeSSLEnabled = true;
 		addLocalHosts = false;
 		createOpen = true;
+		void api
+			.getFileRoots()
+			.then((rootsRes) => {
+				fileRoots = rootsRes ?? [];
+			})
+			.catch(() => {});
 		if (supportsDNS) {
 			void refreshZonesQuiet();
 		}
@@ -1125,6 +1148,35 @@
 									Cari Folder
 								</Button>
 							</div>
+							{#if detectedDrives.length > 0}
+								<div class="flex flex-wrap items-center gap-1.5 pt-1">
+									<span class="text-xs text-muted-foreground">Drive cepat:</span>
+									<Button
+										type="button"
+										size="xs"
+										variant={!rootPath.trim() ? 'secondary' : 'outline'}
+										class="fm-touch-btn h-8 text-xs sm:h-7"
+										onclick={() => (rootPath = '')}
+									>
+										Default (/var/www)
+									</Button>
+									{#each detectedDrives as drv (drv.path)}
+										{@const active = rootPath.trim() === drv.path || rootPath.trim().startsWith(drv.path + '/')}
+										<Button
+											type="button"
+											size="xs"
+											variant={active ? 'secondary' : 'outline'}
+											class="fm-touch-btn h-8 max-w-full text-xs sm:h-7"
+											onclick={() => {
+												rootPath = effectiveDomain ? `${drv.path}/${effectiveDomain}` : drv.path;
+											}}
+										>
+											<HardDriveIcon data-icon="inline-start" />
+											<span class="truncate">{drv.name}</span>
+										</Button>
+									{/each}
+								</div>
+							{/if}
 							<Field.FieldDescription>
 								Kosongkan untuk otomatis di <code>/var/www/&lt;domain&gt;</code>, atau ketuk <strong>Cari Folder</strong> untuk memilih direktori yang sudah ada.
 								{#if !isStatic}

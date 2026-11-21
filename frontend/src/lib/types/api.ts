@@ -19,6 +19,19 @@ export interface CPUCoreUsage {
 	percent: number;
 }
 
+export interface MountDriveInfo {
+	name: string;
+	mount_point: string;
+	device?: string;
+	fs_type?: string;
+	total_gb: number;
+	used_gb: number;
+	free_gb: number;
+	total_bytes: number;
+	used_bytes: number;
+	percent: number;
+}
+
 export interface SystemStats {
 	wdev_version?: string;
 	hostname: string;
@@ -41,6 +54,7 @@ export interface SystemStats {
 	disk_total_gb: number;
 	disk_used_gb: number;
 	disk_percent: number;
+	mount_drives?: MountDriveInfo[];
 	lan_ip: string;
 	netbird_ip: string;
 	public_ip?: string;
@@ -669,7 +683,7 @@ export interface SetupComponentStatus {
 export interface FileRootInfo {
 	name: string;
 	path: string;
-	kind: 'webroot' | 'vhost' | 'home' | 'custom' | string;
+	kind: 'webroot' | 'vhost' | 'home' | 'drive' | 'custom' | string;
 	domain?: string;
 }
 

@@ -45,6 +45,7 @@ type SystemStats struct {
 	DiskTotalGB  int64             `json:"disk_total_gb"`
 	DiskUsedGB   int64             `json:"disk_used_gb"`
 	DiskPercent  int               `json:"disk_percent"`
+	MountDrives  []MountDriveInfo  `json:"mount_drives,omitempty"`
 	LanIP        string            `json:"lan_ip"`
 	NetbirdIP    string            `json:"netbird_ip"`
 	PublicIP     string            `json:"public_ip,omitempty"`
@@ -152,6 +153,7 @@ func Collect() (*SystemStats, error) {
 	loadAvg, cpuCores, l1, l5, l15, p1, p5, p15 := getLoadAvgInfo()
 	memTotal, memUsed, memPct := getMemInfo()
 	diskTotal, diskUsed, diskPct := getDiskInfo("/")
+	mountDrives := DetectMountDrives()
 	lanIP, netbirdIP, publicIP := getNetworkIPs()
 	services := getServiceStatuses()
 	runtimes := getRuntimeVersions()
@@ -184,6 +186,7 @@ func Collect() (*SystemStats, error) {
 		DiskTotalGB:  diskTotal,
 		DiskUsedGB:   diskUsed,
 		DiskPercent:  diskPct,
+		MountDrives:  mountDrives,
 		LanIP:        lanIP,
 		NetbirdIP:    netbirdIP,
 		PublicIP:     publicIP,
@@ -486,20 +489,7 @@ func getMemInfo() (totalMB int64, usedMB int64, percent int) {
 }
 
 func getDiskInfo(path string) (totalGB int64, usedGB int64, percent int) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, 0, 0
-	}
-
-	totalBytes := stat.Blocks * uint64(stat.Bsize)
-	freeBytes := stat.Bfree * uint64(stat.Bsize)
-	usedBytes := totalBytes - freeBytes
-
-	totalGB = int64(totalBytes / (1024 * 1024 * 1024))
-	usedGB = int64(usedBytes / (1024 * 1024 * 1024))
-	if totalBytes > 0 {
-		percent = int((float64(usedBytes) / float64(totalBytes)) * 100)
-	}
+	totalGB, usedGB, _, _, _, percent, _ = readDiskUsage(path, syscall.Statfs)
 	return
 }
 
