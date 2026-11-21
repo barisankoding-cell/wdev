@@ -1271,6 +1271,59 @@ func (inst *Installer) InstallCloudflared(ctx context.Context, cb LogCallback) e
 	return nil
 }
 
+// 16. NetBird Mesh VPN (Repo Resmi pkgs.netbird.io, mandiri tanpa PowerDNS)
+func (inst *Installer) InstallNetbird(ctx context.Context, cb LogCallback) error {
+	cb("--- [16] Memasang / Memperbarui NetBird Mesh VPN ---")
+	wasActive := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "netbird").Run() == nil
+
+	_ = inst.ensureNetbirdRepo(ctx, cb)
+
+	if inst.isDebian {
+		if err := inst.runCmd(ctx, cb, "apt-get", "install", "-y", "netbird"); err != nil {
+			return err
+		}
+	} else if inst.pkgMgr == "dnf" || inst.pkgMgr == "yum" {
+		action := "install"
+		if rpmIsInstalled(ctx, "netbird") {
+			action = "upgrade"
+		}
+		args := []string{action, "-y"}
+		if inst.pkgMgr == "dnf" {
+			args = append(args, "--refresh")
+		}
+		args = append(args, "netbird")
+		if err := inst.runCmd(ctx, cb, inst.pkgMgr, args...); err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("package manager '%s' belum didukung untuk pemasangan otomatis NetBird", inst.pkgMgr)
+	}
+
+	if exec.CommandContext(ctx, "systemctl", "cat", "netbird").Run() == nil {
+		_ = inst.runCmd(ctx, cb, "systemctl", "enable", "netbird")
+		if wasActive {
+			if err := inst.runCmd(ctx, cb, "systemctl", "restart", "netbird"); err != nil {
+				return fmt.Errorf("gagal menjalankan ulang service netbird: %w", err)
+			}
+		} else if err := inst.runCmd(ctx, cb, "systemctl", "start", "netbird"); err != nil {
+			cb(fmt.Sprintf("[WARN] Service netbird terpasang namun belum dapat dijalankan otomatis: %v", err))
+		}
+	}
+
+	ver := ""
+	if nbBin := findTool("netbird"); nbBin != "" {
+		if out, err := exec.CommandContext(ctx, nbBin, "version").CombinedOutput(); err == nil {
+			ver = strings.TrimSpace(string(out))
+		}
+	}
+	if ver != "" {
+		cb(fmt.Sprintf("✓ NetBird Mesh VPN (v%s) berhasil dipasang/diperbarui.", strings.TrimPrefix(ver, "v")))
+	} else {
+		cb("✓ NetBird Mesh VPN berhasil dipasang/diperbarui.")
+	}
+	return nil
+}
+
 // Full 14-Step Auto Setup
 func (inst *Installer) RunFullInstall(ctx context.Context, cb LogCallback) error {
 	cb("=================================================================")
@@ -1678,15 +1731,20 @@ func (inst *Installer) CheckUpdates(ctx context.Context, cb LogCallback) error {
 
 	// 10. NetBird
 	nbInst := "-"
-	if out, err := exec.CommandContext(ctx, "netbird", "version").CombinedOutput(); err == nil {
-		nbInst = strings.TrimSpace(string(out))
+	if nbBin := findTool("netbird"); nbBin != "" {
+		if out, err := exec.CommandContext(ctx, nbBin, "version").CombinedOutput(); err == nil {
+			nbInst = strings.TrimSpace(string(out))
+		}
 	}
 	nbLatest := getCandidate("netbird")
+	if up := fetchNetbirdLatestVersion(ctx); up != "" && (nbLatest == "-" || hasNewerVersion(nbLatest, up)) {
+		nbLatest = up
+	}
 	results = append(results, VersionCheck{
 		Name:      "NetBird Mesh VPN",
 		Installed: nbInst,
 		Latest:    nbLatest,
-		HasUpdate: nbLatest != "-" && nbInst != "-" && !strings.HasPrefix(nbLatest, nbInst),
+		HasUpdate: nbLatest != "-" && nbInst != "-" && hasNewerVersion(nbInst, nbLatest),
 	})
 
 	// 11. Orca ADE

@@ -110,7 +110,7 @@ MAIL SERVER & RELAY:
 INSTALASI & SYSTEMD SERVICE:
   wdev install [service]               Pasang wdev ke sistem & aktifkan systemd service (auto-start)
   wdev uninstall [--purge]             Hapus systemd service wdev & binary dari sistem
-  wdev install <komponen>              Pasang atau perbarui komponen (update, node, php, postgres, dll.)
+  wdev install <komponen>              Pasang atau perbarui komponen (update, node, php, postgres, netbird, dll.)
 `, Version)
 }
 
@@ -1370,6 +1370,9 @@ func main() {
 		case "cloudflare":
 			taskName = "Cloudflare Tunnel (cloudflared)"
 			fn = inst.InstallCloudflared
+		case "netbird":
+			taskName = "NetBird Mesh VPN"
+			fn = inst.InstallNetbird
 		case "zsh":
 			taskName = "Oh My Zsh"
 			fn = func(ctx context.Context, cb func(string)) error {

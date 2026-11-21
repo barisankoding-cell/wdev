@@ -656,11 +656,11 @@ func (t *TUI) menuFullInstall() {
 	}
 }
 
-// 9. INSTALASI KOMPONEN MODULAR (19 ITEM)
+// 9. INSTALASI KOMPONEN MODULAR (20 ITEM)
 func (t *TUI) menuModularInstall() {
 	for {
 		t.Clear()
-		fmt.Printf("%s%s=== [9] INSTALASI KOMPONEN MODULAR (19 ITEM) ===%s\n\n", Bold, Blue, Reset)
+		fmt.Printf("%s%s=== [9] INSTALASI KOMPONEN MODULAR (20 ITEM) ===%s\n\n", Bold, Blue, Reset)
 		fmt.Printf("%sCore & Build Tools:%s\n", Bold, Reset)
 		fmt.Printf("  %s[1]%s  Dependensi Dasar Sistem (Build Tools, curl, git, lib)\n", Cyan, Reset)
 		fmt.Printf("  %s[2]%s  Node.js (multi-versi via wdev switch node)\n", Cyan, Reset)
@@ -680,14 +680,15 @@ func (t *TUI) menuModularInstall() {
 		fmt.Printf("  %s[13]%s Local SSL (mkcert) & helper wdev site\n", Cyan, Reset)
 		fmt.Printf("  %s[14]%s Full PHP Web Stack (Nginx + PHP + Composer + SSL)\n", Cyan, Reset)
 		fmt.Printf("  %s[15]%s Cloudflare Tunnel & DNS (cloudflared via wdev cf)\n", Cyan, Reset)
-		fmt.Printf("  %s[16]%s PowerDNS & VPS Edge Gateway\n", Cyan, Reset)
+		fmt.Printf("  %s[16]%s NetBird Mesh VPN (Install / Update Mandiri)\n", Cyan, Reset)
+		fmt.Printf("  %s[17]%s PowerDNS & VPS Edge Gateway\n", Cyan, Reset)
 		fmt.Printf("%sWorkspace, IDE & Shell:%s\n", Bold, Reset)
-		fmt.Printf("  %s[17]%s Oh My Zsh (Plugin & Tema Populer)\n", Cyan, Reset)
-		fmt.Printf("  %s[18]%s Orca ADE - Desktop GUI (Aplikasi Desktop)\n", Cyan, Reset)
-		fmt.Printf("  %s[19]%s Orca ADE - Headless Server (Service 24/7)\n", Cyan, Reset)
+		fmt.Printf("  %s[18]%s Oh My Zsh (Plugin & Tema Populer)\n", Cyan, Reset)
+		fmt.Printf("  %s[19]%s Orca ADE - Desktop GUI (Aplikasi Desktop)\n", Cyan, Reset)
+		fmt.Printf("  %s[20]%s Orca ADE - Headless Server (Service 24/7)\n", Cyan, Reset)
 		fmt.Printf("  %s[0]%s  Kembali ke Menu Utama\n\n", Yellow, Reset)
 
-		c := t.prompt("Pilih komponen [0-19]: ")
+		c := t.prompt("Pilih komponen [0-20]: ")
 		switch c {
 		case "1":
 			t.runTask("Dependensi Dasar Sistem", t.inst.InstallBase)
@@ -728,16 +729,18 @@ func (t *TUI) menuModularInstall() {
 		case "15":
 			t.runTask("Cloudflare Tunnel (cloudflared)", t.inst.InstallCloudflared)
 		case "16":
-			t.menuPowerDNS()
+			t.runTask("NetBird Mesh VPN", t.inst.InstallNetbird)
 		case "17":
+			t.menuPowerDNS()
+		case "18":
 			t.runTask("Oh My Zsh", func(ctx context.Context, cb installer.LogCallback) error {
 				return t.inst.InstallZsh(ctx, cb, "powerlevel10k")
 			})
-		case "18":
+		case "19":
 			t.runTask("Orca ADE (Desktop GUI)", func(ctx context.Context, cb installer.LogCallback) error {
 				return t.inst.InstallOrca(ctx, cb, "desktop")
 			})
-		case "19":
+		case "20":
 			t.runTask("Orca ADE (Headless Server)", func(ctx context.Context, cb installer.LogCallback) error {
 				return t.inst.InstallOrca(ctx, cb, "headless")
 			})

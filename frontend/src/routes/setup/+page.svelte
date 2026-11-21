@@ -78,7 +78,8 @@
 				{ component: 'ssl', label: 'Local SSL (mkcert)' },
 				{ component: 'php-stack', label: 'Full PHP Stack' },
 				{ component: 'cloudflare', label: 'Cloudflare Tunnel' },
-				{ component: 'pdns', label: 'PowerDNS & NetBird' }
+				{ component: 'netbird', label: 'NetBird Mesh VPN' },
+				{ component: 'pdns', label: 'PowerDNS & Edge Gateway' }
 			]
 		},
 		{

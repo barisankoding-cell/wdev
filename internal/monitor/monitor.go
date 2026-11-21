@@ -417,11 +417,15 @@ func fetchCoreLatestVersions(ctx context.Context) map[string]string {
 	var mu sync.Mutex
 
 	setVal := func(key, val string) {
+		val = strings.TrimSpace(val)
 		if val == "" || val == "-" {
 			return
 		}
 		mu.Lock()
-		latest[key] = val
+		cur := latest[key]
+		if cur == "" || cur == "-" || hasNewerVersion(cur, val) {
+			latest[key] = val
+		}
 		mu.Unlock()
 	}
 
@@ -506,6 +510,26 @@ func fetchCoreLatestVersions(ctx context.Context) map[string]string {
 				}
 				if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil && rel.TagName != "" {
 					setVal("cloudflared", strings.TrimPrefix(rel.TagName, "v"))
+				}
+			}
+		}
+	}()
+
+	// 3. NetBird (rilis resmi pkgs.netbird.io)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req, err := http.NewRequestWithContext(ctx, "GET", "https://pkgs.netbird.io/releases/latest", nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "wdev-control-plane")
+			resp, err := client.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				var rel struct {
+					TagName string `json:"tag_name"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil && rel.TagName != "" {
+					setVal("netbird", strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v"))
 				}
 			}
 		}
@@ -702,23 +726,7 @@ func getServiceStatuses() []ServiceStatus {
 	nbActive := isSystemdServiceActive("netbird")
 	nbVer := getNetbirdVersion()
 	nbInstalled := nbVer != "" || fileExists("/usr/bin/netbird") || fileExists("/usr/local/bin/netbird")
-	nbLatest := cachedLatest["netbird"]
-	if nbLatest == "" && nbVer != "" {
-		nbLatest = cleanVersion(nbVer)
-	}
-	list = append(list, ServiceStatus{
-		Name:             "netbird",
-		DisplayName:      "NetBird Mesh VPN",
-		Category:         "Network / Ingress",
-		Active:           nbActive,
-		StatusText:       statusText(nbActive),
-		Version:          nbVer,
-		Port:             "wt0",
-		Installed:        nbInstalled,
-		LatestVersion:    nbLatest,
-		HasUpdate:        nbInstalled && hasNewerVersion(nbVer, nbLatest),
-		InstallComponent: "pdns",
-	})
+	list = append(list, buildNetbirdServiceStatus(nbActive, nbVer, nbInstalled, cachedLatest["netbird"]))
 
 	// 7. PowerDNS (Local systemd or VPS Edge Gateway)
 	pdnsStatus := getPDNSServiceStatus()
@@ -1056,6 +1064,25 @@ func getCloudflaredVersion() string {
 		return ver
 	}
 	return ""
+}
+
+func buildNetbirdServiceStatus(active bool, ver string, installed bool, latest string) ServiceStatus {
+	if latest == "" && ver != "" {
+		latest = cleanVersion(ver)
+	}
+	return ServiceStatus{
+		Name:             "netbird",
+		DisplayName:      "NetBird Mesh VPN",
+		Category:         "Network / Ingress",
+		Active:           active,
+		StatusText:       statusText(active),
+		Version:          ver,
+		Port:             "wt0",
+		Installed:        installed,
+		LatestVersion:    latest,
+		HasUpdate:        installed && hasNewerVersion(ver, latest),
+		InstallComponent: "netbird",
+	}
 }
 
 func getNetbirdVersion() string {

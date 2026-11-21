@@ -157,3 +157,19 @@ func TestHandleServiceConfigValidation(t *testing.T) {
 		t.Fatalf("expected 400 for unknown sub-action, got %d", rec.Code)
 	}
 }
+
+func TestResolveInstallTaskNetbirdIndependent(t *testing.T) {
+	srv := newTestServer()
+
+	taskName, fn, ok := srv.resolveInstallTask("netbird", "")
+	if !ok || fn == nil {
+		t.Fatalf("expected netbird component to resolve to an install task")
+	}
+	if taskName != "NetBird Mesh VPN" {
+		t.Fatalf("taskName = %q, want %q", taskName, "NetBird Mesh VPN")
+	}
+
+	if _, _, ok := srv.resolveInstallTask("does-not-exist", ""); ok {
+		t.Fatalf("expected unknown component to return ok=false")
+	}
+}

@@ -1584,10 +1584,25 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var fn func(ctx context.Context, cb func(string)) error
-	taskName := "Instal " + payload.Component
+	taskName, fn, ok := s.resolveInstallTask(payload.Component, reqVersion)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "Komponen tidak dikenal: "+payload.Component)
+		return
+	}
 
-	switch payload.Component {
+	taskID, err := s.runner.StartNativeTask(taskName, fn)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "started", "task_id": taskID})
+}
+
+func (s *Server) resolveInstallTask(component, reqVersion string) (taskName string, fn func(ctx context.Context, cb func(string)) error, ok bool) {
+	taskName = "Instal " + component
+
+	switch component {
 	case "all", "full-install":
 		taskName = "Full Auto Setup (14 Langkah)"
 		fn = func(ctx context.Context, cb func(string)) error {
@@ -1722,6 +1737,11 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		taskName = "Cloudflare Tunnel (cloudflared)"
 		fn = func(ctx context.Context, cb func(string)) error {
 			return s.installer.InstallCloudflared(ctx, cb)
+		}
+	case "netbird":
+		taskName = "NetBird Mesh VPN"
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.installer.InstallNetbird(ctx, cb)
 		}
 	case "zsh", "zsh-p10k":
 		theme := reqVersion
@@ -1865,17 +1885,10 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 	default:
-		writeError(w, http.StatusBadRequest, "Komponen tidak dikenal: "+payload.Component)
-		return
+		return "", nil, false
 	}
 
-	taskID, err := s.runner.StartNativeTask(taskName, fn)
-	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"status": "started", "task_id": taskID})
+	return taskName, fn, true
 }
 
 func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {

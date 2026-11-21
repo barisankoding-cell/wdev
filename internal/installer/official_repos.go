@@ -513,6 +513,94 @@ gpgkey=https://packages.redis.io/gpg
 	return false
 }
 
+const netbirdRPMRepoContent = `[NetBird]
+name=NetBird
+baseurl=https://pkgs.netbird.io/yum/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.netbird.io/yum/repodata/repomd.xml.key
+repo_gpgcheck=1
+`
+
+func netbirdDebianRepoLine(keyringPath string) string {
+	return fmt.Sprintf("deb [signed-by=%s] https://pkgs.netbird.io/debian stable main\n", keyringPath)
+}
+
+// ensureNetbirdRepo menyiapkan repositori resmi NetBird (pkgs.netbird.io) secara mandiri tanpa PowerDNS.
+func (inst *Installer) ensureNetbirdRepo(ctx context.Context, cb LogCallback) bool {
+	if inst.isDebian {
+		listPath := "/etc/apt/sources.list.d/netbird.list"
+		existingData, readErr := os.ReadFile(listPath)
+		hadExisting := readErr == nil && strings.Contains(string(existingData), "pkgs.netbird.io/debian")
+
+		keyring := "/etc/apt/keyrings/netbird-archive-keyring.gpg"
+		cb("Menyiapkan repositori resmi NetBird (pkgs.netbird.io)...")
+		if err := inst.ensureGPGKeyring(ctx, cb, "https://pkgs.netbird.io/debian/public.key", keyring); err != nil {
+			cb(fmt.Sprintf("[WARN] Gagal mengunduh kunci pkgs.netbird.io (%v), mencoba repo yang ada.", err))
+			return false
+		}
+		if err := inst.writeSystemFile(ctx, cb, listPath, []byte(netbirdDebianRepoLine(keyring)), "644"); err != nil {
+			cb(fmt.Sprintf("[WARN] Gagal menulis %s (%v).", listPath, err))
+			return false
+		}
+		if err := inst.runCmd(ctx, cb, "apt-get", "update", "-y"); err != nil {
+			cb(fmt.Sprintf("[WARN] apt-get update pkgs.netbird.io gagal (%v).", err))
+			if !hadExisting {
+				_ = inst.runCmd(ctx, cb, "rm", "-f", listPath)
+				_ = inst.runCmd(ctx, cb, "apt-get", "update", "-y")
+			}
+			return false
+		}
+		return true
+	}
+
+	if inst.pkgMgr == "dnf" || inst.pkgMgr == "yum" {
+		repoPath := "/etc/yum.repos.d/netbird.repo"
+		if data, err := os.ReadFile(repoPath); err == nil && strings.Contains(string(data), "pkgs.netbird.io/yum") {
+			cb("Repositori resmi NetBird (pkgs.netbird.io RPM) sudah terpasang.")
+			return true
+		}
+		if !checkURLReachable(ctx, "https://pkgs.netbird.io/yum/repodata/repomd.xml") {
+			cb("[WARN] Repo resmi pkgs.netbird.io RPM tidak dapat dijangkau, mencoba repo sistem.")
+			return false
+		}
+		cb("Menyiapkan repositori resmi NetBird (pkgs.netbird.io RPM)...")
+		if err := inst.writeSystemFile(ctx, cb, repoPath, []byte(netbirdRPMRepoContent), "644"); err != nil {
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
+// fetchNetbirdLatestVersion mengambil tag versi rilis terbaru NetBird dari endpoint resmi pkgs.netbird.io.
+func fetchNetbirdLatestVersion(ctx context.Context) string {
+	reqCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, "GET", "https://pkgs.netbird.io/releases/latest", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "wdev-installer")
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v")
+}
+
 type adoptiumReleaseAsset struct {
 	ReleaseName string `json:"release_name"`
 	Binary      struct {

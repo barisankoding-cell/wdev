@@ -124,3 +124,22 @@ func TestHasNewerVersionOrca(t *testing.T) {
 		t.Fatal("expected older release not to report update")
 	}
 }
+
+func TestNetbirdRepoHelpers(t *testing.T) {
+	debLine := netbirdDebianRepoLine("/etc/apt/keyrings/netbird-archive-keyring.gpg")
+	wantDeb := "deb [signed-by=/etc/apt/keyrings/netbird-archive-keyring.gpg] https://pkgs.netbird.io/debian stable main\n"
+	if debLine != wantDeb {
+		t.Fatalf("netbirdDebianRepoLine() = %q, want %q", debLine, wantDeb)
+	}
+	for _, needle := range []string{"[NetBird]", "baseurl=https://pkgs.netbird.io/yum/", "gpgcheck=1", "repo_gpgcheck=1"} {
+		if !strings.Contains(netbirdRPMRepoContent, needle) {
+			t.Fatalf("netbirdRPMRepoContent missing %q", needle)
+		}
+	}
+	if !HasNewerVersion("0.83.1", "0.83.2") {
+		t.Fatal("expected 0.83.2 to be newer than 0.83.1")
+	}
+	if HasNewerVersion("0.83.2", "0.83.2") {
+		t.Fatal("expected same netbird version not to report update")
+	}
+}
