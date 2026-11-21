@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"wdev/internal/auth"
@@ -1577,25 +1578,27 @@ func main() {
 			return
 		}
 		sub := strings.ToLower(args[1])
-		if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" {
-			if _, err := os.Stat("/etc/wdev/wdev.db"); err == nil {
-				if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" {
-					fmt.Println("⚠️  PERHATIAN: Service sistem wdev aktif menggunakan /etc/wdev/wdev.db.")
-					fmt.Printf("   Jalankan dengan sudo agar langsung tersimpan ke layanan background:\n")
-					fmt.Printf("   sudo wdev panel %s ...\n\n", sub)
-				}
+		_, etcStatErr := os.Stat("/etc/wdev/wdev.db")
+		etcDBActive := etcStatErr == nil || os.IsPermission(etcStatErr) || exec.Command("systemctl", "is-active", "--quiet", "wdev").Run() == nil
+		if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" && etcDBActive {
+			if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" {
+				fmt.Fprintf(os.Stderr, "⚠️  Service sistem wdev aktif menggunakan /etc/wdev/wdev.db.\n")
+				fmt.Fprintf(os.Stderr, "   Jalankan dengan sudo agar perubahan berlaku ke panel aktif: sudo wdev panel %s ...\n", sub)
+				os.Exit(1)
 			}
 		}
 		switch sub {
 		case "default", "info", "status":
 			activeAuth := authMgr
-			if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" {
-				if _, err := os.Stat("/etc/wdev/wdev.db"); err == nil {
-					if sysStore, err := store.New("/etc/wdev/wdev.db"); err == nil {
-						activeAuth = auth.New(cfg, sysStore)
-						defer sysStore.Close()
-					}
+			if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" && etcDBActive {
+				sysStore, err := store.New("/etc/wdev/wdev.db")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: database panel sistem (/etc/wdev/wdev.db) hanya dapat dibaca sebagai root.\n")
+					fmt.Fprintf(os.Stderr, "Jalankan 'sudo wdev panel default' agar Security Entrance & kredensial yang tampil sesuai layanan aktif.\n")
+					os.Exit(1)
 				}
+				activeAuth = auth.New(cfg, sysStore)
+				defer sysStore.Close()
 			}
 			pubIP := ""
 			conf := pdnsMgr.LoadConfig()

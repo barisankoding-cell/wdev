@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -497,6 +498,14 @@ func (s *Server) handleAuthChangeCredentials(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%s", s.cfg.HTTPHost, s.cfg.HTTPPort)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		if os.Geteuid() != 0 && exec.Command("systemctl", "is-active", "--quiet", "wdev").Run() == nil {
+			return fmt.Errorf("gagal bind %s (%w): service wdev.service sudah berjalan sebagai root; gunakan 'sudo wdev panel default' untuk melihat URL Security Entrance yang aktif", addr, err)
+		}
+		return err
+	}
+
 	useTLS := s.cfg.TLSCert != "" && s.cfg.TLSKey != ""
 	scheme := "http"
 	if useTLS {
@@ -532,9 +541,9 @@ func (s *Server) Start() error {
 		MaxHeaderBytes:    1 << 20,
 	}
 	if useTLS {
-		return srv.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
+		return srv.ServeTLS(ln, s.cfg.TLSCert, s.cfg.TLSKey)
 	}
-	return srv.ListenAndServe()
+	return srv.Serve(ln)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

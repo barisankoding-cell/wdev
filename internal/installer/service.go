@@ -105,6 +105,7 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 
 	cb(fmt.Sprintf("✓ wdev.service berhasil diinstal dan aktif di port %s!", port))
 	cb(fmt.Sprintf("✓ Akses Web UI: http://localhost:%s", port))
+	cb("✓ Cek URL Security Entrance & kredensial panel: sudo wdev panel default")
 	return nil
 }
 
