@@ -51,7 +51,7 @@
 </script>
 
 <header
-	class="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-3 sm:gap-3 sm:px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+	class="sticky top-0 z-20 flex min-h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 pt-[env(safe-area-inset-top,0px)] pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))] backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:gap-3 sm:pl-[max(1rem,env(safe-area-inset-left,0px))] sm:pr-[max(1rem,env(safe-area-inset-right,0px))]"
 >
 	<div class="flex min-w-0 items-center gap-2">
 		<Sidebar.Trigger class="size-8 sm:size-7" />

@@ -161,7 +161,7 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="flex max-h-[85vh] flex-col gap-3 sm:max-w-xl">
+	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-3 overflow-y-auto overscroll-contain sm:max-w-xl">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				<FolderOpenIcon class="size-4 text-primary" />
@@ -171,24 +171,24 @@
 		</Dialog.Header>
 
 		{#if quickRoots.length > 0}
-			<div class="flex flex-wrap items-center gap-1.5">
-				<span class="text-xs text-muted-foreground">Lokasi cepat:</span>
+			<div class="flex items-center gap-1.5 overflow-x-auto overscroll-x-contain pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
+				<span class="shrink-0 text-xs text-muted-foreground">Lokasi cepat:</span>
 				{#each quickRoots as root (root.path)}
 					{@const active = currentPath === root.path}
 					<Button
 						type="button"
 						variant={active ? 'secondary' : 'outline'}
 						size="xs"
-						class="h-7 text-xs"
+						class="fm-touch-btn h-8 shrink-0 text-xs sm:h-7"
 						disabled={loading}
 						onclick={() => browse(root.path)}
 					>
 						{#if root.kind === 'home'}
-							<HomeIcon class="size-3.5" />
+							<HomeIcon data-icon="inline-start" />
 						{:else if root.kind === 'webroot'}
-							<GlobeIcon class="size-3.5" />
+							<GlobeIcon data-icon="inline-start" />
 						{:else}
-							<HardDriveIcon class="size-3.5" />
+							<HardDriveIcon data-icon="inline-start" />
 						{/if}
 						<span class="max-w-44 truncate">{root.name}</span>
 					</Button>
@@ -197,7 +197,7 @@
 		{/if}
 
 		<!-- Breadcrumb + Actions -->
-		<div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-2.5 py-2">
+		<div class="flex flex-col gap-2 rounded-lg border bg-muted/30 px-2.5 py-2 sm:flex-row sm:items-center sm:justify-between">
 			<div class="flex min-w-0 flex-1 flex-wrap items-center gap-1 text-xs">
 				<span class="font-mono text-muted-foreground">/</span>
 				{#each breadcrumbs as seg, idx (seg.path)}
@@ -207,14 +207,14 @@
 					{#if seg.clickable && idx < breadcrumbs.length - 1}
 						<button
 							type="button"
-							class="rounded px-1.5 py-0.5 font-mono font-medium text-primary hover:bg-muted"
+							class="fm-touch-hit rounded px-1.5 py-1 font-mono font-medium text-primary hover:bg-muted"
 							onclick={() => browse(seg.path)}
 						>
 							{seg.label}
 						</button>
 					{:else}
 						<span
-							class="rounded px-1.5 py-0.5 font-mono {idx === breadcrumbs.length - 1
+							class="rounded px-1.5 py-1 font-mono {idx === breadcrumbs.length - 1
 								? 'bg-background font-semibold text-foreground shadow-xs'
 								: 'text-muted-foreground'}"
 						>
@@ -224,41 +224,47 @@
 				{/each}
 			</div>
 
-			<div class="flex shrink-0 items-center gap-1">
+			<div class="flex shrink-0 items-center justify-end gap-1.5">
 				<Button
 					type="button"
 					variant="outline"
 					size="xs"
+					class="fm-touch-btn"
 					title="Naik ke folder induk"
+					aria-label="Naik ke folder induk"
 					disabled={loading || !canGoUp || !parentPath}
 					onclick={() => parentPath && browse(parentPath)}
 				>
-					<ArrowUpIcon class="size-3.5" />
+					<ArrowUpIcon data-icon="inline-start" />
 					<span class="sr-only sm:not-sr-only">Naik</span>
 				</Button>
 				<Button
 					type="button"
 					variant={creatingOpen ? 'secondary' : 'outline'}
 					size="xs"
+					class="fm-touch-btn"
 					title="Buat folder baru di lokasi ini"
+					aria-label="Buat folder baru di lokasi ini"
 					disabled={loading || !currentPath}
 					onclick={() => {
 						creatingOpen = !creatingOpen;
 						newFolderName = '';
 					}}
 				>
-					<FolderPlusIcon class="size-3.5" />
+					<FolderPlusIcon data-icon="inline-start" />
 					<span class="sr-only sm:not-sr-only">Folder Baru</span>
 				</Button>
 				<Button
 					type="button"
 					variant="outline"
 					size="xs"
+					class="fm-touch-btn"
 					title="Muat ulang folder"
+					aria-label="Muat ulang folder"
 					disabled={loading}
 					onclick={() => browse(currentPath)}
 				>
-					<RefreshCwIcon class="size-3.5" />
+					<RefreshCwIcon />
 				</Button>
 			</div>
 		</div>
@@ -270,7 +276,7 @@
 					autocorrect="off"
 					autocapitalize="none"
 					spellcheck={false}
-					class="h-8 flex-1 text-xs"
+					class="h-10 flex-1 text-base sm:h-8 sm:text-xs"
 					bind:value={newFolderName}
 					onkeydown={(e) => {
 						if (e.key === 'Enter') {
@@ -282,6 +288,7 @@
 				<Button
 					type="button"
 					size="xs"
+					class="fm-touch-btn"
 					disabled={creatingFolder || !newFolderName.trim()}
 					onclick={handleCreateFolder}
 				>
@@ -294,12 +301,14 @@
 					type="button"
 					variant="ghost"
 					size="xs"
+					class="fm-touch-btn"
+					aria-label="Tutup form folder baru"
 					onclick={() => {
 						creatingOpen = false;
 						newFolderName = '';
 					}}
 				>
-					<XIcon class="size-3.5" />
+					<XIcon />
 				</Button>
 			</div>
 		{/if}
@@ -318,7 +327,7 @@
 		</InputGroup.Root>
 
 		<!-- Folder List -->
-		<div class="min-h-56 max-h-72 overflow-y-auto rounded-lg border bg-background">
+		<div class="min-h-48 max-h-72 overflow-y-auto overscroll-contain rounded-lg border bg-background">
 			{#if loading}
 				<div class="flex flex-col gap-2 p-3">
 					<Skeleton class="h-8 w-full" />
@@ -327,14 +336,14 @@
 					<Skeleton class="h-8 w-4/5" />
 				</div>
 			{:else if loadError}
-				<div class="flex h-full min-h-52 flex-col items-center justify-center gap-2 p-4 text-center text-xs text-destructive">
+				<div class="flex h-full min-h-48 flex-col items-center justify-center gap-2 p-4 text-center text-xs text-destructive">
 					<p>{loadError}</p>
-					<Button type="button" variant="outline" size="xs" onclick={() => browse('')}>
+					<Button type="button" variant="outline" size="xs" class="fm-touch-btn" onclick={() => browse('')}>
 						Kembali ke Root Default
 					</Button>
 				</div>
 			{:else if filteredFolders.length === 0}
-				<div class="flex h-full min-h-52 flex-col items-center justify-center gap-1.5 p-4 text-center text-xs text-muted-foreground">
+				<div class="flex h-full min-h-48 flex-col items-center justify-center gap-1.5 p-4 text-center text-xs text-muted-foreground">
 					<FolderIcon class="size-7 opacity-40" />
 					<p>
 						{folders.length === 0
@@ -346,10 +355,10 @@
 			{:else}
 				<ul class="divide-y divide-border/60">
 					{#each filteredFolders as dir (dir.path)}
-						<li class="flex items-center justify-between gap-2 px-3 py-2 transition-colors hover:bg-muted/50">
+						<li class="flex min-h-11 items-center justify-between gap-2 px-3 py-1.5 transition-colors hover:bg-muted/50">
 							<button
 								type="button"
-								class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+								class="flex min-h-10 min-w-0 flex-1 items-center gap-2.5 text-left"
 								onclick={() => browse(dir.path)}
 							>
 								<FolderIcon class="size-4 shrink-0 text-amber-500" />
@@ -359,10 +368,10 @@
 								type="button"
 								variant="ghost"
 								size="xs"
-								class="shrink-0 text-xs text-primary hover:text-primary"
+								class="fm-touch-btn shrink-0 text-xs text-primary hover:text-primary"
 								onclick={() => choosePath(dir.path)}
 							>
-								<CheckIcon class="size-3.5" />
+								<CheckIcon data-icon="inline-start" />
 								Pilih
 							</Button>
 						</li>
@@ -371,7 +380,7 @@
 			{/if}
 		</div>
 
-		<Dialog.Footer class="flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+		<Dialog.Footer class="flex-col gap-2 pb-[env(safe-area-inset-bottom,0px)] sm:flex-row sm:items-center sm:justify-between sm:pb-0">
 			<div class="min-w-0 flex-1 text-left text-xs text-muted-foreground">
 				<span>Dipilih:</span>
 				<code class="ml-1 inline-block max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-foreground align-bottom">
@@ -379,8 +388,8 @@
 				</code>
 			</div>
 			<div class="flex shrink-0 items-center justify-end gap-2">
-				<Button type="button" variant="outline" onclick={() => (open = false)}>Batal</Button>
-				<Button type="button" disabled={loading || !currentPath} onclick={() => choosePath(currentPath)}>
+				<Button type="button" variant="outline" class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial" onclick={() => (open = false)}>Batal</Button>
+				<Button type="button" class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial" disabled={loading || !currentPath} onclick={() => choosePath(currentPath)}>
 					<CheckIcon data-icon="inline-start" />
 					Pilih Folder Ini
 				</Button>

@@ -39,6 +39,11 @@
 		TableRow
 	} from '#lib/components/ui/table/index.js';
 	import * as Tabs from '#lib/components/ui/tabs/index.js';
+	import * as InputGroup from '#lib/components/ui/input-group/index.js';
+	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
+	import * as Sheet from '#lib/components/ui/sheet/index.js';
+	import { Separator } from '#lib/components/ui/separator/index.js';
+	import { cn } from '#lib/utils.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { FileEntry, FileListResult, FileRootInfo } from '#lib/types/api.js';
 	import ArrowDownIcon from '@lucide/svelte/icons/arrow-down';
@@ -50,6 +55,8 @@
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import DownloadIcon from '@lucide/svelte/icons/download';
+	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
+	import EllipsisVerticalIcon from '@lucide/svelte/icons/ellipsis-vertical';
 	import EyeIcon from '@lucide/svelte/icons/eye';
 	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
 	import FileArchiveIcon from '@lucide/svelte/icons/file-archive';
@@ -67,6 +74,7 @@
 	import ImageIcon from '@lucide/svelte/icons/image';
 	import LockIcon from '@lucide/svelte/icons/lock';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
+	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import ScissorsIcon from '@lucide/svelte/icons/scissors';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -238,11 +246,28 @@
 	let extractDest = $state('');
 	let extractBusy = $state(false);
 
+	// Mobile sheets & responsive bar state
+	let mobileEntrySheetOpen = $state(false);
+	let mobileEntrySheetEntry = $state<FileEntry | null>(null);
+	let mobileFolderSheetOpen = $state(false);
+	let mobileBulkSheetOpen = $state(false);
+	let breadcrumbScrollEl = $state<HTMLElement | null>(null);
+
 	let lastSyncedUrlParam: string | null = null;
 	let loadSerial = 0;
 
 	const currentPath = $derived(listing?.path ?? '');
 	const roots = $derived<FileRootInfo[]>(listing?.roots ?? []);
+	const hasMobileBottomBar = $derived(selectedPaths.length > 0 || clipboard !== null);
+
+	$effect(() => {
+		void breadcrumbs;
+		const el = breadcrumbScrollEl;
+		if (!el) return;
+		queueMicrotask(() => {
+			el.scrollLeft = el.scrollWidth;
+		});
+	});
 
 	const isSearchMode = $derived(searchResults !== null);
 	const rawEntries = $derived<FileEntry[]>(
@@ -355,6 +380,40 @@
 			hour: '2-digit',
 			minute: '2-digit'
 		});
+	}
+
+	function formatCompactModTime(iso: string): string {
+		const d = new Date(iso);
+		if (Number.isNaN(d.getTime())) return iso;
+		return d.toLocaleString('id-ID', {
+			day: '2-digit',
+			month: 'short',
+			hour: '2-digit',
+			minute: '2-digit'
+		});
+	}
+
+	function splitDisplayName(name: string, isDir: boolean): { base: string; ext: string } {
+		if (isDir) return { base: name, ext: '' };
+		const lower = name.toLowerCase();
+		for (const compound of ['.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst']) {
+			if (lower.endsWith(compound) && name.length > compound.length) {
+				const cut = name.length - compound.length;
+				return { base: name.slice(0, cut), ext: name.slice(cut) };
+			}
+		}
+		const dotIdx = name.lastIndexOf('.');
+		if (dotIdx <= 0 || name.length - dotIdx > 10) {
+			return { base: name, ext: '' };
+		}
+		return { base: name.slice(0, dotIdx), ext: name.slice(dotIdx) };
+	}
+
+	function handleSortSelect(value: string) {
+		const next = (value === 'size' || value === 'mod_time' ? value : 'name') as SortKey;
+		if (sortBy === next) return;
+		sortBy = next;
+		sortDir = next === 'mod_time' ? 'desc' : 'asc';
 	}
 
 	function joinChildPath(dir: string, name: string): string {
@@ -978,10 +1037,27 @@
 
 	let contextMenu = $state<ContextMenuState | null>(null);
 
+	function openMobileEntrySheet(entry: FileEntry) {
+		closeContextMenu();
+		mobileEntrySheetEntry = entry;
+		mobileEntrySheetOpen = true;
+	}
+
 	function openContextMenu(e: MouseEvent, entry: FileEntry | null) {
 		if (!currentPath) return;
 		e.preventDefault();
 		e.stopPropagation();
+		if (
+			typeof window !== 'undefined' &&
+			(window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 640)
+		) {
+			if (entry) {
+				openMobileEntrySheet(entry);
+			} else {
+				mobileFolderSheetOpen = true;
+			}
+			return;
+		}
 		const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
 		const vh = typeof window !== 'undefined' ? window.innerHeight : 768;
 		const x = Math.max(8, Math.min(e.clientX, vw - 240));
@@ -1015,27 +1091,57 @@
 	<title>File Manager - wdev Control Plane</title>
 </svelte:head>
 
-<div class="space-y-5">
+{#snippet entryIcon(entry: FileEntry, extraClass = '')}
+	{#if entry.is_dir}
+		{#if entry.is_symlink}
+			<FolderSymlinkIcon class={cn('size-4 shrink-0 text-amber-500', extraClass)} />
+		{:else}
+			<FolderIcon class={cn('size-4 shrink-0 text-amber-500', extraClass)} />
+		{/if}
+	{:else if entry.is_image}
+		<ImageIcon class={cn('size-4 shrink-0 text-purple-500', extraClass)} />
+	{:else if entry.is_archive}
+		<FileArchiveIcon class={cn('size-4 shrink-0 text-orange-500', extraClass)} />
+	{:else if isCodeFile(entry)}
+		<FileCodeIcon class={cn('size-4 shrink-0 text-emerald-500', extraClass)} />
+	{:else if isTextFile(entry)}
+		<FileTextIcon class={cn('size-4 shrink-0 text-sky-500', extraClass)} />
+	{:else}
+		<FileIcon class={cn('text-muted-foreground size-4 shrink-0', extraClass)} />
+	{/if}
+{/snippet}
+
+{#snippet filenameDisplay(entry: FileEntry)}
+	{@const parts = splitDisplayName(entry.name, entry.is_dir)}
+	{#if parts.ext}
+		<span class="fm-filename"><span>{parts.base}</span>{parts.ext}</span>
+	{:else}
+		<span class="block truncate">{parts.base}</span>
+	{/if}
+{/snippet}
+
+<div class={cn('flex flex-col gap-4 sm:gap-5', hasMobileBottomBar && 'pb-24 md:pb-0')}>
 	<!-- Page Header -->
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-		<div>
-			<h1 class="text-2xl font-bold tracking-tight">File Manager</h1>
-			<p class="text-muted-foreground text-sm">
+		<div class="min-w-0">
+			<h1 class="text-xl font-bold tracking-tight text-balance sm:text-2xl">File Manager</h1>
+			<p class="text-muted-foreground text-xs sm:text-sm">
 				Kelola berkas website, VHost document root, permission, upload, editor, dan arsip ZIP/TAR secara langsung.
 			</p>
 		</div>
 
-		<div class="flex flex-wrap items-center gap-2">
+		<!-- Desktop Header Actions -->
+		<div class="hidden flex-wrap items-center gap-2 sm:flex">
 			<Button variant="outline" size="sm" onclick={() => openTerminalAt(currentPath)} disabled={!currentPath}>
-				<SquareTerminalIcon class="size-4" />
+				<SquareTerminalIcon data-icon="inline-start" />
 				Open Terminal
 			</Button>
 			<Button variant="outline" size="sm" onclick={openNewFileDialog} disabled={!currentPath || isSearchMode}>
-				<FilePlusIcon class="size-4" />
+				<FilePlusIcon data-icon="inline-start" />
 				File Baru
 			</Button>
 			<Button variant="outline" size="sm" onclick={openNewFolderDialog} disabled={!currentPath || isSearchMode}>
-				<FolderPlusIcon class="size-4" />
+				<FolderPlusIcon data-icon="inline-start" />
 				Folder Baru
 			</Button>
 			<Button
@@ -1044,47 +1150,89 @@
 				disabled={!currentPath}
 				onclick={() => triggerDownload(selectedPaths.length > 0 ? selectedPaths : [currentPath])}
 			>
-				<DownloadIcon class="size-4" />
+				<DownloadIcon data-icon="inline-start" />
 				{selectedPaths.length > 0 ? `Download (${selectedPaths.length})` : 'Download Folder'}
 			</Button>
 			<Button size="sm" onclick={() => openUploadDialog('device')} disabled={!currentPath || isSearchMode}>
 				{#if uploading}
-					<Spinner class="size-4" />
+					<Spinner data-icon="inline-start" />
 					Upload {uploadProgress.percent}%
 				{:else}
-					<UploadIcon class="size-4" />
+					<UploadIcon data-icon="inline-start" />
 					Upload
 				{/if}
+			</Button>
+		</div>
+
+		<!-- Mobile Header Actions -->
+		<div class="flex items-center gap-2 sm:hidden">
+			<Button
+				class="min-h-11 flex-1"
+				onclick={() => openUploadDialog('device')}
+				disabled={!currentPath || isSearchMode}
+			>
+				{#if uploading}
+					<Spinner data-icon="inline-start" />
+					Upload {uploadProgress.percent}%
+				{:else}
+					<UploadIcon data-icon="inline-start" />
+					Upload
+				{/if}
+			</Button>
+			<Button
+				variant="outline"
+				class="min-h-11 flex-1"
+				onclick={() => (mobileFolderSheetOpen = true)}
+				disabled={!currentPath}
+			>
+				<PlusIcon data-icon="inline-start" />
+				Baru &amp; Aksi
+			</Button>
+			<Button
+				variant="outline"
+				size="icon-lg"
+				class="min-h-11 min-w-11 shrink-0"
+				aria-label="Open Terminal di folder ini"
+				onclick={() => openTerminalAt(currentPath)}
+				disabled={!currentPath}
+			>
+				<SquareTerminalIcon />
 			</Button>
 		</div>
 	</div>
 
 	<!-- Quick Access Roots / VHosts -->
 	{#if roots.length > 0}
-		<div class="flex flex-wrap items-center gap-2">
-			<span class="text-muted-foreground text-xs font-medium uppercase tracking-wide">Akses Cepat:</span>
+		<nav
+			aria-label="Akses cepat direktori"
+			class="flex items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0"
+		>
+			<span class="text-muted-foreground shrink-0 text-xs font-medium uppercase tracking-wide">Akses Cepat:</span>
 			{#each roots as root (root.path)}
 				{@const active = currentPath === root.path || currentPath.startsWith(root.path.replace(/\/+$/, '') + '/')}
 				<Button
 					variant={active ? 'secondary' : 'outline'}
 					size="sm"
-					class="h-7 gap-1.5 text-xs"
+					class="fm-touch-btn h-8 shrink-0 gap-1.5 text-xs sm:h-7"
 					onclick={() => navigateTo(root.path)}
 				>
 					{#if root.kind === 'home'}
-						<HomeIcon class="size-3.5" />
+						<HomeIcon data-icon="inline-start" />
 					{:else}
-						<HardDriveIcon class="size-3.5" />
+						<HardDriveIcon data-icon="inline-start" />
 					{/if}
 					<span>{root.name}</span>
 				</Button>
 			{/each}
-		</div>
+		</nav>
 	{/if}
 
 	<!-- Main Explorer Card (with drag-and-drop dropzone) -->
 	<Card
-		class={`relative flex min-h-[460px] flex-col transition-colors sm:min-h-[calc(100dvh-15rem)] ${dragOver ? 'border-primary ring-primary/30 ring-2' : ''}`}
+		class={cn(
+			'relative flex min-h-[420px] flex-col transition-colors sm:min-h-[calc(100dvh-15rem)]',
+			dragOver && 'border-primary ring-primary/30 ring-2'
+		)}
 		ondragenter={handleWorkspaceDragEnter}
 		ondragover={handleWorkspaceDragOver}
 		ondragleave={handleWorkspaceDragLeave}
@@ -1092,125 +1240,157 @@
 		oncontextmenu={(e) => openContextMenu(e, null)}
 	>
 		{#if dragOver}
-			<div class="bg-background/85 pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-primary backdrop-blur-[1px]">
+			<div class="bg-background/85 pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-primary p-4 text-center backdrop-blur-[1px]">
 				<UploadIcon class="text-primary mb-2 size-10" />
 				<p class="text-sm font-semibold">Lepaskan file untuk mengunggah ke:</p>
-				<p class="text-muted-foreground mt-1 font-mono text-xs">{currentPath}</p>
+				<p class="text-muted-foreground mt-1 break-all font-mono text-xs">{currentPath}</p>
 			</div>
 		{/if}
 
-		<CardHeader class="space-y-3 pb-3">
+		<CardHeader class="flex flex-col gap-3 pb-3">
 			<!-- Toolbar Row: Up / Home / Refresh / Breadcrumb or Jump Path / Hidden Toggle / Search -->
 			<div class="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
-				<div class="flex min-w-0 flex-1 items-center gap-1.5">
+				<div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
 					<Button
 						variant="outline"
 						size="icon-sm"
+						class="fm-touch-btn shrink-0"
 						title="Naik ke folder induk"
+						aria-label="Naik ke folder induk"
 						disabled={!listing?.can_go_up || loading || isSearchMode}
 						onclick={() => listing?.parent && navigateTo(listing.parent)}
 					>
-						<ArrowUpIcon class="size-4" />
+						<ArrowUpIcon />
 					</Button>
 					<Button
 						variant="outline"
 						size="icon-sm"
+						class="fm-touch-btn shrink-0"
 						title="Ke direktori awal"
+						aria-label="Ke direktori awal"
 						disabled={loading}
 						onclick={() => navigateTo(roots[0]?.path ?? '')}
 					>
-						<HomeIcon class="size-4" />
+						<HomeIcon />
 					</Button>
 					<Button
 						variant="outline"
 						size="icon-sm"
+						class="fm-touch-btn shrink-0"
 						title="Segarkan"
+						aria-label="Segarkan direktori"
 						disabled={loading || searching}
 						onclick={refreshCurrent}
 					>
-						<RefreshCwIcon class={`size-4 ${loading || searching ? 'animate-spin' : ''}`} />
+						<RefreshCwIcon class={cn((loading || searching) && 'animate-spin')} />
+					</Button>
+					<Button
+						variant={showHidden ? 'secondary' : 'outline'}
+						size="sm"
+						class="fm-touch-btn ml-auto h-8 gap-1.5 text-xs sm:hidden"
+						aria-pressed={showHidden}
+						onclick={toggleShowHidden}
+					>
+						{#if showHidden}
+							<EyeIcon data-icon="inline-start" />
+						{:else}
+							<EyeOffIcon data-icon="inline-start" />
+						{/if}
+						.dot
 					</Button>
 
 					<!-- Breadcrumb / Inline Path Input -->
 					{#if pathEditMode}
-						<form onsubmit={handleJumpSubmit} class="flex min-w-0 flex-1 items-center gap-1.5">
+						<form onsubmit={handleJumpSubmit} class="flex min-w-0 flex-1 basis-full items-center gap-1.5 sm:basis-0">
 							<Input
 								bind:value={pathInput}
-								class="h-8 font-mono text-xs"
+								class="h-10 min-w-0 flex-1 font-mono text-base sm:h-8 sm:text-xs"
 								placeholder="/var/www/..."
 								aria-label="Path direktori"
+								autocapitalize="none"
+								autocorrect="off"
+								spellcheck={false}
 								autofocus
 							/>
-							<Button type="submit" size="sm" class="h-8">Buka</Button>
+							<Button type="submit" size="sm" class="fm-touch-btn h-10 shrink-0 sm:h-8">Buka</Button>
 							<Button
 								type="button"
 								variant="ghost"
 								size="icon-sm"
+								class="fm-touch-btn shrink-0"
 								onclick={() => {
 									pathEditMode = false;
 									pathInput = currentPath;
 								}}
 								aria-label="Batal ubah path"
 							>
-								<XIcon class="size-4" />
+								<XIcon />
 							</Button>
 						</form>
 					{:else}
-						<div class="bg-muted/40 flex min-h-8 min-w-0 flex-1 flex-wrap items-center gap-0.5 rounded-md border px-2 py-1 text-xs">
-							{#if breadcrumbs.length === 0}
-								<span class="text-muted-foreground font-mono">Memuat path...</span>
-							{:else}
-								{#each breadcrumbs as seg, idx (seg.path)}
-									{#if idx > 0}
-										<ChevronRightIcon class="text-muted-foreground/60 size-3.5 shrink-0" />
-									{/if}
-									{#if seg.clickable && seg.path !== currentPath}
-										<button
-											type="button"
-											class="hover:bg-accent hover:text-accent-foreground rounded px-1.5 py-0.5 font-mono transition-colors"
-											onclick={() => navigateTo(seg.path)}
-										>
-											{seg.label}
-										</button>
-									{:else if seg.path === currentPath}
-										<span class="text-foreground rounded px-1.5 py-0.5 font-mono font-semibold">
-											{seg.label}
-										</span>
-									{:else}
-										<span class="text-muted-foreground px-1 py-0.5 font-mono">
-											{seg.label}
-										</span>
-									{/if}
-								{/each}
-							{/if}
+						<div class="bg-muted/40 flex min-h-9 min-w-0 flex-1 basis-full items-center gap-1 rounded-md border px-2 py-1 text-xs sm:min-h-8 sm:basis-0">
+							<nav
+								bind:this={breadcrumbScrollEl}
+								aria-label="Lokasi direktori"
+								class="flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto overscroll-x-contain sm:flex-wrap sm:overflow-visible"
+							>
+								{#if breadcrumbs.length === 0}
+									<span class="text-muted-foreground font-mono">Memuat path...</span>
+								{:else}
+									{#each breadcrumbs as seg, idx (seg.path)}
+										{#if idx > 0}
+											<ChevronRightIcon class="text-muted-foreground/60 size-3.5 shrink-0" aria-hidden="true" />
+										{/if}
+										{#if seg.clickable && seg.path !== currentPath}
+											<button
+												type="button"
+												class="fm-touch-hit hover:bg-accent hover:text-accent-foreground shrink-0 rounded px-1.5 py-1 font-mono transition-colors sm:py-0.5"
+												onclick={() => navigateTo(seg.path)}
+											>
+												{seg.label}
+											</button>
+										{:else if seg.path === currentPath}
+											<span class="text-foreground bg-background/80 shrink-0 rounded px-1.5 py-1 font-mono font-semibold shadow-2xs sm:bg-transparent sm:py-0.5 sm:shadow-none">
+												{seg.label}
+											</span>
+										{:else}
+											<span class="text-muted-foreground shrink-0 px-1 py-1 font-mono sm:py-0.5">
+												{seg.label}
+											</span>
+										{/if}
+									{/each}
+								{/if}
+							</nav>
 							<button
 								type="button"
-								class="text-muted-foreground hover:text-foreground ml-auto rounded p-0.5"
+								class="fm-touch-hit text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 shrink-0 items-center justify-center rounded sm:size-6"
 								title="Ketik path manual"
+								aria-label="Ketik path manual"
 								onclick={() => {
 									pathInput = currentPath;
 									pathEditMode = true;
 								}}
 							>
-								<PencilIcon class="size-3" />
+								<PencilIcon class="size-3.5 sm:size-3" />
 							</button>
 						</div>
 					{/if}
 				</div>
 
 				<!-- Search & Hidden Toggle -->
-				<div class="flex flex-wrap items-center gap-2">
+				<div class="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:flex-nowrap">
 					<Button
 						variant={showHidden ? 'secondary' : 'outline'}
 						size="sm"
-						class="h-8 gap-1.5 text-xs"
+						class="hidden h-8 shrink-0 gap-1.5 text-xs sm:inline-flex"
+						aria-pressed={showHidden}
 						onclick={toggleShowHidden}
 						title="Tampilkan / sembunyikan file awalan titik (.env, .htaccess, dll)"
 					>
 						{#if showHidden}
-							<EyeIcon class="size-3.5" />
+							<EyeIcon data-icon="inline-start" />
 						{:else}
-							<EyeOffIcon class="size-3.5" />
+							<EyeOffIcon data-icon="inline-start" />
 						{/if}
 						Hidden (.dot)
 					</Button>
@@ -1220,25 +1400,42 @@
 							e.preventDefault();
 							void runSearch();
 						}}
-						class="flex items-center gap-1.5"
+						class="flex min-w-0 flex-1 items-center gap-1.5 lg:flex-initial"
 					>
-						<div class="relative">
-							<SearchIcon class="text-muted-foreground pointer-events-none absolute top-2 left-2.5 size-3.5" />
-							<Input
+						<InputGroup.Root class="h-10 min-w-0 flex-1 sm:h-8 lg:w-56">
+							<InputGroup.Addon align="inline-start">
+								<SearchIcon />
+							</InputGroup.Addon>
+							<InputGroup.Input
+								type="search"
 								bind:value={searchInput}
 								placeholder="Cari file di folder ini..."
-								class="h-8 w-48 pl-8 text-xs sm:w-56"
+								aria-label="Cari file di folder ini"
+								class="h-full text-base sm:text-xs"
 							/>
-						</div>
-						<Button type="submit" variant="outline" size="sm" class="h-8" disabled={searching || !currentPath}>
+							{#if searchInput}
+								<InputGroup.Addon align="inline-end">
+									<InputGroup.Button
+										type="button"
+										size="icon-xs"
+										class="fm-touch-hit"
+										aria-label="Kosongkan kata kunci"
+										onclick={() => (searchInput = '')}
+									>
+										<XIcon />
+									</InputGroup.Button>
+								</InputGroup.Addon>
+							{/if}
+						</InputGroup.Root>
+						<Button type="submit" variant="outline" size="sm" class="fm-touch-btn h-10 shrink-0 sm:h-8" disabled={searching || !currentPath}>
 							{#if searching}
-								<Spinner class="size-3.5" />
+								<Spinner />
 							{:else}
 								Cari
 							{/if}
 						</Button>
 						{#if isSearchMode}
-							<Button type="button" variant="ghost" size="sm" class="h-8 text-xs" onclick={clearSearch}>
+							<Button type="button" variant="ghost" size="sm" class="fm-touch-btn h-10 shrink-0 text-xs sm:h-8" onclick={clearSearch}>
 								Reset
 							</Button>
 						{/if}
@@ -1246,26 +1443,26 @@
 				</div>
 			</div>
 
-			<!-- Clipboard Banner -->
+			<!-- Clipboard Banner (Desktop / >= md; mobile uses sticky bottom bar) -->
 			{#if clipboard}
-				<div class="bg-primary/5 border-primary/25 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs">
-					<div class="flex items-center gap-2">
+				<div class="bg-primary/5 border-primary/25 hidden flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs md:flex">
+					<div class="flex min-w-0 items-center gap-2">
 						{#if clipboard.mode === 'copy'}
 							<CopyIcon class="text-primary size-4 shrink-0" />
 						{:else}
 							<ScissorsIcon class="text-primary size-4 shrink-0" />
 						{/if}
-						<span>
+						<span class="min-w-0">
 							<strong>{clipboard.paths.length} item</strong> siap {clipboard.mode === 'copy' ? 'disalin' : 'dipindahkan'} dari
-							<code class="bg-muted rounded px-1 py-0.5 font-mono">{clipboard.sourceDir}</code>
+							<code class="bg-muted rounded px-1 py-0.5 font-mono break-all">{clipboard.sourceDir}</code>
 						</span>
 					</div>
 					<div class="flex items-center gap-1.5">
 						<Button size="sm" class="h-7 gap-1 text-xs" disabled={bulkBusy || isSearchMode || !currentPath} onclick={pasteClipboard}>
 							{#if bulkBusy}
-								<Spinner class="size-3.5" />
+								<Spinner data-icon="inline-start" />
 							{:else}
-								<ClipboardPasteIcon class="size-3.5" />
+								<ClipboardPasteIcon data-icon="inline-start" />
 							{/if}
 							Tempel di Sini
 						</Button>
@@ -1276,9 +1473,9 @@
 				</div>
 			{/if}
 
-			<!-- Multi-select Bulk Actions Bar -->
+			<!-- Multi-select Bulk Actions Bar (Desktop / >= md; mobile uses sticky bottom bar) -->
 			{#if selectedPaths.length > 0}
-				<div class="bg-muted/60 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs">
+				<div class="bg-muted/60 hidden flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs md:flex">
 					<div class="flex items-center gap-2 font-medium">
 						<Badge variant="secondary">{selectedPaths.length} dipilih</Badge>
 						<button
@@ -1291,19 +1488,19 @@
 					</div>
 					<div class="flex flex-wrap items-center gap-1.5">
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => setClipboard('copy', selectedPaths)}>
-							<CopyIcon class="size-3.5" />
+							<CopyIcon data-icon="inline-start" />
 							Salin
 						</Button>
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => setClipboard('move', selectedPaths)}>
-							<ScissorsIcon class="size-3.5" />
+							<ScissorsIcon data-icon="inline-start" />
 							Pindah
 						</Button>
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => openCompressDialog(selectedPaths)}>
-							<FileArchiveIcon class="size-3.5" />
+							<FileArchiveIcon data-icon="inline-start" />
 							Kompres ZIP
 						</Button>
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => triggerDownload(selectedPaths)}>
-							<DownloadIcon class="size-3.5" />
+							<DownloadIcon data-icon="inline-start" />
 							Download ZIP
 						</Button>
 						<Button
@@ -1316,7 +1513,7 @@
 									selectedPaths
 								)}
 						>
-							<LockIcon class="size-3.5" />
+							<LockIcon data-icon="inline-start" />
 							Permission
 						</Button>
 						<Button
@@ -1326,7 +1523,7 @@
 							disabled={bulkBusy}
 							onclick={() => confirmDelete(selectedPaths)}
 						>
-							<Trash2Icon class="size-3.5" />
+							<Trash2Icon data-icon="inline-start" />
 							Hapus
 						</Button>
 					</div>
@@ -1335,17 +1532,17 @@
 
 			<!-- Active Upload Progress Banner (for drag-and-drop uploads too) -->
 			{#if uploading}
-				<div class="bg-primary/5 border-primary/25 space-y-2 rounded-lg border px-3 py-2.5 text-xs">
+				<div class="bg-primary/5 border-primary/25 flex flex-col gap-2 rounded-lg border px-3 py-2.5 text-xs">
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<div class="flex items-center gap-2 font-medium">
-							<Spinner class="size-3.5" />
-							<span>Mengunggah ke <code class="font-mono">{currentPath}</code>...</span>
+						<div class="flex min-w-0 items-center gap-2 font-medium">
+							<Spinner class="size-3.5 shrink-0" />
+							<span class="truncate">Mengunggah ke <code class="font-mono">{currentPath}</code>...</span>
 						</div>
 						<div class="flex items-center gap-2">
 							<span class="font-mono text-[11px]">
 								{uploadProgress.percent}% ({formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)})
 							</span>
-							<Button variant="ghost" size="sm" class="h-6 px-2 text-xs" onclick={cancelUpload}>
+							<Button variant="ghost" size="sm" class="fm-touch-btn h-7 px-2 text-xs" onclick={cancelUpload}>
 								Batal
 							</Button>
 						</div>
@@ -1362,8 +1559,7 @@
 					</CardTitle>
 				{:else if listing}
 					<CardDescription class="text-xs">
-						{listing.total_dirs} folder, {listing.total_files} file • Total ukuran file: {formatBytes(listing.total_size)}
-						• Tips: klik kanan baris untuk Open Terminal &amp; aksi cepat, atau seret file ke tabel untuk mengunggah.
+						{listing.total_dirs} folder, {listing.total_files} file • Total: {formatBytes(listing.total_size)}<span class="fm-pointer-fine-only"> • Tips: klik kanan baris untuk Open Terminal &amp; aksi cepat, atau seret file ke tabel untuk mengunggah.</span><span class="fm-pointer-coarse-only"> • Ketuk berkas untuk membuka, ketuk ⋮ untuk menu aksi.</span>
 					</CardDescription>
 				{/if}
 			</div>
@@ -1372,11 +1568,11 @@
 		<CardContent class="flex flex-1 flex-col pt-0">
 			{#if errorMsg}
 				<Alert variant="destructive" class="mb-4">
-					<CircleAlertIcon class="size-4" />
+					<CircleAlertIcon />
 					<AlertTitle>Gagal Memuat Direktori</AlertTitle>
 					<AlertDescription class="flex flex-wrap items-center justify-between gap-2">
 						<span>{errorMsg}</span>
-						<Button variant="outline" size="sm" onclick={() => navigateTo(roots[0]?.path ?? '')}>
+						<Button variant="outline" size="sm" class="fm-touch-btn" onclick={() => navigateTo(roots[0]?.path ?? '')}>
 							Kembali ke Root Awal
 						</Button>
 					</AlertDescription>
@@ -1384,13 +1580,13 @@
 			{/if}
 
 			{#if loading && !listing}
-				<div class="space-y-2">
+				<div class="flex flex-col gap-2">
 					{#each [1, 2, 3, 4, 5, 6] as row (row)}
-						<Skeleton class="h-10 w-full" />
+						<Skeleton class="h-12 w-full sm:h-10" />
 					{/each}
 				</div>
 			{:else if visibleEntries.length === 0}
-				<Empty.Root class="flex flex-1 flex-col justify-center border min-h-[360px]">
+				<Empty.Root class="flex min-h-[300px] flex-1 flex-col justify-center border sm:min-h-[360px]">
 					<Empty.Header>
 						<Empty.Media variant="icon">
 							<FolderOpenIcon class="size-5" />
@@ -1400,251 +1596,361 @@
 							{#if isSearchMode}
 								Tidak ditemukan berkas atau folder yang cocok dengan kata kunci "{activeSearchQuery}".
 							{:else}
-								Belum ada berkas di direktori ini. Gunakan tombol di atas atau seret berkas ke sini untuk mengunggah.
+								Belum ada berkas di direktori ini. Gunakan tombol Upload atau File Baru untuk menambahkan berkas.
 							{/if}
 						</Empty.Description>
 					</Empty.Header>
 					{#if !isSearchMode}
-						<Empty.Content class="flex-row justify-center gap-2">
-							<Button variant="outline" size="sm" onclick={openNewFileDialog}>
-								<FilePlusIcon class="size-4" />
+						<Empty.Content class="flex-row flex-wrap justify-center gap-2">
+							<Button variant="outline" size="sm" class="fm-touch-btn" onclick={openNewFileDialog}>
+								<FilePlusIcon data-icon="inline-start" />
 								Buat File Baru
 							</Button>
-							<Button size="sm" onclick={() => openUploadDialog('device')}>
-								<UploadIcon class="size-4" />
+							<Button size="sm" class="fm-touch-btn" onclick={() => openUploadDialog('device')}>
+								<UploadIcon data-icon="inline-start" />
 								Upload Berkas
 							</Button>
 						</Empty.Content>
 					{/if}
 				</Empty.Root>
 			{:else}
-				<div class="flex-1 min-h-[360px]">
-					<ResponsiveTableWrapper label="Daftar Berkas File Manager">
-					<Table>
-						<TableHeader>
-							<TableRow>
-								<TableHead class="w-10">
-									<Checkbox
-										checked={allVisibleSelected}
-										indeterminate={someVisibleSelected}
-										onCheckedChange={(v) => toggleSelectAll(Boolean(v))}
-										aria-label="Pilih semua berkas"
-									/>
-								</TableHead>
-								<TableHead>
-									<button
-										type="button"
-										class="hover:text-foreground inline-flex items-center gap-1 font-medium"
-										onclick={() => toggleSort('name')}
-									>
-										Nama
-										{#if sortBy === 'name'}
-											{#if sortDir === 'asc'}
-												<ArrowUpIcon class="size-3.5" />
-											{:else}
-												<ArrowDownIcon class="size-3.5" />
-											{/if}
-										{:else}
-											<ArrowUpDownIcon class="text-muted-foreground/50 size-3.5" />
-										{/if}
-									</button>
-								</TableHead>
-								<TableHead class="w-28">
-									<button
-										type="button"
-										class="hover:text-foreground inline-flex items-center gap-1 font-medium"
-										onclick={() => toggleSort('size')}
-									>
-										Ukuran
-										{#if sortBy === 'size'}
-											{#if sortDir === 'asc'}
-												<ArrowUpIcon class="size-3.5" />
-											{:else}
-												<ArrowDownIcon class="size-3.5" />
-											{/if}
-										{:else}
-											<ArrowUpDownIcon class="text-muted-foreground/50 size-3.5" />
-										{/if}
-									</button>
-								</TableHead>
-								<TableHead class="w-36">Permission</TableHead>
-								<TableHead class="w-36">Owner</TableHead>
-								<TableHead class="w-40">
-									<button
-										type="button"
-										class="hover:text-foreground inline-flex items-center gap-1 font-medium"
-										onclick={() => toggleSort('mod_time')}
-									>
-										Diubah
-										{#if sortBy === 'mod_time'}
-											{#if sortDir === 'asc'}
-												<ArrowUpIcon class="size-3.5" />
-											{:else}
-												<ArrowDownIcon class="size-3.5" />
-											{/if}
-										{:else}
-											<ArrowUpDownIcon class="text-muted-foreground/50 size-3.5" />
-										{/if}
-									</button>
-								</TableHead>
-								<TableHead class="text-right">Aksi</TableHead>
-							</TableRow>
-						</TableHeader>
-						<TableBody>
-							{#each visibleEntries as entry (entry.path)}
+				<div class="fm-list-container min-h-[300px] flex-1 sm:min-h-[360px]">
+					<!-- Desktop Table View (@container >= 44rem) -->
+					<div class="fm-desktop-view">
+						<ResponsiveTableWrapper label="Daftar Berkas File Manager" stackOnMobile={false}>
+							<Table>
+								<TableHeader>
+									<TableRow>
+										<TableHead scope="col" class="w-10">
+											<Checkbox
+												checked={allVisibleSelected}
+												indeterminate={someVisibleSelected}
+												onCheckedChange={(v) => toggleSelectAll(Boolean(v))}
+												aria-label="Pilih semua berkas"
+											/>
+										</TableHead>
+										<TableHead scope="col">
+											<button
+												type="button"
+												class="hover:text-foreground inline-flex items-center gap-1 font-medium"
+												onclick={() => toggleSort('name')}
+											>
+												Nama
+												{#if sortBy === 'name'}
+													{#if sortDir === 'asc'}
+														<ArrowUpIcon class="size-3.5" />
+													{:else}
+														<ArrowDownIcon class="size-3.5" />
+													{/if}
+												{:else}
+													<ArrowUpDownIcon class="text-muted-foreground/50 size-3.5" />
+												{/if}
+											</button>
+										</TableHead>
+										<TableHead scope="col" class="w-28">
+											<button
+												type="button"
+												class="hover:text-foreground inline-flex items-center gap-1 font-medium"
+												onclick={() => toggleSort('size')}
+											>
+												Ukuran
+												{#if sortBy === 'size'}
+													{#if sortDir === 'asc'}
+														<ArrowUpIcon class="size-3.5" />
+													{:else}
+														<ArrowDownIcon class="size-3.5" />
+													{/if}
+												{:else}
+													<ArrowUpDownIcon class="text-muted-foreground/50 size-3.5" />
+												{/if}
+											</button>
+										</TableHead>
+										<TableHead scope="col" class="w-36">Permission</TableHead>
+										<TableHead scope="col" class="w-36">Owner</TableHead>
+										<TableHead scope="col" class="w-40">
+											<button
+												type="button"
+												class="hover:text-foreground inline-flex items-center gap-1 font-medium"
+												onclick={() => toggleSort('mod_time')}
+											>
+												Diubah
+												{#if sortBy === 'mod_time'}
+													{#if sortDir === 'asc'}
+														<ArrowUpIcon class="size-3.5" />
+													{:else}
+														<ArrowDownIcon class="size-3.5" />
+													{/if}
+												{:else}
+													<ArrowUpDownIcon class="text-muted-foreground/50 size-3.5" />
+												{/if}
+											</button>
+										</TableHead>
+										<TableHead scope="col" class="text-right">Aksi</TableHead>
+									</TableRow>
+								</TableHeader>
+								<TableBody>
+									{#each visibleEntries as entry (entry.path)}
+										{@const checked = selectedSet.has(entry.path)}
+										<TableRow
+											class={cn(
+												checked && 'bg-muted/40',
+												contextMenu?.entry?.path === entry.path && 'ring-primary/50 ring-1'
+											)}
+											oncontextmenu={(e) => openContextMenu(e, entry)}
+										>
+											<TableCell data-label="Pilih">
+												<Checkbox
+													{checked}
+													onCheckedChange={(v) => toggleSelect(entry.path, Boolean(v))}
+													aria-label={`Pilih ${entry.name}`}
+												/>
+											</TableCell>
+											<TableCell data-label="Nama">
+												<div class="flex min-w-0 items-center gap-2.5">
+													{@render entryIcon(entry)}
+
+													<div class="min-w-0 flex-1">
+														<button
+															type="button"
+															class="hover:text-primary block max-w-[20rem] text-left font-medium hover:underline lg:max-w-[28rem] xl:max-w-[36rem]"
+															onclick={() => handleRowPrimaryClick(entry)}
+														>
+															{@render filenameDisplay(entry)}
+														</button>
+														{#if entry.is_symlink && entry.symlink_target}
+															<p class="text-muted-foreground truncate font-mono text-[11px]">
+																→ {entry.symlink_target}
+															</p>
+														{/if}
+														{#if isSearchMode}
+															<button
+																type="button"
+																class="text-muted-foreground hover:text-foreground block truncate font-mono text-[11px] hover:underline"
+																onclick={() => navigateTo(getParentPath(entry.path))}
+															>
+																{getParentPath(entry.path)}
+															</button>
+														{/if}
+													</div>
+												</div>
+											</TableCell>
+											<TableCell data-label="Ukuran" class="font-mono text-xs whitespace-nowrap">
+												{entry.is_dir ? '—' : formatBytes(entry.size)}
+											</TableCell>
+											<TableCell data-label="Permission">
+												<button
+													type="button"
+													class="hover:bg-muted inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-xs transition-colors"
+													title="Ubah permission"
+													onclick={() => openChmodDialog([entry])}
+												>
+													<span class="font-semibold">{entry.mode}</span>
+													<span class="text-muted-foreground hidden sm:inline">({entry.perm_text})</span>
+												</button>
+											</TableCell>
+											<TableCell data-label="Owner" class="text-muted-foreground font-mono text-xs whitespace-nowrap">
+												{entry.owner}:{entry.group}
+											</TableCell>
+											<TableCell data-label="Diubah" class="text-muted-foreground text-xs whitespace-nowrap">
+												{formatModTime(entry.mod_time)}
+											</TableCell>
+											<TableCell data-label="Aksi" class="text-right">
+												<div class="flex justify-end">
+													<DropdownMenu.Root>
+														<DropdownMenu.Trigger>
+															{#snippet child({ props })}
+																<Button
+																	variant="outline"
+																	size="xs"
+																	onclick={(e) => e.stopPropagation()}
+																	{...props}
+																>
+																	Aksi
+																	<ChevronDownIcon data-icon="inline-end" />
+																</Button>
+															{/snippet}
+														</DropdownMenu.Trigger>
+														<DropdownMenu.Content align="end" class="w-48">
+															<DropdownMenu.Group>
+																<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+																	{entry.name}
+																</DropdownMenu.Label>
+																<DropdownMenu.Separator />
+																{#if entry.is_dir}
+																	<DropdownMenu.Item onclick={() => void navigateTo(entry.path)}>
+																		<FolderOpenIcon />
+																		<span>Buka Folder</span>
+																	</DropdownMenu.Item>
+																{:else if entry.editable || entry.is_image}
+																	<DropdownMenu.Item onclick={() => openEditor(entry)}>
+																		<EyeIcon />
+																		<span>{entry.editable ? 'Edit File' : 'Lihat Gambar'}</span>
+																	</DropdownMenu.Item>
+																{/if}
+																{#if entry.is_archive}
+																	<DropdownMenu.Item onclick={() => openExtractDialog(entry)}>
+																		<FileArchiveIcon />
+																		<span>Ekstrak Arsip</span>
+																	</DropdownMenu.Item>
+																{/if}
+																<DropdownMenu.Item onclick={() => triggerDownload([entry.path])}>
+																	<DownloadIcon />
+																	<span>{entry.is_dir ? 'Download ZIP' : 'Download File'}</span>
+																</DropdownMenu.Item>
+																<DropdownMenu.Item
+																	onclick={() => openTerminalAt(entry.is_dir ? entry.path : currentPath)}
+																>
+																	<SquareTerminalIcon />
+																	<span>Open Terminal</span>
+																</DropdownMenu.Item>
+																<DropdownMenu.Separator />
+																<DropdownMenu.Item onclick={() => openRenameDialog(entry)}>
+																	<PencilIcon />
+																	<span>Ubah Nama</span>
+																</DropdownMenu.Item>
+																<DropdownMenu.Item onclick={() => openChmodDialog([entry])}>
+																	<LockIcon />
+																	<span>Permission / Chmod</span>
+																</DropdownMenu.Item>
+																<DropdownMenu.Separator />
+																<DropdownMenu.Item
+																	variant="destructive"
+																	onclick={() => confirmDelete([entry.path])}
+																>
+																	<Trash2Icon />
+																	<span>Hapus</span>
+																</DropdownMenu.Item>
+															</DropdownMenu.Group>
+														</DropdownMenu.Content>
+													</DropdownMenu.Root>
+												</div>
+											</TableCell>
+										</TableRow>
+									{/each}
+								</TableBody>
+							</Table>
+						</ResponsiveTableWrapper>
+					</div>
+
+					<!-- Mobile Ergonomic Card List View (@container < 44rem) -->
+					<div class="fm-mobile-view flex flex-col gap-2">
+						<!-- Mobile Control Bar: Select All + Sort -->
+						<div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-2.5 py-1.5">
+							<label
+								for="fm-mobile-select-all"
+								class="fm-touch-check cursor-pointer gap-2 px-1 text-xs font-medium text-foreground select-none"
+							>
+								<Checkbox
+									id="fm-mobile-select-all"
+									checked={allVisibleSelected}
+									indeterminate={someVisibleSelected}
+									onCheckedChange={(v) => toggleSelectAll(Boolean(v))}
+									aria-label="Pilih semua berkas"
+								/>
+								<span>
+									{allVisibleSelected ? 'Batal Pilih' : 'Pilih Semua'} ({visibleEntries.length})
+								</span>
+							</label>
+
+							<div class="flex items-center gap-1.5">
+								<NativeSelect.Root
+									bind:value={sortBy}
+									size="sm"
+									aria-label="Urutkan berkas berdasarkan"
+									class="text-xs"
+								>
+									<NativeSelect.Option value="name">Nama</NativeSelect.Option>
+									<NativeSelect.Option value="size">Ukuran</NativeSelect.Option>
+									<NativeSelect.Option value="mod_time">Diubah</NativeSelect.Option>
+								</NativeSelect.Root>
+								<Button
+									type="button"
+									variant="outline"
+									size="icon-sm"
+									class="fm-touch-btn shrink-0"
+									aria-label={sortDir === 'asc'
+										? 'Urutan naik (A-Z / terkecil), ketuk untuk balikkan'
+										: 'Urutan turun (Z-A / terbesar), ketuk untuk balikkan'}
+									onclick={() => (sortDir = sortDir === 'asc' ? 'desc' : 'asc')}
+								>
+									{#if sortDir === 'asc'}
+										<ArrowUpIcon />
+									{:else}
+										<ArrowDownIcon />
+									{/if}
+								</Button>
+							</div>
+						</div>
+
+						<!-- Compact Mobile File List -->
+						<ul class="divide-y divide-border overflow-hidden rounded-lg border bg-card">
+							{#each visibleEntries as entry, idx (entry.path)}
 								{@const checked = selectedSet.has(entry.path)}
-								<TableRow
-									class={`${checked ? 'bg-muted/40' : ''} ${contextMenu?.entry?.path === entry.path ? 'ring-primary/50 ring-1' : ''}`}
+								{@const checkId = `fm-mobile-row-${idx}`}
+								<li
+									class={cn(
+										'flex items-center gap-1 px-1.5 py-1 transition-colors',
+										checked && 'bg-primary/5'
+									)}
 									oncontextmenu={(e) => openContextMenu(e, entry)}
 								>
-									<TableCell data-label="Pilih">
+									<label
+										for={checkId}
+										class="fm-touch-check flex shrink-0 cursor-pointer items-center justify-center rounded-md px-2"
+									>
 										<Checkbox
+											id={checkId}
 											{checked}
 											onCheckedChange={(v) => toggleSelect(entry.path, Boolean(v))}
 											aria-label={`Pilih ${entry.name}`}
 										/>
-									</TableCell>
-									<TableCell data-label="Nama">
-										<div class="flex min-w-0 items-center gap-2.5">
-											{#if entry.is_dir}
-												{#if entry.is_symlink}
-													<FolderSymlinkIcon class="size-4 shrink-0 text-amber-500" />
-												{:else}
-													<FolderIcon class="size-4 shrink-0 text-amber-500" />
-												{/if}
-											{:else if entry.is_image}
-												<ImageIcon class="size-4 shrink-0 text-purple-500" />
-											{:else if entry.is_archive}
-												<FileArchiveIcon class="size-4 shrink-0 text-orange-500" />
-											{:else if isCodeFile(entry)}
-												<FileCodeIcon class="size-4 shrink-0 text-emerald-500" />
-											{:else if isTextFile(entry)}
-												<FileTextIcon class="size-4 shrink-0 text-sky-500" />
-											{:else}
-												<FileIcon class="text-muted-foreground size-4 shrink-0" />
-											{/if}
+									</label>
 
-											<div class="min-w-0 flex-1">
-												<button
-													type="button"
-													class="hover:text-primary block max-w-full truncate text-left font-medium hover:underline"
-													onclick={() => handleRowPrimaryClick(entry)}
-												>
-													{entry.name}
-												</button>
-												{#if entry.is_symlink && entry.symlink_target}
-													<p class="text-muted-foreground truncate font-mono text-[11px]">
-														→ {entry.symlink_target}
-													</p>
-												{/if}
-												{#if isSearchMode}
-													<button
-														type="button"
-														class="text-muted-foreground hover:text-foreground block truncate font-mono text-[11px] hover:underline"
-														onclick={() => navigateTo(getParentPath(entry.path))}
-													>
-														{getParentPath(entry.path)}
-													</button>
-												{/if}
+									<button
+										type="button"
+										class="flex min-h-12 min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 py-2 text-left transition-colors active:bg-muted/70"
+										onclick={() => handleRowPrimaryClick(entry)}
+									>
+										{@render entryIcon(entry, 'size-5')}
+
+										<div class="flex min-w-0 flex-1 flex-col gap-0.5">
+											<div class="text-sm font-medium text-foreground">
+												{@render filenameDisplay(entry)}
 											</div>
+											<div class="text-muted-foreground flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+												<span>{entry.is_dir ? 'Folder' : formatBytes(entry.size)}</span>
+												<span aria-hidden="true">•</span>
+												<span class="font-mono">{entry.mode}</span>
+												<span aria-hidden="true">•</span>
+												<span>{formatCompactModTime(entry.mod_time)}</span>
+											</div>
+											{#if entry.is_symlink && entry.symlink_target}
+												<span class="text-muted-foreground truncate font-mono text-[11px]">
+													→ {entry.symlink_target}
+												</span>
+											{/if}
+											{#if isSearchMode}
+												<span class="text-muted-foreground truncate font-mono text-[11px]">
+													{getParentPath(entry.path)}
+												</span>
+											{/if}
 										</div>
-									</TableCell>
-									<TableCell data-label="Ukuran" class="font-mono text-xs whitespace-nowrap">
-										{entry.is_dir ? '—' : formatBytes(entry.size)}
-									</TableCell>
-									<TableCell data-label="Permission">
-										<button
-											type="button"
-											class="hover:bg-muted inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-xs transition-colors"
-											title="Ubah permission"
-											onclick={() => openChmodDialog([entry])}
-										>
-											<span class="font-semibold">{entry.mode}</span>
-											<span class="text-muted-foreground hidden sm:inline">({entry.perm_text})</span>
-										</button>
-									</TableCell>
-									<TableCell data-label="Owner" class="text-muted-foreground font-mono text-xs whitespace-nowrap">
-										{entry.owner}:{entry.group}
-									</TableCell>
-									<TableCell data-label="Diubah" class="text-muted-foreground text-xs whitespace-nowrap">
-										{formatModTime(entry.mod_time)}
-									</TableCell>
-									<TableCell data-label="Aksi" class="text-right">
-										<div class="flex justify-end">
-											<DropdownMenu.Root>
-												<DropdownMenu.Trigger>
-													{#snippet child({ props })}
-														<Button
-															variant="outline"
-															size="xs"
-															onclick={(e) => e.stopPropagation()}
-															{...props}
-														>
-															Aksi
-															<ChevronDownIcon data-icon="inline-end" />
-														</Button>
-													{/snippet}
-												</DropdownMenu.Trigger>
-												<DropdownMenu.Content align="end" class="w-48">
-													<DropdownMenu.Group>
-														<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
-															{entry.name}
-														</DropdownMenu.Label>
-														<DropdownMenu.Separator />
-														{#if entry.is_dir}
-															<DropdownMenu.Item onclick={() => void navigateTo(entry.path)}>
-																<FolderOpenIcon />
-																<span>Buka Folder</span>
-															</DropdownMenu.Item>
-														{:else if entry.editable || entry.is_image}
-															<DropdownMenu.Item onclick={() => openEditor(entry)}>
-																<EyeIcon />
-																<span>{entry.editable ? 'Edit File' : 'Lihat Gambar'}</span>
-															</DropdownMenu.Item>
-														{/if}
-														{#if entry.is_archive}
-															<DropdownMenu.Item onclick={() => openExtractDialog(entry)}>
-																<FileArchiveIcon />
-																<span>Ekstrak Arsip</span>
-															</DropdownMenu.Item>
-														{/if}
-														<DropdownMenu.Item onclick={() => triggerDownload([entry.path])}>
-															<DownloadIcon />
-															<span>{entry.is_dir ? 'Download ZIP' : 'Download File'}</span>
-														</DropdownMenu.Item>
-														<DropdownMenu.Item
-															onclick={() => openTerminalAt(entry.is_dir ? entry.path : currentPath)}
-														>
-															<SquareTerminalIcon />
-															<span>Open Terminal</span>
-														</DropdownMenu.Item>
-														<DropdownMenu.Separator />
-														<DropdownMenu.Item onclick={() => openRenameDialog(entry)}>
-															<PencilIcon />
-															<span>Ubah Nama</span>
-														</DropdownMenu.Item>
-														<DropdownMenu.Item onclick={() => openChmodDialog([entry])}>
-															<LockIcon />
-															<span>Permission / Chmod</span>
-														</DropdownMenu.Item>
-														<DropdownMenu.Separator />
-														<DropdownMenu.Item
-															variant="destructive"
-															onclick={() => confirmDelete([entry.path])}
-														>
-															<Trash2Icon />
-															<span>Hapus</span>
-														</DropdownMenu.Item>
-													</DropdownMenu.Group>
-												</DropdownMenu.Content>
-											</DropdownMenu.Root>
-										</div>
-									</TableCell>
-								</TableRow>
+									</button>
+
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										class="fm-touch-btn text-muted-foreground shrink-0"
+										aria-label={`Menu aksi untuk ${entry.name}`}
+										onclick={() => openMobileEntrySheet(entry)}
+									>
+										<EllipsisVerticalIcon />
+									</Button>
+								</li>
 							{/each}
-						</TableBody>
-					</Table>
-				</ResponsiveTableWrapper>
+						</ul>
+					</div>
 				</div>
 			{/if}
 		</CardContent>
@@ -1656,32 +1962,36 @@
 
 <!-- New File Dialog -->
 <Dialog bind:open={newFileOpen}>
-	<DialogContent class="sm:max-w-md">
+	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
 			<DialogTitle>Buat File Baru</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">Lokasi: {currentPath}</DialogDescription>
 		</DialogHeader>
-		<form onsubmit={submitNewFile} class="space-y-4">
+		<form onsubmit={submitNewFile} class="flex flex-col gap-4">
 			<Field>
 				<FieldLabel for="fm-new-file-name">Nama File</FieldLabel>
 				<Input
 					id="fm-new-file-name"
 					bind:value={newFileName}
+					class="h-10 text-base sm:h-8 sm:text-sm"
 					placeholder="index.html, .env, config.php"
+					autocapitalize="none"
+					autocorrect="off"
+					spellcheck={false}
 					required
 					autofocus
 				/>
 			</Field>
-			<label class="flex items-center gap-2 text-sm">
-				<Checkbox bind:checked={newFileOpenAfter} />
+			<label for="fm-new-file-open-after" class="fm-touch-check cursor-pointer gap-2 text-sm">
+				<Checkbox id="fm-new-file-open-after" bind:checked={newFileOpenAfter} />
 				<span>Langsung buka di editor setelah dibuat</span>
 			</label>
 			<DialogFooter>
-				<Button type="button" variant="outline" onclick={() => (newFileOpen = false)} disabled={newFileBusy}>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (newFileOpen = false)} disabled={newFileBusy}>
 					Batal
 				</Button>
-				<Button type="submit" disabled={newFileBusy || !newFileName.trim()}>
-					{#if newFileBusy}<Spinner class="size-4" />{/if}
+				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={newFileBusy || !newFileName.trim()}>
+					{#if newFileBusy}<Spinner data-icon="inline-start" />{/if}
 					Buat File
 				</Button>
 			</DialogFooter>
@@ -1691,28 +2001,32 @@
 
 <!-- New Folder Dialog -->
 <Dialog bind:open={newFolderOpen}>
-	<DialogContent class="sm:max-w-md">
+	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
 			<DialogTitle>Buat Folder Baru</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">Lokasi: {currentPath}</DialogDescription>
 		</DialogHeader>
-		<form onsubmit={submitNewFolder} class="space-y-4">
+		<form onsubmit={submitNewFolder} class="flex flex-col gap-4">
 			<Field>
 				<FieldLabel for="fm-new-folder-name">Nama Folder</FieldLabel>
 				<Input
 					id="fm-new-folder-name"
 					bind:value={newFolderName}
+					class="h-10 text-base sm:h-8 sm:text-sm"
 					placeholder="assets, uploads, public"
+					autocapitalize="none"
+					autocorrect="off"
+					spellcheck={false}
 					required
 					autofocus
 				/>
 			</Field>
 			<DialogFooter>
-				<Button type="button" variant="outline" onclick={() => (newFolderOpen = false)} disabled={newFolderBusy}>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (newFolderOpen = false)} disabled={newFolderBusy}>
 					Batal
 				</Button>
-				<Button type="submit" disabled={newFolderBusy || !newFolderName.trim()}>
-					{#if newFolderBusy}<Spinner class="size-4" />{/if}
+				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={newFolderBusy || !newFolderName.trim()}>
+					{#if newFolderBusy}<Spinner data-icon="inline-start" />{/if}
 					Buat Folder
 				</Button>
 			</DialogFooter>
@@ -1722,7 +2036,7 @@
 
 <!-- Upload & Remote URL Download Dialog -->
 <Dialog bind:open={uploadOpen}>
-	<DialogContent class="sm:max-w-xl">
+	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-xl">
 		<DialogHeader>
 			<DialogTitle>Upload &amp; Download Berkas</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">
@@ -1730,13 +2044,13 @@
 			</DialogDescription>
 		</DialogHeader>
 
-		<Tabs.Root bind:value={uploadTab} class="space-y-4">
-			<Tabs.List class="grid w-full grid-cols-2">
-				<Tabs.Trigger value="device" disabled={fetchingUrl}>Upload File / Folder</Tabs.Trigger>
-				<Tabs.Trigger value="url" disabled={uploading}>Download dari URL</Tabs.Trigger>
+		<Tabs.Root bind:value={uploadTab} class="flex flex-col gap-4">
+			<Tabs.List class="grid h-auto w-full grid-cols-2">
+				<Tabs.Trigger value="device" class="min-h-9 py-1.5 text-xs sm:text-sm" disabled={fetchingUrl}>Upload File / Folder</Tabs.Trigger>
+				<Tabs.Trigger value="url" class="min-h-9 py-1.5 text-xs sm:text-sm" disabled={uploading}>Download dari URL</Tabs.Trigger>
 			</Tabs.List>
 
-			<Tabs.Content value="device" class="space-y-4">
+			<Tabs.Content value="device" class="flex flex-col gap-4">
 				<!-- Hidden file & folder pickers -->
 				<input
 					bind:this={uploadFileInputRef}
@@ -1761,43 +2075,46 @@
 					ondragover={handleUploadDropzoneDragOver}
 					ondragleave={handleUploadDropzoneDragLeave}
 					ondrop={handleUploadDropzoneDrop}
-					class={`flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed p-5 text-center transition-colors ${
+					class={cn(
+						'flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed p-4 text-center transition-colors sm:p-5',
 						uploadDropDragOver ? 'border-primary bg-primary/5' : 'border-muted-foreground/30 bg-muted/20'
-					}`}
+					)}
 				>
 					<UploadIcon class="text-muted-foreground size-7" />
-					<div class="space-y-1">
-						<p class="text-sm font-medium">Seret file atau folder ke sini</p>
+					<div class="flex flex-col gap-1">
+						<p class="text-sm font-medium">Pilih atau seret file/folder ke sini</p>
 						<p class="text-muted-foreground text-xs">
-							Atau pilih langsung dari komputer Anda (maks. 256 MB per unggahan, struktur subfolder dipertahankan).
+							Maks. 256 MB per unggahan, struktur subfolder dipertahankan.
 						</p>
 					</div>
-					<div class="flex flex-wrap items-center justify-center gap-2">
+					<div class="flex w-full flex-wrap items-center justify-center gap-2 sm:w-auto">
 						<Button
 							type="button"
 							variant="outline"
 							size="sm"
+							class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial"
 							disabled={uploading}
 							onclick={() => uploadFileInputRef?.click()}
 						>
-							<FilePlusIcon class="size-3.5" />
+							<FilePlusIcon data-icon="inline-start" />
 							Pilih File
 						</Button>
 						<Button
 							type="button"
 							variant="outline"
 							size="sm"
+							class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial"
 							disabled={uploading}
 							onclick={() => uploadFolderInputRef?.click()}
 						>
-							<FolderPlusIcon class="size-3.5" />
+							<FolderPlusIcon data-icon="inline-start" />
 							Pilih Folder
 						</Button>
 					</div>
 				</div>
 
 				{#if uploadQueue.length > 0}
-					<div class="space-y-2">
+					<div class="flex flex-col gap-2">
 						<div class="flex items-center justify-between text-xs">
 							<span class="font-medium">
 								{uploadQueue.length} berkas antre ({formatBytes(uploadTotalBytes)})
@@ -1805,26 +2122,27 @@
 							{#if !uploading}
 								<button
 									type="button"
-									class="text-muted-foreground hover:text-foreground underline"
+									class="fm-touch-hit text-muted-foreground hover:text-foreground underline"
 									onclick={() => (uploadQueue = [])}
 								>
 									Bersihkan Antrean
 								</button>
 							{/if}
 						</div>
-						<div class="bg-muted/40 max-h-40 space-y-1 overflow-y-auto rounded-md border p-2 text-xs">
+						<div class="bg-muted/40 flex max-h-40 flex-col gap-1 overflow-y-auto overscroll-contain rounded-md border p-2 text-xs">
 							{#each uploadQueue as item, idx (`${item.relativePath}-${idx}`)}
-								<div class="flex items-center justify-between gap-2 rounded px-1 py-0.5 hover:bg-muted/60">
+								<div class="flex min-h-8 items-center justify-between gap-2 rounded px-1 py-0.5 hover:bg-muted/60">
 									<span class="min-w-0 flex-1 truncate font-mono">{item.relativePath}</span>
 									<span class="text-muted-foreground shrink-0 font-mono">{formatBytes(item.file.size)}</span>
 									{#if !uploading}
 										<button
 											type="button"
-											class="text-muted-foreground hover:text-destructive rounded p-0.5"
+											class="fm-touch-hit text-muted-foreground hover:text-destructive inline-flex size-6 items-center justify-center rounded"
 											title="Hapus dari antrean"
+											aria-label={`Hapus ${item.relativePath} dari antrean`}
 											onclick={() => removeUploadQueueIndex(idx)}
 										>
-											<XIcon class="size-3" />
+											<XIcon class="size-3.5" />
 										</button>
 									{/if}
 								</div>
@@ -1833,14 +2151,14 @@
 					</div>
 				{/if}
 
-				<label class="flex items-center gap-2 text-xs">
-					<Checkbox bind:checked={uploadOverwrite} disabled={uploading} />
+				<label for="fm-upload-overwrite" class="fm-touch-check cursor-pointer gap-2 text-xs">
+					<Checkbox id="fm-upload-overwrite" bind:checked={uploadOverwrite} disabled={uploading} />
 					<span>Timpa berkas yang bernama sama (Overwrite)</span>
 				</label>
 
 				{#if uploading}
-					<div class="space-y-1.5 rounded-md border p-2.5 text-xs">
-						<div class="flex items-center justify-between">
+					<div class="flex flex-col gap-1.5 rounded-md border p-2.5 text-xs">
+						<div class="flex items-center justify-between gap-2">
 							<span class="font-medium">Mengunggah berkas...</span>
 							<span class="font-mono">
 								{uploadProgress.percent}% ({formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)})
@@ -1852,19 +2170,20 @@
 
 				<DialogFooter>
 					{#if uploading}
-						<Button type="button" variant="destructive" onclick={cancelUpload}>
+						<Button type="button" variant="destructive" class="min-h-10 sm:min-h-0" onclick={cancelUpload}>
 							Batalkan Upload
 						</Button>
 					{:else}
-						<Button type="button" variant="outline" onclick={() => (uploadOpen = false)}>
+						<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (uploadOpen = false)}>
 							Tutup
 						</Button>
 						<Button
 							type="button"
+							class="min-h-10 sm:min-h-0"
 							disabled={uploadQueue.length === 0}
 							onclick={() => performUpload(uploadQueue)}
 						>
-							<UploadIcon class="size-4" />
+							<UploadIcon data-icon="inline-start" />
 							Mulai Upload ({uploadQueue.length})
 						</Button>
 					{/if}
@@ -1872,7 +2191,7 @@
 			</Tabs.Content>
 
 			<Tabs.Content value="url">
-				<form onsubmit={submitFetchURL} class="space-y-4">
+				<form onsubmit={submitFetchURL} class="flex flex-col gap-4">
 					<Field>
 						<FieldLabel for="fm-fetch-url">URL Berkas / Arsip Publik</FieldLabel>
 						<Input
@@ -1880,7 +2199,7 @@
 							type="url"
 							bind:value={fetchUrl}
 							placeholder="https://wordpress.org/latest.zip"
-							class="font-mono text-xs"
+							class="h-10 font-mono text-base sm:h-8 sm:text-xs"
 							required
 						/>
 						<FieldDescription>
@@ -1894,25 +2213,28 @@
 							id="fm-fetch-filename"
 							bind:value={fetchFilename}
 							placeholder="Kosongkan untuk otomatis dari URL"
-							class="font-mono text-xs"
+							autocapitalize="none"
+							autocorrect="off"
+							spellcheck={false}
+							class="h-10 font-mono text-base sm:h-8 sm:text-xs"
 						/>
 					</Field>
 
-					<label class="flex items-center gap-2 text-xs">
-						<Checkbox bind:checked={fetchOverwrite} disabled={fetchingUrl} />
+					<label for="fm-fetch-overwrite" class="fm-touch-check cursor-pointer gap-2 text-xs">
+						<Checkbox id="fm-fetch-overwrite" bind:checked={fetchOverwrite} disabled={fetchingUrl} />
 						<span>Timpa berkas jika namanya sudah ada</span>
 					</label>
 
 					<DialogFooter>
-						<Button type="button" variant="outline" onclick={() => (uploadOpen = false)} disabled={fetchingUrl}>
+						<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (uploadOpen = false)} disabled={fetchingUrl}>
 							Batal
 						</Button>
-						<Button type="submit" disabled={fetchingUrl || !fetchUrl.trim()}>
+						<Button type="submit" class="min-h-10 sm:min-h-0" disabled={fetchingUrl || !fetchUrl.trim()}>
 							{#if fetchingUrl}
-								<Spinner class="size-4" />
+								<Spinner data-icon="inline-start" />
 								Mengunduh ke Server...
 							{:else}
-								<GlobeIcon class="size-4" />
+								<GlobeIcon data-icon="inline-start" />
 								Download ke Folder Ini
 							{/if}
 						</Button>
@@ -1925,22 +2247,31 @@
 
 <!-- Rename Dialog -->
 <Dialog bind:open={renameOpen}>
-	<DialogContent class="sm:max-w-md">
+	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
 			<DialogTitle>Ubah Nama</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">{renameEntry?.path}</DialogDescription>
 		</DialogHeader>
-		<form onsubmit={submitRename} class="space-y-4">
+		<form onsubmit={submitRename} class="flex flex-col gap-4">
 			<Field>
 				<FieldLabel for="fm-rename-input">Nama Baru</FieldLabel>
-				<Input id="fm-rename-input" bind:value={renameNewName} required autofocus />
+				<Input
+					id="fm-rename-input"
+					bind:value={renameNewName}
+					class="h-10 text-base sm:h-8 sm:text-sm"
+					autocapitalize="none"
+					autocorrect="off"
+					spellcheck={false}
+					required
+					autofocus
+				/>
 			</Field>
 			<DialogFooter>
-				<Button type="button" variant="outline" onclick={() => (renameOpen = false)} disabled={renameBusy}>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (renameOpen = false)} disabled={renameBusy}>
 					Batal
 				</Button>
-				<Button type="submit" disabled={renameBusy || !renameNewName.trim()}>
-					{#if renameBusy}<Spinner class="size-4" />{/if}
+				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={renameBusy || !renameNewName.trim()}>
+					{#if renameBusy}<Spinner data-icon="inline-start" />{/if}
 					Simpan
 				</Button>
 			</DialogFooter>
@@ -1950,7 +2281,7 @@
 
 <!-- Interactive Chmod / Permission Dialog -->
 <Dialog bind:open={chmodOpen}>
-	<DialogContent class="sm:max-w-lg">
+	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-lg">
 		<DialogHeader>
 			<DialogTitle>Permission & Kepemilikan (Chmod)</DialogTitle>
 			<DialogDescription class="text-xs">
@@ -1962,7 +2293,7 @@
 			</DialogDescription>
 		</DialogHeader>
 
-		<form onsubmit={submitChmod} class="space-y-4">
+		<form onsubmit={submitChmod} class="flex flex-col gap-4">
 			<div class="grid grid-cols-4 gap-2 rounded-lg border p-3 text-xs">
 				<div class="text-muted-foreground font-semibold">Scope</div>
 				<div class="text-center font-semibold">Read (4)</div>
@@ -1974,9 +2305,9 @@
 					{ label: 'Group', shift: 3 },
 					{ label: 'Public', shift: 0 }
 				] as group (group.label)}
-					<div class="flex items-center font-medium">{group.label}</div>
+					<div class="flex min-h-10 items-center font-medium sm:min-h-0">{group.label}</div>
 					{#each [4, 2, 1] as bitVal (bitVal)}
-						<div class="flex justify-center">
+						<div class="flex min-h-10 items-center justify-center sm:min-h-0">
 							<Checkbox
 								checked={hasPermBit(group.shift, bitVal)}
 								onCheckedChange={() => togglePermBit(group.shift, bitVal)}
@@ -1993,7 +2324,8 @@
 					<Input
 						id="fm-chmod-mode"
 						bind:value={chmodMode}
-						class="font-mono"
+						class="h-10 font-mono text-base sm:h-8 sm:text-sm"
+						inputmode="numeric"
 						placeholder="0755"
 						maxlength={4}
 					/>
@@ -2004,7 +2336,7 @@
 							type="button"
 							variant={chmodMode === preset || chmodMode === preset.slice(1) ? 'secondary' : 'outline'}
 							size="sm"
-							class="h-8 font-mono text-xs"
+							class="fm-touch-btn h-9 font-mono text-xs sm:h-8"
 							onclick={() => (chmodMode = preset)}
 						>
 							{preset}
@@ -2013,23 +2345,23 @@
 				</div>
 			</div>
 
-			<div class="space-y-2 text-sm">
-				<label class="flex items-center gap-2">
-					<Checkbox bind:checked={chmodRecursive} />
+			<div class="flex flex-col gap-1 text-sm">
+				<label for="fm-chmod-recursive" class="fm-touch-check cursor-pointer gap-2">
+					<Checkbox id="fm-chmod-recursive" bind:checked={chmodRecursive} />
 					<span>Terapkan secara rekursif ke seluruh isi folder</span>
 				</label>
-				<label class="flex items-center gap-2">
-					<Checkbox bind:checked={chmodWebOwner} />
+				<label for="fm-chmod-webowner" class="fm-touch-check cursor-pointer gap-2">
+					<Checkbox id="fm-chmod-webowner" bind:checked={chmodWebOwner} />
 					<span>Samakan kepemilikan (owner/group) ke user web server (<code class="font-mono text-xs">www-data / nginx</code>)</span>
 				</label>
 			</div>
 
 			<DialogFooter>
-				<Button type="button" variant="outline" onclick={() => (chmodOpen = false)} disabled={chmodBusy}>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (chmodOpen = false)} disabled={chmodBusy}>
 					Batal
 				</Button>
-				<Button type="submit" disabled={chmodBusy}>
-					{#if chmodBusy}<Spinner class="size-4" />{/if}
+				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={chmodBusy}>
+					{#if chmodBusy}<Spinner data-icon="inline-start" />{/if}
 					Terapkan Permission
 				</Button>
 			</DialogFooter>
@@ -2039,24 +2371,33 @@
 
 <!-- Compress ZIP Dialog -->
 <Dialog bind:open={compressOpen}>
-	<DialogContent class="sm:max-w-md">
+	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
 			<DialogTitle>Kompres ke Arsip ZIP</DialogTitle>
 			<DialogDescription class="text-xs">
 				Mengarsipkan <strong>{compressTargets.length} item</strong> menjadi satu file `.zip`.
 			</DialogDescription>
 		</DialogHeader>
-		<form onsubmit={submitCompress} class="space-y-4">
+		<form onsubmit={submitCompress} class="flex flex-col gap-4">
 			<Field>
 				<FieldLabel for="fm-compress-out">Path File Arsip ZIP Output</FieldLabel>
-				<Input id="fm-compress-out" bind:value={compressOutput} class="font-mono text-xs" required autofocus />
+				<Input
+					id="fm-compress-out"
+					bind:value={compressOutput}
+					class="h-10 font-mono text-base sm:h-8 sm:text-xs"
+					autocapitalize="none"
+					autocorrect="off"
+					spellcheck={false}
+					required
+					autofocus
+				/>
 			</Field>
 			<DialogFooter>
-				<Button type="button" variant="outline" onclick={() => (compressOpen = false)} disabled={compressBusy}>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (compressOpen = false)} disabled={compressBusy}>
 					Batal
 				</Button>
-				<Button type="submit" disabled={compressBusy || !compressOutput.trim()}>
-					{#if compressBusy}<Spinner class="size-4" />{/if}
+				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={compressBusy || !compressOutput.trim()}>
+					{#if compressBusy}<Spinner data-icon="inline-start" />{/if}
 					Buat Arsip ZIP
 				</Button>
 			</DialogFooter>
@@ -2066,31 +2407,520 @@
 
 <!-- Extract Archive Dialog -->
 <Dialog bind:open={extractOpen}>
-	<DialogContent class="sm:max-w-md">
+	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
 			<DialogTitle>Ekstrak Arsip</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">
 				Arsip: {extractEntry?.name}
 			</DialogDescription>
 		</DialogHeader>
-		<form onsubmit={submitExtract} class="space-y-4">
+		<form onsubmit={submitExtract} class="flex flex-col gap-4">
 			<Field>
 				<FieldLabel for="fm-extract-dest">Folder Tujuan Ekstraksi</FieldLabel>
-				<Input id="fm-extract-dest" bind:value={extractDest} class="font-mono text-xs" required autofocus />
+				<Input
+					id="fm-extract-dest"
+					bind:value={extractDest}
+					class="h-10 font-mono text-base sm:h-8 sm:text-xs"
+					autocapitalize="none"
+					autocorrect="off"
+					spellcheck={false}
+					required
+					autofocus
+				/>
 				<FieldDescription>Mendukung format .zip, .tar.gz, .tgz, dan .tar dengan proteksi Zip-Slip.</FieldDescription>
 			</Field>
 			<DialogFooter>
-				<Button type="button" variant="outline" onclick={() => (extractOpen = false)} disabled={extractBusy}>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (extractOpen = false)} disabled={extractBusy}>
 					Batal
 				</Button>
-				<Button type="submit" disabled={extractBusy || !extractDest.trim()}>
-					{#if extractBusy}<Spinner class="size-4" />{/if}
+				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={extractBusy || !extractDest.trim()}>
+					{#if extractBusy}<Spinner data-icon="inline-start" />{/if}
 					Ekstrak Sekarang
 				</Button>
 			</DialogFooter>
 		</form>
 	</DialogContent>
 </Dialog>
+
+<!-- Mobile Sticky Bottom Action Bar (Selection & Clipboard) -->
+{#if hasMobileBottomBar}
+	<div
+		data-fm-bottom-bar="true"
+		class="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))] shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden"
+	>
+		{#if selectedPaths.length > 0}
+			<div class="mx-auto flex max-w-xl items-center justify-between gap-2">
+				<div class="flex min-w-0 items-center gap-1.5">
+					<Badge variant="secondary" class="shrink-0 font-mono">{selectedPaths.length}</Badge>
+					<span class="truncate text-xs font-medium text-muted-foreground">dipilih</span>
+				</div>
+				<div class="flex shrink-0 items-center gap-1.5">
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="min-h-10 gap-1 text-xs"
+						onclick={() => setClipboard('copy', selectedPaths)}
+					>
+						<CopyIcon data-icon="inline-start" />
+						Salin
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="min-h-10 gap-1 text-xs"
+						onclick={() => setClipboard('move', selectedPaths)}
+					>
+						<ScissorsIcon data-icon="inline-start" />
+						Pindah
+					</Button>
+					<Button
+						type="button"
+						variant="destructive"
+						size="icon"
+						class="min-h-10 min-w-10"
+						aria-label={`Hapus ${selectedPaths.length} item terpilih`}
+						disabled={bulkBusy}
+						onclick={() => confirmDelete(selectedPaths)}
+					>
+						<Trash2Icon />
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="icon"
+						class="min-h-10 min-w-10"
+						aria-label="Aksi batch lainnya"
+						onclick={() => (mobileBulkSheetOpen = true)}
+					>
+						<EllipsisIcon />
+					</Button>
+				</div>
+			</div>
+		{:else if clipboard}
+			<div class="mx-auto flex max-w-xl items-center justify-between gap-2">
+				<div class="flex min-w-0 items-center gap-2 text-xs">
+					{#if clipboard.mode === 'copy'}
+						<CopyIcon class="text-primary size-4 shrink-0" />
+					{:else}
+						<ScissorsIcon class="text-primary size-4 shrink-0" />
+					{/if}
+					<div class="flex min-w-0 flex-col">
+						<span class="truncate font-medium">
+							{clipboard.paths.length} item siap {clipboard.mode === 'copy' ? 'disalin' : 'dipindahkan'}
+						</span>
+						<span class="truncate font-mono text-[11px] text-muted-foreground">{clipboard.sourceDir}</span>
+					</div>
+				</div>
+				<div class="flex shrink-0 items-center gap-1.5">
+					<Button type="button" variant="ghost" size="sm" class="min-h-10 text-xs" onclick={() => (clipboard = null)}>
+						Batal
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						class="min-h-10 gap-1 text-xs"
+						disabled={bulkBusy || isSearchMode || !currentPath}
+						onclick={pasteClipboard}
+					>
+						{#if bulkBusy}
+							<Spinner data-icon="inline-start" />
+						{:else}
+							<ClipboardPasteIcon data-icon="inline-start" />
+						{/if}
+						Tempel
+					</Button>
+				</div>
+			</div>
+		{/if}
+	</div>
+{/if}
+
+<!-- Mobile Bottom Sheet: Folder Actions -->
+<Sheet.Root bind:open={mobileFolderSheetOpen}>
+	<Sheet.Content side="bottom" class="rounded-t-2xl pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
+		<Sheet.Header class="pr-8">
+			<Sheet.Title>Aksi Folder</Sheet.Title>
+			<Sheet.Description class="truncate font-mono text-xs">{currentPath || '-'}</Sheet.Description>
+		</Sheet.Header>
+		<div class="flex max-h-[65dvh] flex-col gap-1.5 overflow-y-auto overscroll-contain px-4 pb-2">
+			<Button
+				type="button"
+				variant="outline"
+				class="min-h-11 w-full justify-start gap-3"
+				disabled={isSearchMode}
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					openNewFileDialog();
+				}}
+			>
+				<FilePlusIcon data-icon="inline-start" />
+				File Baru
+			</Button>
+			<Button
+				type="button"
+				variant="outline"
+				class="min-h-11 w-full justify-start gap-3"
+				disabled={isSearchMode}
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					openNewFolderDialog();
+				}}
+			>
+				<FolderPlusIcon data-icon="inline-start" />
+				Folder Baru
+			</Button>
+			<Button
+				type="button"
+				variant="outline"
+				class="min-h-11 w-full justify-start gap-3"
+				disabled={isSearchMode}
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					openUploadDialog('device');
+				}}
+			>
+				<UploadIcon data-icon="inline-start" />
+				Upload File / Folder
+			</Button>
+			<Button
+				type="button"
+				variant="outline"
+				class="min-h-11 w-full justify-start gap-3"
+				disabled={isSearchMode}
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					openUploadDialog('url');
+				}}
+			>
+				<GlobeIcon data-icon="inline-start" />
+				Download dari URL (Remote)
+			</Button>
+
+			{#if clipboard}
+				<Button
+					type="button"
+					class="min-h-11 w-full justify-start gap-3"
+					disabled={bulkBusy || isSearchMode}
+					onclick={() => {
+						mobileFolderSheetOpen = false;
+						void pasteClipboard();
+					}}
+				>
+					<ClipboardPasteIcon data-icon="inline-start" />
+					Tempel ({clipboard.paths.length} item)
+				</Button>
+			{/if}
+
+			<Separator class="my-1" />
+
+			<Button
+				type="button"
+				variant="ghost"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					triggerDownload([currentPath]);
+				}}
+			>
+				<DownloadIcon data-icon="inline-start" />
+				Download Folder Ini (.zip)
+			</Button>
+			<Button
+				type="button"
+				variant="ghost"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					openTerminalAt(currentPath);
+				}}
+			>
+				<SquareTerminalIcon data-icon="inline-start" />
+				Open Terminal di Sini
+			</Button>
+			<Button
+				type="button"
+				variant="ghost"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					void toggleShowHidden();
+				}}
+			>
+				{#if showHidden}
+					<EyeOffIcon data-icon="inline-start" />
+					Sembunyikan File .dot
+				{:else}
+					<EyeIcon data-icon="inline-start" />
+					Tampilkan File .dot
+				{/if}
+			</Button>
+			<Button
+				type="button"
+				variant="ghost"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileFolderSheetOpen = false;
+					void refreshCurrent();
+				}}
+			>
+				<RefreshCwIcon data-icon="inline-start" />
+				Segarkan Direktori
+			</Button>
+		</div>
+	</Sheet.Content>
+</Sheet.Root>
+
+<!-- Mobile Bottom Sheet: Single File/Folder Entry Actions -->
+<Sheet.Root bind:open={mobileEntrySheetOpen}>
+	<Sheet.Content side="bottom" class="rounded-t-2xl pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
+		{#if mobileEntrySheetEntry}
+			{@const entry = mobileEntrySheetEntry}
+			{@const terminalDir = entry.is_dir ? entry.path : getParentPath(entry.path)}
+			<Sheet.Header class="pr-8">
+				<Sheet.Title class="flex min-w-0 items-center gap-2">
+					{@render entryIcon(entry, 'size-5')}
+					<span class="truncate font-mono text-sm">{entry.name}</span>
+				</Sheet.Title>
+				<Sheet.Description class="font-mono text-xs break-all">
+					{entry.is_dir ? 'Folder' : formatBytes(entry.size)} • {entry.mode} ({entry.perm_text}) • {entry.owner}:{entry.group}
+				</Sheet.Description>
+			</Sheet.Header>
+
+			<div class="flex max-h-[65dvh] flex-col gap-1.5 overflow-y-auto overscroll-contain px-4 pb-2">
+				{#if entry.is_dir}
+					<Button
+						type="button"
+						variant="outline"
+						class="min-h-11 w-full justify-start gap-3"
+						onclick={() => {
+							mobileEntrySheetOpen = false;
+							void navigateTo(entry.path);
+						}}
+					>
+						<FolderOpenIcon data-icon="inline-start" />
+						Buka Folder
+					</Button>
+				{:else if entry.editable || entry.is_image}
+					<Button
+						type="button"
+						variant="outline"
+						class="min-h-11 w-full justify-start gap-3"
+						onclick={() => {
+							mobileEntrySheetOpen = false;
+							openEditor(entry);
+						}}
+					>
+						<EyeIcon data-icon="inline-start" />
+						{entry.editable ? 'Edit File' : 'Lihat Gambar'}
+					</Button>
+				{/if}
+
+				{#if isSearchMode}
+					<Button
+						type="button"
+						variant="ghost"
+						class="min-h-11 w-full justify-start gap-3"
+						onclick={() => {
+							mobileEntrySheetOpen = false;
+							void navigateTo(getParentPath(entry.path));
+						}}
+					>
+						<FolderOpenIcon data-icon="inline-start" />
+						Buka Folder Induk
+					</Button>
+				{/if}
+
+				{#if entry.is_archive}
+					<Button
+						type="button"
+						variant="outline"
+						class="min-h-11 w-full justify-start gap-3"
+						onclick={() => {
+							mobileEntrySheetOpen = false;
+							openExtractDialog(entry);
+						}}
+					>
+						<FileArchiveIcon data-icon="inline-start" />
+						Ekstrak Arsip
+					</Button>
+				{/if}
+
+				<Button
+					type="button"
+					variant="ghost"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						openTerminalAt(terminalDir);
+					}}
+				>
+					<SquareTerminalIcon data-icon="inline-start" />
+					{entry.is_dir ? 'Open Terminal di Sini' : 'Open Terminal di Folder Induk'}
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						triggerDownload([entry.path]);
+					}}
+				>
+					<DownloadIcon data-icon="inline-start" />
+					{entry.is_dir ? 'Download ZIP' : 'Download File'}
+				</Button>
+
+				<Separator class="my-1" />
+
+				<Button
+					type="button"
+					variant="ghost"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						setClipboard('copy', [entry.path]);
+					}}
+				>
+					<CopyIcon data-icon="inline-start" />
+					Salin (Copy)
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						setClipboard('move', [entry.path]);
+					}}
+				>
+					<ScissorsIcon data-icon="inline-start" />
+					Pindah (Cut)
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						openRenameDialog(entry);
+					}}
+				>
+					<PencilIcon data-icon="inline-start" />
+					Ubah Nama
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						openChmodDialog([entry]);
+					}}
+				>
+					<LockIcon data-icon="inline-start" />
+					Permission / Chmod
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						openCompressDialog([entry.path]);
+					}}
+				>
+					<FileArchiveIcon data-icon="inline-start" />
+					Kompres ke ZIP
+				</Button>
+
+				<Separator class="my-1" />
+
+				<Button
+					type="button"
+					variant="destructive"
+					class="min-h-11 w-full justify-start gap-3"
+					onclick={() => {
+						mobileEntrySheetOpen = false;
+						void confirmDelete([entry.path]);
+					}}
+				>
+					<Trash2Icon data-icon="inline-start" />
+					Hapus Permanen
+				</Button>
+			</div>
+		{:else}
+			<Sheet.Header>
+				<Sheet.Title>Aksi Item</Sheet.Title>
+			</Sheet.Header>
+		{/if}
+	</Sheet.Content>
+</Sheet.Root>
+
+<!-- Mobile Bottom Sheet: Bulk Selection Overflow Actions -->
+<Sheet.Root bind:open={mobileBulkSheetOpen}>
+	<Sheet.Content side="bottom" class="rounded-t-2xl pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
+		<Sheet.Header class="pr-8">
+			<Sheet.Title>Aksi Batch ({selectedPaths.length} item)</Sheet.Title>
+			<Sheet.Description class="text-xs">Terapkan operasi sekaligus ke seluruh item yang dicentang.</Sheet.Description>
+		</Sheet.Header>
+		<div class="flex flex-col gap-1.5 px-4 pb-2">
+			<Button
+				type="button"
+				variant="outline"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileBulkSheetOpen = false;
+					openCompressDialog(selectedPaths);
+				}}
+			>
+				<FileArchiveIcon data-icon="inline-start" />
+				Kompres ke ZIP
+			</Button>
+			<Button
+				type="button"
+				variant="outline"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileBulkSheetOpen = false;
+					triggerDownload(selectedPaths);
+				}}
+			>
+				<DownloadIcon data-icon="inline-start" />
+				Download ZIP
+			</Button>
+			<Button
+				type="button"
+				variant="outline"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileBulkSheetOpen = false;
+					openChmodDialog(
+						visibleEntries.filter((e) => selectedSet.has(e.path)),
+						selectedPaths
+					);
+				}}
+			>
+				<LockIcon data-icon="inline-start" />
+				Ubah Permission (Chmod)
+			</Button>
+			<Separator class="my-1" />
+			<Button
+				type="button"
+				variant="ghost"
+				class="min-h-11 w-full justify-start gap-3"
+				onclick={() => {
+					mobileBulkSheetOpen = false;
+					selectedPaths = [];
+				}}
+			>
+				<XIcon data-icon="inline-start" />
+				Bersihkan Pilihan
+			</Button>
+		</div>
+	</Sheet.Content>
+</Sheet.Root>
 
 <svelte:window
 	onclick={closeContextMenu}
@@ -2099,7 +2929,7 @@
 	}}
 />
 
-<!-- Floating Right-Click Context Menu -->
+<!-- Floating Right-Click Context Menu (Desktop) -->
 {#if contextMenu}
 	{@const targetEntry = contextMenu.entry}
 	{@const terminalDir = targetEntry
@@ -2373,3 +3203,41 @@
 		{/if}
 	</div>
 {/if}
+
+<style>
+	.fm-list-container {
+		container: fm-list / inline-size;
+	}
+
+	.fm-mobile-view {
+		display: block;
+	}
+
+	.fm-desktop-view {
+		display: none;
+	}
+
+	@container fm-list (inline-size >= 44rem) {
+		.fm-mobile-view {
+			display: none;
+		}
+
+		.fm-desktop-view {
+			display: block;
+		}
+	}
+
+	.fm-pointer-coarse-only {
+		display: none;
+	}
+
+	@media (pointer: coarse) {
+		.fm-pointer-fine-only {
+			display: none;
+		}
+
+		.fm-pointer-coarse-only {
+			display: inline;
+		}
+	}
+</style>

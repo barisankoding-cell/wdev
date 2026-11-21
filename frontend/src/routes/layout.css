@@ -160,6 +160,10 @@
 	html {
 		@apply font-sans;
 		accent-color: var(--primary);
+		scroll-padding-top: calc(3.75rem + env(safe-area-inset-top, 0px));
+	}
+	html:has([data-fm-bottom-bar='true']) {
+		scroll-padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
 	}
 	body {
 		@apply bg-background text-foreground antialiased overflow-x-clip;
@@ -279,4 +283,55 @@
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 	}
+}
+
+/* Ergonomic touch targets (WCAG 2.5.5 / 2.5.8) for coarse pointers (touch screens) */
+.fm-touch-hit {
+	position: relative;
+}
+
+.fm-touch-check {
+	display: inline-flex;
+	align-items: center;
+}
+
+@media (pointer: coarse) {
+	.fm-touch-hit::after {
+		content: '';
+		position: absolute;
+		inset: -8px;
+	}
+
+	.fm-touch-btn {
+		min-block-size: 44px;
+		min-inline-size: 44px;
+	}
+
+	.fm-touch-check {
+		min-block-size: 44px;
+		min-inline-size: 44px;
+	}
+}
+
+/* Single-line filename truncation keeping the extension visible */
+.fm-filename {
+	display: flex;
+	min-inline-size: 0;
+	max-inline-size: 100%;
+	white-space: nowrap;
+}
+
+.fm-filename > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Contain modal scroll chaining so gestures inside/over dialogs don't scroll the underlying page */
+[data-slot='dialog-overlay'] {
+	overflow: hidden;
+	overscroll-behavior: contain;
+}
+
+[data-slot='dialog-content'] {
+	overscroll-behavior: contain;
 }
