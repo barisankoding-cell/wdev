@@ -25,12 +25,18 @@ import (
 )
 
 type Manager struct {
-	cfg              *config.Config
-	store            *store.Store
-	pdnsMgr          *pdns.Manager
-	ensureStackFn    func(ctx context.Context, cb func(string), domain string) error
-	portProbeFn      func(host string, port int, timeout time.Duration) bool
-	resendAPIBaseURL string
+	cfg                 *config.Config
+	store               *store.Store
+	pdnsMgr             *pdns.Manager
+	ensureStackFn       func(ctx context.Context, cb func(string), domain string) error
+	portProbeFn         func(host string, port int, timeout time.Duration) bool
+	externalPortProbeFn func(port int) (reachable bool, ok bool)
+	extProbeBaseURL     string
+	extProbeMu          sync.Mutex
+	extProbeCache       map[int]extPortCacheEntry
+	extProbeIP          string
+	extProbeAt          time.Time
+	resendAPIBaseURL    string
 
 	// LastRelayDNS menyimpan hasil rekonsiliasi DNS dari operasi relay terakhir
 	// agar handler HTTP/CLI bisa melaporkan record yang dihapus & dibuat.
@@ -62,13 +68,29 @@ func (m *Manager) LastRelayDNSReport() RelayDNSReport {
 	return m.LastRelayDNS
 }
 
+type extPortCacheEntry struct {
+	Reachable bool
+	Checked   bool
+}
+
+// SetExternalPortProbe memungkinkan pengujian atau penggantian probe port eksternal (dari luar internet).
+func (m *Manager) SetExternalPortProbe(fn func(port int) (reachable bool, ok bool)) {
+	m.externalPortProbeFn = fn
+}
+
+// SetExternalProbeBase mengganti URL dasar endpoint uji port eksternal (default: https://ifconfig.co).
+func (m *Manager) SetExternalProbeBase(baseURL string) {
+	m.extProbeBaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+}
+
 type PortStatus struct {
-	Port         int    `json:"port"`
-	Label        string `json:"label"`
-	Open         bool   `json:"open"`
-	Local        bool   `json:"local,omitempty"`
-	Public       bool   `json:"public,omitempty"`
-	InternalOnly bool   `json:"internal_only,omitempty"`
+	Port            int    `json:"port"`
+	Label           string `json:"label"`
+	Open            bool   `json:"open"`
+	Local           bool   `json:"local,omitempty"`
+	Public          bool   `json:"public,omitempty"`
+	ExternalChecked bool   `json:"external_checked,omitempty"`
+	InternalOnly    bool   `json:"internal_only,omitempty"`
 }
 
 type MailStatus struct {
@@ -1304,7 +1326,59 @@ func probeTCPPort(host string, port int, timeout time.Duration) bool {
 	return true
 }
 
-func (m *Manager) checkStalwartPorts() []PortStatus {
+func (m *Manager) externalProbeBase() string {
+	if m != nil && strings.TrimSpace(m.extProbeBaseURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(m.extProbeBaseURL), "/")
+	}
+	return "https://ifconfig.co"
+}
+
+// probeExternalPort menguji keterjangkauan TCP port dari luar VPS (melalui HTTP TCPv4 endpoint).
+func (m *Manager) probeExternalPort(port int, wantIP string) (reachable bool, checked bool) {
+	if port <= 0 || port > 65535 {
+		return false, false
+	}
+	dialer := &net.Dialer{Timeout: 3 * time.Second}
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp4", addr)
+		},
+	}
+	defer tr.CloseIdleConnections()
+
+	client := &http.Client{Timeout: 4 * time.Second, Transport: tr}
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/port/%d", m.externalProbeBase(), port), nil)
+	if err != nil {
+		return false, false
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "wdev-port-check/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, false
+	}
+
+	var parsed struct {
+		IP        string `json:"ip"`
+		Port      int    `json:"port"`
+		Reachable bool   `json:"reachable"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return false, false
+	}
+	if parsed.IP != "" && wantIP != "" && parsed.IP != wantIP {
+		// IP keluar VPS tidak sama dengan VPSPublicIP yang tercatat; hindari salah klaim.
+		return false, false
+	}
+	return parsed.Reachable, true
+}
+
+func (m *Manager) checkStalwartPorts(forceExternal bool) []PortStatus {
 	defs := []struct {
 		port  int
 		label string
@@ -1320,35 +1394,86 @@ func (m *Manager) checkStalwartPorts() []PortStatus {
 		probe = probeTCPPort
 	}
 
+	mode := ""
 	publicIP := ""
-	if m.pdnsMgr != nil && m.pdnsMgr.GetMode() == "vps" {
-		if ip := strings.TrimSpace(m.pdnsMgr.LoadConfig().VPSPublicIP); ip != "" {
-			publicIP = ip
+	if m.pdnsMgr != nil {
+		mode = m.pdnsMgr.GetMode()
+		if mode == "vps" {
+			if ip := strings.TrimSpace(m.pdnsMgr.LoadConfig().VPSPublicIP); ip != "" {
+				publicIP = ip
+			}
 		}
 	}
 
+	// Siapkan cache hasil uji port eksternal agar dashboard tidak menembak endpoint eksternal berulang-ulang.
+	runExtInProd := m.externalPortProbeFn != nil || (m.portProbeFn == nil && mode == "vps")
+	var cachedExt map[int]extPortCacheEntry
+	if runExtInProd && !forceExternal {
+		m.extProbeMu.Lock()
+		if m.extProbeCache != nil && m.extProbeIP == publicIP && time.Since(m.extProbeAt) < 45*time.Second {
+			cachedExt = make(map[int]extPortCacheEntry, len(m.extProbeCache))
+			for k, v := range m.extProbeCache {
+				cachedExt[k] = v
+			}
+		}
+		m.extProbeMu.Unlock()
+	}
+
 	results := make([]PortStatus, len(defs))
+	freshExt := make(map[int]extPortCacheEntry)
+	var freshMu sync.Mutex
 	var wg sync.WaitGroup
 	for i, d := range defs {
 		wg.Add(1)
 		go func(idx, p int, lbl string) {
 			defer wg.Done()
+			internalOnly := p == 8080
 			localOpen := probe("127.0.0.1", p, 250*time.Millisecond) || probe("::1", p, 150*time.Millisecond)
 			pubOpen := false
-			if publicIP != "" {
-				pubOpen = probe(publicIP, p, 300*time.Millisecond)
+			extChecked := false
+
+			if !internalOnly {
+				if runExtInProd {
+					if ent, ok := cachedExt[p]; ok {
+						pubOpen = ent.Reachable
+						extChecked = ent.Checked
+					} else if m.externalPortProbeFn != nil {
+						pubOpen, extChecked = m.externalPortProbeFn(p)
+						freshMu.Lock()
+						freshExt[p] = extPortCacheEntry{Reachable: pubOpen, Checked: extChecked}
+						freshMu.Unlock()
+					} else {
+						pubOpen, extChecked = m.probeExternalPort(p, publicIP)
+						freshMu.Lock()
+						freshExt[p] = extPortCacheEntry{Reachable: pubOpen, Checked: extChecked}
+						freshMu.Unlock()
+					}
+				} else if m.portProbeFn != nil && publicIP != "" {
+					// Mode injeksi SetPortProbe pada unit test eksisting
+					pubOpen = probe(publicIP, p, 300*time.Millisecond)
+				}
 			}
+
 			results[idx] = PortStatus{
-				Port:         p,
-				Label:        lbl,
-				Open:         localOpen || pubOpen,
-				Local:        localOpen,
-				Public:       pubOpen,
-				InternalOnly: p == 8080,
+				Port:            p,
+				Label:           lbl,
+				Open:            localOpen || pubOpen,
+				Local:           localOpen,
+				Public:          pubOpen,
+				ExternalChecked: extChecked,
+				InternalOnly:    internalOnly,
 			}
 		}(i, d.port, d.label)
 	}
 	wg.Wait()
+
+	if len(freshExt) > 0 {
+		m.extProbeMu.Lock()
+		m.extProbeCache = freshExt
+		m.extProbeIP = publicIP
+		m.extProbeAt = time.Now()
+		m.extProbeMu.Unlock()
+	}
 	return results
 }
 
@@ -1380,6 +1505,10 @@ func isPublicIPBehindNAT(publicIP string) bool {
 }
 
 func (m *Manager) GetStatus() (MailStatus, error) {
+	return m.GetStatusWithOptions(false)
+}
+
+func (m *Manager) GetStatusWithOptions(forcePortProbe bool) (MailStatus, error) {
 	mode := "edge"
 	var behindNAT bool
 	if m.pdnsMgr != nil {
@@ -1395,11 +1524,11 @@ func (m *Manager) GetStatus() (MailStatus, error) {
 		Domains:      make([]DomainSummary, 0),
 	}
 
-	// 1. Cek status service stalwart & aksesibilitas port TCP
+	// 1. Cek status service stalwart & aksesibilitas port TCP (dalam VPS + uji dari luar)
 	if err := exec.Command("systemctl", "is-active", "--quiet", "stalwart").Run(); err == nil {
 		status.StalwartActive = true
 	}
-	status.StalwartPorts = m.checkStalwartPorts()
+	status.StalwartPorts = m.checkStalwartPorts(forcePortProbe)
 
 	// 2. Cek SnappyMail
 	if _, err := os.Stat("/var/www/snappymail/index.php"); err == nil {

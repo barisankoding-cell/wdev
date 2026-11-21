@@ -2434,7 +2434,8 @@ func (s *Server) handleMailStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
 		return
 	}
-	st, err := s.mailMgr.GetStatus()
+	forceProbe := r.URL.Query().Get("probe") == "1" || r.URL.Query().Get("probe") == "true"
+	st, err := s.mailMgr.GetStatusWithOptions(forceProbe)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -269,6 +269,7 @@ export interface MailPortStatus {
 	open: boolean;
 	local?: boolean;
 	public?: boolean;
+	external_checked?: boolean;
 	internal_only?: boolean;
 }
 

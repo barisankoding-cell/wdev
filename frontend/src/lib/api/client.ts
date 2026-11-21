@@ -333,7 +333,8 @@ export const api = {
 		}),
 
 	// Mail Server
-	getMailStatus: () => apiFetch<MailStatus>('/api/mail/status'),
+	getMailStatus: (forceProbe = false) =>
+		apiFetch<MailStatus>(forceProbe ? '/api/mail/status?probe=1' : '/api/mail/status'),
 	getMailAccounts: (domain = '') =>
 		apiFetch<DomainAccounts[]>(
 			domain ? `/api/mail/accounts?domain=${encodeURIComponent(domain)}` : '/api/mail/accounts'

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,5 +309,80 @@ func TestChangeAccountPasswordValidation(t *testing.T) {
 	}
 	if err := mgr.ChangeAccountPassword("user@nikaget.my.id", "bad\npass"); err == nil {
 		t.Fatal("expected error for newline in password")
+	}
+}
+
+func TestDualInsideAndOutsidePortProbe(t *testing.T) {
+	mgr, cfg := newTestMailManager(t, "vps")
+	edgeConf := "VPS_NETBIRD_IP=\"127.0.0.1\"\nVPS_PUBLIC_IP=\"203.0.113.10\"\nAPI_KEY=\"k\"\nPDNS_PORT=\"8081\"\n"
+	if err := os.WriteFile(filepath.Join(cfg.WdevEtc, "edge-dns.conf"), []byte(edgeConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulasi probe dalam VPS: 25, 465, 993, 8080 listen lokal; 587 mati
+	mgr.SetPortProbe(func(host string, port int, _ time.Duration) bool {
+		return host == "127.0.0.1" && (port == 25 || port == 465 || port == 993 || port == 8080)
+	})
+
+	// Simulasi probe dari luar VPS (ifconfig.co): hanya 465 terbuka dari luar, 25 & 993 terblokir dari luar
+	var hits int
+	probeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		switch r.URL.Path {
+		case "/port/465":
+			_, _ = w.Write([]byte(`{"ip":"203.0.113.10","port":465,"reachable":true}`))
+		default:
+			_, _ = w.Write([]byte(`{"ip":"203.0.113.10","port":25,"reachable":false}`))
+		}
+	}))
+	defer probeSrv.Close()
+	mgr.SetExternalProbeBase(probeSrv.URL)
+	mgr.SetExternalPortProbe(func(port int) (bool, bool) {
+		return mgr.probeExternalPort(port, "203.0.113.10")
+	})
+
+	st, err := mgr.GetStatus()
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+	if hits != 4 {
+		t.Fatalf("expected 4 external probes (excluding internal 8080), got %d", hits)
+	}
+
+	byPort := make(map[int]PortStatus, len(st.StalwartPorts))
+	for _, p := range st.StalwartPorts {
+		byPort[p.Port] = p
+	}
+	// 25: dalam berhasil, luar terblokir -> Kuning (Local=true, Public=false, ExternalChecked=true)
+	if p := byPort[25]; !p.Open || !p.Local || p.Public || !p.ExternalChecked {
+		t.Fatalf("port 25 = %+v, want Open=true Local=true Public=false ExternalChecked=true", p)
+	}
+	// 465: dalam & luar berhasil -> Hijau (Local=true, Public=true, ExternalChecked=true)
+	if p := byPort[465]; !p.Open || !p.Local || !p.Public || !p.ExternalChecked {
+		t.Fatalf("port 465 = %+v, want Open=true Local=true Public=true ExternalChecked=true", p)
+	}
+	// 587: dalam gagal -> Merah (Open=false, Local=false)
+	if p := byPort[587]; p.Open || p.Local || p.Public || !p.ExternalChecked {
+		t.Fatalf("port 587 = %+v, want Open=false Local=false Public=false ExternalChecked=true", p)
+	}
+	// 8080: internal Nginx, tidak diuji keluar
+	if p := byPort[8080]; !p.InternalOnly || p.ExternalChecked {
+		t.Fatalf("port 8080 = %+v, want InternalOnly=true ExternalChecked=false", p)
+	}
+
+	// Panggilan kedua memakai cache (hits tetap 4)
+	if _, err := mgr.GetStatus(); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 4 {
+		t.Fatalf("expected cached external probe (hits=4), got %d", hits)
+	}
+
+	// forcePortProbe=true (Segarkan) memicu uji eksternal ulang (+4 hits -> 8)
+	if _, err := mgr.GetStatusWithOptions(true); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 8 {
+		t.Fatalf("expected forced refresh external probe (hits=8), got %d", hits)
 	}
 }
