@@ -3,10 +3,12 @@ package mail
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"wdev/internal/config"
 	"wdev/internal/pdns"
 	"wdev/internal/store"
@@ -227,5 +229,61 @@ func TestSetupMailFailsWhenMailStackMissingAndNotSilentSuccess(t *testing.T) {
 	rep, repErr := mgr.RepairDomain("nikaget.my.id", func(string) {})
 	if repErr == nil && rep.OK {
 		t.Fatalf("expected RepairDomain report OK=false when mail stack install fails, got %+v", rep)
+	}
+}
+
+func TestGetStatusDetectsStalwartPortAccessibility(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	openPort := ln.Addr().(*net.TCPAddr).Port
+
+	lnClosed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := lnClosed.Addr().(*net.TCPAddr).Port
+	_ = lnClosed.Close()
+
+	if !probeTCPPort("127.0.0.1", openPort, 300*time.Millisecond) {
+		t.Fatalf("expected probeTCPPort open=true on listening port %d", openPort)
+	}
+	if probeTCPPort("127.0.0.1", closedPort, 300*time.Millisecond) {
+		t.Fatalf("expected probeTCPPort open=false on closed port %d", closedPort)
+	}
+
+	mgr, cfg := newTestMailManager(t, "vps")
+	edgeConf := "VPS_NETBIRD_IP=\"127.0.0.1\"\nVPS_PUBLIC_IP=\"203.0.113.10\"\nAPI_KEY=\"k\"\nPDNS_PORT=\"8081\"\n"
+	if err := os.WriteFile(filepath.Join(cfg.WdevEtc, "edge-dns.conf"), []byte(edgeConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mgr.SetPortProbe(func(host string, port int, _ time.Duration) bool {
+		if host == "127.0.0.1" && (port == 25 || port == 587 || port == 8080) {
+			return true
+		}
+		return host == "203.0.113.10" && port == 25
+	})
+
+	st, err := mgr.GetStatus()
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+	want := map[int]struct{ open, pub bool }{
+		25:   {true, true},
+		465:  {false, false},
+		587:  {true, false},
+		993:  {false, false},
+		8080: {true, false},
+	}
+	if len(st.StalwartPorts) != len(want) {
+		t.Fatalf("expected %d ports, got %+v", len(want), st.StalwartPorts)
+	}
+	for _, p := range st.StalwartPorts {
+		exp := want[p.Port]
+		if p.Open != exp.open || p.Public != exp.pub {
+			t.Fatalf("port %d status = %+v, want open=%v public=%v", p.Port, p, exp.open, exp.pub)
+		}
 	}
 }

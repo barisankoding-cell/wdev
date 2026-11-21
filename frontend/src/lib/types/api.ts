@@ -263,9 +263,17 @@ export interface RelayConfig {
 	updated_at?: string;
 }
 
+export interface MailPortStatus {
+	port: number;
+	label: string;
+	open: boolean;
+	public?: boolean;
+}
+
 export interface MailStatus {
 	mode?: ServerMode;
 	stalwart_active: boolean;
+	stalwart_ports?: MailPortStatus[];
 	snappymail_active: boolean;
 	relay_only: boolean;
 	outbound_default?: string;

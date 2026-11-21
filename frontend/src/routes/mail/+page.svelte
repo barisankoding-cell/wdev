@@ -90,6 +90,18 @@
 		domainGroups.reduce((sum, g) => sum + (g.accounts?.length ?? 0), 0)
 	);
 
+	const stalwartPorts = $derived(
+		mailStatus?.stalwart_ports?.length
+			? mailStatus.stalwart_ports
+			: [
+					{ port: 25, label: 'SMTP', open: false, public: false },
+					{ port: 465, label: 'SMTPS', open: false, public: false },
+					{ port: 587, label: 'Submission', open: false, public: false },
+					{ port: 993, label: 'IMAPS', open: false, public: false },
+					{ port: 8080, label: 'Admin HTTP', open: false, public: false }
+				]
+	);
+
 	const filteredGroups = $derived(
 		domainFilter ? domainGroups.filter((g) => g.domain === domainFilter) : domainGroups
 	);
@@ -608,7 +620,36 @@
 				</div>
 			</Card.Header>
 			<Card.Content>
-				<p class="text-xs text-muted-foreground">Port: 25, 465, 587, 993, 8080</p>
+				<div class="flex flex-wrap items-center gap-1.5" aria-label="Status port Stalwart">
+					<span class="text-xs text-muted-foreground">Port:</span>
+					{#each stalwartPorts as item (item.port)}
+						<span
+							title={!mailStatus
+								? `${item.label} (Port ${item.port}): Memeriksa status port...`
+								: `${item.label} (Port ${item.port}): ${
+										item.open
+											? item.public
+												? 'Terbuka & dapat diakses (lokal + publik)'
+												: 'Terbuka / dapat diakses'
+											: 'Belum terbuka / tidak dapat diakses'
+									}`}
+							class={!mailStatus
+								? 'inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] font-medium text-secondary-foreground'
+								: item.open
+									? 'inline-flex items-center gap-1 rounded-md border border-success/35 bg-success/15 px-1.5 py-0.5 font-mono text-[11px] font-medium text-success'
+									: 'inline-flex items-center gap-1 rounded-md border border-destructive/35 bg-destructive/15 px-1.5 py-0.5 font-mono text-[11px] font-medium text-destructive'}
+						>
+							<span
+								class={!mailStatus
+									? 'size-1.5 rounded-full bg-muted-foreground/60'
+									: item.open
+										? 'size-1.5 rounded-full bg-success'
+										: 'size-1.5 rounded-full bg-destructive'}
+							></span>
+							{item.port}
+						</span>
+					{/each}
+				</div>
 			</Card.Content>
 		</Card.Root>
 

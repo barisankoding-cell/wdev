@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +29,7 @@ type Manager struct {
 	store         *store.Store
 	pdnsMgr       *pdns.Manager
 	ensureStackFn func(ctx context.Context, cb func(string), domain string) error
+	portProbeFn   func(host string, port int, timeout time.Duration) bool
 
 	// LastRelayDNS menyimpan hasil rekonsiliasi DNS dari operasi relay terakhir
 	// agar handler HTTP/CLI bisa melaporkan record yang dihapus & dibuat.
@@ -37,6 +40,11 @@ type Manager struct {
 // SetInstaller mendaftarkan fungsi pemasang Mail Stack otomatis bila Stalwart/SnappyMail belum tersedia.
 func (m *Manager) SetInstaller(fn func(ctx context.Context, cb func(string), domain string) error) {
 	m.ensureStackFn = fn
+}
+
+// SetPortProbe memungkinkan penggantian fungsi cek TCP port untuk pengujian unit.
+func (m *Manager) SetPortProbe(fn func(host string, port int, timeout time.Duration) bool) {
+	m.portProbeFn = fn
 }
 
 // setLastRelayDNS mencatat hasil rekonsiliasi DNS secara aman.
@@ -53,9 +61,17 @@ func (m *Manager) LastRelayDNSReport() RelayDNSReport {
 	return m.LastRelayDNS
 }
 
+type PortStatus struct {
+	Port   int    `json:"port"`
+	Label  string `json:"label"`
+	Open   bool   `json:"open"`
+	Public bool   `json:"public,omitempty"`
+}
+
 type MailStatus struct {
 	Mode             string                 `json:"mode"`
 	StalwartActive   bool                   `json:"stalwart_active"`
+	StalwartPorts    []PortStatus           `json:"stalwart_ports,omitempty"`
 	SnappyMailActive bool                   `json:"snappymail_active"`
 	RelayOnly        bool                   `json:"relay_only"`
 	OutboundDefault  string                 `json:"outbound_default,omitempty"`
@@ -1272,17 +1288,80 @@ server {
 // Manager Public Interface
 // -----------------------------------------------------------------------------
 
+func probeTCPPort(host string, port int, timeout time.Duration) bool {
+	if host == "" || port <= 0 || port > 65535 {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func (m *Manager) checkStalwartPorts() []PortStatus {
+	defs := []struct {
+		port  int
+		label string
+	}{
+		{25, "SMTP"},
+		{465, "SMTPS"},
+		{587, "Submission"},
+		{993, "IMAPS"},
+		{8080, "Admin HTTP"},
+	}
+	probe := m.portProbeFn
+	if probe == nil {
+		probe = probeTCPPort
+	}
+
+	publicIP := ""
+	if m.pdnsMgr != nil && m.pdnsMgr.GetMode() == "vps" {
+		if ip := strings.TrimSpace(m.pdnsMgr.LoadConfig().VPSPublicIP); ip != "" {
+			publicIP = ip
+		}
+	}
+
+	results := make([]PortStatus, len(defs))
+	var wg sync.WaitGroup
+	for i, d := range defs {
+		wg.Add(1)
+		go func(idx, p int, lbl string) {
+			defer wg.Done()
+			localOpen := probe("127.0.0.1", p, 250*time.Millisecond) || probe("::1", p, 150*time.Millisecond)
+			pubOpen := false
+			if publicIP != "" {
+				pubOpen = probe(publicIP, p, 300*time.Millisecond)
+			}
+			results[idx] = PortStatus{
+				Port:   p,
+				Label:  lbl,
+				Open:   localOpen || pubOpen,
+				Public: pubOpen,
+			}
+		}(i, d.port, d.label)
+	}
+	wg.Wait()
+	return results
+}
+
 func (m *Manager) GetStatus() (MailStatus, error) {
+	mode := "edge"
+	if m.pdnsMgr != nil {
+		mode = m.pdnsMgr.GetMode()
+	}
 	status := MailStatus{
-		Mode:         m.pdnsMgr.GetMode(),
+		Mode:         mode,
 		DomainRelays: make(map[string]RelayConfig),
 		Domains:      make([]DomainSummary, 0),
 	}
 
-	// 1. Cek status service stalwart
+	// 1. Cek status service stalwart & aksesibilitas port TCP
 	if err := exec.Command("systemctl", "is-active", "--quiet", "stalwart").Run(); err == nil {
 		status.StalwartActive = true
 	}
+	status.StalwartPorts = m.checkStalwartPorts()
 
 	// 2. Cek SnappyMail
 	if _, err := os.Stat("/var/www/snappymail/index.php"); err == nil {
