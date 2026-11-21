@@ -432,11 +432,23 @@ export interface PostgresConfig {
 	restart?: boolean;
 }
 
+export interface PostgresRoleInfo {
+	name: string;
+	superuser: boolean;
+	can_login: boolean;
+	create_db?: boolean;
+	create_role?: boolean;
+	replication?: boolean;
+	bypass_rls?: boolean;
+	conn_limit?: number;
+	databases?: string[];
+}
+
 export interface PostgresInspectResult {
 	version: string;
 	port: number;
 	databases: { name: string; owner: string; size: string }[];
-	roles: { name: string; superuser: boolean; can_login: boolean }[];
+	roles: PostgresRoleInfo[];
 	connections: { pid: number; database: string; user: string; client_addr: string; state: string; query: string }[];
 }
 
@@ -445,6 +457,27 @@ export interface PostgresCreateDBPayload {
 	database: string;
 	owner: string;
 	password?: string;
+	sudo_pass?: string;
+}
+
+export interface PostgresSaveRolePayload {
+	version: string;
+	role: string;
+	password?: string;
+	can_login: boolean;
+	superuser: boolean;
+	create_db: boolean;
+	create_role: boolean;
+	replication: boolean;
+	bypass_rls: boolean;
+	conn_limit: number;
+	grant_db?: string;
+	sudo_pass?: string;
+}
+
+export interface PostgresDeleteRolePayload {
+	version: string;
+	role: string;
 	sudo_pass?: string;
 }
 

@@ -14,6 +14,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
@@ -49,6 +50,12 @@
 	let newEmail = $state('');
 	let newEmailPass = $state('');
 	let addingAcc = $state(false);
+
+	// Change Email Account Password Modal
+	let editPassOpen = $state(false);
+	let editPassEmail = $state('');
+	let editPassValue = $state('');
+	let editingPass = $state(false);
 
 	// Delete Domain Modal
 	let deleteDomOpen = $state(false);
@@ -182,6 +189,37 @@
 			toast.error(err instanceof Error ? err.message : 'Gagal menambahkan akun email');
 		} finally {
 			addingAcc = false;
+		}
+	}
+
+	function openEditAccountPass(email: string) {
+		editPassEmail = email;
+		editPassValue = '';
+		editPassOpen = true;
+	}
+
+	async function submitEditAccountPass(e: SubmitEvent) {
+		e.preventDefault();
+		const em = editPassEmail.trim();
+		if (!em) return;
+		if (!editPassValue.trim()) {
+			toast.warning('Password baru wajib diisi.');
+			return;
+		}
+		if (editPassValue.trim().length < 8) {
+			toast.warning('Password baru minimal 8 karakter.');
+			return;
+		}
+		editingPass = true;
+		try {
+			const res = await api.changeMailAccountPassword(em, editPassValue.trim());
+			toast.success(res.message || `Password akun ${em} berhasil diperbarui.`);
+			editPassOpen = false;
+			await loadMail();
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : 'Gagal mengubah password akun email');
+		} finally {
+			editingPass = false;
 		}
 	}
 
@@ -944,7 +982,7 @@
 										{/if}
 									</Table.Cell>
 									<Table.Cell data-label="Aksi">
-										<div class="flex justify-end gap-1.5">
+										<div class="flex flex-wrap justify-end gap-1.5">
 											<Button
 												variant="outline"
 												size="xs"
@@ -954,6 +992,15 @@
 											>
 												Webmail
 												<ExternalLinkIcon data-icon="inline-end" />
+											</Button>
+											<Button
+												variant="outline"
+												size="xs"
+												disabled={Boolean(accountPending[acc.email])}
+												onclick={() => openEditAccountPass(acc.email)}
+											>
+												<KeyRoundIcon data-icon="inline-start" />
+												Ubah Password
 											</Button>
 											{#if !acc.is_admin}
 												<Button
@@ -1005,14 +1052,14 @@
 				</Field.Field>
 				<Field.Field>
 					<Field.FieldLabel for="mail-new-password">Password Kotak Pos</Field.FieldLabel>
-					<Input
+					<PasswordInput
 						id="mail-new-password"
-						type="password"
 						autocomplete="new-password"
 						placeholder="Minimal 8 karakter..."
 						bind:value={newEmailPass}
 						required
 					/>
+					<Field.FieldDescription>Isi manual atau klik Generate untuk membuat password kuat acak.</Field.FieldDescription>
 				</Field.Field>
 			</Field.FieldGroup>
 			<Dialog.Footer>
@@ -1023,6 +1070,44 @@
 						Membuat Akun...
 					{:else}
 						Buat Akun Email
+					{/if}
+				</Button>
+			</Dialog.Footer>
+		</form>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Change Email Account Password Dialog -->
+<Dialog.Root bind:open={editPassOpen}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>Ubah Password Akun Email</Dialog.Title>
+			<Dialog.Description>
+				Perbarui kata sandi kotak pos untuk <strong class="font-mono">{editPassEmail}</strong>.
+			</Dialog.Description>
+		</Dialog.Header>
+		<form onsubmit={submitEditAccountPass} class="flex flex-col gap-4">
+			<Field.FieldGroup>
+				<Field.Field>
+					<Field.FieldLabel for="mail-edit-password">Password Baru</Field.FieldLabel>
+					<PasswordInput
+						id="mail-edit-password"
+						autocomplete="new-password"
+						placeholder="Minimal 8 karakter..."
+						bind:value={editPassValue}
+						required
+					/>
+					<Field.FieldDescription>Isi manual atau klik Generate untuk membuat password kuat acak.</Field.FieldDescription>
+				</Field.Field>
+			</Field.FieldGroup>
+			<Dialog.Footer>
+				<Button type="button" variant="outline" onclick={() => (editPassOpen = false)}>Batal</Button>
+				<Button type="submit" disabled={editingPass}>
+					{#if editingPass}
+						<Spinner data-icon="inline-start" />
+						Menyimpan...
+					{:else}
+						Simpan Password
 					{/if}
 				</Button>
 			</Dialog.Footer>
@@ -1164,9 +1249,9 @@
 						<Field.FieldLabel for="mail-relay-secret">
 							{relayProvider === 'resend' ? 'API Key Resend (re_...)' : 'Master SMTP Key Brevo (xkeysib-...)'}
 						</Field.FieldLabel>
-						<Input
+						<PasswordInput
 							id="mail-relay-secret"
-							type="password"
+							canGenerate={false}
 							autocomplete="current-password"
 							placeholder={relayProvider === 'resend' ? 're_123456789...' : 'xkeysib-123456789...'}
 							bind:value={relaySecret}
@@ -1194,7 +1279,7 @@
 					</Field.Field>
 					<Field.Field>
 						<Field.FieldLabel for="mail-relay-pass">Password SMTP</Field.FieldLabel>
-						<Input id="mail-relay-pass" type="password" bind:value={relayPass} />
+						<PasswordInput id="mail-relay-pass" canGenerate={false} autocomplete="current-password" placeholder="Password SMTP..." bind:value={relayPass} />
 					</Field.Field>
 				{/if}
 
@@ -1393,9 +1478,10 @@
 				{#if setupRelayProv === 'resend'}
 					<Field.Field>
 						<Field.FieldLabel for="mail-setup-resend-key">API Key Resend (re_...)</Field.FieldLabel>
-						<Input
+						<PasswordInput
 							id="mail-setup-resend-key"
-							type="password"
+							canGenerate={false}
+							autocomplete="current-password"
 							placeholder="re_123456789..."
 							bind:value={setupResendKey}
 							required
@@ -1408,9 +1494,10 @@
 					</Field.Field>
 					<Field.Field>
 						<Field.FieldLabel for="mail-setup-brevo-key">Brevo SMTP Key (xsmtpsib-...)</Field.FieldLabel>
-						<Input
+						<PasswordInput
 							id="mail-setup-brevo-key"
-							type="password"
+							canGenerate={false}
+							autocomplete="current-password"
 							placeholder="xsmtpsib-..."
 							bind:value={setupBrevoKey}
 							required
@@ -1438,7 +1525,7 @@
 					</Field.Field>
 					<Field.Field>
 						<Field.FieldLabel for="mail-setup-custom-pass">Password</Field.FieldLabel>
-						<Input id="mail-setup-custom-pass" type="password" bind:value={setupCustomPass} />
+						<PasswordInput id="mail-setup-custom-pass" canGenerate={false} autocomplete="current-password" placeholder="Password SMTP..." bind:value={setupCustomPass} />
 					</Field.Field>
 				{/if}
 			</Field.FieldGroup>

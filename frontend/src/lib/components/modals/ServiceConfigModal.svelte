@@ -13,7 +13,9 @@
 		PHPConfig,
 		PostgresConfig,
 		PostgresCreateDBPayload,
+		PostgresDeleteRolePayload,
 		PostgresInspectResult,
+		PostgresSaveRolePayload,
 		RedisConfig,
 		RedisInspectResult
 	} from '#lib/types/api.js';
@@ -43,6 +45,8 @@
 	let inspectError = $state('');
 	let inspectSuccess = $state('');
 	let creatingDB = $state(false);
+	let savingRole = $state(false);
+	let deletingRole = $state('');
 	let flushingDB = $state<number | null>(null);
 
 	let logsText = $state('');
@@ -216,6 +220,58 @@
 		}
 	}
 
+	async function handleSavePostgresRole(payload: PostgresSaveRolePayload): Promise<boolean> {
+		savingRole = true;
+		inspectError = '';
+		inspectSuccess = '';
+		try {
+			const res = await cp.runWithSudoRetry(
+				'Mengelola role PostgreSQL memerlukan password sudo.',
+				(sudoPass) => api.savePostgresRole(sudoPass ? { ...payload, sudo_pass: sudoPass } : payload)
+			);
+			if (!res) return false;
+			inspectSuccess =
+				res.status === 'created'
+					? `Role "${payload.role}" berhasil dibuat.`
+					: `Role "${payload.role}" berhasil diperbarui.`;
+			await loadInspect();
+			return true;
+		} catch (err) {
+			inspectError = err instanceof Error ? err.message : 'Gagal menyimpan role PostgreSQL';
+			return false;
+		} finally {
+			savingRole = false;
+		}
+	}
+
+	async function handleDeletePostgresRole(payload: PostgresDeleteRolePayload): Promise<boolean> {
+		const confirmed = await cp.confirm({
+			title: `Hapus Role PostgreSQL "${payload.role}"`,
+			description: `Hapus role/user "${payload.role}" dari PostgreSQL? Tindakan ini tidak dapat dibatalkan.`,
+			confirmText: 'Ya, Hapus Role',
+			destructive: true
+		});
+		if (!confirmed) return false;
+		deletingRole = payload.role;
+		inspectError = '';
+		inspectSuccess = '';
+		try {
+			const res = await cp.runWithSudoRetry(
+				'Menghapus role PostgreSQL memerlukan password sudo.',
+				(sudoPass) => api.deletePostgresRole(sudoPass ? { ...payload, sudo_pass: sudoPass } : payload)
+			);
+			if (!res) return false;
+			inspectSuccess = `Role "${payload.role}" berhasil dihapus.`;
+			await loadInspect();
+			return true;
+		} catch (err) {
+			inspectError = err instanceof Error ? err.message : 'Gagal menghapus role PostgreSQL';
+			return false;
+		} finally {
+			deletingRole = '';
+		}
+	}
+
 	async function loadLogs() {
 		logsLoading = true;
 		logsText = 'Memuat log layanan...';
@@ -281,7 +337,7 @@
 					<Tabs.Trigger value="settings">Pengaturan</Tabs.Trigger>
 					{#if hasInspect}
 						<Tabs.Trigger value="inspect">
-							<span class="truncate">{cp.serviceConfigTarget === 'redis' ? 'Inspeksi' : 'Database'}</span>
+							<span class="truncate">{cp.serviceConfigTarget === 'redis' ? 'Inspeksi' : 'Database & Roles'}</span>
 						</Tabs.Trigger>
 					{/if}
 					<Tabs.Trigger value="logs">Log</Tabs.Trigger>
@@ -314,12 +370,16 @@
 								{inspectSuccess}
 								{saving}
 								{creatingDB}
+								{savingRole}
+								{deletingRole}
 								{formError}
 								onVersionChange={(v) => loadConfig(v)}
 								onSave={saveConfig}
 								onCancel={() => (cp.serviceConfigOpen = false)}
 								onRefreshInspect={loadInspect}
 								onCreateDB={handleCreatePostgresDB}
+								onSaveRole={handleSavePostgresRole}
+								onDeleteRole={handleDeletePostgresRole}
 							/>
 						{:else if cp.serviceConfigTarget === 'php-fpm' && phpCfg}
 							<PhpConfigPanel
@@ -368,12 +428,16 @@
 									{inspectSuccess}
 									{saving}
 									{creatingDB}
+									{savingRole}
+									{deletingRole}
 									{formError}
 									onVersionChange={(v) => loadConfig(v)}
 									onSave={saveConfig}
 									onCancel={() => (cp.serviceConfigOpen = false)}
 									onRefreshInspect={loadInspect}
 									onCreateDB={handleCreatePostgresDB}
+									onSaveRole={handleSavePostgresRole}
+									onDeleteRole={handleDeletePostgresRole}
 								/>
 							{/if}
 						</Tabs.Content>

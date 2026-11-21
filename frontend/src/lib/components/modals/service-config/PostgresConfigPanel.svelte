@@ -10,11 +10,22 @@
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
-	import type { PostgresConfig, PostgresCreateDBPayload, PostgresInspectResult } from '#lib/types/api.js';
+	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
+	import type {
+		PostgresConfig,
+		PostgresCreateDBPayload,
+		PostgresDeleteRolePayload,
+		PostgresInspectResult,
+		PostgresRoleInfo,
+		PostgresSaveRolePayload
+	} from '#lib/types/api.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import UserPlusIcon from '@lucide/svelte/icons/user-plus';
 
 	let {
 		mode,
@@ -25,12 +36,16 @@
 		inspectSuccess = '',
 		saving = false,
 		creatingDB = false,
+		savingRole = false,
+		deletingRole = '',
 		formError = '',
 		onVersionChange,
 		onSave,
 		onCancel,
 		onRefreshInspect,
-		onCreateDB
+		onCreateDB,
+		onSaveRole,
+		onDeleteRole
 	}: {
 		mode: 'settings' | 'inspect';
 		config: PostgresConfig;
@@ -40,12 +55,16 @@
 		inspectSuccess: string;
 		saving: boolean;
 		creatingDB: boolean;
+		savingRole?: boolean;
+		deletingRole?: string;
 		formError: string;
 		onVersionChange: (version: string) => void;
 		onSave: (payload: Record<string, unknown>) => void;
 		onCancel: () => void;
 		onRefreshInspect: () => void;
 		onCreateDB: (payload: PostgresCreateDBPayload) => Promise<boolean>;
+		onSaveRole?: (payload: PostgresSaveRolePayload) => Promise<boolean>;
+		onDeleteRole?: (payload: PostgresDeleteRolePayload) => Promise<boolean>;
 	} = $props();
 
 	let version = $state('16');
@@ -67,6 +86,23 @@
 	let newDBName = $state('');
 	let newDBOwner = $state('');
 	let newDBPass = $state('');
+
+	// Manajemen Roles / Users
+	let roleFormOpen = $state(false);
+	let roleEditing = $state(false);
+	let roleName = $state('');
+	let rolePass = $state('');
+	let roleCanLogin = $state(true);
+	let roleSuperuser = $state(false);
+	let roleCreateDB = $state(false);
+	let roleCreateRole = $state(false);
+	let roleReplication = $state(false);
+	let roleBypassRLS = $state(false);
+	let roleConnLimitStr = $state('-1');
+	let roleGrantDB = $state('');
+	let roleFormError = $state('');
+
+	const isSystemPostgresRole = $derived(roleEditing && roleName.trim() === 'postgres');
 
 	$effect(() => {
 		version = config.version || '16';
@@ -171,6 +207,75 @@
 		if (ok) {
 			newDBName = '';
 			newDBPass = '';
+		}
+	}
+
+	function openCreateRole() {
+		roleFormOpen = true;
+		roleEditing = false;
+		roleName = '';
+		rolePass = '';
+		roleCanLogin = true;
+		roleSuperuser = false;
+		roleCreateDB = false;
+		roleCreateRole = false;
+		roleReplication = false;
+		roleBypassRLS = false;
+		roleConnLimitStr = '-1';
+		roleGrantDB = '';
+		roleFormError = '';
+	}
+
+	function openEditRole(role: PostgresRoleInfo) {
+		roleFormOpen = true;
+		roleEditing = true;
+		roleName = role.name;
+		rolePass = '';
+		roleCanLogin = role.can_login;
+		roleSuperuser = role.superuser;
+		roleCreateDB = Boolean(role.create_db);
+		roleCreateRole = Boolean(role.create_role);
+		roleReplication = Boolean(role.replication);
+		roleBypassRLS = Boolean(role.bypass_rls);
+		roleConnLimitStr = String(role.conn_limit ?? -1);
+		roleGrantDB = '';
+		roleFormError = '';
+	}
+
+	async function handleSaveRoleSubmit(e: SubmitEvent) {
+		e.preventDefault();
+		if (!onSaveRole) return;
+		roleFormError = '';
+		const cleanName = roleName.trim();
+		if (!cleanName) {
+			roleFormError = 'Nama role / username wajib diisi.';
+			return;
+		}
+		if (!roleEditing && roleCanLogin && !rolePass) {
+			roleFormError = 'Password wajib diisi atau di-generate saat membuat role login baru.';
+			return;
+		}
+		const connLim = parseInt(roleConnLimitStr.trim(), 10);
+		if (Number.isNaN(connLim) || connLim < -1) {
+			roleFormError = 'Connection limit harus berupa angka >= -1 (-1 berarti tanpa batas).';
+			return;
+		}
+		const ok = await onSaveRole({
+			version,
+			role: cleanName,
+			password: rolePass || undefined,
+			can_login: isSystemPostgresRole ? true : roleCanLogin,
+			superuser: isSystemPostgresRole ? true : roleSuperuser,
+			create_db: roleCreateDB,
+			create_role: roleCreateRole,
+			replication: roleReplication,
+			bypass_rls: roleBypassRLS,
+			conn_limit: connLim,
+			grant_db: roleGrantDB || undefined
+		});
+		if (ok) {
+			roleFormOpen = false;
+			rolePass = '';
 		}
 	}
 </script>
@@ -288,14 +393,14 @@
 
 				<Field.Field>
 					<Field.FieldLabel for="pg-cfg-newpass">Setel Password User postgres (Opsional)</Field.FieldLabel>
-					<Input
+					<PasswordInput
 						id="pg-cfg-newpass"
 						name="new_postgres_password"
-						type="password"
 						autocomplete="new-password"
 						placeholder="Kosongkan bila tidak diubah..."
 						bind:value={newPostgresPassword}
 					/>
+					<Field.FieldDescription>Isi manual atau klik Generate bila ingin menyetel ulang password user <code>postgres</code>.</Field.FieldDescription>
 				</Field.Field>
 			</Field.FieldGroup>
 		</Field.FieldSet>
@@ -473,9 +578,8 @@
 					</Field.Field>
 					<Field.Field>
 						<Field.FieldLabel for="pg-new-db-pass">Password User Baru (jika user baru)</Field.FieldLabel>
-						<Input
+						<PasswordInput
 							id="pg-new-db-pass"
-							type="password"
 							autocomplete="new-password"
 							placeholder="Wajib bila membuat user baru..."
 							bind:value={newDBPass}
@@ -528,19 +632,231 @@
 			</ResponsiveTableWrapper>
 		</div>
 
-		<div class="flex flex-col gap-2">
-			<h4 class="text-sm font-semibold">Roles / Users</h4>
-			<div class="flex flex-wrap gap-2">
-				{#if !inspectData?.roles || inspectData.roles.length === 0}
-					<span class="text-xs text-muted-foreground">Tidak ada role terdeteksi.</span>
-				{:else}
-					{#each inspectData.roles as role (role.name)}
-						<Badge variant="outline">
-							{role.name}{role.superuser ? ' (superuser)' : ''}{!role.can_login ? ' [nologin]' : ''}
-						</Badge>
-					{/each}
-				{/if}
+		<div class="flex flex-col gap-3">
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				<div>
+					<h4 class="text-sm font-semibold">Roles / Users PostgreSQL</h4>
+					<p class="text-xs text-muted-foreground">Kelola user, password, hak akses (SUPERUSER, CREATEDB, CREATEROLE), batas koneksi, dan akses database.</p>
+				</div>
+				<Button type="button" variant="outline" size="sm" onclick={() => (roleFormOpen ? (roleFormOpen = false) : openCreateRole())}>
+					<UserPlusIcon data-icon="inline-start" />
+					{roleFormOpen ? 'Tutup Form Role' : 'Tambah Role / User'}
+				</Button>
 			</div>
+
+			{#if roleFormOpen}
+				<form onsubmit={handleSaveRoleSubmit} class="rounded-lg border bg-muted/20 p-4">
+					<Field.FieldSet>
+						<Field.FieldLegend variant="label">
+							{roleEditing ? `Edit Role & Password: ${roleName}` : 'Tambah Role / User Baru'}
+						</Field.FieldLegend>
+
+						{#if roleFormError}
+							<Alert.Root variant="destructive" class="mb-3">
+								<AlertCircleIcon />
+								<Alert.Description class="text-xs">{roleFormError}</Alert.Description>
+							</Alert.Root>
+						{/if}
+
+						<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
+							<Field.Field>
+								<Field.FieldLabel for="pg-role-name">Username / Nama Role</Field.FieldLabel>
+								<Input
+									id="pg-role-name"
+									placeholder="app_user"
+									autocorrect="off"
+									autocapitalize="none"
+									spellcheck={false}
+									disabled={roleEditing}
+									bind:value={roleName}
+									required
+								/>
+							</Field.Field>
+
+							<Field.Field>
+								<Field.FieldLabel for="pg-role-connlimit">Connection Limit (-1 = Unlimited)</Field.FieldLabel>
+								<Input
+									id="pg-role-connlimit"
+									inputmode="numeric"
+									bind:value={roleConnLimitStr}
+									required
+								/>
+							</Field.Field>
+
+							<Field.Field class="sm:col-span-2">
+								<Field.FieldLabel for="pg-role-password">
+									{roleEditing ? 'Password Baru (Kosongkan bila tidak diubah)' : 'Password Role / User'}
+								</Field.FieldLabel>
+								<PasswordInput
+									id="pg-role-password"
+									autocomplete="new-password"
+									placeholder={roleEditing ? 'Kosongkan bila tidak mengubah password...' : 'Wajib untuk role LOGIN...'}
+									bind:value={rolePass}
+								/>
+							</Field.Field>
+
+							<Field.Field class="sm:col-span-2">
+								<Field.FieldLabel for="pg-role-grant-db">Beri Hak Akses Penuh ke Database (Opsional)</Field.FieldLabel>
+								<Select.Root type="single" bind:value={roleGrantDB}>
+									<Select.Trigger id="pg-role-grant-db" class="w-full">
+										{roleGrantDB || 'Tidak perlu GRANT tambahan'}
+									</Select.Trigger>
+									<Select.Content>
+										<Select.Group>
+											<Select.Item value="">Tidak perlu GRANT tambahan</Select.Item>
+											{#each inspectData?.databases || [] as db (db.name)}
+												<Select.Item value={db.name}>{db.name} (owner: {db.owner})</Select.Item>
+											{/each}
+										</Select.Group>
+									</Select.Content>
+								</Select.Root>
+								<Field.FieldDescription>
+									Memberikan <code>ALL PRIVILEGES</code> pada database &amp; schema <code>public</code> terpilih.
+								</Field.FieldDescription>
+							</Field.Field>
+
+							<div class="sm:col-span-2 flex flex-col gap-2">
+								<span class="text-xs font-medium text-foreground">Atribut &amp; Hak Akses Role</span>
+								<div class="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+									<label class="flex items-center gap-2 text-xs">
+										<Checkbox bind:checked={roleCanLogin} disabled={isSystemPostgresRole} />
+										<span>LOGIN (Boleh Login)</span>
+									</label>
+									<label class="flex items-center gap-2 text-xs">
+										<Checkbox bind:checked={roleSuperuser} disabled={isSystemPostgresRole} />
+										<span>SUPERUSER</span>
+									</label>
+									<label class="flex items-center gap-2 text-xs">
+										<Checkbox bind:checked={roleCreateDB} />
+										<span>CREATEDB</span>
+									</label>
+									<label class="flex items-center gap-2 text-xs">
+										<Checkbox bind:checked={roleCreateRole} />
+										<span>CREATEROLE</span>
+									</label>
+									<label class="flex items-center gap-2 text-xs">
+										<Checkbox bind:checked={roleReplication} />
+										<span>REPLICATION</span>
+									</label>
+									<label class="flex items-center gap-2 text-xs">
+										<Checkbox bind:checked={roleBypassRLS} />
+										<span>BYPASSRLS</span>
+									</label>
+								</div>
+								{#if isSystemPostgresRole}
+									<p class="text-[11px] text-muted-foreground">
+										Role sistem <code>postgres</code> selalu mempertahankan hak <code>SUPERUSER</code> dan <code>LOGIN</code>.
+									</p>
+								{/if}
+							</div>
+						</Field.FieldGroup>
+
+						<div class="mt-4 flex flex-wrap justify-end gap-2">
+							<Button type="button" variant="outline" size="sm" onclick={() => (roleFormOpen = false)}>Batal</Button>
+							<Button type="submit" size="sm" disabled={savingRole}>
+								{#if savingRole}
+									<Spinner data-icon="inline-start" />
+									Menyimpan Role...
+								{:else}
+									{roleEditing ? 'Simpan Perubahan Role' : 'Buat Role'}
+								{/if}
+							</Button>
+						</div>
+					</Field.FieldSet>
+				</form>
+			{/if}
+
+			<ResponsiveTableWrapper label="Daftar Roles / Users PostgreSQL">
+				<Table.Root>
+					<Table.Header>
+						<Table.Row>
+							<Table.Head>Username / Role</Table.Head>
+							<Table.Head>Status Login</Table.Head>
+							<Table.Head>Hak Akses &amp; Limit</Table.Head>
+							<Table.Head>Owner Database</Table.Head>
+							<Table.Head class="text-right">Aksi</Table.Head>
+						</Table.Row>
+					</Table.Header>
+					<Table.Body>
+						{#if !inspectData?.roles || inspectData.roles.length === 0}
+							<Table.Row>
+								<Table.Cell colspan={5} class="py-4 text-center text-muted-foreground">
+									{inspectLoading ? 'Memuat daftar role...' : 'Tidak ada role terdeteksi.'}
+								</Table.Cell>
+							</Table.Row>
+						{:else}
+							{#each inspectData.roles as role (role.name)}
+								<Table.Row>
+									<Table.Cell data-label="Role" class="font-mono font-semibold">{role.name}</Table.Cell>
+									<Table.Cell data-label="Login">
+										<Badge variant={role.can_login ? 'secondary' : 'outline'}>
+											{role.can_login ? 'LOGIN' : 'NOLOGIN'}
+										</Badge>
+									</Table.Cell>
+									<Table.Cell data-label="Hak Akses">
+										<div class="flex flex-wrap gap-1">
+											{#if role.superuser}
+												<Badge variant="destructive">SUPERUSER</Badge>
+											{/if}
+											{#if role.create_db}
+												<Badge variant="outline">CREATEDB</Badge>
+											{/if}
+											{#if role.create_role}
+												<Badge variant="outline">CREATEROLE</Badge>
+											{/if}
+											{#if role.replication}
+												<Badge variant="outline">REPLICATION</Badge>
+											{/if}
+											{#if role.bypass_rls}
+												<Badge variant="outline">BYPASSRLS</Badge>
+											{/if}
+											{#if !role.superuser && !role.create_db && !role.create_role && !role.replication && !role.bypass_rls}
+												<span class="text-xs text-muted-foreground">Standard Role</span>
+											{/if}
+											<Badge variant="outline" class="font-mono text-[11px]">
+												{role.conn_limit === undefined || role.conn_limit < 0 ? 'Limit: ∞' : `Limit: ${role.conn_limit}`}
+											</Badge>
+										</div>
+									</Table.Cell>
+									<Table.Cell data-label="Database" class="font-mono text-xs text-muted-foreground">
+										{role.databases?.length ? role.databases.join(', ') : '-'}
+									</Table.Cell>
+									<Table.Cell data-label="Aksi">
+										<div class="flex flex-wrap justify-end gap-1.5">
+											<Button
+												type="button"
+												variant="outline"
+												size="xs"
+												onclick={() => openEditRole(role)}
+											>
+												<KeyRoundIcon data-icon="inline-start" />
+												Edit / Password
+											</Button>
+											{#if role.name !== 'postgres' && onDeleteRole}
+												<Button
+													type="button"
+													variant="destructive"
+													size="xs"
+													disabled={deletingRole === role.name}
+													onclick={() => onDeleteRole({ version, role: role.name })}
+												>
+													{#if deletingRole === role.name}
+														<Spinner data-icon="inline-start" />
+														Menghapus...
+													{:else}
+														<Trash2Icon data-icon="inline-start" />
+														Hapus
+													{/if}
+												</Button>
+											{/if}
+										</div>
+									</Table.Cell>
+								</Table.Row>
+							{/each}
+						{/if}
+					</Table.Body>
+				</Table.Root>
+			</ResponsiveTableWrapper>
 		</div>
 
 		<div class="flex flex-col gap-2">

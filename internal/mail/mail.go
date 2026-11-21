@@ -1736,6 +1736,60 @@ func (m *Manager) DeleteAccount(email string) error {
 	return nil
 }
 
+// ChangeAccountPassword memperbarui kata sandi akun email yang sudah terdaftar di Stalwart.
+func (m *Manager) ChangeAccountPassword(email, password string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	password = strings.TrimSpace(password)
+	if email == "" || password == "" {
+		return fmt.Errorf("email dan password wajib diisi")
+	}
+	if strings.ContainsAny(password, "\r\n") {
+		return fmt.Errorf("password tidak boleh mengandung baris baru")
+	}
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 || parts[0] == "" || !mailUserPartRe.MatchString(parts[0]) || !validMailDomain(parts[1]) {
+		return fmt.Errorf("format email tidak valid")
+	}
+	domainPart := parts[1]
+
+	adminEmail, adminPass, err := m.pickValidAdminCred(domainPart)
+	if err != nil {
+		return fmt.Errorf("kredensial admin Stalwart belum valid: %w", err)
+	}
+	did, err := m.findDomainID(adminEmail, adminPass, domainPart)
+	if err != nil || did == "" {
+		return fmt.Errorf("domain '%s' tidak ditemukan di Stalwart", domainPart)
+	}
+	accID, _, _ := m.findAccountByUsername(adminEmail, adminPass, did, parts[0])
+	if accID == "" {
+		return fmt.Errorf("akun '%s' tidak ditemukan", email)
+	}
+
+	credBytes, err := json.Marshal(map[string]any{
+		"0": map[string]any{
+			"@type":  "Password",
+			"secret": password,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("gagal menyusun payload kredensial: %w", err)
+	}
+
+	out, err := m.runStalwartCli(adminEmail, adminPass, "update", "Account", accID, "--field", "credentials="+string(credBytes))
+	if err != nil || !strings.Contains(strings.ToLower(string(out)), "account") {
+		if strings.Contains(strings.ToLower(string(out)), "weak") {
+			return fmt.Errorf("password ditolak Stalwart (terlalu lemah): minimal 8 karakter")
+		}
+		return fmt.Errorf("gagal mengubah password akun '%s': %s", email, string(out))
+	}
+
+	// Bila password akun admin domain ikut diganti, sinkronkan mail-admin.cred agar panel tetap bisa mengelola Stalwart.
+	if stored, ok := m.getAdminCredMap()[domainPart]; ok && strings.EqualFold(stored.Email, email) {
+		_ = m.saveAdminCred(domainPart, email, password)
+	}
+	return nil
+}
+
 func (m *Manager) SetRelay(opts SetRelayOptions) error {
 	opts.Domain = strings.TrimSpace(opts.Domain)
 	if opts.Domain == "" {

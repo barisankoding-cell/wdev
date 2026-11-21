@@ -1150,6 +1150,17 @@ func main() {
 			}
 			fmt.Printf("✓ Akun %s berhasil dibuat!\n", args[2])
 
+		case "change-password", "passwd":
+			if len(args) < 4 {
+				fmt.Println("Penggunaan: wdev mail change-password <email> <password_baru>")
+				os.Exit(1)
+			}
+			if err := mailMgr.ChangeAccountPassword(args[2], args[3]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Password akun %s berhasil diperbarui!\n", args[2])
+
 		case "relay-remove", "unset-relay":
 			if len(args) < 3 {
 				fmt.Println("Penggunaan: wdev mail unset-relay <domain>")

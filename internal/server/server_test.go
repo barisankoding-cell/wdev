@@ -794,4 +794,30 @@ func TestHandleSitesPostAutoAddsSubdomainARecordInVPSMode(t *testing.T) {
 	if !strings.Contains(patchedBody, `"app.nikaget.my.id."`) || !strings.Contains(patchedBody, `"103.171.85.72"`) {
 		t.Fatalf("expected PowerDNS PATCH with A record for app.nikaget.my.id., got: %s", patchedBody)
 	}
+
+	// Verifikasi validasi POST /api/mail/account/password dan POST /api/service-config/postgresql/save-role & delete-role
+	reqPwd := httptest.NewRequest(http.MethodPost, "/api/mail/account/password", strings.NewReader(`{"email":"invalid","password":"123"}`))
+	recPwd := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recPwd, reqPwd)
+	if recPwd.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /api/mail/account/password without mailMgr = %d, want 503", recPwd.Code)
+	}
+
+	srv.svcCfgMgr = serviceconfig.New(inst.GetSudoPassword)
+	reqRole := httptest.NewRequest(http.MethodPost, "/api/service-config/postgresql/save-role", strings.NewReader(`{"role":"bad;drop","can_login":true,"password":"abc"}`))
+	recRole := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recRole, reqRole)
+	if recRole.Code != http.StatusBadRequest && recRole.Code != http.StatusOK {
+		t.Fatalf("unexpected POST save-role status %d: %s", recRole.Code, recRole.Body.String())
+	}
+	if recRole.Code == http.StatusOK && !strings.Contains(recRole.Body.String(), "sudo_required") {
+		t.Fatalf("expected sudo_required when code=200, got: %s", recRole.Body.String())
+	}
+
+	reqDelRole := httptest.NewRequest(http.MethodPost, "/api/service-config/postgresql/delete-role", strings.NewReader(`{"role":"postgres"}`))
+	recDelRole := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recDelRole, reqDelRole)
+	if recDelRole.Code != http.StatusBadRequest && recDelRole.Code != http.StatusOK {
+		t.Fatalf("unexpected POST delete-role status %d: %s", recDelRole.Code, recDelRole.Body.String())
+	}
 }

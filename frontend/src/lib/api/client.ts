@@ -16,7 +16,9 @@ import type {
 	PHPConfig,
 	PostgresConfig,
 	PostgresCreateDBPayload,
+	PostgresDeleteRolePayload,
 	PostgresInspectResult,
+	PostgresSaveRolePayload,
 	PreflightStatus,
 	ProxyExposure,
 	RedisConfig,
@@ -149,6 +151,18 @@ export const api = {
 
 	createPostgresDB: (payload: PostgresCreateDBPayload) =>
 		apiFetch<SudoOrConfigResponse<never>>('/api/service-config/postgresql/create-db', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+
+	savePostgresRole: (payload: PostgresSaveRolePayload) =>
+		apiFetch<SudoOrConfigResponse<never>>('/api/service-config/postgresql/save-role', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+
+	deletePostgresRole: (payload: PostgresDeleteRolePayload) =>
+		apiFetch<SudoOrConfigResponse<never>>('/api/service-config/postgresql/delete-role', {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
@@ -306,6 +320,11 @@ export const api = {
 		),
 	addMailAccount: (email: string, password: string) =>
 		apiFetch<{ status: string; message: string }>('/api/mail/account', {
+			method: 'POST',
+			body: JSON.stringify({ email, password })
+		}),
+	changeMailAccountPassword: (email: string, password: string) =>
+		apiFetch<{ status: string; message: string }>('/api/mail/account/password', {
 			method: 'POST',
 			body: JSON.stringify({ email, password })
 		}),

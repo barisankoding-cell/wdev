@@ -4,6 +4,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
+	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { api, ApiError } from '#lib/api/client.js';
 	import { toast } from 'svelte-sonner';
@@ -105,9 +106,9 @@
 				<label for="old-password" class="text-xs font-medium text-foreground">
 					Kata Sandi Saat Ini <span class="text-destructive">*</span>
 				</label>
-				<Input
+				<PasswordInput
 					id="old-password"
-					type="password"
+					canGenerate={false}
 					placeholder="Masukkan kata sandi lama..."
 					bind:value={oldPassword}
 					disabled={loading}
@@ -134,13 +135,15 @@
 				<label for="new-password" class="text-xs font-medium text-foreground">
 					Kata Sandi Baru (Kosongkan jika tidak diubah)
 				</label>
-				<Input
+				<PasswordInput
 					id="new-password"
-					type="password"
-					placeholder="Minimal 6 karakter..."
+					placeholder="Minimal 8 karakter..."
 					bind:value={newPassword}
 					disabled={loading}
 					autocomplete="new-password"
+					onGenerate={(pwd) => {
+						confirmPassword = pwd;
+					}}
 				/>
 			</div>
 
@@ -149,9 +152,9 @@
 					<label for="confirm-password" class="text-xs font-medium text-foreground">
 						Konfirmasi Kata Sandi Baru
 					</label>
-					<Input
+					<PasswordInput
 						id="confirm-password"
-						type="password"
+						canGenerate={false}
 						placeholder="Ulangi kata sandi baru..."
 						bind:value={confirmPassword}
 						disabled={loading}

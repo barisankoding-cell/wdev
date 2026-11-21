@@ -295,3 +295,70 @@ db2:keys=7,expires=0,avg_ttl=0
 		t.Fatal("expected SQL injection identifier rejection")
 	}
 }
+
+func TestParsePostgresRolesAndBuildRoleSQL(t *testing.T) {
+	raw := "postgres\tt\tt\tt\tt\tt\tt\t-1\tpostgres,app_db\n" +
+		"app_user\tf\tt\tt\tf\tf\tf\t25\tapp_db\n" +
+		"readonly_grp\tf\tf\tf\tf\tf\tf\t-1\t\n"
+
+	roles := ParsePostgresRoles(raw)
+	if len(roles) != 3 {
+		t.Fatalf("expected 3 roles, got %d: %+v", len(roles), roles)
+	}
+	if roles[0].Name != "postgres" || !roles[0].Superuser || !roles[0].CanLogin || len(roles[0].Databases) != 2 {
+		t.Fatalf("unexpected postgres role: %+v", roles[0])
+	}
+	if roles[1].Name != "app_user" || roles[1].Superuser || !roles[1].CanLogin || !roles[1].CreateDB || roles[1].ConnLimit != 25 {
+		t.Fatalf("unexpected app_user role: %+v", roles[1])
+	}
+	if roles[2].CanLogin || roles[2].ConnLimit != -1 {
+		t.Fatalf("unexpected readonly_grp role: %+v", roles[2])
+	}
+
+	// CREATE LOGIN role requires password
+	if _, err := BuildPostgresRoleSQL(PostgresSaveRoleRequest{Role: "new_user", CanLogin: true, ConnLimit: -1}, false); err == nil {
+		t.Fatal("expected error when creating LOGIN role without password")
+	}
+
+	sqlCreate, err := BuildPostgresRoleSQL(PostgresSaveRoleRequest{
+		Role:       "new_user",
+		Password:   "P@ss'123!",
+		CanLogin:   true,
+		CreateDB:   true,
+		CreateRole: false,
+		ConnLimit:  10,
+	}, false)
+	if err != nil {
+		t.Fatalf("BuildPostgresRoleSQL create failed: %v", err)
+	}
+	wantSubstrs := []string{
+		`CREATE ROLE "new_user" WITH`,
+		"LOGIN NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 10",
+		`PASSWORD 'P@ss''123!'`,
+	}
+	for _, s := range wantSubstrs {
+		if !strings.Contains(sqlCreate, s) {
+			t.Fatalf("SQL %q missing %q", sqlCreate, s)
+		}
+	}
+
+	// Protecting postgres system role from losing superuser/login
+	if _, err := BuildPostgresRoleSQL(PostgresSaveRoleRequest{Role: "postgres", CanLogin: true, Superuser: false, ConnLimit: -1}, true); err == nil {
+		t.Fatal("expected error when revoking superuser from postgres role")
+	}
+
+	// Alter role password optional
+	sqlAlter, err := BuildPostgresRoleSQL(PostgresSaveRoleRequest{
+		Role:      "app_user",
+		CanLogin:  true,
+		CreateDB:  true,
+		BypassRLS: true,
+		ConnLimit: -1,
+	}, true)
+	if err != nil {
+		t.Fatalf("BuildPostgresRoleSQL alter failed: %v", err)
+	}
+	if !strings.Contains(sqlAlter, `ALTER ROLE "app_user" WITH`) || !strings.Contains(sqlAlter, "BYPASSRLS") || strings.Contains(sqlAlter, "PASSWORD") {
+		t.Fatalf("unexpected alter SQL: %s", sqlAlter)
+	}
+}

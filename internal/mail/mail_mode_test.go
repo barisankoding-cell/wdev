@@ -287,3 +287,19 @@ func TestGetStatusDetectsStalwartPortAccessibility(t *testing.T) {
 		}
 	}
 }
+
+func TestChangeAccountPasswordValidation(t *testing.T) {
+	mgr, _ := newTestMailManager(t, "vps")
+	if err := mgr.ChangeAccountPassword("", "Secret123!"); err == nil {
+		t.Fatal("expected error for empty email")
+	}
+	if err := mgr.ChangeAccountPassword("user@nikaget.my.id", ""); err == nil {
+		t.Fatal("expected error for empty password")
+	}
+	if err := mgr.ChangeAccountPassword("bad-email", "Secret123!"); err == nil {
+		t.Fatal("expected error for invalid email format")
+	}
+	if err := mgr.ChangeAccountPassword("user@nikaget.my.id", "bad\npass"); err == nil {
+		t.Fatal("expected error for newline in password")
+	}
+}

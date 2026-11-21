@@ -114,6 +114,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/mail/status", s.handleMailStatus)
 	s.mux.HandleFunc("/api/mail/accounts", s.handleMailAccounts)
 	s.mux.HandleFunc("/api/mail/account", s.handleMailAccountAdd)
+	s.mux.HandleFunc("/api/mail/account/password", s.handleMailAccountPassword)
 	s.mux.HandleFunc("/api/mail/account/delete", s.handleMailAccountDelete)
 	s.mux.HandleFunc("/api/mail/relay", s.handleMailRelaySet)
 	s.mux.HandleFunc("/api/mail/preflight", s.handleMailPreflight)
@@ -781,6 +782,59 @@ func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":   "created",
 				"database": req.Database,
+			})
+			return
+		}
+
+		if subAction == "save-role" && (service == "postgresql" || service == "postgres") {
+			var req serviceconfig.PostgresSaveRoleRequest
+			if err := json.Unmarshal(bodyBytes, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "Payload role PostgreSQL tidak valid: "+err.Error())
+				return
+			}
+			created, err := s.svcCfgMgr.SavePostgresRole(r.Context(), req)
+			if err != nil {
+				if errors.Is(err, serviceconfig.ErrSudoRequired) {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status":  "sudo_required",
+						"message": "Mengelola role PostgreSQL memerlukan hak akses administrator (sudo).",
+					})
+					return
+				}
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			actionStatus := "updated"
+			if created {
+				actionStatus = "created"
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": actionStatus,
+				"role":   strings.TrimSpace(req.Role),
+			})
+			return
+		}
+
+		if subAction == "delete-role" && (service == "postgresql" || service == "postgres") {
+			var req serviceconfig.PostgresDeleteRoleRequest
+			if err := json.Unmarshal(bodyBytes, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "Payload penghapusan role PostgreSQL tidak valid: "+err.Error())
+				return
+			}
+			if err := s.svcCfgMgr.DeletePostgresRole(r.Context(), req); err != nil {
+				if errors.Is(err, serviceconfig.ErrSudoRequired) {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status":  "sudo_required",
+						"message": "Menghapus role PostgreSQL memerlukan hak akses administrator (sudo).",
+					})
+					return
+				}
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "deleted",
+				"role":   strings.TrimSpace(req.Role),
 			})
 			return
 		}
@@ -2403,6 +2457,33 @@ func (s *Server) handleMailAccountAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "created",
 		"message": "Akun email " + payload.Email + " berhasil ditambahkan",
+	})
+}
+
+func (s *Server) handleMailAccountPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	if s.mailMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		return
+	}
+	var payload struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid: "+err.Error())
+		return
+	}
+	if err := s.mailMgr.ChangeAccountPassword(payload.Email, payload.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "updated",
+		"message": "Password akun email " + payload.Email + " berhasil diperbarui",
 	})
 }
 

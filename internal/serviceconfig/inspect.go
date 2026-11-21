@@ -188,11 +188,17 @@ type PostgresDatabaseInfo struct {
 	Size  string `json:"size"`
 }
 
-// PostgresRoleInfo info role/user PostgreSQL.
+// PostgresRoleInfo info role/user PostgreSQL beserta atribut hak akses lengkap.
 type PostgresRoleInfo struct {
-	Name      string `json:"name"`
-	Superuser bool   `json:"superuser"`
-	CanLogin  bool   `json:"can_login"`
+	Name        string   `json:"name"`
+	Superuser   bool     `json:"superuser"`
+	CanLogin    bool     `json:"can_login"`
+	CreateDB    bool     `json:"create_db"`
+	CreateRole  bool     `json:"create_role"`
+	Replication bool     `json:"replication"`
+	BypassRLS   bool     `json:"bypass_rls"`
+	ConnLimit   int      `json:"conn_limit"`
+	Databases   []string `json:"databases,omitempty"`
 }
 
 // PostgresConnInfo info sesi aktif di pg_stat_activity.
@@ -222,6 +228,27 @@ type PostgresCreateDBRequest struct {
 	Password string `json:"password,omitempty"`
 }
 
+// PostgresSaveRoleRequest payload tambah/ubah role/user PostgreSQL beserta hak aksesnya.
+type PostgresSaveRoleRequest struct {
+	Version     string `json:"version"`
+	Role        string `json:"role"`
+	Password    string `json:"password,omitempty"`
+	CanLogin    bool   `json:"can_login"`
+	Superuser   bool   `json:"superuser"`
+	CreateDB    bool   `json:"create_db"`
+	CreateRole  bool   `json:"create_role"`
+	Replication bool   `json:"replication"`
+	BypassRLS   bool   `json:"bypass_rls"`
+	ConnLimit   int    `json:"conn_limit"`
+	GrantDB     string `json:"grant_db,omitempty"`
+}
+
+// PostgresDeleteRoleRequest payload penghapusan role PostgreSQL.
+type PostgresDeleteRoleRequest struct {
+	Version string `json:"version"`
+	Role    string `json:"role"`
+}
+
 var pgIdentRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
 
 // ValidatePGIdentifier memvalidasi nama database atau role PostgreSQL secara ketat.
@@ -233,11 +260,61 @@ func ValidatePGIdentifier(name, label string) error {
 }
 
 func (m *Manager) runPostgresQuery(ctx context.Context, port int, sqlQuery string) (string, error) {
+	return m.runPostgresQueryDB(ctx, port, "", sqlQuery)
+}
+
+func (m *Manager) runPostgresQueryDB(ctx context.Context, port int, dbName, sqlQuery string) (string, error) {
 	if port <= 0 {
 		port = 5432
 	}
-	cmdStr := fmt.Sprintf("psql -p %d -At -F $'\\t' -v ON_ERROR_STOP=1", port)
+	dbArg := ""
+	if dbName != "" {
+		if err := ValidatePGIdentifier(dbName, "nama database"); err != nil {
+			return "", err
+		}
+		dbArg = " -d " + dbName
+	}
+	cmdStr := fmt.Sprintf("psql -p %d%s -At -F $'\\t' -v ON_ERROR_STOP=1", port, dbArg)
 	return m.runPrivilegedCmdStdin(ctx, sqlQuery+"\n", "su", "-", "postgres", "-c", cmdStr)
+}
+
+// ParsePostgresRoles mem-parse output baris tab-separated query pg_roles menjadi slice PostgresRoleInfo.
+func ParsePostgresRoles(raw string) []PostgresRoleInfo {
+	var roles []PostgresRoleInfo
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		if len(cols) < 3 {
+			continue
+		}
+		info := PostgresRoleInfo{
+			Name:      cols[0],
+			Superuser: cols[1] == "t",
+			CanLogin:  cols[2] == "t",
+			ConnLimit: -1,
+		}
+		if len(cols) >= 8 {
+			info.CreateDB = cols[3] == "t"
+			info.CreateRole = cols[4] == "t"
+			info.Replication = cols[5] == "t"
+			info.BypassRLS = cols[6] == "t"
+			if lim, err := strconv.Atoi(strings.TrimSpace(cols[7])); err == nil {
+				info.ConnLimit = lim
+			}
+		}
+		if len(cols) >= 9 && strings.TrimSpace(cols[8]) != "" {
+			for _, db := range strings.Split(cols[8], ",") {
+				db = strings.TrimSpace(db)
+				if db != "" {
+					info.Databases = append(info.Databases, db)
+				}
+			}
+		}
+		roles = append(roles, info)
+	}
+	return roles
 }
 
 // InspectPostgres mengambil daftar database, role, dan koneksi aktif dari PostgreSQL.
@@ -276,21 +353,9 @@ func (m *Manager) InspectPostgres(ctx context.Context, version string) (*Postgre
 	}
 
 	roleOut, err := m.runPostgresQuery(ctx, port,
-		`SELECT rolname, rolsuper, rolcanlogin FROM pg_roles WHERE rolname NOT LIKE 'pg_%' ORDER BY rolname;`)
+		`SELECT r.rolname, r.rolsuper, r.rolcanlogin, r.rolcreatedb, r.rolcreaterole, r.rolreplication, r.rolbypassrls, r.rolconnlimit, COALESCE(ARRAY_TO_STRING(ARRAY(SELECT d.datname FROM pg_database d WHERE d.datdba = r.oid AND d.datistemplate = false ORDER BY d.datname), ','), '') FROM pg_roles r WHERE LEFT(r.rolname, 3) <> 'pg_' ORDER BY r.rolname;`)
 	if err == nil {
-		for _, line := range strings.Split(roleOut, "\n") {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			cols := strings.Split(line, "\t")
-			if len(cols) >= 3 {
-				res.Roles = append(res.Roles, PostgresRoleInfo{
-					Name:      cols[0],
-					Superuser: cols[1] == "t",
-					CanLogin:  cols[2] == "t",
-				})
-			}
-		}
+		res.Roles = ParsePostgresRoles(roleOut)
 	}
 
 	connOut, err := m.runPostgresQuery(ctx, port,
@@ -362,6 +427,140 @@ func (m *Manager) CreatePostgresDatabase(ctx context.Context, req PostgresCreate
 	stmts = append(stmts, fmt.Sprintf(`CREATE DATABASE "%s" OWNER "%s";`, dbName, owner))
 
 	_, err = m.runPostgresQuery(ctx, port, strings.Join(stmts, "\n"))
+	return err
+}
+
+func boolKeyword(b bool, t, f string) string {
+	if b {
+		return t
+	}
+	return f
+}
+
+// BuildPostgresRoleSQL menyusun pernyataan CREATE ROLE / ALTER ROLE PostgreSQL yang valid dan aman.
+func BuildPostgresRoleSQL(req PostgresSaveRoleRequest, exists bool) (string, error) {
+	role := strings.TrimSpace(req.Role)
+	if err := ValidatePGIdentifier(role, "nama role"); err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(strings.ToLower(role), "pg_") {
+		return "", fmt.Errorf("nama role tidak boleh diawali 'pg_' (reserved oleh PostgreSQL)")
+	}
+	if role == "postgres" && (!req.Superuser || !req.CanLogin) {
+		return "", fmt.Errorf("role sistem 'postgres' harus tetap memiliki hak SUPERUSER dan LOGIN")
+	}
+	if req.ConnLimit < -1 {
+		return "", fmt.Errorf("connection limit minimal -1 (tanpa batas)")
+	}
+	if strings.ContainsRune(req.Password, '\x00') {
+		return "", fmt.Errorf("password mengandung karakter tidak valid")
+	}
+	if req.Password != "" {
+		if err := validateSingleLine(req.Password, "password role"); err != nil {
+			return "", err
+		}
+	}
+	if !exists && req.CanLogin && req.Password == "" {
+		return "", fmt.Errorf("password wajib diisi saat membuat role/user login baru '%s'", role)
+	}
+
+	opts := []string{
+		boolKeyword(req.CanLogin, "LOGIN", "NOLOGIN"),
+		boolKeyword(req.Superuser, "SUPERUSER", "NOSUPERUSER"),
+		boolKeyword(req.CreateDB, "CREATEDB", "NOCREATEDB"),
+		boolKeyword(req.CreateRole, "CREATEROLE", "NOCREATEROLE"),
+		boolKeyword(req.Replication, "REPLICATION", "NOREPLICATION"),
+		boolKeyword(req.BypassRLS, "BYPASSRLS", "NOBYPASSRLS"),
+		fmt.Sprintf("CONNECTION LIMIT %d", req.ConnLimit),
+	}
+	if req.Password != "" {
+		escaped := strings.ReplaceAll(req.Password, "'", "''")
+		opts = append(opts, fmt.Sprintf("PASSWORD '%s'", escaped))
+	}
+
+	verb := "ALTER ROLE"
+	if !exists {
+		verb = "CREATE ROLE"
+	}
+	return fmt.Sprintf(`%s "%s" WITH %s;`, verb, role, strings.Join(opts, " ")), nil
+}
+
+// SavePostgresRole membuat role/user PostgreSQL baru atau memperbarui hak akses & password role yang sudah ada.
+func (m *Manager) SavePostgresRole(ctx context.Context, req PostgresSaveRoleRequest) (bool, error) {
+	role := strings.TrimSpace(req.Role)
+	if err := ValidatePGIdentifier(role, "nama role"); err != nil {
+		return false, err
+	}
+	if req.GrantDB != "" {
+		if err := ValidatePGIdentifier(strings.TrimSpace(req.GrantDB), "nama database"); err != nil {
+			return false, err
+		}
+	}
+
+	cfg, err := m.GetPostgresConfig(ctx, req.Version)
+	if err != nil {
+		return false, err
+	}
+	port := cfg.Port
+	if port <= 0 {
+		port = 5432
+	}
+
+	existsOut, err := m.runPostgresQuery(ctx, port, fmt.Sprintf("SELECT 1 FROM pg_roles WHERE rolname = '%s';", role))
+	if err != nil {
+		return false, err
+	}
+	exists := strings.TrimSpace(existsOut) == "1"
+
+	stmt, err := BuildPostgresRoleSQL(req, exists)
+	if err != nil {
+		return false, err
+	}
+	if _, err := m.runPostgresQuery(ctx, port, stmt); err != nil {
+		return false, err
+	}
+
+	if grantDB := strings.TrimSpace(req.GrantDB); grantDB != "" {
+		if _, err := m.runPostgresQuery(ctx, port, fmt.Sprintf(`GRANT ALL PRIVILEGES ON DATABASE "%s" TO "%s";`, grantDB, role)); err != nil {
+			return false, fmt.Errorf("role tersimpan, namun gagal memberi hak akses database %s: %w", grantDB, err)
+		}
+		schemaSQL := fmt.Sprintf(`GRANT USAGE, CREATE ON SCHEMA public TO "%[1]s"; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "%[1]s"; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "%[1]s";`, role)
+		if _, err := m.runPostgresQueryDB(ctx, port, grantDB, schemaSQL); err != nil {
+			return false, fmt.Errorf("role tersimpan, namun gagal memberi hak akses schema public di %s: %w", grantDB, err)
+		}
+	}
+
+	return !exists, nil
+}
+
+// DeletePostgresRole menghapus role/user PostgreSQL non-sistem yang tidak lagi memiliki database.
+func (m *Manager) DeletePostgresRole(ctx context.Context, req PostgresDeleteRoleRequest) error {
+	role := strings.TrimSpace(req.Role)
+	if err := ValidatePGIdentifier(role, "nama role"); err != nil {
+		return err
+	}
+	if role == "postgres" || strings.HasPrefix(strings.ToLower(role), "pg_") {
+		return fmt.Errorf("role sistem '%s' tidak dapat dihapus", role)
+	}
+
+	cfg, err := m.GetPostgresConfig(ctx, req.Version)
+	if err != nil {
+		return err
+	}
+	port := cfg.Port
+	if port <= 0 {
+		port = 5432
+	}
+
+	ownedOut, err := m.runPostgresQuery(ctx, port, fmt.Sprintf(
+		`SELECT STRING_AGG(d.datname, ', ') FROM pg_database d JOIN pg_roles r ON d.datdba = r.oid WHERE r.rolname = '%s' AND d.datistemplate = false;`, role))
+	if err == nil {
+		if owned := strings.TrimSpace(ownedOut); owned != "" {
+			return fmt.Errorf("role '%s' masih menjadi pemilik database (%s); hapus atau alihkan pemilik database terlebih dahulu", role, owned)
+		}
+	}
+
+	_, err = m.runPostgresQuery(ctx, port, fmt.Sprintf(`DROP ROLE IF EXISTS "%s";`, role))
 	return err
 }
 

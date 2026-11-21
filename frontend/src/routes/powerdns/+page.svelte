@@ -16,6 +16,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
@@ -1565,10 +1566,10 @@
 				{#if deployAuthMethod === 'password'}
 					<Field.Field>
 						<Field.FieldLabel for="vps-deploy-password">Password Login SSH</Field.FieldLabel>
-						<Input
+						<PasswordInput
 							id="vps-deploy-password"
-							type="password"
-							autocomplete="new-password"
+							canGenerate={false}
+							autocomplete="current-password"
 							placeholder="Masukkan password SSH user VPS"
 							bind:value={deployPassword}
 							required

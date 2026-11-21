@@ -10,6 +10,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
 	import type { RedisConfig, RedisInspectResult } from '#lib/types/api.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -208,10 +209,9 @@
 							label={config.has_password ? 'Password Aktif' : 'Tanpa Password'}
 						/>
 					</div>
-					<Input
+					<PasswordInput
 						id="redis-cfg-password"
 						name="password"
-						type="password"
 						autocomplete="new-password"
 						placeholder="Isi untuk menyetel / mengganti password..."
 						bind:value={password}
