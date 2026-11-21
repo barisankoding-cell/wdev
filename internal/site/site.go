@@ -188,13 +188,18 @@ func (m *Manager) ListSites() ([]store.SiteRecord, error) {
 		return nil, err
 	}
 	for i := range sites {
+		var certPath string
 		if confPath, ok := m.findVHostConfigPath(sites[i].Domain); ok {
 			if data, readErr := m.readFile(confPath); readErr == nil {
-				if enabled, provider := DetectSSLProviderFromConfig(string(data)); enabled {
+				if enabled, provider, detectedCert := DetectSSLInfoFromConfig(string(data)); enabled {
 					sites[i].SSLEnabled = true
 					sites[i].SSLProvider = provider
+					certPath = detectedCert
 				}
 			}
+		}
+		if sites[i].SSLEnabled {
+			m.populateSiteSSLExpiry(&sites[i], certPath)
 		}
 	}
 	return sites, nil

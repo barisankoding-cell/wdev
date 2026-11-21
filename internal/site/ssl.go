@@ -3,20 +3,24 @@ package site
 import (
 	"bufio"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"wdev/internal/store"
 )
 
 var (
 	serverNameRe     = regexp.MustCompile(`(?m)server_name\s+([^;]+);`)
-	sslCertificateRe = regexp.MustCompile(`(?m)^\s*ssl_certificate\s+`)
+	sslCertificateRe = regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;\s]+)\s*;`)
 )
 
 // ValidateLetsEncryptDomain memastikan domain valid dan merupakan FQDN publik
@@ -52,13 +56,75 @@ func validateLetsEncryptEmail(email string) (string, error) {
 // DetectSSLProviderFromConfig memeriksa isi berkas konfigurasi Nginx untuk mengetahui
 // apakah SSL aktif serta apakah sertifikatnya berasal dari Let's Encrypt atau lokal.
 func DetectSSLProviderFromConfig(confText string) (enabled bool, provider string) {
-	if !sslCertificateRe.MatchString(confText) {
-		return false, ""
+	enabled, provider, _ = DetectSSLInfoFromConfig(confText)
+	return enabled, provider
+}
+
+// DetectSSLInfoFromConfig mengekstrak status SSL, provider, dan path file sertifikat dari konfigurasi Nginx.
+func DetectSSLInfoFromConfig(confText string) (enabled bool, provider, certPath string) {
+	m := sslCertificateRe.FindStringSubmatch(confText)
+	if len(m) < 2 {
+		return false, "", ""
 	}
-	if strings.Contains(confText, "/etc/letsencrypt/") {
-		return true, "letsencrypt"
+	certPath = strings.Trim(strings.TrimSpace(m[1]), `"'`)
+	if strings.Contains(confText, "/etc/letsencrypt/") || strings.Contains(certPath, "/etc/letsencrypt/") {
+		return true, "letsencrypt", certPath
 	}
-	return true, "local"
+	return true, "local", certPath
+}
+
+// ParseCertificateExpiry membaca waktu kedaluwarsa (NotAfter) sertifikat X.509 pertama dari konten PEM.
+func ParseCertificateExpiry(pemBytes []byte) (time.Time, error) {
+	rest := pemBytes
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		return cert.NotAfter.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("sertifikat X.509 tidak ditemukan")
+}
+
+func (m *Manager) populateSiteSSLExpiry(s *store.SiteRecord, certPath string) {
+	if s == nil || !s.SSLEnabled {
+		return
+	}
+	candidates := make([]string, 0, 3)
+	if certPath != "" {
+		candidates = append(candidates, certPath)
+	}
+	if s.SSLProvider == "letsencrypt" {
+		candidates = append(candidates, filepath.Join("/etc/letsencrypt/live", s.Domain, "fullchain.pem"))
+	} else if s.SSLProvider == "local" {
+		candidates = append(candidates, filepath.Join("/etc/ssl/local-certs", s.Domain+".pem"))
+	}
+	for _, p := range candidates {
+		if p == "" {
+			continue
+		}
+		data, err := m.readFile(p)
+		if err != nil {
+			continue
+		}
+		exp, err := ParseCertificateExpiry(data)
+		if err != nil {
+			continue
+		}
+		expUTC := exp.UTC()
+		daysLeft := int(math.Floor(time.Until(expUTC).Hours() / 24))
+		s.SSLExpiresAt = &expUTC
+		s.SSLDaysLeft = &daysLeft
+		return
+	}
 }
 
 func extractVHostDomains(confText, primaryDomain string) []string {

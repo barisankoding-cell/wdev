@@ -374,12 +374,23 @@ func (t *TUI) menuWebStack() {
 		case "4":
 			t.Clear()
 			sites, _ := t.siteMgr.ListSites()
-			fmt.Printf("%-24s %-12s %-10s %-8s %s\n", "DOMAIN", "FRAMEWORK", "RUNTIME", "SSL", "ROOT / TARGET")
-			fmt.Println(strings.Repeat("-", 70))
+			fmt.Printf("%-24s %-12s %-12s %-28s %s\n", "DOMAIN", "FRAMEWORK", "RUNTIME", "SSL", "ROOT / TARGET")
+			fmt.Println(strings.Repeat("-", 92))
 			for _, s := range sites {
 				ssl := "HTTP"
 				if s.SSLEnabled {
 					ssl = "SSL"
+					if s.SSLProvider == "letsencrypt" {
+						ssl = "SSL (LE)"
+					}
+					if s.SSLExpiresAt != nil {
+						expDate := s.SSLExpiresAt.Local().Format("2006-01-02")
+						if s.SSLDaysLeft != nil && *s.SSLDaysLeft >= 0 {
+							ssl += fmt.Sprintf(" s/d %s (%dh)", expDate, *s.SSLDaysLeft)
+						} else {
+							ssl += fmt.Sprintf(" exp %s", expDate)
+						}
+					}
 				}
 				runtimeText := "PHP " + s.PHPVersion
 				if s.Framework == "static" {
@@ -391,7 +402,7 @@ func (t *TUI) menuWebStack() {
 				if s.Framework == "proxy" {
 					target = fmt.Sprintf("Port :%d", s.ProxyPort)
 				}
-				fmt.Printf("%-24s %-12s %-12s %-8s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, ssl, target)
+				fmt.Printf("%-24s %-12s %-12s %-28s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, ssl, target)
 			}
 			t.waitEnter()
 		case "5":

@@ -3,6 +3,7 @@ package mail
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -375,15 +376,35 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 		}
 	}
 
-	// 2. Pastikan domain & admin Stalwart siap.
-	adminUser, adminPass, admErr := m.ensureStalwartMailDomain(domain)
-	if admErr != nil {
-		rep.add("Domain Stalwart", actionWarn, admErr.Error())
+	// 2. Pastikan Mail Stack (Stalwart + SnappyMail) terpasang, service aktif, dan bootstrap siap.
+	stackReady := true
+	if stackErr := m.ensureMailStackInstalled(context.Background(), cb, domain); stackErr != nil {
+		rep.add("Mail Stack", actionFail, stackErr.Error())
+		stackReady = false
+	} else if localErr := m.ensureLocalMailStack(); localErr != nil {
+		rep.add("Service Stalwart", actionFail, localErr.Error())
+		stackReady = false
+	} else if bsErr := m.ensureStalwartBootstrap(domain); bsErr != nil {
+		rep.add("Bootstrap Stalwart", actionFail, bsErr.Error())
+		stackReady = false
 	} else {
-		rep.add("Domain Stalwart", actionOK, "domain & akun admin siap ("+adminUser+")")
+		rep.add("Service Stalwart", actionOK, "engine Stalwart & SnappyMail siap")
 	}
 
-	// 3. Sinkronkan record DNS inbound/outbound bila zone tersedia.
+	// 3. Pastikan domain & admin Stalwart siap.
+	var adminUser, adminPass string
+	if stackReady {
+		var admErr error
+		adminUser, adminPass, admErr = m.ensureStalwartMailDomain(domain)
+		if admErr != nil {
+			rep.add("Domain Stalwart", actionFail, admErr.Error())
+		} else {
+			rep.add("Domain Stalwart", actionOK, "domain & akun admin siap ("+adminUser+")")
+		}
+	}
+	_ = m.writeSnappyMailDomainConfig(domain)
+
+	// 4. Sinkronkan record DNS inbound/outbound bila zone tersedia.
 	if zone != "" {
 		m.syncMailDNS(zone, domain, &rep, cb)
 	}

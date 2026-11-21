@@ -66,6 +66,9 @@ func New(
 	if pdnsMgr != nil && siteMgr != nil {
 		pdnsMgr.SetSiteManager(siteMgr)
 	}
+	if mailMgr != nil && inst != nil {
+		mailMgr.SetInstaller(inst.InstallMailStackWithDomain)
+	}
 	srv := &Server{
 		cfg:         cfg,
 		store:       s,

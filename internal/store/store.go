@@ -18,15 +18,17 @@ type Store struct {
 }
 
 type SiteRecord struct {
-	Domain      string    `json:"domain"`
-	RootPath    string    `json:"root_path"`
-	PHPVersion  string    `json:"php_version"`
-	Framework   string    `json:"framework"`
-	ProxyPort   int       `json:"proxy_port"`
-	SSLEnabled  bool      `json:"ssl_enabled"`
-	SSLProvider string    `json:"ssl_provider,omitempty"`
-	ExposedTo   string    `json:"exposed_to"`
-	CreatedAt   time.Time `json:"created_at"`
+	Domain       string     `json:"domain"`
+	RootPath     string     `json:"root_path"`
+	PHPVersion   string     `json:"php_version"`
+	Framework    string     `json:"framework"`
+	ProxyPort    int        `json:"proxy_port"`
+	SSLEnabled   bool       `json:"ssl_enabled"`
+	SSLProvider  string     `json:"ssl_provider,omitempty"`
+	SSLExpiresAt *time.Time `json:"ssl_expires_at,omitempty"`
+	SSLDaysLeft  *int       `json:"ssl_days_left,omitempty"`
+	ExposedTo    string     `json:"exposed_to"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 type CFProfile struct {

@@ -2,11 +2,19 @@ package site
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"wdev/internal/config"
 	"wdev/internal/store"
 )
@@ -261,5 +269,85 @@ func TestEnableLetsEncryptValidationAndFallbackRetry(t *testing.T) {
 	listed, err := mgr.ListSites()
 	if err != nil || len(listed) != 1 || !listed[0].SSLEnabled || listed[0].SSLProvider != "letsencrypt" {
 		t.Fatalf("unexpected mgr.ListSites result: %+v err=%v", listed, err)
+	}
+}
+
+func writeTestCertPEM(t *testing.T, path, cn string, notAfter time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-24 * time.Hour),
+		NotAfter:     notAfter,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(path, pemBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListSitesParsesSSLExpirationFromCertificate(t *testing.T) {
+	mgr, cfg, db := newTestSiteManager(t)
+
+	// 1. Sertifikat Let's Encrypt aktif (berlaku ~89 hari)
+	validCertPath := filepath.Join(t.TempDir(), "etc", "letsencrypt", "live", "aktif.my.id", "fullchain.pem")
+	wantExp := time.Now().Add(89*24*time.Hour + 6*time.Hour).UTC().Truncate(time.Second)
+	writeTestCertPEM(t, validCertPath, "aktif.my.id", wantExp)
+
+	if err := os.MkdirAll(cfg.NginxSitesAvail, 0755); err != nil {
+		t.Fatal(err)
+	}
+	vhostValid := fmt.Sprintf("server {\n  listen 443 ssl;\n  server_name aktif.my.id;\n  ssl_certificate %s;\n}\n", validCertPath)
+	if err := os.WriteFile(filepath.Join(cfg.NginxSitesAvail, "aktif.my.id"), []byte(vhostValid), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSite(store.SiteRecord{Domain: "aktif.my.id", Framework: "static", RootPath: "/var/www/aktif.my.id"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Sertifikat kedaluwarsa (-48 jam)
+	expCertPath := filepath.Join(t.TempDir(), "etc", "letsencrypt", "live", "expired.my.id", "fullchain.pem")
+	pastExp := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Second)
+	writeTestCertPEM(t, expCertPath, "expired.my.id", pastExp)
+
+	vhostExpired := fmt.Sprintf("server {\n  listen 443 ssl;\n  server_name expired.my.id;\n  ssl_certificate %s;\n}\n", expCertPath)
+	if err := os.WriteFile(filepath.Join(cfg.NginxSitesAvail, "expired.my.id"), []byte(vhostExpired), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSite(store.SiteRecord{Domain: "expired.my.id", Framework: "static", RootPath: "/var/www/expired.my.id"}); err != nil {
+		t.Fatal(err)
+	}
+
+	sites, err := mgr.ListSites()
+	if err != nil {
+		t.Fatalf("ListSites failed: %v", err)
+	}
+	if len(sites) != 2 {
+		t.Fatalf("expected 2 sites, got %d", len(sites))
+	}
+
+	if sites[0].Domain != "aktif.my.id" || !sites[0].SSLEnabled || sites[0].SSLProvider != "letsencrypt" {
+		t.Fatalf("unexpected aktif site metadata: %+v", sites[0])
+	}
+	if sites[0].SSLExpiresAt == nil || !sites[0].SSLExpiresAt.Equal(wantExp) {
+		t.Fatalf("expected SSLExpiresAt=%v, got %v", wantExp, sites[0].SSLExpiresAt)
+	}
+	if sites[0].SSLDaysLeft == nil || *sites[0].SSLDaysLeft != 89 {
+		t.Fatalf("expected SSLDaysLeft=89, got %v", sites[0].SSLDaysLeft)
+	}
+
+	if sites[1].Domain != "expired.my.id" || sites[1].SSLDaysLeft == nil || *sites[1].SSLDaysLeft >= 0 {
+		t.Fatalf("expected negative SSLDaysLeft for expired cert, got %+v", sites[1])
 	}
 }

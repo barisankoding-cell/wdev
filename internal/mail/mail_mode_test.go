@@ -1,6 +1,8 @@
 package mail
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,5 +180,52 @@ func TestHostsAndVhostLifecycleAndSSLPreservation(t *testing.T) {
 	}
 	if len(rep.Checks) == 0 {
 		t.Fatal("expected action report checks")
+	}
+}
+
+func TestPreflightWithAutoInstallerMovesMissingBinariesToWarnings(t *testing.T) {
+	mgr, _ := newTestMailManager(t, "local")
+	mgr.SetInstaller(func(context.Context, func(string), string) error {
+		return nil
+	})
+	pf := mgr.Preflight("mailtest.local")
+	if len(pf.Blockers) != 0 {
+		t.Fatalf("expected 0 blockers in local mode with auto-installer, got blockers=%v", pf.Blockers)
+	}
+}
+
+func TestSetupMailFailsWhenMailStackMissingAndNotSilentSuccess(t *testing.T) {
+	mgr, cfg := newTestMailManager(t, "vps")
+	edgeConf := "VPS_NETBIRD_IP=\"127.0.0.1\"\nVPS_PUBLIC_IP=\"203.0.113.10\"\nAPI_KEY=\"k\"\nPDNS_PORT=\"8081\"\n"
+	if err := os.WriteFile(filepath.Join(cfg.WdevEtc, "edge-dns.conf"), []byte(edgeConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	calledInstall := false
+	mgr.SetInstaller(func(_ context.Context, _ func(string), dom string) error {
+		calledInstall = true
+		if dom != "nikaget.my.id" {
+			t.Fatalf("expected installer domain nikaget.my.id, got %q", dom)
+		}
+		return fmt.Errorf("simulasi gagal unduh stalwart")
+	})
+
+	err := mgr.SetupMail(context.Background(), func(string) {}, SetupMailOptions{Domain: "nikaget.my.id", SSL: true})
+	if err == nil {
+		t.Fatal("expected SetupMail to fail when mail stack install fails instead of reporting success")
+	}
+	_, snErr := os.Stat("/var/www/snappymail/index.php")
+	if !hasToolPath("/usr/local/bin/stalwart", "stalwart") || !hasStalwartUnit() || !hasToolPath("/usr/local/bin/stalwart-cli", "stalwart-cli") || snErr != nil {
+		if !calledInstall {
+			t.Fatal("expected SetupMail to attempt automatic Mail Stack installation when binaries are missing")
+		}
+	}
+	if _, statErr := os.Stat(mgr.domainsStatePath()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected domains state %s NOT written when SetupMail fails", mgr.domainsStatePath())
+	}
+
+	rep, repErr := mgr.RepairDomain("nikaget.my.id", func(string) {})
+	if repErr == nil && rep.OK {
+		t.Fatalf("expected RepairDomain report OK=false when mail stack install fails, got %+v", rep)
 	}
 }

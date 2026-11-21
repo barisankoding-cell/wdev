@@ -162,6 +162,7 @@ func main() {
 	pdnsMgr := pdns.New(cfg, db)
 	pdnsMgr.SetSiteManager(siteMgr)
 	mailMgr := mail.New(cfg, db, pdnsMgr)
+	mailMgr.SetInstaller(inst.InstallMailStackWithDomain)
 	authMgr := auth.New(cfg, db)
 
 	args := os.Args[1:]
@@ -511,8 +512,8 @@ func main() {
 				fmt.Println("Belum ada virtual host.")
 				return
 			}
-			fmt.Printf("%-24s %-12s %-12s %-12s %s\n", "DOMAIN", "FRAMEWORK", "RUNTIME", "SSL", "ROOT / TARGET")
-			fmt.Println(strings.Repeat("-", 76))
+			fmt.Printf("%-24s %-12s %-12s %-28s %s\n", "DOMAIN", "FRAMEWORK", "RUNTIME", "SSL", "ROOT / TARGET")
+			fmt.Println(strings.Repeat("-", 92))
 			for _, s := range sites {
 				sslText := "HTTP"
 				if s.SSLEnabled {
@@ -520,6 +521,18 @@ func main() {
 						sslText = "HTTPS (LE)"
 					} else {
 						sslText = "HTTPS"
+					}
+					if s.SSLExpiresAt != nil {
+						expDate := s.SSLExpiresAt.Local().Format("2006-01-02")
+						if s.SSLDaysLeft != nil {
+							if *s.SSLDaysLeft < 0 {
+								sslText += fmt.Sprintf(" exp %s", expDate)
+							} else {
+								sslText += fmt.Sprintf(" s/d %s (%dh)", expDate, *s.SSLDaysLeft)
+							}
+						} else {
+							sslText += fmt.Sprintf(" s/d %s", expDate)
+						}
 					}
 				}
 				runtimeText := "PHP " + s.PHPVersion
@@ -532,7 +545,7 @@ func main() {
 				if s.Framework == "proxy" {
 					target = fmt.Sprintf("Port :%d", s.ProxyPort)
 				}
-				fmt.Printf("%-24s %-12s %-12s %-12s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, sslText, target)
+				fmt.Printf("%-24s %-12s %-12s %-28s %s\n", s.Domain, strings.ToUpper(s.Framework), runtimeText, sslText, target)
 			}
 
 		case "create", "add":

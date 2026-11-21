@@ -563,19 +563,34 @@
 		</div>
 	</div>
 
-	{#if mailStatus && (!mailStatus.stalwart_active || mailStatus.domains.length === 0)}
+	{#if mailStatus && (!mailStatus.stalwart_active || !mailStatus.snappymail_active || mailStatus.domains.length === 0)}
 		<Alert.Root>
 			<InfoIcon />
-			<Alert.Title>Setup Domain &amp; Mail Server</Alert.Title>
+			<Alert.Title>
+				{#if mailStatus.domains.length > 0 && (!mailStatus.stalwart_active || !mailStatus.snappymail_active)}
+					Mail Server Stack Belum Aktif / Belum Terpasang
+				{:else}
+					Setup Domain &amp; Mail Server
+				{/if}
+			</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<span>
-					{#if modeStore.mode === 'local'}
+					{#if mailStatus.domains.length > 0 && (!mailStatus.stalwart_active || !mailStatus.snappymail_active)}
+						Domain mail sudah tercatat, namun engine Stalwart dan/atau Webmail SnappyMail belum terpasang atau sedang nonaktif. Klik Pasang Mail Stack lalu Perbaiki domain terkait.
+					{:else if modeStore.mode === 'local'}
 						Inisialisasi engine Stalwart lokal, Webmail SnappyMail, entri /etc/hosts, serta SSL lokal (mkcert/OpenSSL) tanpa NetBird.
 					{:else}
 						Inisialisasi engine Stalwart Mail Server, Webmail SnappyMail, record DNS (MX, SPF, DMARC), dan SSL Let's Encrypt.
 					{/if}
 				</span>
-				<Button size="xs" onclick={openSetupModal}>Mulai Setup Domain</Button>
+				<div class="flex flex-wrap gap-2">
+					{#if !mailStatus.stalwart_active || !mailStatus.snappymail_active}
+						<Button size="xs" variant="outline" onclick={() => cp.triggerInstall('mail-stack')}>
+							Pasang Mail Stack
+						</Button>
+					{/if}
+					<Button size="xs" onclick={openSetupModal}>Mulai Setup Domain</Button>
+				</div>
 			</Alert.Description>
 		</Alert.Root>
 	{/if}

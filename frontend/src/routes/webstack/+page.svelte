@@ -170,6 +170,35 @@
 		}
 	}
 
+	function formatSSLExpiry(expiresAt?: string, daysLeft?: number): {
+		text: string;
+		fullTitle: string;
+		expired: boolean;
+		expiringSoon: boolean;
+	} | null {
+		if (!expiresAt) return null;
+		const dt = new Date(expiresAt);
+		if (Number.isNaN(dt.getTime())) return null;
+		const dateLabel = dt.toLocaleDateString('id-ID', {
+			day: 'numeric',
+			month: 'short',
+			year: 'numeric'
+		});
+		const fullTitle = dt.toLocaleString('id-ID', {
+			dateStyle: 'full',
+			timeStyle: 'short'
+		});
+		const expired = typeof daysLeft === 'number' ? daysLeft < 0 : dt.getTime() < Date.now();
+		const expiringSoon = !expired && typeof daysLeft === 'number' && daysLeft <= 14;
+		let text = `s/d ${dateLabel}`;
+		if (expired) {
+			text = `Kedaluwarsa ${dateLabel}`;
+		} else if (typeof daysLeft === 'number') {
+			text = daysLeft === 0 ? `s/d ${dateLabel} (<1 hari)` : `s/d ${dateLabel} (${daysLeft} hari)`;
+		}
+		return { text, fullTitle, expired, expiringSoon };
+	}
+
 	async function deleteSite(siteDomain: string) {
 		const confirmed = await cp.confirm({
 			title: 'Hapus Virtual Host',
@@ -286,6 +315,7 @@
 					{#each filteredSites as site (site.domain)}
 						{@const proto = site.ssl_enabled ? 'https://' : 'http://'}
 						{@const hasLetsEncrypt = site.ssl_enabled && site.ssl_provider === 'letsencrypt'}
+						{@const sslExpiry = formatSSLExpiry(site.ssl_expires_at, site.ssl_days_left)}
 						<Table.Row>
 							<Table.Cell data-label="Domain">
 								<a
@@ -315,13 +345,31 @@
 							</Table.Cell>
 							<Table.Cell data-label="SSL">
 								{#if site.ssl_enabled}
-									{#if site.ssl_provider === 'letsencrypt'}
-										<StatusBadge tone="success" label="Let's Encrypt" />
-									{:else if isVPS && site.ssl_provider === 'local'}
-										<StatusBadge tone="warning" label="SSL Lokal" />
-									{:else}
-										<StatusBadge tone="success" label="HTTPS" />
-									{/if}
+									<div class="flex flex-col items-start gap-1">
+										{#if sslExpiry?.expired}
+											<StatusBadge tone="destructive" label={hasLetsEncrypt ? "Let's Encrypt" : 'HTTPS'} />
+										{:else if sslExpiry?.expiringSoon}
+											<StatusBadge tone="warning" label={hasLetsEncrypt ? "Let's Encrypt" : 'HTTPS'} />
+										{:else if site.ssl_provider === 'letsencrypt'}
+											<StatusBadge tone="success" label="Let's Encrypt" />
+										{:else if isVPS && site.ssl_provider === 'local'}
+											<StatusBadge tone="warning" label="SSL Lokal" />
+										{:else}
+											<StatusBadge tone="success" label="HTTPS" />
+										{/if}
+										{#if sslExpiry}
+											<span
+												class="text-[11px] leading-tight {sslExpiry.expired
+													? 'font-medium text-destructive'
+													: sslExpiry.expiringSoon
+														? 'font-medium text-warning'
+														: 'text-muted-foreground'}"
+												title={`Berakhir pada ${sslExpiry.fullTitle}`}
+											>
+												{sslExpiry.text}
+											</span>
+										{/if}
+									</div>
 								{:else}
 									<StatusBadge tone="neutral" label="HTTP" showIcon={false} />
 								{/if}

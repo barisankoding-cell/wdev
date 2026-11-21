@@ -259,7 +259,11 @@ func (inst *Installer) installStalwart(ctx context.Context, cb LogCallback) erro
 	if _, err := os.Stat("/etc/stalwart/stalwart.env"); err != nil {
 		_ = inst.writeSystemFile(ctx, cb, "/etc/stalwart/stalwart.env", []byte("# Stalwart environment (dikelola wdev)\n"), "0640")
 	}
-	_ = inst.runCmd(ctx, cb, "chown", "-R", "stalwart:stalwart", "/etc/stalwart", "/var/lib/stalwart", "/var/log/stalwart")
+	chownTargets := []string{"/etc/stalwart", "/var/lib/stalwart/", "/var/log/stalwart"}
+	if resolved, err := filepath.EvalSymlinks("/var/lib/stalwart"); err == nil && resolved != "" && resolved != "/var/lib/stalwart" {
+		chownTargets = append(chownTargets, resolved)
+	}
+	_ = inst.runCmd(ctx, cb, "chown", append([]string{"-R", "stalwart:stalwart"}, chownTargets...)...)
 
 	unitPath := "/etc/systemd/system/stalwart.service"
 	if _, err := os.Stat(unitPath); err != nil {

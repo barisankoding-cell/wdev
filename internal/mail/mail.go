@@ -23,14 +23,20 @@ import (
 )
 
 type Manager struct {
-	cfg     *config.Config
-	store   *store.Store
-	pdnsMgr *pdns.Manager
+	cfg           *config.Config
+	store         *store.Store
+	pdnsMgr       *pdns.Manager
+	ensureStackFn func(ctx context.Context, cb func(string), domain string) error
 
 	// LastRelayDNS menyimpan hasil rekonsiliasi DNS dari operasi relay terakhir
 	// agar handler HTTP/CLI bisa melaporkan record yang dihapus & dibuat.
 	relayDNSMu   sync.Mutex
 	LastRelayDNS RelayDNSReport
+}
+
+// SetInstaller mendaftarkan fungsi pemasang Mail Stack otomatis bila Stalwart/SnappyMail belum tersedia.
+func (m *Manager) SetInstaller(fn func(ctx context.Context, cb func(string), domain string) error) {
+	m.ensureStackFn = fn
 }
 
 // setLastRelayDNS mencatat hasil rekonsiliasi DNS secara aman.
@@ -250,13 +256,48 @@ func unsetStalwartEnv(key string) error {
 	return writeRootFile(path, []byte(content), 0640)
 }
 
-func restartStalwart() error {
+func stalwartServiceFailureDetail() string {
+	var out []byte
+	var err error
 	if os.Geteuid() == 0 {
-		_ = exec.Command("systemctl", "restart", "stalwart").Run()
+		out, err = exec.Command("journalctl", "-u", "stalwart", "-n", "12", "--no-pager", "-o", "cat").CombinedOutput()
 	} else {
-		_ = exec.Command("sudo", "-n", "systemctl", "restart", "stalwart").Run()
+		out, err = exec.Command("sudo", "-n", "journalctl", "-u", "stalwart", "-n", "12", "--no-pager", "-o", "cat").CombinedOutput()
+	}
+	if err == nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			lines := strings.Split(msg, "\n")
+			if len(lines) > 4 {
+				lines = lines[len(lines)-4:]
+			}
+			return strings.Join(lines, " | ")
+		}
+	}
+	if os.Geteuid() == 0 {
+		out, _ = exec.Command("systemctl", "status", "stalwart", "--no-pager", "-n", "6").CombinedOutput()
+	} else {
+		out, _ = exec.Command("sudo", "-n", "systemctl", "status", "stalwart", "--no-pager", "-n", "6").CombinedOutput()
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func restartStalwart() error {
+	out, err := runRootCombined("systemctl", "restart", "stalwart")
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if j := stalwartServiceFailureDetail(); j != "" {
+			detail = j
+		}
+		if detail != "" {
+			return fmt.Errorf("gagal me-restart service stalwart (%v): %s", err, detail)
+		}
+		return fmt.Errorf("gagal me-restart service stalwart: %w", err)
 	}
 	if !waitStalwartReady(20 * time.Second) {
+		if j := stalwartServiceFailureDetail(); j != "" {
+			return fmt.Errorf("stalwart belum merespons setelah restart: %s", j)
+		}
 		return fmt.Errorf("stalwart belum merespons setelah restart")
 	}
 	return nil
@@ -415,7 +456,10 @@ func (m *Manager) ensureStalwartBootstrap(domain string) error {
 	if err := setStalwartEnv("STALWART_RECOVERY_ADMIN", "wdev-bootstrap:"+recPass); err != nil {
 		return err
 	}
-	_ = restartStalwart()
+	if err := restartStalwart(); err != nil {
+		_ = unsetStalwartEnv("STALWART_RECOVERY_ADMIN")
+		return fmt.Errorf("gagal memulai mode bootstrap Stalwart: %w", err)
+	}
 
 	payload := map[string]any{
 		"defaultDomain":         domain,
@@ -442,10 +486,12 @@ func (m *Manager) ensureStalwartBootstrap(domain string) error {
 
 	out, err := m.runStalwartCli("wdev-bootstrap", recPass, "update", "Bootstrap", "--file", tmpFile)
 	_ = unsetStalwartEnv("STALWART_RECOVERY_ADMIN")
-	_ = restartStalwart()
 
 	if err != nil || !strings.Contains(strings.ToLower(string(out)), "updated bootstrap") {
 		return fmt.Errorf("bootstrap Stalwart gagal: %s", string(out))
+	}
+	if err := restartStalwart(); err != nil {
+		return fmt.Errorf("gagal me-restart Stalwart setelah bootstrap: %w", err)
 	}
 
 	adminUser := ""
@@ -651,9 +697,10 @@ func phpFPMsock() string {
 	if _, err := os.Stat("/run/php/php8.4-fpm.sock"); err == nil {
 		return "/run/php/php8.4-fpm.sock"
 	}
-	matches, _ := filepath.Glob("/run/php/*fpm.sock")
-	if len(matches) > 0 {
-		return matches[0]
+	for _, pat := range []string{"/run/php/*fpm.sock", "/run/php-fpm/*.sock"} {
+		if matches, _ := filepath.Glob(pat); len(matches) > 0 {
+			return matches[0]
+		}
 	}
 	return "/run/php/php8.4-fpm.sock"
 }
@@ -1001,11 +1048,16 @@ func ensureSymlink(target, link string) error {
 }
 
 func runRoot(name string, args ...string) error {
+	_, err := runRootCombined(name, args...)
+	return err
+}
+
+func runRootCombined(name string, args ...string) ([]byte, error) {
 	if os.Geteuid() == 0 {
-		return exec.Command(name, args...).Run()
+		return exec.Command(name, args...).CombinedOutput()
 	}
 	sudoArgs := append([]string{"-n", name}, args...)
-	return exec.Command("sudo", sudoArgs...).Run()
+	return exec.Command("sudo", sudoArgs...).CombinedOutput()
 }
 
 func (m *Manager) ensureLocalMailFirewall() string {
@@ -1073,24 +1125,121 @@ func (m *Manager) ensureLocalMailFirewall() string {
 	return strings.Join(results, "; ")
 }
 
+func hasToolPath(defaultPath, cmdName string) bool {
+	if defaultPath != "" {
+		if fi, err := os.Stat(defaultPath); err == nil && !fi.IsDir() {
+			return true
+		}
+	}
+	if p, err := exec.LookPath(cmdName); err == nil && p != "" {
+		return true
+	}
+	return false
+}
+
+func hasStalwartUnit() bool {
+	if _, err := os.Stat("/etc/systemd/system/stalwart.service"); err == nil {
+		return true
+	}
+	return exec.Command("systemctl", "cat", "stalwart.service").Run() == nil
+}
+
+func (m *Manager) ensureMailStackInstalled(ctx context.Context, cb func(string), domain string) error {
+	var missing []string
+	if !hasToolPath("/usr/local/bin/stalwart", "stalwart") || !hasStalwartUnit() {
+		missing = append(missing, "Stalwart")
+	}
+	if !hasToolPath("/usr/local/bin/stalwart-cli", "stalwart-cli") {
+		missing = append(missing, "stalwart-cli")
+	}
+	if _, err := os.Stat("/var/www/snappymail/index.php"); err != nil {
+		missing = append(missing, "SnappyMail")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if m.ensureStackFn == nil {
+		return fmt.Errorf("komponen Mail Stack belum terpasang (%s); jalankan 'wdev install mail' terlebih dahulu", strings.Join(missing, ", "))
+	}
+	if cb != nil {
+		cb(fmt.Sprintf("  Komponen Mail Stack belum lengkap (%s); memasang otomatis...", strings.Join(missing, ", ")))
+	}
+	if err := m.ensureStackFn(ctx, cb, domain); err != nil {
+		return fmt.Errorf("gagal memasang Mail Stack (%s): %w", strings.Join(missing, ", "), err)
+	}
+	return nil
+}
+
+func (m *Manager) ensureStalwartDirsOwnership(stDir string) error {
+	if _, err := exec.Command("id", "-u", "stalwart").Output(); err != nil {
+		return fmt.Errorf("user sistem 'stalwart' belum tersedia; instalasi Stalwart belum lengkap")
+	}
+	targets := []string{"/etc/stalwart", "/var/log/stalwart", "/var/lib/stalwart/", stDir}
+	if resolved, err := filepath.EvalSymlinks("/var/lib/stalwart"); err == nil && resolved != "" {
+		targets = append(targets, resolved)
+	}
+	seen := make(map[string]bool)
+	var unique []string
+	for _, t := range targets {
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		if _, err := os.Stat(t); err == nil {
+			unique = append(unique, t)
+		}
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	if out, err := runRootCombined("chown", append([]string{"-R", "stalwart:stalwart"}, unique...)...); err != nil {
+		return fmt.Errorf("gagal mengatur izin direktori Stalwart (%v): %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func (m *Manager) ensureLocalMailStack() error {
+	if !hasToolPath("/usr/local/bin/stalwart", "stalwart") || !hasStalwartUnit() {
+		return fmt.Errorf("Stalwart Mail Server belum terpasang (/usr/local/bin/stalwart atau unit systemd stalwart.service tidak ditemukan)")
+	}
+	if !hasToolPath("/usr/local/bin/stalwart-cli", "stalwart-cli") {
+		return fmt.Errorf("stalwart-cli belum terpasang (/usr/local/bin/stalwart-cli tidak ditemukan)")
+	}
+
 	baseDir := m.mailDataDir()
 	stDir := filepath.Join(baseDir, "stalwart")
 	snDir := filepath.Join(baseDir, "snappymail")
-	_ = os.MkdirAll(stDir, 0755)
-	_ = os.MkdirAll(snDir, 0755)
-	_ = os.MkdirAll("/var/www/snappymail", 0755)
+	for _, dir := range []string{stDir, snDir, "/etc/stalwart", "/var/log/stalwart"} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			_ = runRoot("mkdir", "-p", dir)
+		}
+	}
 
 	if _, err := os.Lstat("/var/lib/stalwart"); err != nil {
 		_ = os.MkdirAll("/var/lib", 0755)
-		_ = os.Symlink(stDir, "/var/lib/stalwart")
+		if err := os.Symlink(stDir, "/var/lib/stalwart"); err != nil {
+			_ = runRoot("ln", "-sfn", stDir, "/var/lib/stalwart")
+		}
 	}
 
-	_ = exec.Command("systemctl", "enable", "--now", "stalwart").Run()
-	// Stalwart berjalan sebagai user sistem `stalwart`; pastikan data bisa ditulis.
-	_, _ = exec.Command("id", "-u", "stalwart").Output()
-	_ = runRoot("chown", "-R", "stalwart:stalwart", stDir)
+	if err := m.ensureStalwartDirsOwnership(stDir); err != nil {
+		return err
+	}
 	_ = m.ensureLocalMailFirewall()
+
+	if out, err := runRootCombined("systemctl", "enable", "--now", "stalwart"); err != nil {
+		detail := strings.TrimSpace(string(out))
+		if j := stalwartServiceFailureDetail(); j != "" {
+			detail = j
+		}
+		return fmt.Errorf("gagal mengaktifkan/menjalankan service stalwart (%v): %s", err, detail)
+	}
+	if exec.Command("systemctl", "is-active", "--quiet", "stalwart").Run() != nil {
+		if j := stalwartServiceFailureDetail(); j != "" {
+			return fmt.Errorf("service stalwart tidak berjalan setelah diaktifkan: %s", j)
+		}
+		return fmt.Errorf("service stalwart tidak berjalan setelah diaktifkan")
+	}
 	return nil
 }
 
@@ -1691,12 +1840,17 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 		cb(fmt.Sprintf("✓ IP NetBird lokal terdeteksi: %s", localNB))
 	}
 
-	// 1. Pastikan mail stack lokal siap (Stalwart & SnappyMail)
+	// 1. Pastikan mail stack lokal terpasang, service aktif, dan ter-bootstrap (Stalwart & SnappyMail)
 	cb("[1/4] Menyiapkan Mail Stack Lokal (Stalwart + SnappyMail)...")
-	if err := m.ensureLocalMailStack(); err != nil {
-		cb(fmt.Sprintf("  Peringatan stack lokal: %v", err))
+	if err := m.ensureMailStackInstalled(ctx, cb, cleanDom); err != nil {
+		return err
 	}
-	_ = m.ensureStalwartBootstrap(cleanDom)
+	if err := m.ensureLocalMailStack(); err != nil {
+		return err
+	}
+	if err := m.ensureStalwartBootstrap(cleanDom); err != nil {
+		return err
+	}
 
 	// Stalwart hanya punya satu public URL. Jangan timpa domain pertama yang
 	// sudah tercatat agar link admin domain lama tidak berubah.
@@ -1708,17 +1862,20 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 			scheme = "http"
 		}
 		pubURL := fmt.Sprintf("%s://mailadmin.%s", scheme, cleanDom)
-		_ = setStalwartEnv("STALWART_PUBLIC_URL", pubURL)
-		_ = restartStalwart()
+		if err := setStalwartEnv("STALWART_PUBLIC_URL", pubURL); err != nil {
+			return fmt.Errorf("gagal menyimpan STALWART_PUBLIC_URL: %w", err)
+		}
+		if err := restartStalwart(); err != nil {
+			return err
+		}
 	}
 
 	// Ensure Domain & Admin user di Stalwart
 	adminUser, adminPass, err := m.ensureStalwartMailDomain(cleanDom)
 	if err != nil {
-		cb(fmt.Sprintf("  Peringatan domain Stalwart: %v", err))
-	} else {
-		cb(fmt.Sprintf("  ✓ Akun Admin Stalwart siap: %s", adminUser))
+		return fmt.Errorf("gagal mendaftarkan domain/admin di Stalwart: %w", err)
 	}
+	cb(fmt.Sprintf("  ✓ Akun Admin Stalwart siap: %s", adminUser))
 
 	// Prekonfigurasi domain di SnappyMail
 	_ = m.writeSnappyMailDomainConfig(cleanDom)
@@ -1949,6 +2106,14 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 				cb("   " + line)
 			}
 		}
+	}
+
+	if exec.Command("systemctl", "is-active", "--quiet", "stalwart").Run() != nil {
+		detail := stalwartServiceFailureDetail()
+		if detail != "" {
+			return fmt.Errorf("setup domain selesai namun service stalwart tidak aktif: %s", detail)
+		}
+		return fmt.Errorf("setup domain selesai namun service stalwart tidak aktif")
 	}
 
 	modeBanner := "HYBRID EDGE"

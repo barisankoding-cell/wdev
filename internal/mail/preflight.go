@@ -87,10 +87,18 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 	}
 
 	if !st.StalwartBinary {
-		st.Blockers = append(st.Blockers, "Stalwart belum terpasang (jalankan: wdev install mail)")
+		if m.ensureStackFn != nil {
+			st.Warnings = append(st.Warnings, "Stalwart belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan")
+		} else {
+			st.Blockers = append(st.Blockers, "Stalwart belum terpasang (jalankan: wdev install mail)")
+		}
 	}
 	if !st.StalwartCLI {
-		st.Blockers = append(st.Blockers, "stalwart-cli belum terpasang (jalankan: wdev install mail)")
+		if m.ensureStackFn != nil {
+			st.Warnings = append(st.Warnings, "stalwart-cli belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan")
+		} else {
+			st.Blockers = append(st.Blockers, "stalwart-cli belum terpasang (jalankan: wdev install mail)")
+		}
 	}
 	if st.Domain != "" && !validMailDomain(st.Domain) {
 		st.Blockers = append(st.Blockers, "domain tidak valid")
@@ -139,7 +147,11 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 	}
 
 	if !st.SnappyMail {
-		st.Warnings = append(st.Warnings, "SnappyMail belum terpasang; webmail tidak akan aktif")
+		if m.ensureStackFn != nil {
+			st.Warnings = append(st.Warnings, "SnappyMail belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan")
+		} else {
+			st.Warnings = append(st.Warnings, "SnappyMail belum terpasang; webmail tidak akan aktif")
+		}
 	}
 	if mode != "local" && st.VPSPublicIP != "" && !st.PTRMatch {
 		st.Warnings = append(st.Warnings, "PTR/rDNS IP publik belum menunjuk mail."+st.Domain+"; banyak penerima akan menolak email masuk")
