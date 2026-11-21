@@ -384,6 +384,22 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 	// Clean up stale or non-site entries from database
 	_, _ = s.db.Exec(`DELETE FROM sites WHERE domain LIKE '%.conf' OR domain LIKE '%.custom.conf' OR domain LIKE 'wdev_%' OR domain = 'default'`)
 
+	// Preserve framework and exposed_to metadata already stored for domains whose local Nginx
+	// vhost uses generic FastCGI directives or matching public domain in server_name.
+	type existingSiteMeta struct {
+		Framework string
+		ExposedTo string
+	}
+	existingMeta := make(map[string]existingSiteMeta)
+	if prevSites, listErr := s.ListSites(); listErr == nil {
+		for _, ps := range prevSites {
+			existingMeta[strings.ToLower(strings.TrimSpace(ps.Domain))] = existingSiteMeta{
+				Framework: ps.Framework,
+				ExposedTo: ps.ExposedTo,
+			}
+		}
+	}
+
 	// 1. Scan /etc/nginx/sites-available
 	if entries, err := os.ReadDir(nginxSitesAvail); err == nil {
 		for _, e := range entries {
@@ -456,6 +472,15 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 							}
 						}
 					}
+				}
+			}
+
+			if prev, ok := existingMeta[domain]; ok {
+				if framework == "generic" && prev.Framework != "" && prev.Framework != "static" && prev.Framework != "proxy" {
+					framework = prev.Framework
+				}
+				if exposedTo == "" && prev.ExposedTo != "" {
+					exposedTo = prev.ExposedTo
 				}
 			}
 

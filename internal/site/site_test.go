@@ -592,3 +592,78 @@ func TestResolvePHPFastCGIPassCrossDistro(t *testing.T) {
 		t.Fatalf("fallback got (%q, %q)", pass, sock)
 	}
 }
+
+func TestPHPVHostPropagatesProxyHTTPSAndHealsLegacyConfigs(t *testing.T) {
+	mgr, cfg, _ := newTestSiteManager(t)
+
+	// 1. Vhost baru Laravel harus langsung menyertakan parameter FastCGI proxy HTTPS
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:     "lara.example.my.id",
+		Framework:  "laravel",
+		PHPVersion: "8.4",
+		SSLEnabled: false,
+		SkipHosts:  true,
+	}); err != nil {
+		t.Fatalf("CreateSite failed: %v", err)
+	}
+	newConf, err := os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "lara.example.my.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`if ($http_x_forwarded_proto ~* "^https(,|$)")`,
+		"fastcgi_param HTTPS $fe_https if_not_empty;",
+		"fastcgi_param REQUEST_SCHEME $fe_scheme;",
+		"fastcgi_param SERVER_PORT $fe_port;",
+	} {
+		if !strings.Contains(string(newConf), want) {
+			t.Fatalf("new vhost missing %q:\n%s", want, string(newConf))
+		}
+	}
+
+	// 2. Vhost PHP lama tanpa fastcgi_param HTTPS harus diperbaiki oleh EnsureProxyHTTPSForPHPVhosts (idempoten)
+	legacyVhost := `server {
+    listen 80;
+    server_name legacy.example.my.id;
+    root /var/www/legacy/public;
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+}
+`
+	legacyPath := filepath.Join(cfg.NginxSitesAvail, "legacy.example.my.id")
+	if err := os.WriteFile(legacyPath, []byte(legacyVhost), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Static/custom file tidak boleh disentuh
+	customPath := filepath.Join(cfg.NginxSitesAvail, "legacy.example.my.id.custom.conf")
+	customBody := "# custom include\n"
+	if err := os.WriteFile(customPath, []byte(customBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := mgr.EnsureProxyHTTPSForPHPVhosts()
+	if err != nil {
+		t.Fatalf("EnsureProxyHTTPSForPHPVhosts failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 legacy vhost patched, got %d", count)
+	}
+	patched, _ := os.ReadFile(legacyPath)
+	if !strings.Contains(string(patched), "fastcgi_param HTTPS $fe_https if_not_empty;") ||
+		!strings.Contains(string(patched), "fastcgi_param REQUEST_SCHEME $fe_scheme;") ||
+		!strings.Contains(string(patched), "fastcgi_param SERVER_PORT $fe_port;") {
+		t.Fatalf("legacy vhost not patched properly:\n%s", string(patched))
+	}
+	gotCustom, _ := os.ReadFile(customPath)
+	if string(gotCustom) != customBody {
+		t.Fatalf("custom conf modified unexpectedly: %q", string(gotCustom))
+	}
+
+	// Panggilan kedua tidak boleh mengubah apapun lagi
+	count2, err := mgr.EnsureProxyHTTPSForPHPVhosts()
+	if err != nil || count2 != 0 {
+		t.Fatalf("expected idempotent 0 updates on second call, got count=%d err=%v", count2, err)
+	}
+}

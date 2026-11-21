@@ -591,6 +591,15 @@ func (s *Server) Start() error {
 	return s.listenAndServeMux(ln, handler)
 }
 
+func (s *Server) syncNginxProxyAfterUpdate() {
+	if s.siteMgr != nil {
+		_, _ = s.siteMgr.EnsureProxyHTTPSForPHPVhosts()
+	}
+	if s.pdnsMgr != nil {
+		_, _ = s.pdnsMgr.EnsureEdgeRealIPConfig()
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -2278,7 +2287,11 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 	case "update":
 		taskName = "Perbarui Seluruh Paket & Toolchain"
 		fn = func(ctx context.Context, cb func(string)) error {
-			return s.installer.RunUpdateAll(ctx, cb)
+			if err := s.installer.RunUpdateAll(ctx, cb); err != nil {
+				return err
+			}
+			s.syncNginxProxyAfterUpdate()
+			return nil
 		}
 	case "check-updates", "check_updates", "updates":
 		taskName = "Pemeriksaan Ketersediaan Pembaruan"
@@ -2349,7 +2362,11 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 	case "nginx":
 		taskName = "Nginx Web Server"
 		fn = func(ctx context.Context, cb func(string)) error {
-			return s.installer.InstallNginx(ctx, cb)
+			if err := s.installer.InstallNginx(ctx, cb); err != nil {
+				return err
+			}
+			s.syncNginxProxyAfterUpdate()
+			return nil
 		}
 	case "php":
 		ver := reqVersion

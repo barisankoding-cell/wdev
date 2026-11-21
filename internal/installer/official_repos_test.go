@@ -2,6 +2,8 @@ package installer
 
 import (
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -96,13 +98,56 @@ http {
     include /etc/nginx/conf.d/*.conf;
 }
 `
-	if strings.Contains(orig, "/etc/nginx/sites-enabled/") {
-		t.Fatal("unexpected sites-enabled")
+	patched, changed := patchNginxMainConfig(orig, true)
+	if !changed {
+		t.Fatal("expected patchNginxMainConfig to modify nginx.org default config")
 	}
-	target := "include /etc/nginx/conf.d/*.conf;"
-	patched := strings.Replace(orig, target, target+"\n    include /etc/nginx/sites-enabled/*;", 1)
-	if !strings.Contains(patched, "include /etc/nginx/sites-enabled/*;") {
-		t.Fatal("failed to insert sites-enabled include")
+	if !strings.Contains(patched, "user  www-data;") || !strings.Contains(patched, "include /etc/nginx/sites-enabled/*;") {
+		t.Fatalf("unexpected patched nginx.conf:\n%s", patched)
+	}
+	if _, changedAgain := patchNginxMainConfig(patched, true); changedAgain {
+		t.Fatal("expected patchNginxMainConfig to be idempotent")
+	}
+
+	tmp := t.TempDir()
+	confPath := filepath.Join(tmp, "nginx.conf")
+	passwdPath := filepath.Join(tmp, "passwd")
+	if err := os.WriteFile(confPath, []byte(orig), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passwdPath, []byte("www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Installer{isDebian: true}
+	inst.ensureNginxCompatibilityAt(t.Context(), func(string) {}, confPath, passwdPath)
+	diskBytes, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(diskBytes), "user  www-data;") || !strings.Contains(string(diskBytes), "include /etc/nginx/sites-enabled/*;") {
+		t.Fatalf("ensureNginxCompatibilityAt failed:\n%s", string(diskBytes))
+	}
+}
+
+func TestAptSafeConffileArgs(t *testing.T) {
+	gotInstall := aptSafeConffileArgs("install", "nginx")
+	wantInstall := []string{
+		"-o", "Dpkg::Options::=--force-confdef",
+		"-o", "Dpkg::Options::=--force-confold",
+		"install", "-y", "nginx",
+	}
+	if !reflect.DeepEqual(gotInstall, wantInstall) {
+		t.Fatalf("aptSafeConffileArgs(install) = %v, want %v", gotInstall, wantInstall)
+	}
+
+	gotUpgrade := aptSafeConffileArgs("upgrade")
+	wantUpgrade := []string{
+		"-o", "Dpkg::Options::=--force-confdef",
+		"-o", "Dpkg::Options::=--force-confold",
+		"upgrade", "-y",
+	}
+	if !reflect.DeepEqual(gotUpgrade, wantUpgrade) {
+		t.Fatalf("aptSafeConffileArgs(upgrade) = %v, want %v", gotUpgrade, wantUpgrade)
 	}
 }
 

@@ -303,6 +303,13 @@ func main() {
 		cfg.TLSCert = *tlsCertFlag
 		cfg.TLSKey = *tlsKeyFlag
 
+		if _, err := siteMgr.EnsureProxyHTTPSForPHPVhosts(); err != nil {
+			fmt.Fprintf(os.Stderr, "Peringatan: sinkronisasi FastCGI HTTPS vhost gagal: %v\n", err)
+		}
+		if _, err := pdnsMgr.EnsureEdgeRealIPConfig(); err != nil {
+			fmt.Fprintf(os.Stderr, "Peringatan: sinkronisasi Nginx real_ip Edge gagal: %v\n", err)
+		}
+
 		srv := server.New(cfg, db, runMgr, inst, siteMgr, swMgr, cfMgr, pdnsMgr, mailMgr, authMgr)
 		if err := srv.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error menjalankan server: %v\n", err)

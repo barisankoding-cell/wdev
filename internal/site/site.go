@@ -842,6 +842,9 @@ func (m *Manager) SyncAll() error {
 			}
 		}
 	}
+	if _, err := m.EnsureProxyHTTPSForPHPVhosts(); err != nil {
+		return err
+	}
 	if m.skipNginxExec {
 		return nil
 	}
@@ -849,6 +852,55 @@ func (m *Manager) SyncAll() error {
 		_, _ = m.runPrivileged(nginxBin, "-t")
 	}
 	return m.reloadOrStartNginx()
+}
+
+// EnsureProxyHTTPSForPHPVhosts memastikan seluruh vhost PHP aktif di sites-available
+// meneruskan status HTTPS dari header X-Forwarded-Proto reverse proxy ke PHP-FPM.
+func (m *Manager) EnsureProxyHTTPSForPHPVhosts() (int, error) {
+	sitesAvail := m.sitesAvailDir()
+	entries, err := os.ReadDir(sitesAvail)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	updatedCount := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == "default" || name == "default.conf" ||
+			name == "000-default" || name == "000-default.conf" ||
+			strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".custom.conf") ||
+			strings.HasSuffix(name, ".bak") || strings.HasSuffix(name, ".disabled") ||
+			strings.HasSuffix(name, "~") {
+			continue
+		}
+		confPath := filepath.Join(sitesAvail, name)
+		origBytes, readErr := m.readFile(confPath)
+		if readErr != nil {
+			continue
+		}
+		nextText, changed := EnsureFastCGIProxyHTTPSInConfig(string(origBytes))
+		if !changed {
+			continue
+		}
+		if writeErr := m.writeFile(confPath, []byte(nextText), 0644); writeErr != nil {
+			return updatedCount, writeErr
+		}
+		if !m.skipNginxExec {
+			if nginxBin := findNginxBinary(); nginxBin != "" {
+				if out, testErr := m.runPrivileged(nginxBin, "-t"); testErr != nil {
+					_ = m.writeFile(confPath, origBytes, 0644)
+					return updatedCount, fmt.Errorf("konfigurasi nginx tidak valid setelah memperbarui %s: %s", name, out)
+				}
+			}
+		}
+		updatedCount++
+	}
+	if updatedCount > 0 && !m.skipNginxExec {
+		_ = m.reloadOrStartNginx()
+	}
+	return updatedCount, nil
 }
 
 func findNginxBinary() string {

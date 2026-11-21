@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -427,23 +428,17 @@ module_hotfixes=true
 	return false
 }
 
-// ensureNginxCompatibility memastikan nginx.conf memuat /etc/nginx/sites-enabled/* dan user sesuai PHP-FPM.
-func (inst *Installer) ensureNginxCompatibility(ctx context.Context, cb LogCallback) {
-	_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/etc/nginx/sites-available", "/etc/nginx/sites-enabled")
-	confPath := "/etc/nginx/nginx.conf"
-	data, err := os.ReadFile(confPath)
-	if err != nil {
-		return
-	}
-	content := string(data)
+var nginxUserDirectiveRe = regexp.MustCompile(`(?m)^user\s+nginx;`)
+
+// patchNginxMainConfig menormalkan nginx.conf agar worker memakai www-data (bila ada)
+// dan memuat direktori virtual host /etc/nginx/sites-enabled/*.
+func patchNginxMainConfig(content string, hasWWWData bool) (string, bool) {
 	updated := false
 
 	// Pada Debian/Ubuntu, PHP-FPM berjalan sebagai www-data; sesuaikan user nginx.org bila www-data tersedia
-	if inst.isDebian && strings.Contains(content, "user  nginx;") {
-		if passwdData, err := os.ReadFile("/etc/passwd"); err == nil && strings.Contains(string(passwdData), "www-data:") {
-			content = strings.Replace(content, "user  nginx;", "user  www-data;", 1)
-			updated = true
-		}
+	if hasWWWData && nginxUserDirectiveRe.MatchString(content) {
+		content = nginxUserDirectiveRe.ReplaceAllString(content, "user  www-data;")
+		updated = true
 	}
 
 	if !strings.Contains(content, "/etc/nginx/sites-enabled/") {
@@ -451,13 +446,48 @@ func (inst *Installer) ensureNginxCompatibility(ctx context.Context, cb LogCallb
 		if strings.Contains(content, target) {
 			content = strings.Replace(content, target, target+"\n    include /etc/nginx/sites-enabled/*;", 1)
 			updated = true
+		} else if idx := strings.Index(content, "http {"); idx != -1 {
+			insertAt := idx + len("http {")
+			content = content[:insertAt] + "\n    include /etc/nginx/sites-enabled/*;" + content[insertAt:]
+			updated = true
 		}
 	}
 
-	if updated {
-		cb("Menyesuaikan /etc/nginx/nginx.conf agar mendukung sites-enabled...")
-		_ = inst.writeSystemFile(ctx, cb, confPath, []byte(content), "644")
+	return content, updated
+}
+
+// ensureNginxCompatibility memastikan nginx.conf memuat /etc/nginx/sites-enabled/* dan user sesuai PHP-FPM.
+func (inst *Installer) ensureNginxCompatibility(ctx context.Context, cb LogCallback) {
+	inst.ensureNginxCompatibilityAt(ctx, cb, "/etc/nginx/nginx.conf", "/etc/passwd")
+}
+
+func (inst *Installer) ensureNginxCompatibilityAt(ctx context.Context, cb LogCallback, confPath, passwdPath string) {
+	if confPath == "/etc/nginx/nginx.conf" {
+		_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/etc/nginx/sites-available", "/etc/nginx/sites-enabled")
 	}
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		return
+	}
+
+	hasWWWData := false
+	if inst.isDebian {
+		if passwdData, pErr := os.ReadFile(passwdPath); pErr == nil && strings.Contains(string(passwdData), "www-data:") {
+			hasWWWData = true
+		}
+	}
+
+	patched, updated := patchNginxMainConfig(string(data), hasWWWData)
+	if !updated {
+		return
+	}
+
+	cb("Menyesuaikan " + confPath + " agar mendukung sites-enabled & worker PHP-FPM...")
+	if confPath == "/etc/nginx/nginx.conf" {
+		_ = inst.writeSystemFile(ctx, cb, confPath, []byte(patched), "644")
+		return
+	}
+	_ = os.WriteFile(confPath, []byte(patched), 0644)
 }
 
 // ensureRedisRepo menyiapkan repositori resmi Redis (packages.redis.io).

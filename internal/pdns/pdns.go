@@ -443,6 +443,7 @@ func (m *Manager) SetMode(mode string) error {
 	if norm == "vps" || norm == "local" {
 		m.ensureLocalPDNSConfig(norm)
 	}
+	_, _ = m.EnsureEdgeRealIPConfig()
 	return nil
 }
 
@@ -1516,7 +1517,8 @@ func (m *Manager) ExposeSite(localDomain, publicDomain string, useSSL bool) erro
 		return fmt.Errorf("gagal mengonfigurasi vhost lokal: %w", err)
 	}
 
-	// Reload nginx when managing system Nginx directory
+	// Ensure Nginx trusts Edge Gateway X-Real-IP and reload if vhost/realip changed
+	_, _ = m.EnsureEdgeRealIPConfig()
 	if sitesAvailDir == "/etc/nginx/sites-available" {
 		if err := reloadNginx(); err != nil {
 			return fmt.Errorf("gagal me-reload Nginx lokal: %w", err)
@@ -1578,45 +1580,47 @@ func configureLocalVhost(confPath, pubDom string) error {
 			}
 			return match
 		})
+	}
 
-		// Add conditional https redirect & fe_https variable if not already present
-		if !strings.Contains(text, "$redirect_to_https") {
-			proxyRules := `
+	// Add conditional https redirect only when local SSL (443) exists on this vhost
+	hasLocalSSL := strings.Contains(text, "listen 443") || strings.Contains(text, "ssl_certificate")
+	if hasLocalSSL && !strings.Contains(text, "$redirect_to_https") {
+		proxyRules := `
     # Handle HTTP to HTTPS redirect for direct non-proxy connections
     set $redirect_to_https 0;
     if ($scheme = "http") {
         set $redirect_to_https 1;
     }
-    if ($http_x_forwarded_proto = "https") {
+    if ($http_x_forwarded_proto ~* "^https(,|$)") {
         set $redirect_to_https 0;
     }
     if ($redirect_to_https = 1) {
         return 301 https://$host$request_uri;
     }
-
-    # Pass HTTPS flag to PHP-FPM when proxied behind Edge Gateway SSL
-    set $fe_https $https;
-    if ($http_x_forwarded_proto = "https") {
-        set $fe_https on;
-    }
 `
-			reSNLine := regexp.MustCompile(`(?m)(server_name\s+[^;]+;\n)`)
-			text = reSNLine.ReplaceAllString(text, "${1}"+proxyRules)
-		}
+		reSNLine := regexp.MustCompile(`(?m)(server_name\s+[^;]+;\n)`)
+		text = reSNLine.ReplaceAllStringFunc(text, func(match string) string {
+			return match + proxyRules
+		})
+	}
 
-		// Add fastcgi_param HTTPS $fe_https to PHP block if missing
-		if strings.Contains(text, `location ~ \.php`) && !strings.Contains(text, "fastcgi_param HTTPS") {
-			reFastcgi := regexp.MustCompile(`(?m)(include\s+fastcgi_params;\n)`)
-			text = reFastcgi.ReplaceAllString(text, "${1}        fastcgi_param HTTPS $fe_https if_not_empty;\n")
-		}
+	// Always ensure PHP FastCGI passes proxy HTTPS status (including when localDomain == pubDom)
+	if nextText, changed := site.EnsureFastCGIProxyHTTPSInConfig(text); changed {
+		text = nextText
+	}
 
-		// Write with sudo if needed
-		backup := data
-		if err := writeFileWithSudo(confPath, []byte(text)); err != nil {
-			return err
-		}
+	if text == string(data) {
+		return nil
+	}
 
-		// Test configuration
+	// Write with sudo if needed
+	backup := data
+	if err := writeFileWithSudo(confPath, []byte(text)); err != nil {
+		return err
+	}
+
+	// Test configuration when managing system Nginx directory
+	if filepath.Clean(filepath.Dir(confPath)) == "/etc/nginx/sites-available" {
 		if err := testNginx(); err != nil {
 			_ = writeFileWithSudo(confPath, backup)
 			return err
@@ -1764,6 +1768,85 @@ func writeFileWithSudo(path string, content []byte) error {
 	return os.WriteFile(path, content, 0644)
 }
 
+func removeFileWithSudo(path string) error {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil
+	}
+	if err := os.Remove(path); err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	if os.Geteuid() != 0 {
+		cmd := exec.Command("sudo", "-n", "rm", "-f", path)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("sudo rm gagal: %w (%s)", err, string(out))
+		}
+		return nil
+	}
+	return os.Remove(path)
+}
+
+func (m *Manager) nginxConfDDir() string {
+	if m.cfg != nil && strings.TrimSpace(m.cfg.NginxSitesAvail) != "" {
+		return filepath.Join(filepath.Dir(filepath.Clean(m.cfg.NginxSitesAvail)), "conf.d")
+	}
+	return "/etc/nginx/conf.d"
+}
+
+// EnsureEdgeRealIPConfig menyinkronkan konfigurasi Nginx realip agar $remote_addr
+// dan REMOTE_ADDR PHP/Laravel menerima IP asli pengunjung dari VPS Edge Gateway.
+func (m *Manager) EnsureEdgeRealIPConfig() (bool, error) {
+	confDDir := m.nginxConfDDir()
+	if _, err := os.Stat(confDDir); os.IsNotExist(err) {
+		return false, nil
+	}
+	isSystemNginx := filepath.Clean(confDDir) == "/etc/nginx/conf.d"
+	realIPPath := filepath.Join(confDDir, "wdev-edge-realip.conf")
+
+	conf := m.LoadConfig()
+	ip := net.ParseIP(strings.TrimSpace(conf.VPSNetbirdIP))
+	wantEnable := conf.Mode == "edge" && ip != nil && !ip.IsLoopback() && !ip.IsUnspecified()
+
+	existingBytes, readErr := os.ReadFile(realIPPath)
+	exists := readErr == nil
+
+	if !wantEnable {
+		if !exists {
+			return false, nil
+		}
+		if err := removeFileWithSudo(realIPPath); err != nil {
+			return false, err
+		}
+		if isSystemNginx {
+			if err := testNginx(); err != nil {
+				_ = writeFileWithSudo(realIPPath, existingBytes)
+				return false, err
+			}
+			_ = reloadNginx()
+		}
+		return true, nil
+	}
+
+	desired := fmt.Sprintf("# Managed by wdev (Edge Gateway Real IP)\nset_real_ip_from %s;\nreal_ip_header X-Real-IP;\n", ip.String())
+	if exists && string(existingBytes) == desired {
+		return false, nil
+	}
+	if err := writeFileWithSudo(realIPPath, []byte(desired)); err != nil {
+		return false, err
+	}
+	if isSystemNginx {
+		if err := testNginx(); err != nil {
+			if exists {
+				_ = writeFileWithSudo(realIPPath, existingBytes)
+			} else {
+				_ = removeFileWithSudo(realIPPath)
+			}
+			return false, err
+		}
+		_ = reloadNginx()
+	}
+	return true, nil
+}
+
 func testNginx() error {
 	var cmd *exec.Cmd
 	if os.Geteuid() != 0 {
@@ -1820,7 +1903,11 @@ AGENT_PORT="%s"
 			writeErr = err
 		}
 	}
-	return writeErr
+	if writeErr != nil {
+		return writeErr
+	}
+	_, _ = m.EnsureEdgeRealIPConfig()
+	return nil
 }
 
 func (m *Manager) Connect(opts ConnectOptions) error {

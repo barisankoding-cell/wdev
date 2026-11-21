@@ -3,7 +3,65 @@ package site
 import (
 	"fmt"
 	"html"
+	"regexp"
+	"strings"
 )
+
+var includeFastCGIParamsRe = regexp.MustCompile(`(?m)^([ \t]*)(include\s+(?:fastcgi_params|fastcgi\.conf);)[ \t]*\r?$`)
+
+// EnsureFastCGIProxyHTTPSInConfig menyuntikkan penerusan status HTTPS dari header
+// X-Forwarded-Proto reverse proxy ke FastCGI PHP agar aplikasi (Laravel, dll.)
+// mengenali HTTPS tanpa perlu mengubah konfigurasi aplikasi.
+func EnsureFastCGIProxyHTTPSInConfig(confText string) (string, bool) {
+	if strings.Contains(confText, "fastcgi_param HTTPS") {
+		return confText, false
+	}
+	if !includeFastCGIParamsRe.MatchString(confText) {
+		return confText, false
+	}
+	hasFEHttps := strings.Contains(confText, "$fe_https")
+	hasFEScheme := strings.Contains(confText, "$fe_scheme")
+	hasFEPort := strings.Contains(confText, "$fe_port")
+
+	updated := includeFastCGIParamsRe.ReplaceAllStringFunc(confText, func(line string) string {
+		m := includeFastCGIParamsRe.FindStringSubmatch(line)
+		indent := ""
+		directive := strings.TrimSpace(line)
+		if len(m) > 2 {
+			indent = m[1]
+			directive = m[2]
+		}
+		var b strings.Builder
+		if !hasFEHttps {
+			b.WriteString(indent + "set $fe_https $https;\n")
+		}
+		if !hasFEScheme {
+			b.WriteString(indent + "set $fe_scheme $scheme;\n")
+		}
+		if !hasFEPort {
+			b.WriteString(indent + "set $fe_port $server_port;\n")
+		}
+		if !hasFEHttps || !hasFEScheme || !hasFEPort {
+			b.WriteString(indent + `if ($http_x_forwarded_proto ~* "^https(,|$)") {` + "\n")
+			if !hasFEHttps {
+				b.WriteString(indent + "    set $fe_https on;\n")
+			}
+			if !hasFEScheme {
+				b.WriteString(indent + "    set $fe_scheme https;\n")
+			}
+			if !hasFEPort {
+				b.WriteString(indent + "    set $fe_port 443;\n")
+			}
+			b.WriteString(indent + "}\n")
+		}
+		b.WriteString(indent + directive + "\n")
+		b.WriteString(indent + "fastcgi_param HTTPS $fe_https if_not_empty;\n")
+		b.WriteString(indent + "fastcgi_param REQUEST_SCHEME $fe_scheme;\n")
+		b.WriteString(indent + "fastcgi_param SERVER_PORT $fe_port;")
+		return b.String()
+	})
+	return updated, updated != confText
+}
 
 const nginxVHostTemplate = `server {
     listen 80;
@@ -89,7 +147,18 @@ server {
         set $path_info $fastcgi_path_info;
         try_files $fastcgi_script_name =404;
         fastcgi_index index.php;
+        set $fe_https $https;
+        set $fe_scheme $scheme;
+        set $fe_port $server_port;
+        if ($http_x_forwarded_proto ~* "^https(,|$)") {
+            set $fe_https on;
+            set $fe_scheme https;
+            set $fe_port 443;
+        }
         include fastcgi_params;
+        fastcgi_param HTTPS $fe_https if_not_empty;
+        fastcgi_param REQUEST_SCHEME $fe_scheme;
+        fastcgi_param SERVER_PORT $fe_port;
         fastcgi_param PATH_INFO $path_info;
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         fastcgi_pass {{if .PHPFastCGIPass}}{{.PHPFastCGIPass}}{{else}}unix:{{.PHPSocket}}{{end}};

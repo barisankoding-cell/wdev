@@ -435,3 +435,110 @@ func TestFormatTXTRecordContentAndMXRecordContent(t *testing.T) {
 		t.Fatalf("formatMXRecordContent = %q", mx)
 	}
 }
+
+func TestConfigureLocalVhostSameDomainAndRealIPConfig(t *testing.T) {
+	tmp := t.TempDir()
+	avail := filepath.Join(tmp, "sites-available")
+	confD := filepath.Join(tmp, "conf.d")
+	etcDir := filepath.Join(tmp, "etc")
+	for _, dir := range []string{avail, confD, etcDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1. Vhost HTTP-only dengan server_name yang sudah sama dengan publicDomain (seperti lara.erposoft.my.id)
+	//    harus tetap dipatch FastCGI HTTPS dan TIDAK boleh mendapat redirect 301 https:// tanpa blok 443.
+	vhostPath := filepath.Join(avail, "lara.erposoft.my.id")
+	initial := `server {
+    listen 80;
+    server_name lara.erposoft.my.id;
+    root /mnt/projects/appsone/public;
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+}
+`
+	if err := os.WriteFile(vhostPath, []byte(initial), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureLocalVhost(vhostPath, "lara.erposoft.my.id"); err != nil {
+		t.Fatalf("configureLocalVhost failed: %v", err)
+	}
+	gotBytes, _ := os.ReadFile(vhostPath)
+	got := string(gotBytes)
+	if !strings.Contains(got, "fastcgi_param HTTPS $fe_https if_not_empty;") {
+		t.Fatalf("expected FastCGI HTTPS param even when domain already in server_name:\n%s", got)
+	}
+	if strings.Contains(got, "return 301 https://") {
+		t.Fatalf("HTTP-only vhost must not inject 301 https redirect:\n%s", got)
+	}
+
+	// 2. Vhost dengan SSL lokal (443) + alias baru harus menormalkan redirect 80->443 agar tidak loop lewat Edge.
+	sslPath := filepath.Join(avail, "appsone.test")
+	sslInit := `server {
+    listen 80;
+    server_name appsone.test;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name appsone.test;
+    ssl_certificate /etc/ssl/local-certs/appsone.test.pem;
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+}
+`
+	if err := os.WriteFile(sslPath, []byte(sslInit), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureLocalVhost(sslPath, "app.erposoft.my.id"); err != nil {
+		t.Fatalf("configureLocalVhost(ssl) failed: %v", err)
+	}
+	gotSSLBytes, _ := os.ReadFile(sslPath)
+	gotSSL := string(gotSSLBytes)
+	if !strings.Contains(gotSSL, "server_name appsone.test app.erposoft.my.id;") {
+		t.Fatalf("expected public domain alias added:\n%s", gotSSL)
+	}
+	if !strings.Contains(gotSSL, "$redirect_to_https") ||
+		!strings.Contains(gotSSL, `return 301 https://$host$request_uri;`) ||
+		!strings.Contains(gotSSL, "fastcgi_param HTTPS $fe_https if_not_empty;") {
+		t.Fatalf("expected conditional redirect and FastCGI HTTPS on SSL vhost:\n%s", gotSSL)
+	}
+
+	// 3. EnsureEdgeRealIPConfig menulis set_real_ip_from di mode edge dan membersihkannya di mode local.
+	st, err := store.New(filepath.Join(tmp, "wdev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mgr := New(&config.Config{WdevEtc: etcDir, NginxSitesAvail: avail}, st)
+	if err := mgr.SetMode("edge"); err != nil {
+		t.Fatal(err)
+	}
+	edgeConf := "VPS_NETBIRD_IP=\"100.68.66.249\"\nVPS_PUBLIC_IP=\"174.128.205.124\"\nAPI_KEY=\"k\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(edgeConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := mgr.EnsureEdgeRealIPConfig()
+	if err != nil || !changed {
+		t.Fatalf("EnsureEdgeRealIPConfig(edge) got changed=%v err=%v", changed, err)
+	}
+	realIPBytes, err := os.ReadFile(filepath.Join(confD, "wdev-edge-realip.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(realIPBytes), "set_real_ip_from 100.68.66.249;") || !strings.Contains(string(realIPBytes), "real_ip_header X-Real-IP;") {
+		t.Fatalf("unexpected realip config:\n%s", string(realIPBytes))
+	}
+
+	if err := mgr.SetMode("local"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(confD, "wdev-edge-realip.conf")); !os.IsNotExist(err) {
+		t.Fatalf("expected wdev-edge-realip.conf removed in local mode, err=%v", err)
+	}
+}

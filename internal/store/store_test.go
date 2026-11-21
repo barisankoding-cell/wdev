@@ -144,3 +144,50 @@ func TestSetSiteSSLAndSyncFromDiskDetectsLetsEncrypt(t *testing.T) {
 		t.Fatalf("SyncFromDisk did not detect letsencrypt provider: %+v", sites[0])
 	}
 }
+
+func TestSyncFromDiskPreservesFrameworkAndSameDomainExposedTo(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := New(filepath.Join(tmp, "preserve.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.SaveSite(SiteRecord{
+		Domain:     "lara.erposoft.my.id",
+		RootPath:   "/mnt/projects/appsone",
+		PHPVersion: "8.4",
+		Framework:  "laravel",
+		ExposedTo:  "lara.erposoft.my.id",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	avail := filepath.Join(tmp, "sites-available")
+	if err := os.MkdirAll(avail, 0755); err != nil {
+		t.Fatal(err)
+	}
+	vhost := `server {
+    listen 80;
+    server_name lara.erposoft.my.id;
+    root /mnt/projects/appsone/public;
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+}
+`
+	if err := os.WriteFile(filepath.Join(avail, "lara.erposoft.my.id"), []byte(vhost), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	db.SyncFromDisk(avail, filepath.Join(tmp, "exposures"))
+
+	sites, err := db.ListSites()
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("unexpected ListSites: %+v err=%v", sites, err)
+	}
+	if sites[0].Framework != "laravel" || sites[0].ExposedTo != "lara.erposoft.my.id" {
+		t.Fatalf("SyncFromDisk clobbered metadata: %+v", sites[0])
+	}
+}

@@ -109,7 +109,7 @@ func needsSudo(name string, args ...string) bool {
 		return true
 	}
 	switch base {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot", "runuser", "su":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "nginx", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot", "runuser", "su":
 		return true
 	case "sqlite3":
 		for _, arg := range args {
@@ -966,13 +966,67 @@ func (inst *Installer) reportRedisFailure(ctx context.Context, cb LogCallback, s
 	}
 }
 
+func aptSafeConffileArgs(subcmd string, extra ...string) []string {
+	args := []string{
+		"-o", "Dpkg::Options::=--force-confdef",
+		"-o", "Dpkg::Options::=--force-confold",
+		subcmd,
+		"-y",
+	}
+	return append(args, extra...)
+}
+
+func (inst *Installer) validateNginxConfig(ctx context.Context, cb LogCallback) error {
+	nginxBin := findTool("nginx")
+	if nginxBin == "" {
+		return nil
+	}
+	return inst.runCmd(ctx, cb, nginxBin, "-t")
+}
+
+func (inst *Installer) reconcileNginxAfterUpdate(ctx context.Context, cb LogCallback, backup []byte, restart bool) error {
+	if findTool("nginx") == "" {
+		return nil
+	}
+	inst.ensureNginxCompatibility(ctx, cb)
+	if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Perbaikan permission cache Nginx: %v", err))
+	}
+	if err := inst.validateNginxConfig(ctx, cb); err != nil {
+		if len(backup) > 0 {
+			cb("[WARN] Uji konfigurasi Nginx gagal pasca-upgrade; memulihkan backup /etc/nginx/nginx.conf...")
+			_ = inst.writeSystemFile(ctx, cb, "/etc/nginx/nginx.conf", backup, "644")
+			inst.ensureNginxCompatibility(ctx, cb)
+			if retryErr := inst.validateNginxConfig(ctx, cb); retryErr != nil {
+				return fmt.Errorf("konfigurasi Nginx tidak valid pasca-upgrade: %w", retryErr)
+			}
+		} else {
+			return fmt.Errorf("konfigurasi Nginx tidak valid pasca-upgrade: %w", err)
+		}
+	}
+	if restart {
+		if err := inst.runCmd(ctx, cb, "systemctl", "enable", "nginx"); err != nil {
+			return fmt.Errorf("gagal mengaktifkan service nginx: %w", err)
+		}
+		if err := inst.runCmd(ctx, cb, "systemctl", "restart", "nginx"); err != nil {
+			return fmt.Errorf("gagal menjalankan ulang service nginx: %w", err)
+		}
+	} else if exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "nginx").Run() == nil {
+		if err := inst.runCmd(ctx, cb, "systemctl", "reload", "nginx"); err != nil {
+			cb(fmt.Sprintf("[WARN] Reload Nginx pasca-upgrade: %v", err))
+		}
+	}
+	return nil
+}
+
 // 10. Nginx Mainline (Official nginx.org Repo)
 func (inst *Installer) InstallNginx(ctx context.Context, cb LogCallback) error {
 	cb("--- [10] Memasang Nginx Web Server ---")
 	_ = inst.ensureNginxRepo(ctx, cb)
+	nginxBackup, _ := os.ReadFile("/etc/nginx/nginx.conf")
 
 	if inst.isDebian {
-		if err := inst.runCmd(ctx, cb, "apt-get", "install", "-y", "nginx"); err != nil {
+		if err := inst.runCmd(ctx, cb, "apt-get", aptSafeConffileArgs("install", "nginx")...); err != nil {
 			return err
 		}
 	} else {
@@ -990,15 +1044,8 @@ func (inst *Installer) InstallNginx(ctx context.Context, cb LogCallback) error {
 		}
 	}
 
-	inst.ensureNginxCompatibility(ctx, cb)
-	if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
-		cb(fmt.Sprintf("[WARN] Perbaikan permission cache Nginx: %v", err))
-	}
-	if err := inst.runCmd(ctx, cb, "systemctl", "enable", "nginx"); err != nil {
-		return fmt.Errorf("gagal mengaktifkan service nginx: %w", err)
-	}
-	if err := inst.runCmd(ctx, cb, "systemctl", "restart", "nginx"); err != nil {
-		return fmt.Errorf("gagal menjalankan ulang service nginx: %w", err)
+	if err := inst.reconcileNginxAfterUpdate(ctx, cb, nginxBackup, true); err != nil {
+		return err
 	}
 	cb("✓ Nginx Web Server berhasil dipasang dan diaktifkan.")
 	return nil
@@ -1471,9 +1518,10 @@ func (inst *Installer) RunFullInstall(ctx context.Context, cb LogCallback) error
 // Update All
 func (inst *Installer) RunUpdateAll(ctx context.Context, cb LogCallback) error {
 	cb("=== MEMPERBARUI SELURUH SISTEM & TOOLCHAIN ===")
+	nginxBackup, _ := os.ReadFile("/etc/nginx/nginx.conf")
 	if inst.isDebian {
 		_ = inst.runCmd(ctx, cb, "apt-get", "update", "-y")
-		_ = inst.runCmd(ctx, cb, "apt-get", "upgrade", "-y")
+		_ = inst.runCmd(ctx, cb, "apt-get", aptSafeConffileArgs("upgrade")...)
 	} else {
 		migratingPG := inst.preparePostgresBeforeRPMUpgrade(ctx, cb, "")
 		_ = inst.runCmd(ctx, cb, inst.pkgMgr, "upgrade", "-y")
@@ -1499,8 +1547,8 @@ func (inst *Installer) RunUpdateAll(ctx context.Context, cb LogCallback) error {
 	if err := inst.EnsureWdevServiceUnit(ctx, cb); err != nil {
 		cb(fmt.Sprintf("[WARN] Penyelarasan unit wdev.service: %v", err))
 	}
-	if err := inst.FixNginxCachePerm(ctx, cb); err != nil {
-		cb(fmt.Sprintf("[WARN] Perbaikan permission cache Nginx: %v", err))
+	if err := inst.reconcileNginxAfterUpdate(ctx, cb, nginxBackup, false); err != nil {
+		cb(fmt.Sprintf("[WARN] Penyelarasan Nginx pasca-upgrade: %v", err))
 	}
 	cb("✓ Pembaruan seluruh sistem selesai.")
 	return nil

@@ -21,6 +21,7 @@ import (
 	"time"
 	"wdev/internal/config"
 	"wdev/internal/pdns"
+	"wdev/internal/site"
 	"wdev/internal/store"
 )
 
@@ -751,7 +752,7 @@ func phpFPMsock() string {
 // Stalwart (127.0.0.1:8080), webmail -> SnappyMail, mail -> health check.
 func localMailVhostBlock(domain, phpSock string) string {
 	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
-	return fmt.Sprintf(`# Managed by wdev (mail vhost %[1]s)
+	raw := fmt.Sprintf(`# Managed by wdev (mail vhost %[1]s)
 server {
 	listen 80;
 	server_name webmail.%[1]s;
@@ -798,6 +799,10 @@ server {
 	location / { return 200 "mail server host ok\n"; }
 }
 `, domain, phpSock)
+	if patched, ok := site.EnsureFastCGIProxyHTTPSInConfig(raw); ok {
+		return patched
+	}
+	return raw
 }
 
 func (m *Manager) nginxMailPaths(domain string) (available, enabled string) {
@@ -1304,6 +1309,9 @@ server {
 	location ~ ^/(data|config)/ { deny all; return 404; }
 }
 `, phpFPMsock())
+	if patched, ok := site.EnsureFastCGIProxyHTTPSInConfig(content); ok {
+		content = patched
+	}
 	if err := writeRootFile(available, []byte(content), 0644); err != nil {
 		return err
 	}
