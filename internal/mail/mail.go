@@ -1398,17 +1398,21 @@ func (m *Manager) checkStalwartPorts(forceExternal bool) []PortStatus {
 	publicIP := ""
 	if m.pdnsMgr != nil {
 		mode = m.pdnsMgr.GetMode()
-		if mode == "vps" {
+		if mode == "vps" || mode == "edge" {
 			if ip := strings.TrimSpace(m.pdnsMgr.LoadConfig().VPSPublicIP); ip != "" {
 				publicIP = ip
 			}
 		}
 	}
 
-	// Siapkan cache hasil uji port eksternal agar dashboard tidak menembak endpoint eksternal berulang-ulang.
-	runExtInProd := m.externalPortProbeFn != nil || (m.portProbeFn == nil && mode == "vps")
+	// Di mode vps, daemon berjalan di VPS yang sama sehingga uji luar memakai endpoint eksternal (ifconfig.co).
+	// Di mode edge, daemon berjalan di klien sehingga TCP dial ke VPSPublicIP langsung melalui internet publik.
+	useExternalHTTP := m.externalPortProbeFn != nil || (m.portProbeFn == nil && mode == "vps")
+	useEdgeDirect := mode == "edge" && publicIP != "" && m.portProbeFn == nil && m.externalPortProbeFn == nil
+	useCache := useExternalHTTP || useEdgeDirect
+
 	var cachedExt map[int]extPortCacheEntry
-	if runExtInProd && !forceExternal {
+	if useCache && !forceExternal {
 		m.extProbeMu.Lock()
 		if m.extProbeCache != nil && m.extProbeIP == publicIP && time.Since(m.extProbeAt) < 45*time.Second {
 			cachedExt = make(map[int]extPortCacheEntry, len(m.extProbeCache))
@@ -1433,24 +1437,45 @@ func (m *Manager) checkStalwartPorts(forceExternal bool) []PortStatus {
 			extChecked := false
 
 			if !internalOnly {
-				if runExtInProd {
+				switch {
+				case m.externalPortProbeFn != nil:
 					if ent, ok := cachedExt[p]; ok {
 						pubOpen = ent.Reachable
 						extChecked = ent.Checked
-					} else if m.externalPortProbeFn != nil {
+					} else {
 						pubOpen, extChecked = m.externalPortProbeFn(p)
 						freshMu.Lock()
 						freshExt[p] = extPortCacheEntry{Reachable: pubOpen, Checked: extChecked}
 						freshMu.Unlock()
+					}
+				case useExternalHTTP:
+					if ent, ok := cachedExt[p]; ok {
+						pubOpen = ent.Reachable
+						extChecked = ent.Checked
 					} else {
 						pubOpen, extChecked = m.probeExternalPort(p, publicIP)
 						freshMu.Lock()
 						freshExt[p] = extPortCacheEntry{Reachable: pubOpen, Checked: extChecked}
 						freshMu.Unlock()
 					}
-				} else if m.portProbeFn != nil && publicIP != "" {
-					// Mode injeksi SetPortProbe pada unit test eksisting
+				case useEdgeDirect:
+					if ent, ok := cachedExt[p]; ok {
+						pubOpen = ent.Reachable
+						extChecked = ent.Checked
+					} else {
+						pubOpen = probe(publicIP, p, 1500*time.Millisecond)
+						extChecked = true
+						freshMu.Lock()
+						freshExt[p] = extPortCacheEntry{Reachable: pubOpen, Checked: extChecked}
+						freshMu.Unlock()
+					}
+				case m.portProbeFn != nil && publicIP != "":
+					// Mode injeksi SetPortProbe pada unit test:
+					// di edge mode, probe(publicIP) mewakili uji langsung dari klien ke IP VPS eksternal.
 					pubOpen = probe(publicIP, p, 300*time.Millisecond)
+					if mode == "edge" {
+						extChecked = true
+					}
 				}
 			}
 

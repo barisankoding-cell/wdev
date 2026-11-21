@@ -385,4 +385,37 @@ func TestDualInsideAndOutsidePortProbe(t *testing.T) {
 	if hits != 8 {
 		t.Fatalf("expected forced refresh external probe (hits=8), got %d", hits)
 	}
+
+	// Uji mode Edge Gateway: client men-dial IP VPS eksternal (174.128.205.124) secara langsung
+	edgeMgr, edgeCfg := newTestMailManager(t, "edge")
+	edgeGatewayConf := "VPS_NETBIRD_IP=\"100.64.0.1\"\nVPS_PUBLIC_IP=\"174.128.205.124\"\nAPI_KEY=\"k\"\nPDNS_PORT=\"8081\"\n"
+	if err := os.WriteFile(filepath.Join(edgeCfg.WdevEtc, "edge-dns.conf"), []byte(edgeGatewayConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+	edgeMgr.SetPortProbe(func(host string, port int, _ time.Duration) bool {
+		if host == "127.0.0.1" {
+			return port == 25 || port == 465 || port == 993 || port == 8080
+		}
+		if host == "174.128.205.124" {
+			return port == 25 || port == 465 || port == 993
+		}
+		return false
+	})
+	edgeSt, err := edgeMgr.GetStatus()
+	if err != nil {
+		t.Fatalf("edge GetStatus failed: %v", err)
+	}
+	edgeByPort := make(map[int]PortStatus, len(edgeSt.StalwartPorts))
+	for _, p := range edgeSt.StalwartPorts {
+		edgeByPort[p.Port] = p
+	}
+	for _, openP := range []int{25, 465, 993} {
+		p := edgeByPort[openP]
+		if !p.Open || !p.Local || !p.Public || !p.ExternalChecked {
+			t.Fatalf("edge port %d = %+v, want Open=true Local=true Public=true ExternalChecked=true", openP, p)
+		}
+	}
+	if p := edgeByPort[587]; p.Open || p.Public {
+		t.Fatalf("edge closed port 587 = %+v, want Open=false Public=false", p)
+	}
 }
