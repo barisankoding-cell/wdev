@@ -1,5 +1,16 @@
 # Changelog
 
+## [v2.3.0] - 2026-11-21
+
+### 🚀 Fitur Baru
+- feat(setup,server): rapikan installer modular dengan preset hosting & development serta instalasi batch (100bdc5)
+
+### 🐛 Perbaikan Bug
+- fix(updater): stage biner di direktori target untuk atasi error cross-device rename (797ea62)
+
+### 🔧 Pemeliharaan & Tooling
+- chore(release): tambah deteksi versi SemVer otomatis pada make release dan changelog (19bad6d)
+
 ## [v2.2.1] - 2026-11-21
 
 ### 🚀 Fitur Baru
