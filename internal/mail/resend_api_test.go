@@ -50,7 +50,8 @@ func newFakePDNSServer(t *testing.T, initialZones ...string) (*fakePDNSServer, *
 			_ = json.NewEncoder(w).Encode(list)
 		case p == "/zones" && r.Method == http.MethodPost:
 			var req struct {
-				Name string `json:"name"`
+				Name        string   `json:"name"`
+				Nameservers []string `json:"nameservers"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			zn := strings.TrimSuffix(req.Name, ".") + "."
@@ -59,6 +60,13 @@ func newFakePDNSServer(t *testing.T, initialZones ...string) (*fakePDNSServer, *
 				return
 			}
 			zi := &pdns.ZoneInfo{ID: zn, Name: zn, Kind: "Native"}
+			if len(req.Nameservers) > 0 {
+				var nsRecs []pdns.Record
+				for _, ns := range req.Nameservers {
+					nsRecs = append(nsRecs, pdns.Record{Content: strings.TrimSuffix(ns, ".") + "."})
+				}
+				zi.RRsets = append(zi.RRsets, pdns.RRSet{Name: zn, Type: "NS", TTL: 3600, Records: nsRecs})
+			}
 			fp.zones[zn] = zi
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(zi)
