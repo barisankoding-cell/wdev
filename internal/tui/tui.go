@@ -147,7 +147,7 @@ func (t *TUI) renderSystemSummary() {
 	if t.pdnsMgr != nil {
 		stats.ServerMode = t.pdnsMgr.GetMode()
 		cfg := t.pdnsMgr.LoadConfig()
-		if cfg.VPSPublicIP != "" {
+		if cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
 			stats.PublicIP = cfg.VPSPublicIP
 		}
 		if stats.ServerMode == "vps" && stats.PublicIP != "" {
@@ -157,10 +157,12 @@ func (t *TUI) renderSystemSummary() {
 
 	netLabel := "NetBird:"
 	netVal := stats.NetbirdIP
-	if stats.ServerMode == "vps" || (stats.PublicIP != "" && stats.PublicIP != "-" && stats.PublicIP != "127.0.0.1") {
+	if stats.ServerMode == "vps" || (stats.PublicIP != "" && stats.PublicIP != "-" && stats.PublicIP != "127.0.0.1" && pdns.IsPublicIPv4String(stats.PublicIP)) {
 		netLabel = "IP VPS: "
-		if stats.PublicIP != "" {
+		if stats.PublicIP != "" && pdns.IsPublicIPv4String(stats.PublicIP) {
 			netVal = stats.PublicIP
+		} else {
+			netVal = "-"
 		}
 	}
 

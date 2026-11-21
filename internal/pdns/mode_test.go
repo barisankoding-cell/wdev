@@ -104,6 +104,21 @@ func TestDetectModeFromSignals(t *testing.T) {
 			},
 			want: "vps",
 		},
+		{
+			name: "floating public ip without netbird implies vps",
+			sig: modeSignals{
+				hasPublicIP: true,
+			},
+			want: "vps",
+		},
+		{
+			name: "floating public ip with netbird implies edge client",
+			sig: modeSignals{
+				hasPublicIP:    true,
+				localNetbirdIP: "100.64.0.12",
+			},
+			want: "edge",
+		},
 	}
 
 	for _, tc := range cases {

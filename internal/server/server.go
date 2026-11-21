@@ -553,11 +553,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if s.pdnsMgr != nil {
 		stats.ServerMode = s.pdnsMgr.GetMode()
 		cfg := s.pdnsMgr.LoadConfig()
-		if cfg.VPSPublicIP != "" {
+		if cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
 			stats.PublicIP = cfg.VPSPublicIP
 		}
 		if stats.ServerMode == "vps" {
-			if stats.PublicIP != "" {
+			if stats.PublicIP != "" && pdns.IsPublicIPv4String(stats.PublicIP) {
 				stats.NetbirdIP = stats.PublicIP
 			}
 		}

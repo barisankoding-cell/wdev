@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -514,6 +515,10 @@ func isPublicIPv4(ip net.IP) bool {
 	return true
 }
 
+func IsPublicIPv4(ip net.IP) bool {
+	return isPublicIPv4(ip)
+}
+
 func loadEdgeDNSPublicIP() string {
 	paths := []string{
 		"/etc/wdev/edge-dns.conf",
@@ -537,11 +542,69 @@ func loadEdgeDNSPublicIP() string {
 			k := strings.TrimSpace(parts[0])
 			v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
 			if (k == "VPS_PUBLIC_IP" || k == "PUBLIC_IP") && v != "" && v != "127.0.0.1" && v != "localhost" {
-				return v
+				parsed := net.ParseIP(v)
+				if parsed != nil && isPublicIPv4(parsed.To4()) {
+					return v
+				}
 			}
 		}
 	}
 	return ""
+}
+
+var (
+	cachedPublicIP     string
+	cachedPublicIPTime time.Time
+	publicIPMu         sync.RWMutex
+)
+
+func getCachedExternalPublicIP() string {
+	publicIPMu.RLock()
+	if cachedPublicIP != "" && time.Since(cachedPublicIPTime) < 5*time.Minute {
+		ip := cachedPublicIP
+		publicIPMu.RUnlock()
+		return ip
+	}
+	publicIPMu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+
+	transport := &http.Transport{
+		DialContext: func(c context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(c, "tcp4", addr)
+		},
+	}
+	client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
+	for _, u := range []string{
+		"https://api.ipify.org",
+		"https://ipv4.icanhazip.com",
+		"https://ifconfig.me/ip",
+	} {
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+		_ = resp.Body.Close()
+		ip := strings.TrimSpace(string(body))
+		parsed := net.ParseIP(ip)
+		if parsed != nil && isPublicIPv4(parsed.To4()) {
+			publicIPMu.Lock()
+			cachedPublicIP = ip
+			cachedPublicIPTime = time.Now()
+			publicIPMu.Unlock()
+			return ip
+		}
+	}
+
+	publicIPMu.RLock()
+	defer publicIPMu.RUnlock()
+	return cachedPublicIP
 }
 
 func getNetworkIPs() (lanIP string, netbirdIP string, publicIP string) {
@@ -585,6 +648,9 @@ func getNetworkIPs() (lanIP string, netbirdIP string, publicIP string) {
 	}
 	if publicIP == "" {
 		publicIP = loadEdgeDNSPublicIP()
+	}
+	if publicIP == "" {
+		publicIP = getCachedExternalPublicIP()
 	}
 	return
 }

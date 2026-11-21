@@ -1,6 +1,9 @@
 package monitor
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 func TestParseLoadAvgPercent(t *testing.T) {
 	summary, l1, l5, l15, p1, p5, p15 := parseLoadAvg("2.00 1.00 0.50 1/200 1234", 8)
@@ -74,5 +77,30 @@ intr 12350
 	// totalDelta = 110, idleDelta = 80, usedDelta = 30 -> 30/110 = 27%
 	if usages[1].Percent != 27 {
 		t.Fatalf("expected 27%% on core 1, got %d%%", usages[1].Percent)
+	}
+}
+
+func TestIsPublicIPv4(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		{"103.171.85.72", true},
+		{"8.8.8.8", true},
+		{"1.1.1.1", true},
+		{"127.0.0.1", false},
+		{"10.3.35.254", false},
+		{"192.168.1.100", false},
+		{"172.16.0.5", false},
+		{"100.64.0.1", false},
+		{"169.254.1.1", false},
+		{"224.0.0.1", false},
+		{"0.0.0.0", false},
+	}
+	for _, tc := range cases {
+		parsed := net.ParseIP(tc.ip)
+		if got := IsPublicIPv4(parsed.To4()); got != tc.want {
+			t.Errorf("IsPublicIPv4(%s) = %v, want %v", tc.ip, got, tc.want)
+		}
 	}
 }

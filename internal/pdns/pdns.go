@@ -164,7 +164,7 @@ func DetectPublicInterfaceIP() string {
 			if ip4 == nil {
 				continue
 			}
-			if !ip4.IsLoopback() && !ip4.IsPrivate() && !ip4.IsLinkLocalUnicast() && !ip4.IsMulticast() && !ip4.IsUnspecified() && !isCGNATIPv4(ip4) {
+			if isPublicIPv4(ip4) {
 				return ip4.String()
 			}
 		}
@@ -172,10 +172,56 @@ func DetectPublicInterfaceIP() string {
 	return ""
 }
 
+func isPublicIPv4(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	if ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127 {
+		return false
+	}
+	return true
+}
+
+// IsPublicIPv4String memeriksa apakah representasi string IPv4 adalah alamat publik yang valid.
+func IsPublicIPv4String(ipStr string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(ipStr))
+	if parsed == nil {
+		return false
+	}
+	ip4 := parsed.To4()
+	if ip4 == nil {
+		return false
+	}
+	return isPublicIPv4(ip4)
+}
+
 // HasPublicInterfaceIP memeriksa apakah mesin ini memiliki IPv4 publik langsung
 // pada interface jaringan host (ciri khas VPS publik tanpa NAT).
 func HasPublicInterfaceIP() bool {
 	return DetectPublicInterfaceIP() != ""
+}
+
+// DetectPublicIP mendeteksi IPv4 publik baik langsung pada interface jaringan (tanpa NAT)
+// maupun floating IP / 1:1 NAT melalui layanan eksternal.
+func DetectPublicIP() string {
+	if pub := DetectPublicInterfaceIP(); pub != "" {
+		return pub
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	pub := edge.DetectPublicIP(ctx)
+	if IsPublicIPv4String(pub) {
+		return pub
+	}
+	return ""
+}
+
+// HasPublicIP memeriksa apakah mesin ini memiliki alamat IPv4 publik (baik langsung di NIC maupun Floating IP).
+func HasPublicIP() bool {
+	return DetectPublicIP() != ""
 }
 
 // DetectLocalLANIP mengembalikan IPv4 LAN/host utama (bukan loopback dan bukan NetBird).
@@ -220,6 +266,7 @@ type modeSignals struct {
 	hasEdgeAgentCfg bool
 	localNetbirdIP  string
 	hasPublicNIC    bool
+	hasPublicIP     bool
 }
 
 func detectModeFromSignals(sig modeSignals) string {
@@ -235,18 +282,23 @@ func detectModeFromSignals(sig modeSignals) string {
 	if sig.hasPublicNIC {
 		return "vps"
 	}
+	// 3. Jika mesin memiliki IP publik (termasuk Floating IP / 1:1 NAT) tanpa tunnel NetBird dan tanpa remote edge host,
+	// maka ini adalah Full VPS standalone!
+	if sig.hasPublicIP && sig.localNetbirdIP == "" && sig.remoteEdgeHost == "" {
+		return "vps"
+	}
 	if sig.hasLocalPDNS {
 		return "local"
 	}
-	// 3. Jika edge-dns.conf mengarah ke host remote (bukan loopback), ini client Edge.
+	// 4. Jika edge-dns.conf mengarah ke host remote (bukan loopback), ini client Edge.
 	if sig.remoteEdgeHost != "" {
 		return "edge"
 	}
-	// 4. Jika NetBird aktif tanpa IP publik host, arahkan ke Edge Gateway.
+	// 5. Jika NetBird aktif tanpa IP publik host, arahkan ke Edge Gateway.
 	if sig.localNetbirdIP != "" {
 		return "edge"
 	}
-	// 5. Default aman: mode Lokal standalone.
+	// 6. Default aman: mode Lokal standalone.
 	return "local"
 }
 
@@ -284,13 +336,19 @@ func (m *Manager) GetMode() string {
 	}
 	_, pdnsConfErr := os.Stat("/etc/powerdns/pdns.conf")
 	_, edgeConfErr := os.Stat("/etc/wdev-edge/edge.conf")
+	hasPubNIC := HasPublicInterfaceIP()
+	hasPubIP := hasPubNIC
+	if !hasPubIP {
+		hasPubIP = HasPublicIP()
+	}
 	return detectModeFromSignals(modeSignals{
 		explicitMode:    explicit,
 		remoteEdgeHost:  m.readRemoteEdgeHost(),
 		hasLocalPDNS:    pdnsConfErr == nil,
 		hasEdgeAgentCfg: edgeConfErr == nil,
 		localNetbirdIP:  m.GetLocalNetbirdIP(),
-		hasPublicNIC:    HasPublicInterfaceIP(),
+		hasPublicNIC:    hasPubNIC,
+		hasPublicIP:     hasPubIP,
 	})
 }
 
@@ -385,13 +443,10 @@ func (m *Manager) ensureLocalPDNSConfig(mode string) {
 
 	if pubIP == "" {
 		if mode == "vps" {
-			pubIP = edge.DetectPublicIP(context.Background())
+			pubIP = DetectPublicIP()
 		}
-		if pubIP == "" {
-			pubIP = DetectLocalLANIP()
-		}
-		if pubIP == "" && mode == "local" {
-			pubIP = "127.0.0.1"
+		if !IsPublicIPv4String(pubIP) {
+			pubIP = ""
 		}
 	}
 
@@ -440,7 +495,9 @@ func (m *Manager) LoadConfig() EdgeConfig {
 			case "VPS_NETBIRD_IP":
 				conf.VPSNetbirdIP = v
 			case "VPS_PUBLIC_IP":
-				conf.VPSPublicIP = v
+				if v != "" {
+					conf.VPSPublicIP = v
+				}
 			case "API_KEY":
 				conf.APIKey = v
 			case "PDNS_PORT":
@@ -486,21 +543,13 @@ func (m *Manager) LoadConfig() EdgeConfig {
 				conf.VPSNetbirdIP = "127.0.0.1"
 			}
 		}
-		if mode == "vps" && conf.VPSPublicIP == "" {
-			if pub := DetectPublicInterfaceIP(); pub != "" {
+		if mode == "vps" && (conf.VPSPublicIP == "" || !IsPublicIPv4String(conf.VPSPublicIP)) {
+			if pub := DetectPublicIP(); pub != "" {
 				conf.VPSPublicIP = pub
-			} else if pub := edge.DetectPublicIP(context.Background()); pub != "" {
-				conf.VPSPublicIP = pub
-			} else if lan := DetectLocalLANIP(); lan != "" {
-				conf.VPSPublicIP = lan
 			}
 		}
 		if mode == "local" && hasLocalPDNS && conf.VPSPublicIP == "" {
-			if lan := DetectLocalLANIP(); lan != "" {
-				conf.VPSPublicIP = lan
-			} else {
-				conf.VPSPublicIP = "127.0.0.1"
-			}
+			conf.VPSPublicIP = "127.0.0.1"
 		}
 		if conf.APIKey != "" && conf.VPSNetbirdIP != "" {
 			conf.Configured = true

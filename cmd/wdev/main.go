@@ -314,7 +314,7 @@ func main() {
 		if pdnsMgr != nil {
 			stats.ServerMode = pdnsMgr.GetMode()
 			edgeCfg := pdnsMgr.LoadConfig()
-			if edgeCfg.VPSPublicIP != "" {
+			if edgeCfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(edgeCfg.VPSPublicIP) {
 				stats.PublicIP = edgeCfg.VPSPublicIP
 			}
 			if stats.ServerMode == "vps" && stats.PublicIP != "" {
@@ -335,12 +335,9 @@ func main() {
 		fmt.Printf("RAM:        %d / %d MB (%d%%)\n", stats.MemUsedMB, stats.MemTotalMB, stats.MemPercent)
 		fmt.Printf("Disk (/):   %d / %d GB (%d%%)\n", stats.DiskUsedGB, stats.DiskTotalGB, stats.DiskPercent)
 		fmt.Printf("LAN IP:     %s\n", stats.LanIP)
-		if stats.ServerMode == "vps" || (stats.PublicIP != "" && stats.PublicIP != "-" && stats.PublicIP != "127.0.0.1") {
+		if stats.ServerMode == "vps" || (stats.PublicIP != "" && stats.PublicIP != "-" && stats.PublicIP != "127.0.0.1" && pdns.IsPublicIPv4String(stats.PublicIP)) {
 			pub := stats.PublicIP
-			if pub == "" {
-				pub = stats.NetbirdIP
-			}
-			if pub == "" {
+			if pub == "" || !pdns.IsPublicIPv4String(pub) {
 				pub = "-"
 			}
 			fmt.Printf("IP VPS:     %s\n", pub)
