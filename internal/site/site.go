@@ -3,15 +3,60 @@ package site
 import (
 	"bytes"
 	"fmt"
-	"html/template"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"text/template"
 	"time"
 	"wdev/internal/config"
 	"wdev/internal/store"
 )
+
+var (
+	siteDomainRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	phpVerRe     = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+)
+
+// ValidateDomain memastikan domain adalah hostname valid tanpa path traversal atau karakter injeksi.
+func ValidateDomain(domain string) error {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" || len(domain) > 253 {
+		return fmt.Errorf("domain tidak valid")
+	}
+	if !siteDomainRe.MatchString(domain) {
+		return fmt.Errorf("format domain tidak valid: %q", domain)
+	}
+	return nil
+}
+
+// ValidateRootPath memastikan path root situs aman untuk direktif Nginx dan tidak menembus sistem.
+func ValidateRootPath(rootPath string) (string, error) {
+	p := strings.TrimSpace(rootPath)
+	if p == "" {
+		return "", fmt.Errorf("root_path tidak boleh kosong")
+	}
+	if strings.ContainsAny(p, " \t\r\n\x00;\"'{}()$`\\") {
+		return "", fmt.Errorf("root_path mengandung karakter terlarang")
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("root_path harus berupa path absolut")
+	}
+	clean := filepath.Clean(p)
+	allowedRoots := []string{"/var/www", "/home", "/srv", "/opt", "/mnt", "/media"}
+	ok := false
+	for _, base := range allowedRoots {
+		if clean == base || strings.HasPrefix(clean, base+"/") {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return "", fmt.Errorf("root_path harus berada di bawah /var/www, /home, /srv, /opt, atau /mnt")
+	}
+	return clean, nil
+}
 
 type Manager struct {
 	cfg   *config.Config
@@ -51,8 +96,8 @@ func (m *Manager) ListSites() ([]store.SiteRecord, error) {
 
 func (m *Manager) CreateSite(opts CreateOptions) error {
 	opts.Domain = strings.ToLower(strings.TrimSpace(opts.Domain))
-	if opts.Domain == "" {
-		return fmt.Errorf("domain tidak boleh kosong")
+	if err := ValidateDomain(opts.Domain); err != nil {
+		return err
 	}
 
 	if opts.Framework == "proxy" {
@@ -63,8 +108,17 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 		if opts.RootPath == "" {
 			opts.RootPath = filepath.Join("/var/www", opts.Domain)
 		}
+		cleanRoot, err := ValidateRootPath(opts.RootPath)
+		if err != nil {
+			return err
+		}
+		opts.RootPath = cleanRoot
 		if opts.PHPVersion == "" {
 			opts.PHPVersion = "8.4"
+		}
+		opts.PHPVersion = strings.TrimSpace(opts.PHPVersion)
+		if !phpVerRe.MatchString(opts.PHPVersion) {
+			return fmt.Errorf("versi PHP tidak valid: %q", opts.PHPVersion)
 		}
 	}
 
@@ -168,6 +222,9 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 
 func (m *Manager) DeleteSite(domain string) error {
 	domain = strings.ToLower(strings.TrimSpace(domain))
+	if err := ValidateDomain(domain); err != nil {
+		return err
+	}
 	availPath := filepath.Join(m.cfg.NginxSitesAvail, domain)
 	enablePath := filepath.Join(m.cfg.NginxSitesEnable, domain)
 
@@ -187,10 +244,14 @@ func (m *Manager) DeleteSite(domain string) error {
 }
 
 func (m *Manager) generateSSL(domain, certFile, keyFile string) error {
+	if err := ValidateDomain(domain); err != nil {
+		return err
+	}
 	// Try mkcert first
 	if _, err := exec.LookPath("mkcert"); err == nil {
-		cmd := exec.Command("mkcert", "-cert-file", certFile, "-key-file", keyFile, domain)
+		cmd := exec.Command("mkcert", "-cert-file", certFile, "-key-file", keyFile, "--", domain)
 		if err := cmd.Run(); err == nil {
+			_ = os.Chmod(keyFile, 0600)
 			return nil
 		}
 	}
@@ -201,7 +262,11 @@ func (m *Manager) generateSSL(domain, certFile, keyFile string) error {
 		"-keyout", keyFile,
 		"-out", certFile,
 		"-subj", fmt.Sprintf("/CN=%s", domain))
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	_ = os.Chmod(keyFile, 0600)
+	return nil
 }
 
 func (m *Manager) addHostsEntry(domain string) {

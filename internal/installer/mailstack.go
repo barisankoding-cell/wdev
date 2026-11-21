@@ -79,9 +79,10 @@ func (inst *Installer) installStalwart(ctx context.Context, cb LogCallback) erro
 		if url == "" {
 			return fmt.Errorf("aset Stalwart untuk arsitektur %s tidak ditemukan", runtime.GOARCH)
 		}
-		tmpDir := filepath.Join(os.TempDir(), "wdev-stalwart")
-		_ = os.RemoveAll(tmpDir)
-		_ = os.MkdirAll(tmpDir, 0755)
+		tmpDir, err := os.MkdirTemp("", "wdev-stalwart-*")
+		if err != nil {
+			return err
+		}
 		defer os.RemoveAll(tmpDir)
 		archive := filepath.Join(tmpDir, "stalwart.tar.gz")
 		if err := downloadFile(url, archive); err != nil {
@@ -166,9 +167,10 @@ func (inst *Installer) installStalwartCLI(ctx context.Context, cb LogCallback) e
 	if url == "" {
 		return fmt.Errorf("aset stalwart-cli tidak ditemukan")
 	}
-	tmpDir := filepath.Join(os.TempDir(), "wdev-stalwart-cli")
-	_ = os.RemoveAll(tmpDir)
-	_ = os.MkdirAll(tmpDir, 0755)
+	tmpDir, err := os.MkdirTemp("", "wdev-stalwart-cli-*")
+	if err != nil {
+		return err
+	}
 	defer os.RemoveAll(tmpDir)
 	archive := filepath.Join(tmpDir, "cli.tar.xz")
 	if err := downloadFile(url, archive); err != nil {
@@ -212,9 +214,10 @@ func (inst *Installer) installSnappyMail(ctx context.Context, cb LogCallback) er
 	if url == "" {
 		return fmt.Errorf("aset SnappyMail (.tar.gz) tidak ditemukan")
 	}
-	tmpDir := filepath.Join(os.TempDir(), "wdev-snappymail")
-	_ = os.RemoveAll(tmpDir)
-	_ = os.MkdirAll(tmpDir, 0755)
+	tmpDir, err := os.MkdirTemp("", "wdev-snappymail-*")
+	if err != nil {
+		return err
+	}
 	defer os.RemoveAll(tmpDir)
 	archive := filepath.Join(tmpDir, "snappymail.tar.gz")
 	if err := downloadFile(url, archive); err != nil {

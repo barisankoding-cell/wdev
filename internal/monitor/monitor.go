@@ -1345,6 +1345,26 @@ func getRuntimeVersions() map[string]string {
 	return res
 }
 
+// isAllowedManagedService membatasi kontrol systemctl hanya ke unit layanan yang dikelola wdev.
+func isAllowedManagedService(name string) bool {
+	switch name {
+	case "nginx", "php-fpm", "postgresql", "redis", "redis-server", "valkey", "valkey-server",
+		"cloudflared", "netbird", "pdns", "stalwart", "postfix", "wdev", "orca":
+		return true
+	}
+	for _, v := range []string{"8.5", "8.4", "8.3", "8.2", "8.1", "8.0", "7.4"} {
+		if name == "php"+v+"-fpm" {
+			return true
+		}
+	}
+	for _, v := range supportedPostgresMajors {
+		if name == "postgresql-"+v || name == "postgresql@"+v+"-main" {
+			return true
+		}
+	}
+	return false
+}
+
 // ControlService executes systemctl start/stop/restart
 func ControlService(serviceName, action string) error {
 	switch action {
@@ -1352,6 +1372,11 @@ func ControlService(serviceName, action string) error {
 		// Allowed actions
 	default:
 		return fmt.Errorf("aksi tidak valid: %s", action)
+	}
+
+	serviceName = strings.TrimSpace(serviceName)
+	if !isAllowedManagedService(serviceName) {
+		return fmt.Errorf("layanan tidak diizinkan untuk dikontrol melalui panel: %s", serviceName)
 	}
 
 	// Map service alias

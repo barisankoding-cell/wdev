@@ -1,6 +1,7 @@
 package edge
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -805,9 +806,11 @@ func setupMailDomain(domain, targetIP string, useSSL bool, _ map[string]any) (ma
 	if !validDomain(domain) {
 		return nil, fmt.Errorf("domain tidak valid: %s", domain)
 	}
-	if targetIP == "" || targetIP == "127.0.0.1" {
-		return nil, fmt.Errorf("target_ip mesin lokal (NetBird) wajib diisi; VPS hanya gateway")
+	parsedIP := net.ParseIP(strings.TrimSpace(targetIP))
+	if parsedIP == nil || parsedIP.IsLoopback() || parsedIP.IsUnspecified() {
+		return nil, fmt.Errorf("target_ip mesin lokal (NetBird) tidak valid; VPS hanya gateway")
 	}
+	targetIP = parsedIP.String()
 	fw := ensureMailFirewall()
 
 	adminSub := "mailadmin." + domain
@@ -960,7 +963,8 @@ func replaceTransport(domain, entry string) {
 func audit(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := LoadAPIKey()
-		if key == "" || r.Header.Get("X-API-Key") != key {
+		got := r.Header.Get("X-API-Key")
+		if key == "" || subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized: Invalid or missing X-API-Key"})
 			return
 		}
@@ -1027,17 +1031,23 @@ func NewAgentHandler() http.Handler {
 				ws = v
 			}
 			port := 80
-			if v, ok := data["target_port"].(float64); ok && v > 0 {
+			if v, ok := data["target_port"].(float64); ok {
 				port = int(v)
+			}
+			if port < 1 || port > 65535 {
+				writeJSON(w, 400, map[string]string{"error": "Invalid target_port"})
+				return
 			}
 			if !validDomain(domain) {
 				writeJSON(w, 400, map[string]string{"error": "Invalid domain: " + domain})
 				return
 			}
-			if strings.TrimSpace(targetIP) == "" {
-				writeJSON(w, 400, map[string]string{"error": "target_ip is required"})
+			parsedTargetIP := net.ParseIP(strings.TrimSpace(targetIP))
+			if parsedTargetIP == nil {
+				writeJSON(w, 400, map[string]string{"error": "target_ip must be a valid IP address"})
 				return
 			}
+			targetIP = parsedTargetIP.String()
 			sslStatus, err := writeProxy(domain, targetIP, port, useSSL, ws)
 			if err != nil {
 				writeJSON(w, 500, map[string]string{"error": "Nginx config test failed", "details": err.Error()})

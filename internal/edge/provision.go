@@ -352,10 +352,10 @@ func Provision(ctx context.Context, cb func(string), opts ProvisionOptions) erro
 	cb(" Netbird IP     : " + opts.NetbirdIP)
 	cb(" PowerDNS API   : " + opts.PDNSPort)
 	cb(" Edge Agent     : " + opts.AgentPort)
-	cb(" API Key        : " + opts.APIKey)
+	cb(" API Key        : tersimpan aman di " + ConfigFile + " (mode 0600)")
 	cb("")
-	cb("Hubungkan dari mesin lokal:")
-	cb(fmt.Sprintf("  sudo wdev pdns connect %s %s %s", opts.NetbirdIP, opts.PublicIP, opts.APIKey))
+	cb("Hubungkan dari mesin lokal (baca API_KEY dari " + ConfigFile + "):")
+	cb(fmt.Sprintf("  sudo wdev pdns connect %s %s <API_KEY>", opts.NetbirdIP, opts.PublicIP))
 	return nil
 }
 
@@ -580,8 +580,12 @@ func ensureEdgeFirewall(opts ProvisionOptions) string {
 		for _, p := range []string{"22/tcp", "53/tcp", "53/udp", "80/tcp", "443/tcp", "25/tcp", "465/tcp", "587/tcp", "993/tcp", "143/tcp", "995/tcp", "110/tcp"} {
 			_, _ = run("firewall-cmd", "--permanent", "--add-port="+p)
 		}
+		for _, p := range []string{opts.PDNSPort, opts.AgentPort} {
+			_, _ = run("firewall-cmd", "--permanent", "--add-rich-rule",
+				fmt.Sprintf("rule family=ipv4 source address=100.64.0.0/10 port port=%s protocol=tcp accept", p))
+		}
 		_, _ = run("firewall-cmd", "--reload")
-		return "firewalld: port web, DNS, SSH, mail dibuka"
+		return "firewalld: port web, DNS, SSH, mail dibuka (API dibatasi ke NetBird 100.64.0.0/10)"
 	}
 	return "UFW/firewalld tidak tersedia; buka port manual di firewall penyedia VPS"
 }

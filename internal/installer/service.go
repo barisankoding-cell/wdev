@@ -60,6 +60,7 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 			return fmt.Errorf("gagal membuat direktori %s: %w", dir, err)
 		}
 	}
+	_ = inst.runCmd(ctx, cb, "chmod", "700", "/etc/wdev")
 
 	// 2. Salin biner wdev ke /usr/local/bin/wdev jika berbeda atau update
 	exePath, err := os.Executable()
@@ -78,11 +79,19 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 	serviceUnit := WdevServiceUnitContent(port, host)
 
 	cb(fmt.Sprintf("Menulis konfigurasi systemd service ke %s...", WdevServiceUnitPath))
-	tmpFile := "/tmp/wdev.service.tmp"
-	if err := os.WriteFile(tmpFile, []byte(serviceUnit), 0644); err != nil {
+	tmpF, err := os.CreateTemp("", "wdev-service-*.tmp")
+	if err != nil {
 		return fmt.Errorf("gagal membuat file temporary service: %w", err)
 	}
+	tmpFile := tmpF.Name()
 	defer os.Remove(tmpFile)
+	if _, err := tmpF.WriteString(serviceUnit); err != nil {
+		tmpF.Close()
+		return fmt.Errorf("gagal menulis file temporary service: %w", err)
+	}
+	if err := tmpF.Close(); err != nil {
+		return fmt.Errorf("gagal menutup file temporary service: %w", err)
+	}
 
 	if err := inst.runCmd(ctx, cb, "cp", "-f", tmpFile, WdevServiceUnitPath); err != nil {
 		return fmt.Errorf("gagal menyalin unit service ke %s: %w", WdevServiceUnitPath, err)

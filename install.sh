@@ -44,6 +44,7 @@ fi
 
 echo -e "${BLUE}>>> [2/4] Menyiapkan biner dan direktori wdev...${NC}"
 mkdir -p /etc/wdev /var/lib/wdev /var/log/wdev
+chmod 700 /etc/wdev
 
 # Jika ada biner lokal di folder saat ini, gunakan biner tersebut
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

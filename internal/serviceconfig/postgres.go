@@ -82,7 +82,25 @@ func (m *Manager) DetectPostgresVersions(ctx context.Context) []string {
 	return out
 }
 
+func isValidPGVersion(v string) bool {
+	if v == "" || v == "system" {
+		return true
+	}
+	if len(v) > 3 {
+		return false
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Manager) resolvePostgresPaths(ctx context.Context, requestedVer string) (confPath, hbaPath, unit, resolvedVer string, avail []string, err error) {
+	if !isValidPGVersion(strings.TrimSpace(requestedVer)) {
+		return "", "", "", "", nil, fmt.Errorf("versi PostgreSQL tidak valid: %q", requestedVer)
+	}
 	avail = m.DetectPostgresVersions(ctx)
 	ver := strings.TrimSpace(requestedVer)
 	if ver == "" {

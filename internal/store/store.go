@@ -70,7 +70,7 @@ type TaskRecord struct {
 
 func New(dbPath string) (*Store, error) {
 	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("gagal membuat direktori db: %w", err)
 	}
 
@@ -83,6 +83,13 @@ func New(dbPath string) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrasi database gagal: %w", err)
+	}
+
+	// Ketatkan permission file database (termasuk WAL/SHM) agar tidak dapat dibaca user lokal lain
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if _, statErr := os.Stat(p); statErr == nil {
+			_ = os.Chmod(p, 0600)
+		}
 	}
 
 	return s, nil
@@ -436,6 +443,14 @@ func (s *Store) DeleteExpiredSessions() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM panel_sessions WHERE expires_at < ?`, time.Now().Format(time.RFC3339))
+	return err
+}
+
+// DeleteAllSessions mencabut seluruh sesi panel aktif (dipanggil saat ganti/reset kredensial).
+func (s *Store) DeleteAllSessions() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM panel_sessions`)
 	return err
 }
 

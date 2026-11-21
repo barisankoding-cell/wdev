@@ -286,10 +286,14 @@ func main() {
 		fs := flag.NewFlagSet("serve", flag.ExitOnError)
 		portFlag := fs.String("port", cfg.HTTPPort, "Port HTTP untuk Web Dashboard")
 		hostFlag := fs.String("host", cfg.HTTPHost, "Host binding")
+		tlsCertFlag := fs.String("tls-cert", cfg.TLSCert, "Path sertifikat TLS (opsional untuk HTTPS)")
+		tlsKeyFlag := fs.String("tls-key", cfg.TLSKey, "Path private key TLS (opsional untuk HTTPS)")
 		_ = fs.Parse(args[1:])
 
 		cfg.HTTPPort = *portFlag
 		cfg.HTTPHost = *hostFlag
+		cfg.TLSCert = *tlsCertFlag
+		cfg.TLSKey = *tlsKeyFlag
 
 		srv := server.New(cfg, db, runMgr, inst, siteMgr, swMgr, cfMgr, pdnsMgr, mailMgr, authMgr)
 		if err := srv.Start(); err != nil {

@@ -147,14 +147,15 @@ func (inst *Installer) ensureMesloLGSNerdFont(ctx context.Context, cb LogCallbac
 
 func resolveZshThemeValue(theme string) string {
 	switch strings.ToLower(strings.TrimSpace(theme)) {
-	case "", "powerlevel10k", "p10k":
+	case "", "powerlevel10k", "p10k", "powerlevel10k/powerlevel10k":
 		return "powerlevel10k/powerlevel10k"
 	case "agnoster":
 		return "agnoster"
 	case "robbyrussell":
 		return "robbyrussell"
 	default:
-		return theme
+		// Tolak nilai kustom bebas agar tidak terjadi injeksi shell ke ~/.zshrc
+		return "powerlevel10k/powerlevel10k"
 	}
 }
 

@@ -21,25 +21,45 @@ import (
 
 type LogCallback = func(line string)
 
+const sudoCacheTTL = 30 * time.Minute
+
 type Installer struct {
-	cfg      *config.Config
-	store    *store.Store
-	distro   string
-	pkgMgr   string
-	isDebian bool
-	sudoPass string
-	mu       sync.Mutex
+	cfg        *config.Config
+	store      *store.Store
+	distro     string
+	pkgMgr     string
+	isDebian   bool
+	sudoPass   string
+	sudoPassAt time.Time
+	mu         sync.Mutex
 }
 
 func (inst *Installer) SetSudoPassword(pass string) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	inst.sudoPass = pass
+	if pass != "" {
+		inst.sudoPassAt = time.Now()
+	} else {
+		inst.sudoPassAt = time.Time{}
+	}
+}
+
+func (inst *Installer) ClearSudoPassword() {
+	inst.SetSudoPassword("")
 }
 
 func (inst *Installer) GetSudoPassword() string {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
+	if inst.sudoPass == "" {
+		return ""
+	}
+	if !inst.sudoPassAt.IsZero() && time.Since(inst.sudoPassAt) > sudoCacheTTL {
+		inst.sudoPass = ""
+		inst.sudoPassAt = time.Time{}
+		return ""
+	}
 	return inst.sudoPass
 }
 
@@ -329,12 +349,16 @@ func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver stri
 		cb(fmt.Sprintf("Node.js v%s sudah terpasang di %s, melewati unduhan.", fullVer, targetDir))
 	} else {
 		cb(fmt.Sprintf("Mengunduh Node.js dari: %s", url))
-		tmpTar := filepath.Join(os.TempDir(), tarName)
+		tmpDir, err := os.MkdirTemp("", "wdev-node-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+		tmpTar := filepath.Join(tmpDir, tarName)
 
 		if err := downloadFile(url, tmpTar); err != nil {
 			return fmt.Errorf("gagal mengunduh Node.js: %w", err)
 		}
-		defer os.Remove(tmpTar)
 
 		_ = inst.runCmd(ctx, cb, "mkdir", "-p", nodeBaseDir)
 		_ = inst.runCmd(ctx, cb, "rm", "-rf", targetDir)
@@ -369,9 +393,7 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 	inst.GuardToolchainColumns(ctx, cb, "rustc", "cargo", "rustup", "mold")
 
 	_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/usr/local/cargo", "/usr/local/rustup")
-	if os.Geteuid() != 0 {
-		_ = inst.runCmd(ctx, cb, "chmod", "777", "/usr/local/cargo", "/usr/local/rustup")
-	}
+	_ = inst.runCmd(ctx, cb, "chmod", "755", "/usr/local/cargo", "/usr/local/rustup")
 
 	// 1. Rustup di lokasi kanonik /usr/local/cargo & /usr/local/rustup
 	rustupBin := "/usr/local/cargo/bin/rustup"
@@ -381,13 +403,17 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 		if runtime.GOARCH == "arm64" {
 			target = "aarch64-unknown-linux-gnu"
 		}
-		rustupInit := filepath.Join(os.TempDir(), "rustup-init")
+		tmpDir, err := os.MkdirTemp("", "wdev-rustup-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+		rustupInit := filepath.Join(tmpDir, "rustup-init")
 		url := fmt.Sprintf("https://static.rust-lang.org/rustup/dist/%s/rustup-init", target)
 		if err := downloadFile(url, rustupInit); err != nil {
 			return err
 		}
-		defer os.Remove(rustupInit)
-		if err := os.Chmod(rustupInit, 0755); err != nil {
+		if err := os.Chmod(rustupInit, 0700); err != nil {
 			return err
 		}
 		if err := inst.runCmd(ctx, cb, rustupInit, "-y", "--no-modify-path", "--default-toolchain", "stable"); err != nil {
@@ -466,13 +492,17 @@ func (inst *Installer) InstallGolang(ctx context.Context, cb LogCallback) error 
 	} else {
 		tarName := fmt.Sprintf("go%s.linux-%s.tar.gz", latestVer, arch)
 		url := fmt.Sprintf("https://go.dev/dl/%s", tarName)
-		tmpTar := filepath.Join(os.TempDir(), tarName)
+		tmpDir, err := os.MkdirTemp("", "wdev-go-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+		tmpTar := filepath.Join(tmpDir, tarName)
 
 		cb(fmt.Sprintf("Mengunduh Go v%s dari: %s", latestVer, url))
 		if err := downloadFile(url, tmpTar); err != nil {
 			return fmt.Errorf("gagal mengunduh Go: %w", err)
 		}
-		defer os.Remove(tmpTar)
 
 		cb("Mengekstrak ke /usr/local/go...")
 		_ = inst.runCmd(ctx, cb, "rm", "-rf", "/usr/local/go")
@@ -524,12 +554,16 @@ func (inst *Installer) InstallJava(ctx context.Context, cb LogCallback, ver stri
 		cb(fmt.Sprintf("OpenJDK %s (Temurin %s) sudah versi terbaru di %s, melewati unduhan.", ver, jdkVer, targetDir))
 	} else {
 		tarName := fmt.Sprintf("temurin-jdk-%s-%s.tar.gz", ver, adoptiumArch())
-		tmpTar := filepath.Join(os.TempDir(), tarName)
+		tmpDir, err := os.MkdirTemp("", "wdev-jdk-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+		tmpTar := filepath.Join(tmpDir, tarName)
 		cb(fmt.Sprintf("Mengunduh Temurin JDK %s (%s) dari: %s", ver, jdkVer, dlURL))
 		if err := downloadFile(dlURL, tmpTar); err != nil {
 			return fmt.Errorf("gagal mengunduh JDK %s: %w", ver, err)
 		}
-		defer os.Remove(tmpTar)
 
 		_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/usr/lib/jvm")
 		_ = inst.runCmd(ctx, cb, "rm", "-rf", targetDir)
@@ -619,12 +653,16 @@ func (inst *Installer) installMoldOfficial(ctx context.Context, cb LogCallback) 
 	if alreadyLatest {
 		cb(fmt.Sprintf("Mold %s sudah terpasang di %s, melewati unduhan.", tag, moldDir))
 	} else {
-		tmpTar := filepath.Join(os.TempDir(), fmt.Sprintf("mold-%s-%s", tag, archSuffix))
+		tmpDir, err := os.MkdirTemp("", "wdev-mold-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+		tmpTar := filepath.Join(tmpDir, fmt.Sprintf("mold-%s-%s", tag, archSuffix))
 		cb(fmt.Sprintf("Mengunduh Mold %s dari: %s", tag, dlURL))
 		if err := downloadFile(dlURL, tmpTar); err != nil {
 			return err
 		}
-		defer os.Remove(tmpTar)
 
 		_ = inst.runCmd(ctx, cb, "rm", "-rf", moldDir)
 		_ = inst.runCmd(ctx, cb, "mkdir", "-p", moldDir)
@@ -666,13 +704,17 @@ func (inst *Installer) InstallAndroidSDK(ctx context.Context, cb LogCallback) er
 	} else {
 		zipName := "commandlinetools-linux-11076708_latest.zip"
 		url := "https://dl.google.com/android/repository/" + zipName
-		tmpZip := filepath.Join(os.TempDir(), zipName)
+		tmpDir, err := os.MkdirTemp("", "wdev-android-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+		tmpZip := filepath.Join(tmpDir, zipName)
 
 		cb("Mengunduh Android Command Line Tools...")
 		if err := downloadFile(url, tmpZip); err != nil {
 			return err
 		}
-		defer os.Remove(tmpZip)
 
 		_ = inst.runCmd(ctx, cb, "mkdir", "-p", cmdlineDir)
 		if err := inst.runCmd(ctx, cb, "unzip", "-qo", tmpZip, "-d", cmdlineDir); err != nil {
@@ -993,12 +1035,16 @@ func (inst *Installer) InstallComposer(ctx context.Context, cb LogCallback) erro
 	composerBin := "/usr/local/bin/composer"
 
 	// Ambil PHAR resmi langsung dari rilis GitHub composer/composer.
-	pharPath := filepath.Join(os.TempDir(), "composer.phar")
+	tmpDir, err := os.MkdirTemp("", "wdev-composer-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	pharPath := filepath.Join(tmpDir, "composer.phar")
 	cb("Mengunduh Composer PHAR resmi...")
 	if err := downloadFile("https://getcomposer.org/download/latest-stable/composer.phar", pharPath); err != nil {
 		return fmt.Errorf("gagal mengunduh composer.phar: %w", err)
 	}
-	defer os.Remove(pharPath)
 
 	if err := inst.runCmd(ctx, cb, "install", "-m", "0755", pharPath, composerBin); err != nil {
 		return err
@@ -1031,12 +1077,16 @@ func (inst *Installer) InstallMkcert(ctx context.Context, cb LogCallback) error 
 		cb(fmt.Sprintf("mkcert v%s sudah terpasang di %s, melewati unduhan.", mkcertVer, dst))
 	} else {
 		url := fmt.Sprintf("https://github.com/FiloSottile/mkcert/releases/download/v%s/mkcert-v%s-linux-%s", mkcertVer, mkcertVer, arch)
-		tmpFile := filepath.Join(os.TempDir(), "mkcert.tmp")
+		tmpDir, err := os.MkdirTemp("", "wdev-mkcert-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+		tmpFile := filepath.Join(tmpDir, "mkcert.tmp")
 
 		if err := downloadFile(url, tmpFile); err != nil {
 			return err
 		}
-		defer os.Remove(tmpFile)
 
 		_ = inst.runCmd(ctx, cb, "rm", "-f", dst)
 		_ = inst.runCmd(ctx, cb, "cp", tmpFile, dst)
@@ -1254,12 +1304,16 @@ func (inst *Installer) InstallCloudflared(ctx context.Context, cb LogCallback) e
 
 	url := fmt.Sprintf("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-%s", arch)
 	dst := "/usr/local/bin/cloudflared"
-	tmpFile := filepath.Join(os.TempDir(), "cloudflared.tmp")
+	tmpDir, err := os.MkdirTemp("", "wdev-cloudflared-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpFile := filepath.Join(tmpDir, "cloudflared.tmp")
 
 	if err := downloadFile(url, tmpFile); err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile)
 
 	_ = inst.runCmd(ctx, cb, "rm", "-f", dst)
 	_ = inst.runCmd(ctx, cb, "cp", tmpFile, dst)

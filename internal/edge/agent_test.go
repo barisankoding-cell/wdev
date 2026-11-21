@@ -102,3 +102,12 @@ func TestMergeMynetworksIdempotent(t *testing.T) {
 		t.Fatalf("IP target duplikat: %s", second)
 	}
 }
+
+func TestSetupMailDomainRejectsInvalidTargetIP(t *testing.T) {
+	if _, err := setupMailDomain("example.com", "100.64.0.2:80; include /etc/passwd", false, nil); err == nil {
+		t.Fatalf("expected error for non-IP target_ip injection payload")
+	}
+	if _, err := setupMailDomain("example.com", "127.0.0.1", false, nil); err == nil {
+		t.Fatalf("expected error for loopback target_ip")
+	}
+}

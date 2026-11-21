@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,7 +28,7 @@ const (
 	SettingInitialPassword  = "panel_initial_password"
 	SettingEntranceSecret   = "panel_entrance_secret"
 
-	DefaultIterations = 25000
+	DefaultIterations = 210000
 	SaltLength        = 16
 	KeyLength         = 32
 
@@ -40,6 +41,7 @@ const (
 	MaxFailedAttempts = 5
 	LockoutDuration   = 15 * time.Minute
 	AttemptWindow     = 5 * time.Minute
+	maxTrackedIPs     = 4096
 )
 
 // attemptInfo mencatat percobaan login per IP untuk anti-brute force.
@@ -91,13 +93,33 @@ func randomBytes(n int) ([]byte, error) {
 	return b, nil
 }
 
-// randomHex menghasilkan string heksadesimal acak sepanjang 2*n karakter.
+// randomHex menghasilkan string heksadesimal acak sepanjang 2*n karakter secara aman.
 func randomHex(n int) string {
 	b, err := randomBytes(n)
 	if err != nil {
-		return fmt.Sprintf("%x", time.Now().UnixNano())
+		panic(fmt.Sprintf("crypto/rand gagal menghasilkan entropi: %v", err))
 	}
 	return hex.EncodeToString(b)
+}
+
+// hashSessionToken menghitung SHA-256 hex dari token sesi agar token mentah tidak pernah tersimpan di DB.
+func hashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// IsHTTPS memeriksa apakah request masuk melalui koneksi TLS atau reverse proxy HTTPS tepercaya.
+func IsHTTPS(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if isTrustedProxy(remoteHost(r.RemoteAddr)) {
+		return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+	}
+	return false
 }
 
 // randomReadableString menghasilkan string alphanumeric acak mudah dibaca.
@@ -254,20 +276,24 @@ func (m *Manager) GetUsername() string {
 	return user
 }
 
-// SetUsername mengubah username panel.
+// SetUsername mengubah username panel dan mencabut sesi aktif.
 func (m *Manager) SetUsername(user string) error {
 	user = strings.TrimSpace(user)
 	if user == "" {
 		return errors.New("username tidak boleh kosong")
 	}
-	return m.store.SetSetting(SettingUsername, user)
+	if err := m.store.SetSetting(SettingUsername, user); err != nil {
+		return err
+	}
+	_ = m.store.DeleteAllSessions()
+	return nil
 }
 
-// SetPassword memperbarui kata sandi panel.
+// SetPassword memperbarui kata sandi panel dan mencabut seluruh sesi aktif.
 func (m *Manager) SetPassword(newPass string) error {
 	newPass = strings.TrimSpace(newPass)
-	if len(newPass) < 6 {
-		return errors.New("kata sandi minimal 6 karakter")
+	if len(newPass) < 8 {
+		return errors.New("kata sandi minimal 8 karakter")
 	}
 	hash, err := HashPassword(newPass)
 	if err != nil {
@@ -278,23 +304,47 @@ func (m *Manager) SetPassword(newPass string) error {
 	}
 	// Hapus initial password karena sudah diganti manual oleh admin
 	_ = m.store.SetSetting(SettingInitialPassword, "")
+	// Cabut semua sesi aktif agar sesi lama/tercuri tidak lagi berlaku
+	_ = m.store.DeleteAllSessions()
 	return nil
 }
 
-// ValidateCredentials memvalidasi login username & password.
+// ValidateCredentials memvalidasi login username & password secara constant-time.
 func (m *Manager) ValidateCredentials(user, pass string) bool {
 	if !m.IsAuthEnabled() {
 		return true
 	}
 	currentUsername := m.GetUsername()
-	if user != currentUsername {
-		return false
-	}
+	userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(currentUsername)) == 1
+
 	hash, err := m.store.GetSetting(SettingPasswordHash)
 	if err != nil || hash == "" {
 		return false
 	}
-	return VerifyPassword(pass, hash)
+	// Selalu jalankan verifikasi PBKDF2 meski username tidak cocok untuk mencegah timing side-channel
+	passMatch := VerifyPassword(pass, hash)
+	return userMatch && passMatch
+}
+
+func (m *Manager) pruneAttemptsLocked(now time.Time) {
+	if len(m.attempts) < maxTrackedIPs/2 {
+		return
+	}
+	for k, info := range m.attempts {
+		if !info.lockedUntil.IsZero() && now.After(info.lockedUntil) {
+			delete(m.attempts, k)
+		} else if info.lockedUntil.IsZero() && now.Sub(info.firstFailed) > AttemptWindow {
+			delete(m.attempts, k)
+		}
+	}
+	if len(m.attempts) >= maxTrackedIPs {
+		for k := range m.attempts {
+			delete(m.attempts, k)
+			if len(m.attempts) < maxTrackedIPs/2 {
+				break
+			}
+		}
+	}
 }
 
 // CheckRateLimit memeriksa apakah IP terkunci akibat kegagalan login beruntun.
@@ -332,6 +382,7 @@ func (m *Manager) RecordLoginAttempt(ip string, success bool) {
 
 	info, exists := m.attempts[ip]
 	if !exists {
+		m.pruneAttemptsLocked(now)
 		m.attempts[ip] = &attemptInfo{
 			count:       1,
 			firstFailed: now,
@@ -352,28 +403,29 @@ func (m *Manager) RecordLoginAttempt(ip string, success bool) {
 	}
 }
 
-// CreateSession membuat token sesi baru dan menyimpannya di database.
+// CreateSession membuat token sesi baru dan menyimpan hash SHA-256-nya di database.
 func (m *Manager) CreateSession(username string) (string, error) {
 	token := randomHex(32)
 	expiresAt := time.Now().Add(SessionDuration)
-	if err := m.store.SaveSession(token, username, expiresAt); err != nil {
+	if err := m.store.SaveSession(hashSessionToken(token), username, expiresAt); err != nil {
 		return "", err
 	}
 	_ = m.store.DeleteExpiredSessions()
 	return token, nil
 }
 
-// ValidateSession memeriksa keabsahan token sesi.
+// ValidateSession memeriksa keabsahan token sesi (berdasarkan hash SHA-256 di DB).
 func (m *Manager) ValidateSession(token string) (string, bool) {
 	if token == "" {
 		return "", false
 	}
-	username, exp, err := m.store.GetSession(token)
+	hashed := hashSessionToken(token)
+	username, exp, err := m.store.GetSession(hashed)
 	if err != nil || username == "" {
 		return "", false
 	}
 	if time.Now().After(exp) {
-		_ = m.store.DeleteSession(token)
+		_ = m.store.DeleteSession(hashed)
 		return "", false
 	}
 	return username, true
@@ -381,14 +433,17 @@ func (m *Manager) ValidateSession(token string) (string, bool) {
 
 // DeleteSession menghapus sesi pengguna saat logout.
 func (m *Manager) DeleteSession(token string) error {
-	return m.store.DeleteSession(token)
+	if token == "" {
+		return nil
+	}
+	return m.store.DeleteSession(hashSessionToken(token))
 }
 
-// SignEntranceCookie membuat cookie penanda bahwa pengunjung telah melewati security entrance.
+// GenerateEntranceCookie membuat cookie penanda bahwa pengunjung telah melewati security entrance.
 func (m *Manager) GenerateEntranceCookie() (*http.Cookie, error) {
-	secret, _ := m.store.GetSetting(SettingEntranceSecret)
-	if secret == "" {
-		secret = "wdev-fallback-entrance-secret"
+	secret, err := m.store.GetSetting(SettingEntranceSecret)
+	if err != nil || secret == "" {
+		return nil, errors.New("secret security entrance tidak tersedia")
 	}
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -422,8 +477,10 @@ func (m *Manager) ValidateEntranceCookie(val string) bool {
 		return false
 	}
 
-	// Kadaluwarsa jika lebih dari EntranceDuration
-	if time.Since(time.Unix(ts, 0)) > EntranceDuration {
+	// Tolak timestamp masa depan (>60s clock skew) atau sudah kadaluwarsa
+	now := time.Now()
+	issuedAt := time.Unix(ts, 0)
+	if issuedAt.After(now.Add(60*time.Second)) || now.Sub(issuedAt) > EntranceDuration {
 		return false
 	}
 
@@ -437,7 +494,7 @@ func (m *Manager) ValidateEntranceCookie(val string) bool {
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 
-// ResetCredentials mengembalikan kredensial ke nilai acak baru.
+// ResetCredentials mengembalikan kredensial ke nilai acak baru, merotasi entrance secret, dan mencabut seluruh sesi.
 func (m *Manager) ResetCredentials() (PanelAccessInfo, error) {
 	newPass := "wdev-" + randomReadablePassword(10)
 	hash, err := HashPassword(newPass)
@@ -445,11 +502,14 @@ func (m *Manager) ResetCredentials() (PanelAccessInfo, error) {
 		return PanelAccessInfo{}, err
 	}
 	entrance := randomHex(4)
+	newSecret := randomHex(16)
 	_ = m.store.SetSetting(SettingUsername, "admin")
 	_ = m.store.SetSetting(SettingPasswordHash, hash)
 	_ = m.store.SetSetting(SettingInitialPassword, newPass)
 	_ = m.store.SetSetting(SettingSecurityEntrance, entrance)
+	_ = m.store.SetSetting(SettingEntranceSecret, newSecret)
 	_ = m.store.SetSetting(SettingAuthEnabled, "1")
+	_ = m.store.DeleteAllSessions()
 
 	return m.GetPanelAccessInfo("", ""), nil
 }
@@ -502,26 +562,60 @@ func (m *Manager) GetPanelAccessInfo(publicIP, netbirdIP string) PanelAccessInfo
 	}
 }
 
-// ClientIP mengekstrak IP klien dengan memperhatikan header proxy.
+func remoteHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return strings.TrimSpace(remoteAddr)
+}
+
+func isTrustedProxy(peerIP string) bool {
+	ip := net.ParseIP(strings.TrimSpace(peerIP))
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	if raw := strings.TrimSpace(os.Getenv("WDEV_TRUSTED_PROXIES")); raw != "" {
+		for _, entry := range strings.Split(raw, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			if strings.Contains(entry, "/") {
+				if _, cidr, err := net.ParseCIDR(entry); err == nil && cidr.Contains(ip) {
+					return true
+				}
+			} else if p := net.ParseIP(entry); p != nil && p.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ClientIP mengekstrak IP klien; header proxy (X-Forwarded-For / X-Real-IP) hanya
+// dipercaya bila koneksi langsung berasal dari loopback atau WDEV_TRUSTED_PROXIES.
 func ClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			ip := strings.TrimSpace(parts[0])
+	peer := remoteHost(r.RemoteAddr)
+	if isTrustedProxy(peer) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if len(parts) > 0 {
+				ip := strings.TrimSpace(parts[0])
+				if net.ParseIP(ip) != nil {
+					return ip
+				}
+			}
+		}
+		if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+			ip := strings.TrimSpace(xrip)
 			if net.ParseIP(ip) != nil {
 				return ip
 			}
 		}
 	}
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		ip := strings.TrimSpace(xrip)
-		if net.ParseIP(ip) != nil {
-			return ip
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil && host != "" {
-		return host
-	}
-	return r.RemoteAddr
+	return peer
 }

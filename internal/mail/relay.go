@@ -302,11 +302,20 @@ func (m *Manager) upsertRelayRoute(adminEmail, adminPass, routeName string, cred
 	if err != nil {
 		return err
 	}
-	tmpFile := fmt.Sprintf("/tmp/wdev_route_%d.json", time.Now().UnixNano())
-	if err := os.WriteFile(tmpFile, pBytes, 0600); err != nil {
+	tmpF, err := os.CreateTemp("", "wdev-route-*.json")
+	if err != nil {
 		return err
 	}
+	tmpFile := tmpF.Name()
 	defer os.Remove(tmpFile)
+	_ = os.Chmod(tmpFile, 0600)
+	if _, err := tmpF.Write(pBytes); err != nil {
+		tmpF.Close()
+		return err
+	}
+	if err := tmpF.Close(); err != nil {
+		return err
+	}
 
 	existing, err := m.findMtaRoute(adminEmail, adminPass, routeName)
 	if err != nil {

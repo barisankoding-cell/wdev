@@ -14,6 +14,8 @@ type Config struct {
 	HostsFile        string
 	HTTPPort         string
 	HTTPHost         string
+	TLSCert          string
+	TLSKey           string
 }
 
 func Load() *Config {
@@ -35,7 +37,7 @@ func Load() *Config {
 	dbPath := os.Getenv("WDEV_DB")
 	if dbPath == "" {
 		testFile := filepath.Join(wdevEtc, ".write_test")
-		if err := os.WriteFile(testFile, []byte(""), 0644); err == nil {
+		if err := os.WriteFile(testFile, []byte(""), 0600); err == nil {
 			_ = os.Remove(testFile)
 			dbPath = filepath.Join(wdevEtc, "wdev.db")
 		} else {
@@ -44,7 +46,7 @@ func Load() *Config {
 				home = "."
 			}
 			userEtc := filepath.Join(home, ".config", "wdev")
-			_ = os.MkdirAll(userEtc, 0755)
+			_ = os.MkdirAll(userEtc, 0700)
 			dbPath = filepath.Join(userEtc, "wdev.db")
 		}
 	}
@@ -67,6 +69,8 @@ func Load() *Config {
 		HostsFile:        "/etc/hosts",
 		HTTPPort:         port,
 		HTTPHost:         host,
+		TLSCert:          os.Getenv("WDEV_TLS_CERT"),
+		TLSKey:           os.Getenv("WDEV_TLS_KEY"),
 	}
 }
 

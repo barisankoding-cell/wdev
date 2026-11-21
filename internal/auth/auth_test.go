@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -126,5 +127,74 @@ func TestRateLimiter(t *testing.T) {
 	allowedOther, _ := mgr.CheckRateLimit(otherIP)
 	if !allowedOther {
 		t.Errorf("other IP should not be locked")
+	}
+}
+
+func TestSessionHashedAndRevokedOnCredentialChange(t *testing.T) {
+	st, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	cfg := &config.Config{HTTPPort: "3200"}
+	mgr := New(cfg, st)
+
+	token, err := mgr.CreateSession("admin")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	// Token mentah tidak boleh ada di store
+	if rawUser, _, _ := st.GetSession(token); rawUser != "" {
+		t.Fatalf("raw session token should not be stored directly in SQLite")
+	}
+	// Hash-nya harus valid lewat ValidateSession
+	if u, ok := mgr.ValidateSession(token); !ok || u != "admin" {
+		t.Fatalf("ValidateSession should succeed before password change")
+	}
+
+	// Ganti password harus mencabut semua sesi lama
+	if err := mgr.SetPassword("StrongNewPass123!"); err != nil {
+		t.Fatalf("SetPassword failed: %v", err)
+	}
+	if _, ok := mgr.ValidateSession(token); ok {
+		t.Fatalf("session should be revoked after SetPassword")
+	}
+
+	// Password < 8 karakter harus ditolak
+	if err := mgr.SetPassword("short"); err == nil {
+		t.Fatalf("SetPassword should reject passwords shorter than 8 characters")
+	}
+
+	// ResetCredentials harus mencabut sesi & merotasi entrance secret
+	token2, _ := mgr.CreateSession("admin")
+	oldCookie, err := mgr.GenerateEntranceCookie()
+	if err != nil {
+		t.Fatalf("GenerateEntranceCookie failed: %v", err)
+	}
+	if _, err := mgr.ResetCredentials(); err != nil {
+		t.Fatalf("ResetCredentials failed: %v", err)
+	}
+	if _, ok := mgr.ValidateSession(token2); ok {
+		t.Fatalf("session should be revoked after ResetCredentials")
+	}
+	if mgr.ValidateEntranceCookie(oldCookie.Value) {
+		t.Fatalf("old entrance cookie should be invalidated after ResetCredentials")
+	}
+}
+
+func TestClientIPIgnoresUntrustedProxyHeaders(t *testing.T) {
+	// Koneksi langsung dari IP publik tidak boleh bisa memalsukan X-Forwarded-For
+	req := httptest.NewRequest("POST", "/api/auth/login", nil)
+	req.RemoteAddr = "203.0.113.50:54321"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-IP", "5.6.7.8")
+	if got := ClientIP(req); got != "203.0.113.50" {
+		t.Fatalf("ClientIP() = %q, want peer IP 203.0.113.50", got)
+	}
+
+	// Koneksi dari reverse proxy lokal (127.0.0.1) boleh memakai X-Forwarded-For
+	reqProxy := httptest.NewRequest("POST", "/api/auth/login", nil)
+	reqProxy.RemoteAddr = "127.0.0.1:40000"
+	reqProxy.Header.Set("X-Forwarded-For", "198.51.100.22, 127.0.0.1")
+	if got := ClientIP(reqProxy); got != "198.51.100.22" {
+		t.Fatalf("ClientIP() behind loopback proxy = %q, want 198.51.100.22", got)
 	}
 }

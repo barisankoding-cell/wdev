@@ -83,7 +83,28 @@ func DetectPHPVersions() []string {
 	return nil
 }
 
+func isValidPHPVersion(v string) bool {
+	if v == "" || v == "system" {
+		return true
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	for _, p := range parts {
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func resolvePHPPaths(requestedVer string) (*phpPaths, error) {
+	if !isValidPHPVersion(strings.TrimSpace(requestedVer)) {
+		return nil, fmt.Errorf("versi PHP tidak valid: %q", requestedVer)
+	}
 	avail := DetectPHPVersions()
 
 	// Debian/Ubuntu layout

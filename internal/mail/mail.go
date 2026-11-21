@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -140,16 +141,27 @@ func writeRootFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if os.Geteuid() == 0 {
 		_ = os.MkdirAll(dir, 0755)
-		return os.WriteFile(path, data, perm)
+		if err := os.WriteFile(path, data, perm); err != nil {
+			return err
+		}
+		return os.Chmod(path, perm)
 	}
-	tmp := fmt.Sprintf("/tmp/wdev_mail_%d.tmp", time.Now().UnixNano())
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	tmpFile, err := os.CreateTemp("", "wdev-mail-*")
+	if err != nil {
 		return err
 	}
+	tmp := tmpFile.Name()
 	defer os.Remove(tmp)
+	_ = os.Chmod(tmp, perm)
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
 	_ = exec.Command("sudo", "-n", "mkdir", "-p", dir).Run()
-	_ = exec.Command("sudo", "-n", "install", "-m", fmt.Sprintf("%04o", perm), tmp, path).Run()
-	return nil
+	return exec.Command("sudo", "-n", "install", "-m", fmt.Sprintf("%04o", perm), tmp, path).Run()
 }
 
 func (m *Manager) runStalwartCli(user, pass string, args ...string) ([]byte, error) {
@@ -169,10 +181,10 @@ func (m *Manager) runStalwartCli(user, pass string, args ...string) ([]byte, err
 		cmd.Env = append(os.Environ(), envVars...)
 		return cmd.CombinedOutput()
 	}
-	sudoArgs := append([]string{"-n", "env"}, envVars...)
-	sudoArgs = append(sudoArgs, cliPath)
-	sudoArgs = append(sudoArgs, args...)
+	// Gunakan --preserve-env agar STALWART_PASSWORD tidak muncul di /proc/<pid>/cmdline
+	sudoArgs := append([]string{"-n", "--preserve-env=STALWART_URL,STALWART_USER,STALWART_PASSWORD", cliPath}, args...)
 	cmd := exec.Command("sudo", sudoArgs...)
+	cmd.Env = append(os.Environ(), envVars...)
 	return cmd.CombinedOutput()
 }
 
@@ -210,7 +222,7 @@ func setStalwartEnv(key, val string) error {
 		newLines = append(newLines, fmt.Sprintf("%s=%s", key, val))
 	}
 	content := strings.Join(newLines, "\n") + "\n"
-	return writeRootFile(path, []byte(content), 0644)
+	return writeRootFile(path, []byte(content), 0640)
 }
 
 func unsetStalwartEnv(key string) error {
@@ -229,7 +241,7 @@ func unsetStalwartEnv(key string) error {
 		}
 	}
 	content := strings.Join(newLines, "\n") + "\n"
-	return writeRootFile(path, []byte(content), 0644)
+	return writeRootFile(path, []byte(content), 0640)
 }
 
 func restartStalwart() error {
@@ -412,8 +424,14 @@ func (m *Manager) ensureStalwartBootstrap(domain string) error {
 		"generateDkimKeys":      true,
 	}
 	pBytes, _ := json.Marshal(payload)
-	tmpFile := fmt.Sprintf("/tmp/stalwart_bs_%d.json", time.Now().UnixNano())
-	_ = os.WriteFile(tmpFile, pBytes, 0600)
+	tmpF, err := os.CreateTemp("", "stalwart-bs-*.json")
+	if err != nil {
+		return err
+	}
+	tmpFile := tmpF.Name()
+	_ = os.Chmod(tmpFile, 0600)
+	_, _ = tmpF.Write(pBytes)
+	_ = tmpF.Close()
 	defer os.Remove(tmpFile)
 
 	out, err := m.runStalwartCli("wdev-bootstrap", recPass, "update", "Bootstrap", "--file", tmpFile)
@@ -1103,6 +1121,8 @@ func (m *Manager) GetDomainAccounts(domainFilter string) ([]DomainAccounts, erro
 	return results, nil
 }
 
+var mailUserPartRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}$`)
+
 func (m *Manager) AddAccount(email, password string) error {
 	email = strings.TrimSpace(email)
 	password = strings.TrimSpace(password)
@@ -1114,6 +1134,9 @@ func (m *Manager) AddAccount(email, password string) error {
 		return fmt.Errorf("format email tidak valid")
 	}
 	userPart := parts[0]
+	if !mailUserPartRe.MatchString(userPart) {
+		return fmt.Errorf("bagian username email tidak valid: %q", userPart)
+	}
 	domainPart := strings.TrimSuffix(parts[1], ".")
 	if !validMailDomain(domainPart) {
 		return fmt.Errorf("domain email tidak valid: %s", domainPart)
@@ -1130,7 +1153,16 @@ func (m *Manager) AddAccount(email, password string) error {
 	}
 
 	accID, _, _ := m.findAccountByUsername(adminEmail, adminPass, did, userPart)
-	credJSON := fmt.Sprintf(`{"0":{"@type":"Password","secret":"%s"}}`, password)
+	credBytes, err := json.Marshal(map[string]any{
+		"0": map[string]any{
+			"@type":  "Password",
+			"secret": password,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("gagal menyusun payload kredensial: %w", err)
+	}
+	credJSON := string(credBytes)
 
 	if accID != "" {
 		out, err := m.runStalwartCli(adminEmail, adminPass, "update", "Account", accID, "--field", "credentials="+credJSON)

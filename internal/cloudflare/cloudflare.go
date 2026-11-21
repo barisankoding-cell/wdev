@@ -5,11 +5,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"wdev/internal/config"
 	"wdev/internal/store"
 	"gopkg.in/yaml.v3"
 )
+
+var (
+	cfHostRe    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	cfProfileRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+)
+
+func validateCFHost(host, label string) error {
+	if host == "" || len(host) > 253 || !cfHostRe.MatchString(host) {
+		return fmt.Errorf("%s tidak valid: %q", label, host)
+	}
+	return nil
+}
+
+func validateCFProfile(profile string) error {
+	if !cfProfileRe.MatchString(profile) {
+		return fmt.Errorf("nama profil Cloudflare tidak valid: %q", profile)
+	}
+	return nil
+}
 
 type Manager struct {
 	cfg   *config.Config
@@ -111,8 +131,18 @@ func (m *Manager) GetStatus() TunnelStatus {
 func (m *Manager) Expose(localDomain, publicHost, profile string) error {
 	localDomain = strings.ToLower(strings.TrimSpace(localDomain))
 	publicHost = strings.ToLower(strings.TrimSpace(publicHost))
+	profile = strings.TrimSpace(profile)
 	if profile == "" {
 		profile = "default"
+	}
+	if err := validateCFHost(localDomain, "local_domain"); err != nil {
+		return err
+	}
+	if err := validateCFHost(publicHost, "public_host"); err != nil {
+		return err
+	}
+	if err := validateCFProfile(profile); err != nil {
+		return err
 	}
 
 	// 1. Write exposure file in /etc/wdev/exposures
@@ -182,6 +212,9 @@ func (m *Manager) Expose(localDomain, publicHost, profile string) error {
 // Unexpose removes an ingress rule natively
 func (m *Manager) Unexpose(localDomain string) error {
 	localDomain = strings.ToLower(strings.TrimSpace(localDomain))
+	if err := validateCFHost(localDomain, "local_domain"); err != nil {
+		return err
+	}
 	exposuresDir := filepath.Join(m.cfg.WdevEtc, "exposures")
 	expFile := filepath.Join(exposuresDir, localDomain)
 

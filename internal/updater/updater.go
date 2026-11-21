@@ -373,14 +373,13 @@ func Run(ctx context.Context, current string, opts Options, cb func(string)) (Re
 		return res, fmt.Errorf("gagal mengunduh biner: %w", err)
 	}
 	checksumAsset, hasChecksum := pickAsset(rel.Assets, asset.Name+checksumTag)
-	if hasChecksum {
-		if err := verifyChecksum(tmpBin, checksumAsset.URL); err != nil {
-			return res, err
-		}
-		cb("✓ Checksum SHA256 cocok")
-	} else {
-		cb(" [!] Rilis tidak menyertakan checksum; lanjut tanpa verifikasi")
+	if !hasChecksum {
+		return res, fmt.Errorf("rilis %s tidak menyertakan file checksum %s; pembaruan dibatalkan demi keamanan", rel.Tag, asset.Name+checksumTag)
 	}
+	if err := verifyChecksum(tmpBin, checksumAsset.URL); err != nil {
+		return res, err
+	}
+	cb("✓ Checksum SHA256 cocok")
 
 	backup := BinaryPath + ".bak"
 	if _, err := os.Stat(BinaryPath); err == nil {

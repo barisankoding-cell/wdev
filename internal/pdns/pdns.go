@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"wdev/internal/config"
@@ -48,6 +49,7 @@ type EdgeConfig struct {
 	VPSNetbirdIP   string `json:"vps_netbird_ip"`
 	VPSPublicIP    string `json:"vps_public_ip"`
 	APIKey         string `json:"api_key"`
+	HasAPIKey      bool   `json:"has_api_key"`
 	PDNSPort       string `json:"pdns_port"`
 	AgentPort      string `json:"agent_port"`
 	LocalNetbirdIP string `json:"local_netbird_ip"`
@@ -301,6 +303,7 @@ func (m *Manager) LoadConfig() EdgeConfig {
 	}
 
 	// Check if reachable
+	conf.HasAPIKey = conf.APIKey != ""
 	if conf.VPSNetbirdIP != "" && conf.PDNSPort != "" && conf.APIKey != "" {
 		client := http.Client{Timeout: 1500 * time.Millisecond}
 		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s:%s/api/v1/servers/localhost", conf.VPSNetbirdIP, conf.PDNSPort), nil)
@@ -966,12 +969,31 @@ func (m *Manager) Expose(domain string, targetPort int, useSSL bool, websocket b
 	return nil
 }
 
+var (
+	pdnsHostRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
+	sshUserRe  = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,63}$`)
+)
+
+func validatePortString(raw, label string) (string, error) {
+	p, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || p < 1 || p > 65535 {
+		return "", fmt.Errorf("%s tidak valid: %q", label, raw)
+	}
+	return strconv.Itoa(p), nil
+}
+
 func (m *Manager) ExposeSite(localDomain, publicDomain string, useSSL bool) error {
 	localDomain = strings.ToLower(strings.TrimSpace(localDomain))
 	publicDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(publicDomain), "."))
 
 	if localDomain == "" || publicDomain == "" {
 		return fmt.Errorf("domain lokal dan domain publik tidak boleh kosong")
+	}
+	if !pdnsHostRe.MatchString(localDomain) || strings.Contains(localDomain, "..") {
+		return fmt.Errorf("domain lokal tidak valid: %q", localDomain)
+	}
+	if _, err := NormalizeZoneName(publicDomain); err != nil {
+		return fmt.Errorf("domain publik tidak valid: %w", err)
 	}
 
 	// Check config file in sites-available
@@ -1188,6 +1210,35 @@ func removeLocalVhostAlias(pubDom string) {
 	}
 }
 
+func writeSecretFileWithSudo(path string, content []byte) error {
+	if err := os.WriteFile(path, content, 0600); err == nil {
+		_ = os.Chmod(path, 0600)
+		return nil
+	}
+	if os.Geteuid() != 0 {
+		tmpFile, err := os.CreateTemp("", "wdev-secret-*")
+		if err != nil {
+			return err
+		}
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+		_ = os.Chmod(tmpPath, 0600)
+		if _, err := tmpFile.Write(content); err != nil {
+			tmpFile.Close()
+			return err
+		}
+		if err := tmpFile.Close(); err != nil {
+			return err
+		}
+		cmd := exec.Command("sudo", "-n", "install", "-m", "0600", tmpPath, path)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("sudo install gagal: %w (%s)", err, string(out))
+		}
+		return nil
+	}
+	return os.WriteFile(path, content, 0600)
+}
+
 func writeFileWithSudo(path string, content []byte) error {
 	if err := os.WriteFile(path, content, 0644); err == nil {
 		return nil
@@ -1252,10 +1303,10 @@ AGENT_PORT="%s"
 		if os.Geteuid() != 0 {
 			_ = exec.Command("sudo", "-n", "mkdir", "-p", dir).Run()
 		} else {
-			_ = os.MkdirAll(dir, 0755)
+			_ = os.MkdirAll(dir, 0700)
 		}
 		confFile := filepath.Join(dir, "edge-dns.conf")
-		if err := writeFileWithSudo(confFile, []byte(content)); err != nil {
+		if err := writeSecretFileWithSudo(confFile, []byte(content)); err != nil {
 			writeErr = err
 		}
 	}
@@ -1264,15 +1315,38 @@ AGENT_PORT="%s"
 
 func (m *Manager) Connect(opts ConnectOptions) error {
 	opts.VPSNetbirdIP = strings.TrimSpace(opts.VPSNetbirdIP)
+	opts.VPSPublicIP = strings.TrimSpace(opts.VPSPublicIP)
 	opts.APIKey = strings.TrimSpace(opts.APIKey)
 	if opts.VPSNetbirdIP == "" || opts.APIKey == "" {
 		return fmt.Errorf("IP NetBird VPS dan API Key wajib diisi")
 	}
+	parsedNB := net.ParseIP(opts.VPSNetbirdIP)
+	if parsedNB == nil {
+		return fmt.Errorf("IP NetBird VPS tidak valid: %q", opts.VPSNetbirdIP)
+	}
+	opts.VPSNetbirdIP = parsedNB.String()
+	if opts.VPSPublicIP != "" {
+		parsedPub := net.ParseIP(opts.VPSPublicIP)
+		if parsedPub == nil {
+			return fmt.Errorf("IP Publik VPS tidak valid: %q", opts.VPSPublicIP)
+		}
+		opts.VPSPublicIP = parsedPub.String()
+	}
+	if strings.ContainsAny(opts.APIKey, "\r\n\x00\"'") {
+		return fmt.Errorf("API Key mengandung karakter tidak valid")
+	}
 	if opts.PDNSPort == "" {
 		opts.PDNSPort = "8081"
 	}
+	var err error
+	if opts.PDNSPort, err = validatePortString(opts.PDNSPort, "PDNSPort"); err != nil {
+		return err
+	}
 	if opts.AgentPort == "" {
 		opts.AgentPort = "8082"
+	}
+	if opts.AgentPort, err = validatePortString(opts.AgentPort, "AgentPort"); err != nil {
+		return err
 	}
 
 	client := http.Client{Timeout: 5 * time.Second}
@@ -1292,8 +1366,7 @@ func (m *Manager) Connect(opts ConnectOptions) error {
 		return fmt.Errorf("PowerDNS API Key salah atau ditolak (HTTP %d)", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("PowerDNS API merespons status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("PowerDNS API merespons status HTTP %d", resp.StatusCode)
 	}
 
 	return m.SaveConfig(opts.VPSNetbirdIP, opts.VPSPublicIP, opts.APIKey, opts.PDNSPort, opts.AgentPort)
@@ -1353,14 +1426,36 @@ func (m *Manager) DeployVPS(ctx context.Context, cb func(string), opts DeployOpt
 	if opts.VPSHost == "" {
 		return fmt.Errorf("host / IP VPS tidak boleh kosong")
 	}
-	if opts.SSHPort <= 0 {
+	if net.ParseIP(opts.VPSHost) == nil && !pdnsHostRe.MatchString(opts.VPSHost) {
+		return fmt.Errorf("host / IP VPS tidak valid: %q", opts.VPSHost)
+	}
+	if opts.SSHPort == 0 {
 		opts.SSHPort = 22
 	}
+	if opts.SSHPort < 1 || opts.SSHPort > 65535 {
+		return fmt.Errorf("port SSH tidak valid: %d", opts.SSHPort)
+	}
+	opts.SSHUser = strings.TrimSpace(opts.SSHUser)
 	if opts.SSHUser == "" {
 		opts.SSHUser = "root"
 	}
+	if !sshUserRe.MatchString(opts.SSHUser) {
+		return fmt.Errorf("username SSH tidak valid: %q", opts.SSHUser)
+	}
 	if opts.AuthMethod == "" {
 		opts.AuthMethod = "password"
+	}
+	if opts.AuthMethod != "password" && opts.AuthMethod != "key" {
+		return fmt.Errorf("metode autentikasi SSH tidak valid: %q", opts.AuthMethod)
+	}
+	if opts.AuthMethod == "key" && opts.KeyPath != "" {
+		opts.KeyPath = strings.TrimSpace(opts.KeyPath)
+		if strings.HasPrefix(opts.KeyPath, "-") || strings.ContainsAny(opts.KeyPath, "\r\n\x00") {
+			return fmt.Errorf("path SSH key tidak valid")
+		}
+		if fi, err := os.Stat(opts.KeyPath); err != nil || fi.IsDir() {
+			return fmt.Errorf("file SSH key tidak ditemukan: %s", opts.KeyPath)
+		}
 	}
 
 	cb(fmt.Sprintf("=== MEMULAI DEPLOYMENT VPS EDGE GATEWAY (%s) ===", opts.VPSHost))
@@ -1368,17 +1463,20 @@ func (m *Manager) DeployVPS(ctx context.Context, cb func(string), opts DeployOpt
 	buildSSH := func(remoteCmd string) *exec.Cmd {
 		args := []string{
 			"-p", fmt.Sprintf("%d", opts.SSHPort),
-			"-o", "StrictHostKeyChecking=no",
+			"-o", "StrictHostKeyChecking=accept-new",
 			"-o", "ConnectTimeout=15",
 		}
 		if opts.AuthMethod == "key" && opts.KeyPath != "" {
 			args = append(args, "-i", opts.KeyPath)
 		}
 		target := fmt.Sprintf("%s@%s", opts.SSHUser, opts.VPSHost)
-		args = append(args, target, remoteCmd)
+		args = append(args, "--", target, remoteCmd)
 
 		if opts.AuthMethod == "password" {
-			return exec.CommandContext(ctx, "sshpass", append([]string{"-p", opts.Password, "ssh"}, args...)...)
+			// Kirim password lewat env SSHPASS (-e) agar tidak tampil di ps / /proc/<pid>/cmdline
+			cmd := exec.CommandContext(ctx, "sshpass", append([]string{"-e", "ssh"}, args...)...)
+			cmd.Env = append(os.Environ(), "SSHPASS="+opts.Password)
+			return cmd
 		}
 		return exec.CommandContext(ctx, "ssh", args...)
 	}
@@ -1408,7 +1506,7 @@ func (m *Manager) DeployVPS(ctx context.Context, cb func(string), opts DeployOpt
 			return fmt.Errorf("arsitektur VPS (%s) berbeda dengan biner wdev lokal (%s); jalankan wdev dari mesin dengan arsitektur yang sama", remote, runtime.GOARCH)
 		}
 	}
-	uploadCmd := buildSSH("cat > /tmp/wdev-edge-bin && chmod 755 /tmp/wdev-edge-bin && mv /tmp/wdev-edge-bin /usr/local/bin/wdev")
+	uploadCmd := buildSSH(`tmp=$(mktemp /tmp/wdev-edge-bin.XXXXXX) && cat > "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" /usr/local/bin/wdev`)
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("gagal menemukan biner wdev: %w", err)
