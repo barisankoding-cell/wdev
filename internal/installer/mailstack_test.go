@@ -86,6 +86,13 @@ func TestInstallMailStackRejectsWhenNoDomain(t *testing.T) {
 
 	inst := New(cfg, db)
 
+	// File non-vhost (.custom.conf / default / internal wdev) tidak boleh dianggap domain terkonfigurasi
+	for _, nonDomainFile := range []string{"appsone.test.custom.conf", "default.conf", "wdev_webmail.conf"} {
+		if err := os.WriteFile(filepath.Join(cfg.NginxSitesAvail, nonDomainFile), []byte("# helper\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// Tanpa domain terkonfigurasi, harus ditolak
 	err = inst.InstallMailStack(context.Background(), func(string) {})
 	if err == nil {
@@ -103,6 +110,15 @@ func TestInstallMailStackRejectsWhenNoDomain(t *testing.T) {
 	if !strings.Contains(err.Error(), "tidak valid") {
 		t.Fatalf("unexpected error message: %v", err)
 	}
+
+	// VHost nyata tanpa akhiran .conf harus terdeteksi
+	if err := os.WriteFile(filepath.Join(cfg.NginxSitesAvail, "appsone.test"), []byte("server { server_name appsone.test; }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !inst.HasConfiguredDomain() {
+		t.Fatal("expected HasConfiguredDomain to be true when real vhost file exists")
+	}
+	_ = os.Remove(filepath.Join(cfg.NginxSitesAvail, "appsone.test"))
 
 	// Tambahkan domain ke store
 	err = db.SaveSite(store.SiteRecord{Domain: "example.com"})

@@ -47,10 +47,15 @@ func (inst *Installer) HasConfiguredDomain() bool {
 
 	// 2. Cek file konfigurasi mail-domains.json jika ada
 	var statePaths []string
-	if inst.cfg != nil && inst.cfg.WdevEtc != "" {
-		statePaths = append(statePaths, filepath.Join(inst.cfg.WdevEtc, "mail-domains.json"))
+	if inst.cfg != nil && strings.TrimSpace(inst.cfg.WdevEtc) != "" {
+		wdevEtc := strings.TrimSpace(inst.cfg.WdevEtc)
+		statePaths = append(statePaths, filepath.Join(wdevEtc, "mail-domains.json"))
+		if wdevEtc == "/etc/wdev" {
+			statePaths = append(statePaths, "/etc/wdev-edge/mail_domains.json")
+		}
+	} else {
+		statePaths = append(statePaths, "/etc/wdev/mail-domains.json", "/etc/wdev-edge/mail_domains.json")
 	}
-	statePaths = append(statePaths, "/etc/wdev/mail-domains.json", "/etc/wdev-edge/mail_domains.json")
 	for _, p := range statePaths {
 		if data, err := os.ReadFile(p); err == nil {
 			var m map[string]any
@@ -65,14 +70,16 @@ func (inst *Installer) HasConfiguredDomain() bool {
 	}
 
 	// 3. Cek vhost Nginx yang sudah dikonfigurasi selain default / internal wdev
-	vhostDirs := []string{"/etc/nginx/sites-enabled", "/etc/nginx/sites-available"}
-	if inst.cfg != nil {
-		if inst.cfg.NginxSitesEnable != "" {
-			vhostDirs = append([]string{inst.cfg.NginxSitesEnable}, vhostDirs...)
+	var vhostDirs []string
+	if inst.cfg != nil && (strings.TrimSpace(inst.cfg.NginxSitesEnable) != "" || strings.TrimSpace(inst.cfg.NginxSitesAvail) != "") {
+		if d := strings.TrimSpace(inst.cfg.NginxSitesEnable); d != "" {
+			vhostDirs = append(vhostDirs, d)
 		}
-		if inst.cfg.NginxSitesAvail != "" {
-			vhostDirs = append([]string{inst.cfg.NginxSitesAvail}, vhostDirs...)
+		if d := strings.TrimSpace(inst.cfg.NginxSitesAvail); d != "" {
+			vhostDirs = append(vhostDirs, d)
 		}
+	} else {
+		vhostDirs = []string{"/etc/nginx/sites-enabled", "/etc/nginx/sites-available"}
 	}
 	for _, dir := range vhostDirs {
 		entries, err := os.ReadDir(dir)
@@ -80,12 +87,21 @@ func (inst *Installer) HasConfiguredDomain() bool {
 			continue
 		}
 		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
 			name := e.Name()
-			if strings.HasSuffix(name, ".conf") {
-				base := strings.TrimSuffix(name, ".conf")
-				if base != "default" && base != "wdev_webmail" && base != "wdev_fallback" {
-					return true
-				}
+			if name == "default" || name == "default.conf" || name == "000-default" || name == "000-default.conf" ||
+				strings.HasPrefix(name, ".") || strings.HasPrefix(name, "wdev_") ||
+				strings.HasSuffix(name, ".custom.conf") || strings.HasSuffix(name, ".bak") ||
+				strings.HasSuffix(name, ".disabled") || strings.HasSuffix(name, "-le-ssl.conf") ||
+				strings.Contains(name, ".dpkg-") || strings.HasSuffix(name, ".rpmnew") ||
+				strings.HasSuffix(name, ".rpmsave") || strings.HasSuffix(name, "~") {
+				continue
+			}
+			base := strings.TrimSuffix(name, ".conf")
+			if isValidDomain(base) {
+				return true
 			}
 		}
 	}
