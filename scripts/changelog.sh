@@ -3,7 +3,7 @@
 set -euo pipefail
 
 TARGET_VERSION="${1:-}"
-PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+PREV_TAG=$(git describe --tags --abbrev=0 --match "v[0-9]*.[0-9]*.[0-9]*" 2>/dev/null || echo "")
 
 if [ -n "$PREV_TAG" ]; then
     RANGE="${PREV_TAG}..HEAD"

@@ -7,7 +7,7 @@ BINARY := $(BIN_DIR)/wdev
 CMD_PKG := ./cmd/wdev
 VERSION_PKG := wdev/internal/version
 
-# Ambil versi saat ini dari version.go
+# Ambil versi saat ini dari version.go dan deteksi versi berikutnya otomatis
 CURRENT_VERSION := $(shell grep 'var Version =' internal/version/version.go | cut -d '"' -f 2)
 
 .PHONY: all
@@ -68,15 +68,25 @@ clean: ## Bersihkan direktori build binary dan cache
 # -----------------------------------------------------------------------------
 # Release Automation & Changelog
 # -----------------------------------------------------------------------------
+.PHONY: next-version
+next-version: ## Deteksi otomatis versi rilis berikutnya dari git tag & Conventional Commits
+	@chmod +x scripts/next-version.sh
+	@scripts/next-version.sh --explain "$(VERSION)"
+
 .PHONY: changelog
 changelog: ## Tampilkan changelog dari git commit sejak rilis terakhir
-	@chmod +x scripts/changelog.sh
-	@scripts/changelog.sh $(CURRENT_VERSION)
+	@chmod +x scripts/changelog.sh scripts/next-version.sh
+	@scripts/changelog.sh "$$(./scripts/next-version.sh $(VERSION))"
 
 .PHONY: release
-release: ## Otomatisasi rilis ke GitHub dengan changelog (Contoh: make release VERSION=2.2.0)
-	@chmod +x scripts/release.sh scripts/changelog.sh
-	@scripts/release.sh $(VERSION)
+release: ## Otomatisasi rilis ke GitHub (auto-detect versi, opsional: VERSION=x.y.z|patch|minor|major)
+	@chmod +x scripts/release.sh scripts/changelog.sh scripts/next-version.sh
+	@scripts/release.sh "$(VERSION)"
+
+.PHONY: release-dry
+release-dry: ## Simulasi deteksi versi & pratinjau changelog rilis tanpa commit/tag/push
+	@chmod +x scripts/release.sh scripts/changelog.sh scripts/next-version.sh
+	@DRY_RUN=1 scripts/release.sh "$(VERSION)"
 
 .PHONY: help
 help: ## Tampilkan daftar perintah Makefile
