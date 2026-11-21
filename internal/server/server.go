@@ -1048,6 +1048,18 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.Body != nil {
+		var body struct {
+			SudoPass string `json:"sudo_pass"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.SudoPass != "" && s.installer != nil {
+			if err := s.installer.VerifyAndSetSudoPassword(body.SudoPass); err != nil {
+				writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+				return
+			}
+		}
+	}
+
 	unexpose := r.URL.Query().Get("unexpose") == "1" || r.URL.Query().Get("unexpose") == "true"
 	deleteDNS := r.URL.Query().Get("delete_dns") == "1" || r.URL.Query().Get("delete_dns") == "true"
 
@@ -1057,6 +1069,15 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.siteMgr.DeleteSite(domain); err != nil {
+		if s.installer != nil && os.Geteuid() != 0 {
+			if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":  "sudo_required",
+					"message": "Menghapus berkas konfigurasi Nginx memerlukan hak akses administrator (sudo).",
+				})
+				return
+			}
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

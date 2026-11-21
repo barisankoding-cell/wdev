@@ -491,7 +491,15 @@
 	) {
 		siteDeleting = { ...siteDeleting, [siteDomain]: true };
 		try {
-			const res = await api.deleteSite(siteDomain, opts);
+			const res = await cp.runWithSudoRetry(
+				`Penghapusan konfigurasi Nginx untuk ${siteDomain} memerlukan hak akses administrator (sudo).`,
+				(sudoPass) =>
+					api.deleteSite(siteDomain, {
+						...opts,
+						...(sudoPass ? { sudo_pass: sudoPass } : {})
+					})
+			);
+			if (!res) return;
 			if (res?.unexpose_error) {
 				toast.warning(
 					`Virtual host ${siteDomain} dihapus, tetapi pencabutan proxy VPS Edge gagal: ${res.unexpose_error}`
@@ -503,7 +511,7 @@
 			} else if (res?.dns_deleted) {
 				toast.success(`Virtual host ${siteDomain} & record DNS A berhasil dihapus.`);
 			} else {
-				toast.success(`Virtual host ${siteDomain} berhasil dihapus.`);
+				toast.success(`Virtual host ${siteDomain} berhasil dihapus (folder proyek tetap aman).`);
 			}
 			deleteOpen = false;
 			deleteTarget = null;
@@ -530,8 +538,8 @@
 
 		const confirmed = await cp.confirm({
 			title: 'Hapus Virtual Host',
-			description: `Hapus virtual host ${site.domain}? Tindakan ini menghapus konfigurasi Nginx dan entri /etc/hosts lokal.`,
-			confirmText: 'Hapus',
+			description: `Hapus konfigurasi Nginx dan entri /etc/hosts untuk ${site.domain}? Berkas dan folder proyek di ${site.root_path || '/var/www/' + site.domain} tidak akan dihapus.`,
+			confirmText: 'Hapus VHost',
 			destructive: true
 		});
 		if (!confirmed) return;

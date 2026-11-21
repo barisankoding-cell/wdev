@@ -213,18 +213,23 @@ export const api = {
 				...(sudoPass ? { sudo_pass: sudoPass } : {})
 			})
 		}),
-	deleteSite: (domain: string, opts?: { unexpose?: boolean; delete_dns?: boolean }) => {
+	deleteSite: (
+		domain: string,
+		opts?: { unexpose?: boolean; delete_dns?: boolean; sudo_pass?: string }
+	) => {
 		const params = new URLSearchParams();
 		if (opts?.unexpose) params.set('unexpose', '1');
 		if (opts?.delete_dns) params.set('delete_dns', '1');
 		const qs = params.toString();
 		return apiFetch<{
 			status: string;
+			message?: string;
 			unexposed?: boolean;
 			unexpose_error?: string;
 			dns_deleted?: boolean;
 		}>(`/api/sites/${encodeURIComponent(domain)}${qs ? `?${qs}` : ''}`, {
-			method: 'DELETE'
+			method: 'DELETE',
+			...(opts?.sudo_pass ? { body: JSON.stringify({ sudo_pass: opts.sudo_pass }) } : {})
 		});
 	},
 

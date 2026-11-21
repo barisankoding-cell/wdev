@@ -290,7 +290,8 @@ func (s *Store) SetSiteSSL(domain string, enabled bool, provider string) error {
 func (s *Store) DeleteSite(domain string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM sites WHERE domain = ?`, domain)
+	clean := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(domain), "."), ".conf"))
+	_, err := s.db.Exec(`DELETE FROM sites WHERE lower(domain) = ? OR lower(domain) = ?`, clean, clean+".conf")
 	return err
 }
 
@@ -387,12 +388,20 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 	if entries, err := os.ReadDir(nginxSitesAvail); err == nil {
 		for _, e := range entries {
 			name := e.Name()
-			if e.IsDir() || name == "default" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "wdev_") ||
-				strings.HasSuffix(name, ".custom.conf") || strings.HasSuffix(name, ".bak") || strings.HasSuffix(name, "~") {
+			if e.IsDir() || name == "default" || name == "default.conf" ||
+				name == "000-default" || name == "000-default.conf" ||
+				strings.HasPrefix(name, ".") || strings.HasPrefix(name, "wdev_") ||
+				strings.HasSuffix(name, ".custom.conf") || strings.HasSuffix(name, ".bak") ||
+				strings.HasSuffix(name, ".disabled") || strings.HasSuffix(name, "-le-ssl.conf") ||
+				strings.Contains(name, ".dpkg-") || strings.HasSuffix(name, ".rpmnew") ||
+				strings.HasSuffix(name, ".rpmsave") || strings.HasSuffix(name, "~") {
 				continue
 			}
 
-			domain := strings.TrimSuffix(name, ".conf")
+			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(name, ".conf"), "."))
+			if domain == "" {
+				continue
+			}
 			confBytes, err := os.ReadFile(filepath.Join(nginxSitesAvail, name))
 			if err != nil {
 				continue

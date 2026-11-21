@@ -382,3 +382,79 @@ func TestCreateSiteSkipHostsPreservesHostsFile(t *testing.T) {
 		t.Fatalf("expected lokal.test in hosts file when SkipHosts=false, got: %s", string(hostsBytes))
 	}
 }
+
+func TestDeleteSiteRemovesConfVariantsExposuresAndDoesNotResurrectOnSyncFromDisk(t *testing.T) {
+	mgr, cfg, db := newTestSiteManager(t)
+
+	docRoot := filepath.Join(cfg.WebRootBase, "hapus.my.id")
+	if err := os.MkdirAll(filepath.Join(docRoot, "storage"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(docRoot, "storage", "penting.txt")
+	if err := os.WriteFile(userFile, []byte("jangan-hapus"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:    "hapus.my.id",
+		Framework: "static",
+		RootPath:  docRoot,
+	}); err != nil {
+		t.Fatalf("CreateSite failed: %v", err)
+	}
+
+	// Simulasikan berkas legacy .conf, -le-ssl.conf, dan penanda exposures di disk.
+	confVariant := filepath.Join(cfg.NginxSitesAvail, "hapus.my.id.conf")
+	leVariant := filepath.Join(cfg.NginxSitesAvail, "hapus.my.id-le-ssl.conf")
+	leEnabled := filepath.Join(cfg.NginxSitesEnable, "hapus.my.id-le-ssl.conf")
+	if err := os.WriteFile(confVariant, []byte("server { server_name hapus.my.id; }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(leVariant, []byte("server { listen 443 ssl; server_name hapus.my.id; }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(leVariant, leEnabled); err != nil {
+		t.Fatal(err)
+	}
+	expDir := filepath.Join(cfg.WdevEtc, "exposures")
+	if err := os.MkdirAll(expDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	expFile := filepath.Join(expDir, "hapus.my.id.conf")
+	if err := os.WriteFile(expFile, []byte("hapus.my.id\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.DeleteSite("hapus.my.id"); err != nil {
+		t.Fatalf("DeleteSite failed: %v", err)
+	}
+
+	for _, deletedPath := range []string{
+		filepath.Join(cfg.NginxSitesAvail, "hapus.my.id"),
+		filepath.Join(cfg.NginxSitesEnable, "hapus.my.id"),
+		confVariant,
+		leVariant,
+		leEnabled,
+		expFile,
+	} {
+		if _, err := os.Lstat(deletedPath); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be deleted, stat err=%v", deletedPath, err)
+		}
+	}
+
+	// Folder proyek vhost wajib tetap ada beserta isinya.
+	gotUserData, err := os.ReadFile(userFile)
+	if err != nil || string(gotUserData) != "jangan-hapus" {
+		t.Fatalf("expected vhost folder & user files preserved, got err=%v data=%q", err, string(gotUserData))
+	}
+
+	// Simulasikan restart / install ulang wdev memanggil SyncFromDisk: vhost yang dihapus tidak boleh muncul lagi.
+	db.SyncFromDisk(cfg.NginxSitesAvail, expDir)
+	sites, err := db.ListSites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 0 {
+		t.Fatalf("expected 0 sites after SyncFromDisk following DeleteSite, got: %+v", sites)
+	}
+}

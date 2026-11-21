@@ -504,15 +504,39 @@ func (m *Manager) extractRootFromVHost(confPath, domain string) string {
 }
 
 func (m *Manager) DeleteSite(domain string) error {
-	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(domain), "."), ".conf"))
 	if err := ValidateDomain(domain); err != nil {
 		return err
 	}
-	availPath := filepath.Join(m.sitesAvailDir(), domain)
-	enablePath := filepath.Join(m.sitesEnableDir(), domain)
 
-	_ = m.removeFile(enablePath)
-	_ = m.removeFile(availPath)
+	// Hapus semua variasi berkas konfigurasi & symlink Nginx (tanpa menyentuh folder web root_path)
+	// serta gagalkan operasi bila berkas disk tidak dapat dihapus agar tidak muncul kembali saat SyncFromDisk.
+	candidates := []string{
+		domain,
+		domain + ".conf",
+		"wdev_" + domain,
+		"wdev_" + domain + ".conf",
+		domain + "-le-ssl.conf",
+	}
+	availDir := m.sitesAvailDir()
+	enableDir := m.sitesEnableDir()
+	for _, name := range candidates {
+		if err := m.removeFile(filepath.Join(enableDir, name)); err != nil {
+			return fmt.Errorf("gagal menghapus symlink Nginx %s: %w", name, err)
+		}
+		if err := m.removeFile(filepath.Join(availDir, name)); err != nil {
+			return fmt.Errorf("gagal menghapus konfigurasi Nginx %s: %w", name, err)
+		}
+	}
+
+	if m.cfg != nil && strings.TrimSpace(m.cfg.WdevEtc) != "" {
+		expDir := filepath.Join(strings.TrimSpace(m.cfg.WdevEtc), "exposures")
+		for _, name := range []string{domain, domain + ".conf"} {
+			if err := m.removeFile(filepath.Join(expDir, name)); err != nil {
+				return fmt.Errorf("gagal menghapus penanda eksposur %s: %w", name, err)
+			}
+		}
+	}
 
 	if !m.skipNginxExec {
 		_ = m.reloadOrStartNginx()
@@ -520,10 +544,15 @@ func (m *Manager) DeleteSite(domain string) error {
 
 	if m.cfg != nil && m.cfg.HostsFile != "" {
 		m.removeHostsEntry(domain)
+		if !strings.HasPrefix(domain, "www.") {
+			m.removeHostsEntry("www." + domain)
+		}
 	}
 
 	if m.store != nil {
-		_ = m.store.DeleteSite(domain)
+		if err := m.store.DeleteSite(domain); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -613,7 +642,7 @@ func (m *Manager) removeHostsEntry(domain string) {
 		fields := strings.Fields(l)
 		hasDomain := false
 		for _, f := range fields {
-			if f == domain {
+			if strings.EqualFold(f, domain) {
 				hasDomain = true
 				break
 			}
@@ -805,6 +834,9 @@ func (m *Manager) ensureSymlink(target, link string) error {
 }
 
 func (m *Manager) removeFile(path string) error {
+	if _, lerr := os.Lstat(path); os.IsNotExist(lerr) {
+		return nil
+	}
 	if err := os.Remove(path); err == nil || os.IsNotExist(err) {
 		return nil
 	} else if !os.IsPermission(err) || os.Geteuid() == 0 {
