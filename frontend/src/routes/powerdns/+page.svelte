@@ -2070,113 +2070,116 @@
 				</Field.FieldGroup>
 			</form>
 
-			<ResponsiveTableWrapper label="Tabel Record DNS PowerDNS">
-				<Table.Root class="sm:table-fixed">
-					<Table.Header>
-						<Table.Row>
-							<Table.Head scope="col" class="sm:w-48 lg:w-52">Nama Record</Table.Head>
-							<Table.Head scope="col" class="sm:w-20">Tipe</Table.Head>
-							<Table.Head scope="col" class="sm:w-16">TTL</Table.Head>
-							<Table.Head scope="col">Konten</Table.Head>
-							<Table.Head scope="col" class="text-right sm:w-32">Aksi</Table.Head>
-						</Table.Row>
-					</Table.Header>
-					<Table.Body>
-						{#if recordsLoading}
+			<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
+				<ResponsiveTableWrapper label="Tabel Record DNS PowerDNS" class="rounded-none border-0 bg-transparent">
+					<Table.Root class="sm:table-fixed">
+						<Table.Header>
 							<Table.Row>
-								<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-									<div class="inline-flex items-center justify-center gap-2">
-										<Spinner />
-										<span>Memuat record DNS...</span>
-									</div>
-								</Table.Cell>
+								<Table.Head scope="col" class="sm:w-48 lg:w-52">Nama Record</Table.Head>
+								<Table.Head scope="col" class="sm:w-20">Tipe</Table.Head>
+								<Table.Head scope="col" class="sm:w-16">TTL</Table.Head>
+								<Table.Head scope="col">Konten</Table.Head>
+								<Table.Head scope="col" class="text-right sm:w-32">Aksi</Table.Head>
 							</Table.Row>
-						{:else if rrsets.length === 0}
-							<Table.Row>
-								<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-									Belum ada record pada zone ini.
-								</Table.Cell>
-							</Table.Row>
-						{:else}
-							{#each paginatedRRSets as rr (rr.name + ':' + rr.type)}
-								{@const isProtected = rr.type === 'SOA' || rr.type === 'NS'}
-								{@const cleanName = rr.name.replace(/\.$/, '')}
-								{@const isEdgeProxy = exposures.some((p) => p.domain === cleanName)}
-								{#each rr.records || [] as rec, idx (idx)}
-									<Table.Row>
-										<Table.Cell data-label="Nama" class="whitespace-normal wrap-anywhere font-semibold">
-											<div class="flex flex-wrap items-center gap-1.5">
-												<span>{rr.name}</span>
-												{#if isEdgeProxy}
-													<Badge variant="secondary" class="text-[10px]">Edge Proxy</Badge>
-												{/if}
-											</div>
-										</Table.Cell>
-										<Table.Cell data-label="Tipe">
-											<Badge variant="outline">{rr.type}</Badge>
-										</Table.Cell>
-										<Table.Cell data-label="TTL" class="tabular-nums text-muted-foreground">
-											{rr.ttl}
-										</Table.Cell>
-										<Table.Cell
-											data-label="Konten"
-											class="whitespace-normal break-normal wrap-anywhere font-mono text-xs leading-relaxed"
-										>
-											{rec.content}
-										</Table.Cell>
-										<Table.Cell data-label="Aksi" class="text-right whitespace-nowrap">
-											{#if isProtected}
-												<Badge variant="secondary" class="font-normal text-muted-foreground">Sistem</Badge>
-											{:else}
-												<div class="flex justify-end">
-													<DropdownMenu.Root>
-														<DropdownMenu.Trigger>
-															{#snippet child({ props })}
-																<Button
-																	variant="outline"
-																	size="xs"
-																	disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
-																	{...props}
-																>
-																	{#if recordPending[`${rr.name}:${rr.type}`]}
-																		<Spinner data-icon="inline-start" />
-																		Menghapus...
-																	{:else}
-																		Aksi<span class="sr-only"> {rr.type} {rr.name}</span>
-																		<ChevronDownIcon data-icon="inline-end" />
-																	{/if}
-																</Button>
-															{/snippet}
-														</DropdownMenu.Trigger>
-														<DropdownMenu.Content align="end" class="w-44">
-															<DropdownMenu.Group>
-																<DropdownMenu.Item
-																	variant="destructive"
-																	disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
-																	onclick={() => deleteRecord(rr.name, rr.type)}
-																>
-																	<Trash2Icon />
-																	<span>Hapus Record</span>
-																</DropdownMenu.Item>
-															</DropdownMenu.Group>
-														</DropdownMenu.Content>
-													</DropdownMenu.Root>
+						</Table.Header>
+						<Table.Body>
+							{#if recordsLoading}
+								<Table.Row>
+									<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
+										<div class="inline-flex items-center justify-center gap-2">
+											<Spinner />
+											<span>Memuat record DNS...</span>
+										</div>
+									</Table.Cell>
+								</Table.Row>
+							{:else if rrsets.length === 0}
+								<Table.Row>
+									<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
+										Belum ada record pada zone ini.
+									</Table.Cell>
+								</Table.Row>
+							{:else}
+								{#each paginatedRRSets as rr (rr.name + ':' + rr.type)}
+									{@const isProtected = rr.type === 'SOA' || rr.type === 'NS'}
+									{@const cleanName = rr.name.replace(/\.$/, '')}
+									{@const isEdgeProxy = exposures.some((p) => p.domain === cleanName)}
+									{#each rr.records || [] as rec, idx (idx)}
+										<Table.Row>
+											<Table.Cell data-label="Nama" class="whitespace-normal wrap-anywhere font-semibold">
+												<div class="flex flex-wrap items-center gap-1.5">
+													<span>{rr.name}</span>
+													{#if isEdgeProxy}
+														<Badge variant="secondary" class="text-[10px]">Edge Proxy</Badge>
+													{/if}
 												</div>
-											{/if}
-										</Table.Cell>
-									</Table.Row>
+											</Table.Cell>
+											<Table.Cell data-label="Tipe">
+												<Badge variant="outline">{rr.type}</Badge>
+											</Table.Cell>
+											<Table.Cell data-label="TTL" class="tabular-nums text-muted-foreground">
+												{rr.ttl}
+											</Table.Cell>
+											<Table.Cell
+												data-label="Konten"
+												class="whitespace-normal break-normal wrap-anywhere font-mono text-xs leading-relaxed"
+											>
+												{rec.content}
+											</Table.Cell>
+											<Table.Cell data-label="Aksi" class="text-right whitespace-nowrap">
+												{#if isProtected}
+													<Badge variant="secondary" class="font-normal text-muted-foreground">Sistem</Badge>
+												{:else}
+													<div class="flex justify-end">
+														<DropdownMenu.Root>
+															<DropdownMenu.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																		variant="outline"
+																		size="xs"
+																		disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
+																		{...props}
+																	>
+																		{#if recordPending[`${rr.name}:${rr.type}`]}
+																			<Spinner data-icon="inline-start" />
+																			Menghapus...
+																		{:else}
+																			Aksi<span class="sr-only"> {rr.type} {rr.name}</span>
+																			<ChevronDownIcon data-icon="inline-end" />
+																		{/if}
+																	</Button>
+																{/snippet}
+															</DropdownMenu.Trigger>
+															<DropdownMenu.Content align="end" class="w-44">
+																<DropdownMenu.Group>
+																	<DropdownMenu.Item
+																		variant="destructive"
+																		disabled={Boolean(recordPending[`${rr.name}:${rr.type}`])}
+																		onclick={() => deleteRecord(rr.name, rr.type)}
+																	>
+																		<Trash2Icon />
+																		<span>Hapus Record</span>
+																	</DropdownMenu.Item>
+																</DropdownMenu.Group>
+															</DropdownMenu.Content>
+														</DropdownMenu.Root>
+													</div>
+												{/if}
+											</Table.Cell>
+										</Table.Row>
+									{/each}
 								{/each}
-							{/each}
-						{/if}
-					</Table.Body>
-				</Table.Root>
-			</ResponsiveTableWrapper>
-			<PaginationBar
-				bind:page={recordPage}
-				totalItems={rrsets.length}
-				pageSize={PAGE_SIZE}
-				itemLabel="record DNS"
-			/>
+							{/if}
+						</Table.Body>
+					</Table.Root>
+				</ResponsiveTableWrapper>
+				<PaginationBar
+					bind:page={recordPage}
+					totalItems={rrsets.length}
+					pageSize={PAGE_SIZE}
+					itemLabel="record DNS"
+					class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
+				/>
+			</div>
 		</div>
 
 		<Dialog.Footer>

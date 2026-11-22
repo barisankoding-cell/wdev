@@ -870,6 +870,31 @@ func TestHandleSitesPostAutoAddsSubdomainARecordInVPSMode(t *testing.T) {
 		t.Fatalf("expected PowerDNS PATCH with A record for app.nikaget.my.id., got: %s", patchedBody)
 	}
 
+	// Verifikasi GET dan PUT /api/sites/{domain} (Ubah Virtual Host)
+	reqGetSite := httptest.NewRequest(http.MethodGet, "/api/sites/app.nikaget.my.id", nil)
+	recGetSite := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recGetSite, reqGetSite)
+	if recGetSite.Code != http.StatusOK {
+		t.Fatalf("GET /api/sites/app.nikaget.my.id code = %d, body=%s", recGetSite.Code, recGetSite.Body.String())
+	}
+
+	reqPutSite := httptest.NewRequest(http.MethodPut, "/api/sites/app.nikaget.my.id", strings.NewReader(`{"framework":"ci4","php_version":"8.3"}`))
+	recPutSite := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recPutSite, reqPutSite)
+	if recPutSite.Code != http.StatusOK {
+		t.Fatalf("PUT /api/sites/app.nikaget.my.id code = %d, body=%s", recPutSite.Code, recPutSite.Body.String())
+	}
+	var putResp struct {
+		Status string           `json:"status"`
+		Site   store.SiteRecord `json:"site"`
+	}
+	if err := json.Unmarshal(recPutSite.Body.Bytes(), &putResp); err != nil {
+		t.Fatal(err)
+	}
+	if putResp.Status != "updated" || putResp.Site.Framework != "ci4" || putResp.Site.PHPVersion != "8.3" {
+		t.Fatalf("unexpected PUT /api/sites response: %+v", putResp)
+	}
+
 	// Verifikasi validasi POST /api/mail/account/password dan POST /api/service-config/postgresql/save-role & delete-role
 	reqPwd := httptest.NewRequest(http.MethodPost, "/api/mail/account/password", strings.NewReader(`{"email":"invalid","password":"123"}`))
 	recPwd := httptest.NewRecorder()

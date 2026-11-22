@@ -177,8 +177,8 @@
 
 	<section class="flex flex-col gap-3">
 		<h2 class="text-lg font-semibold tracking-tight">Daftar Domain Publik Aktif</h2>
-		<div class="flex flex-col overflow-hidden rounded-lg border bg-card">
-			<ResponsiveTableWrapper label="Tabel Domain Publik Cloudflare" class="rounded-none border-0">
+		<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
+			<ResponsiveTableWrapper label="Tabel Domain Publik Cloudflare" class="rounded-none border-0 bg-transparent">
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
@@ -273,6 +273,7 @@
 			totalItems={allExposures.length}
 			pageSize={PAGE_SIZE}
 			itemLabel="domain publik"
+			class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
 		/>
 	</div>
 </section>

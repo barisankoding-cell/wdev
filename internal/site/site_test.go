@@ -798,3 +798,113 @@ func TestRepairEmptyServerNamesInVHosts(t *testing.T) {
 		t.Fatalf("expected 0 repairs on second run, got %d (err: %v)", repaired2, err)
 	}
 }
+
+func TestUpdateSite(t *testing.T) {
+	mgr, cfg, _ := newTestSiteManager(t)
+
+	// 1. Updating non-existent site should fail
+	err := mgr.UpdateSite("nonexistent.test", CreateOptions{
+		Framework:  "laravel",
+		PHPVersion: "8.4",
+	})
+	if err == nil {
+		t.Fatalf("expected error updating non-existent site, got nil")
+	}
+
+	// 2. Create an initial site
+	initialOpts := CreateOptions{
+		Domain:     "myapp.test",
+		Framework:  "laravel",
+		PHPVersion: "8.4",
+		SSLEnabled: false,
+	}
+	if err := mgr.CreateSite(initialOpts); err != nil {
+		t.Fatalf("CreateSite failed: %v", err)
+	}
+
+	// Verify initial config and docroot
+	siteRec, ok := mgr.GetSite("myapp.test")
+	if !ok {
+		t.Fatalf("site not found in store after CreateSite")
+	}
+	if siteRec.Framework != "laravel" || siteRec.PHPVersion != "8.4" {
+		t.Fatalf("unexpected initial site record: %+v", siteRec)
+	}
+
+	// Place custom user files inside the docroot
+	userFile := filepath.Join(siteRec.RootPath, "user_project.txt")
+	userFileContent := "important user content that must not be deleted"
+	if err := os.WriteFile(userFile, []byte(userFileContent), 0644); err != nil {
+		t.Fatalf("failed to write test user file: %v", err)
+	}
+
+	// 3. Update the site to CI4 with PHP 8.3
+	updateOpts := CreateOptions{
+		Domain:     "myapp.test",
+		Framework:  "ci4",
+		PHPVersion: "8.3",
+		RootPath:   siteRec.RootPath,
+		SSLEnabled: false,
+	}
+	if err := mgr.UpdateSite("myapp.test", updateOpts); err != nil {
+		t.Fatalf("UpdateSite to ci4/php8.3 failed: %v", err)
+	}
+
+	// Verify user file is preserved!
+	readBack, err := os.ReadFile(userFile)
+	if err != nil {
+		t.Fatalf("user file was deleted during UpdateSite: %v", err)
+	}
+	if string(readBack) != userFileContent {
+		t.Fatalf("user file content altered, got: %q", string(readBack))
+	}
+
+	// Verify updated record in store
+	updatedRec, ok := mgr.GetSite("myapp.test")
+	if !ok {
+		t.Fatalf("site not found after update")
+	}
+	if updatedRec.Framework != "ci4" || updatedRec.PHPVersion != "8.3" {
+		t.Fatalf("unexpected updated site record: %+v", updatedRec)
+	}
+
+	// Verify Nginx config in sites-available contains fastcgi_pass and public root
+	confPath := filepath.Join(cfg.NginxSitesAvail, "myapp.test")
+	confData, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("failed to read updated nginx conf: %v", err)
+	}
+	confStr := string(confData)
+	if !strings.Contains(confStr, "fastcgi_pass") {
+		t.Fatalf("expected fastcgi_pass in nginx conf, got:\n%s", confStr)
+	}
+	if !strings.Contains(confStr, "myapp.test/public") {
+		t.Fatalf("expected effectiveRoot with public in nginx conf, got:\n%s", confStr)
+	}
+
+	// 4. Update the site to Reverse Proxy on port 4000
+	proxyOpts := CreateOptions{
+		Domain:    "myapp.test",
+		Framework: "proxy",
+		ProxyPort: 4000,
+	}
+	if err := mgr.UpdateSite("myapp.test", proxyOpts); err != nil {
+		t.Fatalf("UpdateSite to proxy failed: %v", err)
+	}
+
+	proxyRec, ok := mgr.GetSite("myapp.test")
+	if !ok {
+		t.Fatalf("site not found after proxy update")
+	}
+	if proxyRec.Framework != "proxy" || proxyRec.ProxyPort != 4000 {
+		t.Fatalf("unexpected proxy site record: %+v", proxyRec)
+	}
+
+	proxyConfData, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("failed to read proxy nginx conf: %v", err)
+	}
+	if !strings.Contains(string(proxyConfData), "proxy_pass http://127.0.0.1:4000;") {
+		t.Fatalf("expected proxy_pass in nginx conf, got:\n%s", string(proxyConfData))
+	}
+}

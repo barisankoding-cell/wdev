@@ -311,7 +311,7 @@ func (m *Manager) lookupStoredSite(domain string) (store.SiteRecord, bool) {
 
 func (m *Manager) findVHostConfigPath(domain string) (string, bool) {
 	avail := m.sitesAvailDir()
-	for _, name := range []string{domain, domain + ".conf"} {
+	for _, name := range []string{domain, domain + ".conf", "wdev_" + domain + ".conf", "wdev_" + domain} {
 		p := filepath.Join(avail, name)
 		if m.pathExists(p) {
 			return p, true

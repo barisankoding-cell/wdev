@@ -16,28 +16,36 @@
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
-	import type { FileRootInfo } from '#lib/types/api.js';
+	import type { FileRootInfo, SiteRecord } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
 	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 	import NetworkIcon from '@lucide/svelte/icons/network';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import SaveIcon from '@lucide/svelte/icons/save';
 
 	let {
 		open = $bindable(false),
 		pdnsZones = [],
 		parentDomains = [],
 		onRefreshZones,
-		onCreated
+		onCreated,
+		siteToEdit = null,
+		onUpdated
 	}: {
 		open: boolean;
 		pdnsZones: string[];
 		parentDomains: string[];
 		onRefreshZones: () => void | Promise<void>;
-		onCreated: (opts: { domain: string; wantVPSLetsEncrypt: boolean }) => void | Promise<void>;
+		onCreated?: (opts: { domain: string; wantVPSLetsEncrypt: boolean }) => void | Promise<void>;
+		siteToEdit?: SiteRecord | null;
+		onUpdated?: (site: SiteRecord) => void | Promise<void>;
 	} = $props();
+
+	const isEdit = $derived(Boolean(siteToEdit));
 
 	let fileRoots = $state<FileRootInfo[]>([]);
 	let folderPickerOpen = $state(false);
@@ -191,21 +199,39 @@
 		if (isOpen && !prevOpen) {
 			prevOpen = true;
 			untrack(() => {
-				domainMode = isEdge ? 'subdomain' : 'custom';
-				domain = '';
-				subdomainPrefix = '';
-				parentDomain = domainChoices[0] ?? '';
-				domainTouched = false;
-				formError = '';
-				framework = 'laravel';
-				phpVersion = '8.4';
-				rootPath = '';
-				selectedDriveRoot = null;
-				proxyPortStr = '3000';
-				sslEnabled = isLocal;
-				edgeExposeEnabled = isEdge;
-				edgeSSLEnabled = true;
-				addLocalHosts = false;
+				if (siteToEdit) {
+					domainMode = 'custom';
+					domain = siteToEdit.domain;
+					subdomainPrefix = '';
+					parentDomain = '';
+					domainTouched = false;
+					formError = '';
+					framework = siteToEdit.framework || 'laravel';
+					phpVersion = siteToEdit.php_version || '8.4';
+					rootPath = siteToEdit.root_path || '';
+					selectedDriveRoot = null;
+					proxyPortStr = siteToEdit.proxy_port ? String(siteToEdit.proxy_port) : '3000';
+					sslEnabled = Boolean(siteToEdit.ssl_enabled);
+					edgeExposeEnabled = isEdge && Boolean(siteToEdit.exposed_to);
+					edgeSSLEnabled = true;
+					addLocalHosts = false;
+				} else {
+					domainMode = isEdge ? 'subdomain' : 'custom';
+					domain = '';
+					subdomainPrefix = '';
+					parentDomain = domainChoices[0] ?? '';
+					domainTouched = false;
+					formError = '';
+					framework = 'laravel';
+					phpVersion = '8.4';
+					rootPath = '';
+					selectedDriveRoot = null;
+					proxyPortStr = '3000';
+					sslEnabled = isLocal;
+					edgeExposeEnabled = isEdge;
+					edgeSSLEnabled = true;
+					addLocalHosts = false;
+				}
 
 				void api
 					.getFileRoots()
@@ -213,13 +239,17 @@
 						fileRoots = rootsRes ?? [];
 					})
 					.catch(() => {});
-				if (supportsDNS) {
+				if (supportsDNS && !siteToEdit) {
 					void refreshZonesQuiet();
 				}
 				void tick().then(() => {
-					const targetId =
-						isEdge || (isVPS && domainMode === 'subdomain') ? 'site-sub-prefix' : 'site-domain';
-					document.getElementById(targetId)?.focus();
+					if (!siteToEdit) {
+						const targetId =
+							isEdge || (isVPS && domainMode === 'subdomain') ? 'site-sub-prefix' : 'site-domain';
+						document.getElementById(targetId)?.focus();
+					} else {
+						document.getElementById('site-framework')?.focus();
+					}
 				});
 			});
 		} else if (!isOpen) {
@@ -228,7 +258,7 @@
 	});
 
 	$effect(() => {
-		if (domainChoices.length > 0 && (!parentDomain || !domainChoices.includes(parentDomain))) {
+		if (!siteToEdit && domainChoices.length > 0 && (!parentDomain || !domainChoices.includes(parentDomain))) {
 			parentDomain = domainChoices[0];
 		}
 	});
@@ -244,7 +274,7 @@
 		domainTouched = true;
 		formError = '';
 
-		if (isEdge || (isVPS && domainMode === 'subdomain')) {
+		if (!isEdit && (isEdge || (isVPS && domainMode === 'subdomain'))) {
 			if (!parentDomain) {
 				formError = isEdge
 					? 'Tambahkan domain/zone di menu PowerDNS & Edge terlebih dahulu.'
@@ -267,7 +297,7 @@
 			}
 		}
 
-		const cleanDomain = effectiveDomain;
+		const cleanDomain = isEdit && siteToEdit ? siteToEdit.domain : effectiveDomain;
 		if (!cleanDomain) {
 			formError = 'Nama domain wajib diisi.';
 			document.getElementById('site-domain')?.focus();
@@ -278,6 +308,47 @@
 		if (isProxy && (proxyPort < 1 || proxyPort > 65535)) {
 			formError = 'Port aplikasi proxy harus antara 1 sampai 65535.';
 			document.getElementById('site-proxy-port')?.focus();
+			return;
+		}
+
+		if (isEdit) {
+			creating = true;
+			try {
+				const res = await cp.runWithSudoRetry(
+					`Pembaruan konfigurasi Nginx untuk ${cleanDomain} memerlukan hak akses administrator (sudo).`,
+					(sudoPass) =>
+						api.updateSite(cleanDomain, {
+							domain: cleanDomain,
+							framework,
+							php_version: isProxy || isStatic ? '' : phpVersion,
+							root_path: rootPath.trim(),
+							proxy_port: proxyPort,
+							ssl_enabled: sslEnabled,
+							sudo_pass: sudoPass
+						})
+				);
+				if (res) {
+					toast.success(`Virtual host ${cleanDomain} berhasil diperbarui!`);
+					open = false;
+					if (onUpdated) {
+						await onUpdated(
+							res.site ||
+								({
+									...siteToEdit,
+									framework,
+									php_version: isProxy || isStatic ? '' : phpVersion,
+									root_path: rootPath.trim(),
+									proxy_port: proxyPort,
+									ssl_enabled: sslEnabled
+								} as SiteRecord)
+						);
+					}
+				}
+			} catch (err) {
+				formError = err instanceof Error ? err.message : 'Gagal memperbarui virtual host';
+			} finally {
+				creating = false;
+			}
 			return;
 		}
 
@@ -319,7 +390,9 @@
 			}
 
 			open = false;
-			await onCreated({ domain: cleanDomain, wantVPSLetsEncrypt });
+			if (onCreated) {
+				await onCreated({ domain: cleanDomain, wantVPSLetsEncrypt });
+			}
 		} catch (err) {
 			formError = err instanceof Error ? err.message : 'Gagal membuat virtual host';
 		} finally {
@@ -332,8 +405,13 @@
 	<Dialog.Content class="flex max-h-[92dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-4 sm:max-w-[min(94vw,64rem)]">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2 pr-6">
-				<GlobeIcon class="size-4 shrink-0 text-primary" />
-				<span class="truncate">Buat Virtual Host Baru</span>
+				{#if isEdit}
+					<PencilIcon class="size-4 shrink-0 text-primary" />
+					<span class="truncate">Ubah Virtual Host</span>
+				{:else}
+					<GlobeIcon class="size-4 shrink-0 text-primary" />
+					<span class="truncate">Buat Virtual Host Baru</span>
+				{/if}
 			</Dialog.Title>
 			<Dialog.Description class="break-words font-mono text-xs">{metaSubtitle}</Dialog.Description>
 		</Dialog.Header>
@@ -344,7 +422,7 @@
 					{#if formError}
 						<Alert.Root variant="destructive" role="alert">
 							<AlertCircleIcon />
-							<Alert.Title>Pembuatan Virtual Host Gagal</Alert.Title>
+							<Alert.Title>{isEdit ? 'Pembaruan Virtual Host Gagal' : 'Pembuatan Virtual Host Gagal'}</Alert.Title>
 							<Alert.Description>{formError}</Alert.Description>
 						</Alert.Root>
 					{/if}
@@ -391,6 +469,22 @@
 					<Field.FieldSet>
 						<Field.FieldLegend variant="label">Domain &amp; Identitas Host</Field.FieldLegend>
 						<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
+							{#if isEdit}
+								<Field.Field class="sm:col-span-2">
+									<Field.FieldLabel for="site-domain">Domain (Terkunci)</Field.FieldLabel>
+									<Input
+										id="site-domain"
+										name="domain"
+										class="h-11 font-mono text-base bg-muted/50 cursor-not-allowed sm:h-9 sm:text-sm"
+										value={domain}
+										disabled
+										readonly
+									/>
+									<Field.FieldDescription>
+										Nama domain tidak dapat diubah setelah dibuat. Untuk mengganti nama domain, buat virtual host baru.
+									</Field.FieldDescription>
+								</Field.Field>
+							{:else}
 							<Field.Field class="sm:col-span-2" data-invalid={domainInvalid ? 'true' : undefined}>
 								<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 									<Field.FieldLabel
@@ -545,6 +639,7 @@
 									/>
 								{/if}
 							</Field.Field>
+							{/if}
 						</Field.FieldGroup>
 					</Field.FieldSet>
 
@@ -765,11 +860,14 @@
 					<Button
 						type="submit"
 						class="min-h-10 sm:min-h-0"
-						disabled={creating || (isEdge && domainChoices.length === 0)}
+						disabled={creating || (!isEdit && isEdge && domainChoices.length === 0)}
 					>
 						{#if creating}
 							<Spinner data-icon="inline-start" />
-							Membuat...
+							{isEdit ? 'Menyimpan...' : 'Membuat...'}
+						{:else if isEdit}
+							<SaveIcon data-icon="inline-start" />
+							Simpan Perubahan
 						{:else}
 							<PlusIcon data-icon="inline-start" />
 							Buat Virtual Host

@@ -423,6 +423,296 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 	return nil
 }
 
+// UpdateSite memperbarui konfigurasi virtual host yang sudah ada (framework, PHP, root path, proxy port, atau SSL)
+// tanpa menghapus atau menimpa berkas proyek pengguna di document root.
+func (m *Manager) UpdateSite(domain string, opts CreateOptions) error {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if err := ValidateDomain(domain); err != nil {
+		return err
+	}
+	opts.Domain = domain
+
+	existingRec, hasRec := m.GetSite(domain)
+	confPath, hasConf := m.findVHostConfigPath(domain)
+	if !hasRec && !hasConf {
+		return fmt.Errorf("virtual host %s tidak ditemukan", domain)
+	}
+
+	var oldConfBytes []byte
+	if hasConf {
+		if data, err := m.readFile(confPath); err == nil {
+			oldConfBytes = data
+		}
+	}
+
+	opts.Framework = strings.ToLower(strings.TrimSpace(opts.Framework))
+	if opts.Framework == "" {
+		if hasRec && existingRec.Framework != "" {
+			opts.Framework = existingRec.Framework
+		} else {
+			opts.Framework = "generic"
+		}
+	}
+
+	var cleanAliases []string
+	seenAlias := map[string]bool{opts.Domain: true}
+	for _, rawAlias := range opts.ServerAliases {
+		alias := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rawAlias), "."))
+		if alias == "" || seenAlias[alias] {
+			continue
+		}
+		if err := ValidateDomain(alias); err != nil {
+			return fmt.Errorf("alias domain tidak valid (%s): %w", rawAlias, err)
+		}
+		seenAlias[alias] = true
+		cleanAliases = append(cleanAliases, alias)
+	}
+	if len(cleanAliases) == 0 && len(oldConfBytes) > 0 {
+		existingDomains := extractVHostDomains(string(oldConfBytes), opts.Domain)
+		for _, ed := range existingDomains {
+			if !seenAlias[ed] && ValidateDomain(ed) == nil {
+				seenAlias[ed] = true
+				cleanAliases = append(cleanAliases, ed)
+			}
+		}
+	}
+	serverNames := strings.Join(append([]string{opts.Domain}, cleanAliases...), " ")
+
+	if opts.Framework == "proxy" {
+		if opts.ProxyPort <= 0 || opts.ProxyPort > 65535 {
+			return fmt.Errorf("port proxy tidak valid: %d", opts.ProxyPort)
+		}
+	} else {
+		if opts.RootPath == "" {
+			if hasRec && existingRec.RootPath != "" {
+				opts.RootPath = existingRec.RootPath
+			} else {
+				opts.RootPath = filepath.Join(m.webRootBase(), opts.Domain)
+			}
+		}
+		cleanRoot, err := m.validateRootPath(opts.RootPath)
+		if err != nil {
+			return err
+		}
+		opts.RootPath = cleanRoot
+		if opts.Framework == "static" {
+			opts.PHPVersion = ""
+		} else {
+			if opts.PHPVersion == "" {
+				if hasRec && existingRec.PHPVersion != "" {
+					opts.PHPVersion = existingRec.PHPVersion
+				} else {
+					opts.PHPVersion = "8.4"
+				}
+			}
+			opts.PHPVersion = strings.TrimSpace(opts.PHPVersion)
+			if !phpVerRe.MatchString(opts.PHPVersion) {
+				return fmt.Errorf("versi PHP tidak valid: %q", opts.PHPVersion)
+			}
+		}
+	}
+
+	effectiveRoot := opts.RootPath
+	switch opts.Framework {
+	case "laravel", "ci4", "symfony":
+		effectiveRoot = filepath.Join(opts.RootPath, "public")
+	}
+
+	// Pastikan direktori root ada tanpa menimpa berkas proyek apapun milik pengguna
+	if opts.Framework == "static" {
+		if err := m.ensureDir(effectiveRoot, 0755); err != nil {
+			return fmt.Errorf("gagal membuat direktori root %s: %w", effectiveRoot, err)
+		}
+		hasExistingIndex := false
+		for _, candidate := range []string{"index.html", "index.htm", "index.php"} {
+			if m.pathExists(filepath.Join(effectiveRoot, candidate)) {
+				hasExistingIndex = true
+				break
+			}
+		}
+		if !hasExistingIndex {
+			indexHTML := filepath.Join(effectiveRoot, "index.html")
+			placeholder := renderStaticDefaultHTML(opts.Domain, effectiveRoot)
+			_ = m.writeFile(indexHTML, []byte(placeholder), 0644)
+		}
+	} else if opts.Framework != "proxy" {
+		if err := m.ensureDir(effectiveRoot, 0755); err != nil {
+			return fmt.Errorf("gagal membuat direktori root %s: %w", effectiveRoot, err)
+		}
+		indexFile := filepath.Join(effectiveRoot, "index.php")
+		if !m.pathExists(indexFile) {
+			hasExistingIndex := false
+			for _, candidate := range []string{"index.html", "index.htm"} {
+				if m.pathExists(filepath.Join(effectiveRoot, candidate)) {
+					hasExistingIndex = true
+					break
+				}
+			}
+			if !hasExistingIndex {
+				placeholder := fmt.Sprintf("<?php echo '<h1>Selamat Datang di %s</h1><p>Ditenagai oleh wdev & Nginx.</p>'; ?>", opts.Domain)
+				_ = m.writeFile(indexFile, []byte(placeholder), 0644)
+			}
+		}
+	}
+
+	certDir := "/etc/ssl/local-certs"
+	certFile := filepath.Join(certDir, opts.Domain+".pem")
+	keyFile := filepath.Join(certDir, opts.Domain+"-key.pem")
+
+	sslProvider := ""
+	if hasRec {
+		sslProvider = existingRec.SSLProvider
+	}
+
+	if opts.SSLEnabled {
+		if len(oldConfBytes) > 0 {
+			if enabled, provider, detectedCert := DetectSSLInfoFromConfig(string(oldConfBytes)); enabled && detectedCert != "" {
+				if provider == "letsencrypt" {
+					certFile = detectedCert
+					keyCandidate := filepath.Join(filepath.Dir(detectedCert), "privkey.pem")
+					if m.pathExists(keyCandidate) {
+						keyFile = keyCandidate
+					}
+					sslProvider = "letsencrypt"
+				}
+			}
+		}
+		if sslProvider != "letsencrypt" {
+			_ = m.ensureDir(certDir, 0755)
+			if !m.pathExists(certFile) || !m.pathExists(keyFile) {
+				if err := m.generateSSL(opts.Domain, certFile, keyFile); err != nil {
+					opts.SSLEnabled = false
+					sslProvider = ""
+				} else {
+					sslProvider = "local"
+				}
+			} else if sslProvider == "" {
+				sslProvider = "local"
+			}
+		}
+	} else {
+		sslProvider = ""
+	}
+
+	phpSocket := ""
+	phpFastCGIPass := ""
+	if opts.PHPVersion != "" {
+		phpFastCGIPass, phpSocket = resolvePHPFastCGIPass(opts.PHPVersion)
+	}
+
+	tpl, err := template.New("nginx").Parse(nginxVHostTemplate)
+	if err != nil {
+		return fmt.Errorf("gagal parse template nginx: %w", err)
+	}
+
+	data := TemplateData{
+		Domain:         opts.Domain,
+		ServerNames:    serverNames,
+		EffectiveRoot:  effectiveRoot,
+		Framework:      opts.Framework,
+		ProxyPort:      opts.ProxyPort,
+		SSLEnabled:     opts.SSLEnabled,
+		IPv6Enabled:    hasIPv6(),
+		CertFile:       certFile,
+		KeyFile:        keyFile,
+		PHPSocket:      phpSocket,
+		PHPFastCGIPass: phpFastCGIPass,
+	}
+
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, data); err != nil {
+		return fmt.Errorf("gagal render template nginx: %w", err)
+	}
+
+	sitesAvail := m.sitesAvailDir()
+	sitesEnable := m.sitesEnableDir()
+
+	if err := m.ensureDir(sitesAvail, 0755); err != nil {
+		return fmt.Errorf("gagal membuat direktori sites-available: %w", err)
+	}
+	if err := m.ensureDir(sitesEnable, 0755); err != nil {
+		return fmt.Errorf("gagal membuat direktori sites-enabled: %w", err)
+	}
+
+	availPath := filepath.Join(sitesAvail, opts.Domain)
+	enablePath := filepath.Join(sitesEnable, opts.Domain)
+
+	if err := m.writeFile(availPath, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("gagal menulis berkas nginx: %w", err)
+	}
+
+	if err := m.ensureSymlink(availPath, enablePath); err != nil {
+		if len(oldConfBytes) > 0 && confPath != "" {
+			_ = m.writeFile(confPath, oldConfBytes, 0644)
+		} else {
+			_ = m.removeFile(availPath)
+		}
+		return fmt.Errorf("gagal membuat symlink nginx: %w", err)
+	}
+
+	if !m.skipNginxExec {
+		_ = m.ensureDir("/var/log/nginx", 0755)
+		m.ensureNginxSitesEnabledIncluded()
+		_, _ = m.RepairEmptyServerNamesInVHosts()
+
+		nginxBin := findNginxBinary()
+		if nginxBin == "" {
+			if len(oldConfBytes) > 0 && confPath != "" {
+				_ = m.writeFile(confPath, oldConfBytes, 0644)
+				_ = m.ensureSymlink(confPath, enablePath)
+			}
+			return fmt.Errorf("biner nginx tidak ditemukan")
+		}
+		if out, err := m.runPrivileged(nginxBin, "-t"); err != nil {
+			if len(oldConfBytes) > 0 && confPath != "" {
+				_ = m.writeFile(confPath, oldConfBytes, 0644)
+				_ = m.ensureSymlink(confPath, enablePath)
+				if confPath != availPath {
+					_ = m.removeFile(availPath)
+				}
+			} else {
+				_ = m.removeFile(enablePath)
+				_ = m.removeFile(availPath)
+			}
+			return fmt.Errorf("konfigurasi nginx tidak valid: %s", out)
+		}
+		_ = m.reloadOrStartNginx()
+	}
+
+	if confPath != "" && confPath != availPath {
+		_ = m.removeFile(confPath)
+		oldEnable := filepath.Join(sitesEnable, filepath.Base(confPath))
+		if oldEnable != enablePath {
+			_ = m.removeFile(oldEnable)
+		}
+	}
+
+	if !opts.SkipHosts && m.cfg != nil && m.cfg.HostsFile != "" {
+		m.addHostsEntries(append([]string{opts.Domain}, cleanAliases...)...)
+	}
+
+	if m.store != nil {
+		createdAt := existingRec.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		record := store.SiteRecord{
+			Domain:      opts.Domain,
+			RootPath:    opts.RootPath,
+			PHPVersion:  opts.PHPVersion,
+			Framework:   opts.Framework,
+			ProxyPort:   opts.ProxyPort,
+			SSLEnabled:  opts.SSLEnabled,
+			SSLProvider: sslProvider,
+			ExposedTo:   existingRec.ExposedTo,
+			CreatedAt:   createdAt,
+		}
+		_ = m.store.SaveSite(record)
+	}
+
+	return nil
+}
+
 // EnsureDomainStaticVhost menyiapkan vhost Nginx HTTP (port 80) beserta template
 // index.html statis default untuk domain yang ditambahkan di PowerDNS, tanpa
 // menimpa vhost atau berkas situs yang sudah ada.

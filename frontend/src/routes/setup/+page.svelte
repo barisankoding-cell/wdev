@@ -1003,58 +1003,61 @@
 			</div>
 		</Card.Header>
 		<Card.Content>
-			<ResponsiveTableWrapper label="Tabel Riwayat Tugas Control Plane">
-				<Table.Root>
-					<Table.Header>
-						<Table.Row>
-							<Table.Head>Tugas</Table.Head>
-							<Table.Head>Status</Table.Head>
-							<Table.Head>Waktu Mulai</Table.Head>
-							<Table.Head class="text-right">Log</Table.Head>
-						</Table.Row>
-					</Table.Header>
-					<Table.Body>
-						{#if tasks.length === 0}
+			<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
+				<ResponsiveTableWrapper label="Tabel Riwayat Tugas Control Plane" class="rounded-none border-0 bg-transparent">
+					<Table.Root>
+						<Table.Header>
 							<Table.Row>
-								<Table.Cell colspan={4} class="py-6 text-center text-muted-foreground">
-									Belum ada riwayat tugas yang terekam.
-								</Table.Cell>
+								<Table.Head>Tugas</Table.Head>
+								<Table.Head>Status</Table.Head>
+								<Table.Head>Waktu Mulai</Table.Head>
+								<Table.Head class="text-right">Log</Table.Head>
 							</Table.Row>
-						{:else}
-							{#each paginatedTasks as t (t.id)}
+						</Table.Header>
+						<Table.Body>
+							{#if tasks.length === 0}
 								<Table.Row>
-									<Table.Cell data-label="Tugas" class="font-medium">{t.command}</Table.Cell>
-									<Table.Cell data-label="Status">
-										<StatusBadge
-											tone={t.status === 'success'
-												? 'success'
-												: t.status === 'failed'
-													? 'destructive'
-													: 'info'}
-											label={t.status}
-										/>
-									</Table.Cell>
-									<Table.Cell data-label="Waktu" class="font-mono text-xs text-muted-foreground">
-										{new Date(t.started_at).toLocaleString('id-ID')}
-									</Table.Cell>
-									<Table.Cell data-label="Log" class="text-right">
-										<Button variant="outline" size="xs" onclick={() => openTaskLog(t)}>
-											<FileTextIcon data-icon="inline-start" />
-											Lihat Log
-										</Button>
+									<Table.Cell colspan={4} class="py-6 text-center text-muted-foreground">
+										Belum ada riwayat tugas yang terekam.
 									</Table.Cell>
 								</Table.Row>
-							{/each}
-						{/if}
-					</Table.Body>
-				</Table.Root>
-			</ResponsiveTableWrapper>
-			<PaginationBar
-				bind:page={taskPage}
-				totalItems={tasks.length}
-				pageSize={TASK_PAGE_SIZE}
-				itemLabel="riwayat tugas"
-			/>
+							{:else}
+								{#each paginatedTasks as t (t.id)}
+									<Table.Row>
+										<Table.Cell data-label="Tugas" class="font-medium">{t.command}</Table.Cell>
+										<Table.Cell data-label="Status">
+											<StatusBadge
+												tone={t.status === 'success'
+													? 'success'
+													: t.status === 'failed'
+														? 'destructive'
+														: 'info'}
+												label={t.status}
+											/>
+										</Table.Cell>
+										<Table.Cell data-label="Waktu" class="font-mono text-xs text-muted-foreground">
+											{new Date(t.started_at).toLocaleString('id-ID')}
+										</Table.Cell>
+										<Table.Cell data-label="Log" class="text-right">
+											<Button variant="outline" size="xs" onclick={() => openTaskLog(t)}>
+												<FileTextIcon data-icon="inline-start" />
+												Lihat Log
+											</Button>
+										</Table.Cell>
+									</Table.Row>
+								{/each}
+							{/if}
+						</Table.Body>
+					</Table.Root>
+				</ResponsiveTableWrapper>
+				<PaginationBar
+					bind:page={taskPage}
+					totalItems={tasks.length}
+					pageSize={TASK_PAGE_SIZE}
+					itemLabel="riwayat tugas"
+					class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
+				/>
+			</div>
 		</Card.Content>
 	</Card.Root>
 </div>

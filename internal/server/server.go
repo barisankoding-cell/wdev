@@ -103,7 +103,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/service-config/", s.handleServiceConfig)
 	s.mux.HandleFunc("/api/sites", s.handleSites)
 	s.mux.HandleFunc("/api/sites/ssl", s.handleSiteSSL)
-	s.mux.HandleFunc("/api/sites/", s.handleSiteDelete)
+	s.mux.HandleFunc("/api/sites/", s.handleSiteByDomain)
 	s.mux.HandleFunc("/api/switchers", s.handleSwitchers)
 	s.mux.HandleFunc("/api/switchers/", s.handleSwitchersAction)
 	s.mux.HandleFunc("/api/cloudflare/status", s.handleCFStatus)
@@ -1088,6 +1088,78 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 	}
+}
+
+func (s *Server) handleSiteByDomain(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodDelete:
+		s.handleSiteDelete(w, r)
+	case http.MethodPut, http.MethodPatch:
+		s.handleSiteUpdate(w, r)
+	case http.MethodGet:
+		s.handleSiteGet(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+	}
+}
+
+func (s *Server) handleSiteGet(w http.ResponseWriter, r *http.Request) {
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/sites/")), "."))
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "Domain tidak valid")
+		return
+	}
+	siteRec, ok := s.siteMgr.GetSite(domain)
+	if !ok {
+		writeError(w, http.StatusNotFound, "Virtual host tidak ditemukan")
+		return
+	}
+	writeJSON(w, http.StatusOK, siteRec)
+}
+
+func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/sites/")), "."))
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "Domain tidak valid")
+		return
+	}
+
+	var req struct {
+		site.CreateOptions
+		SudoPass string `json:"sudo_pass,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+
+	if req.SudoPass != "" && s.installer != nil {
+		if err := s.installer.VerifyAndSetSudoPassword(req.SudoPass); err != nil {
+			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+			return
+		}
+	}
+
+	req.Domain = domain
+	if err := s.siteMgr.UpdateSite(domain, req.CreateOptions); err != nil {
+		if s.installer != nil && os.Geteuid() != 0 {
+			if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":  "sudo_required",
+					"message": "Memperbarui konfigurasi Nginx memerlukan hak akses administrator (sudo).",
+				})
+				return
+			}
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	siteRec, _ := s.siteMgr.GetSite(domain)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "updated",
+		"site":   siteRec,
+	})
 }
 
 func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {

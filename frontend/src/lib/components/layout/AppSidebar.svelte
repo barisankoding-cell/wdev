@@ -16,6 +16,8 @@
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import ZapIcon from '@lucide/svelte/icons/zap';
+	import ServerIcon from '@lucide/svelte/icons/server';
+	import LaptopIcon from '@lucide/svelte/icons/laptop';
 	import type { Component } from 'svelte';
 
 	interface NavItem {
@@ -134,11 +136,33 @@
 	</Sidebar.Content>
 
 	<Sidebar.Footer class="border-t border-sidebar-border p-3 text-xs text-muted-foreground">
-		<div class="flex flex-col gap-0.5 truncate group-data-[collapsible=icon]:hidden">
-			<span class="truncate font-medium text-sidebar-foreground">
-				{cp.systemStatus?.hostname || 'Linux Host'}
-			</span>
-			<span class="truncate">{cp.systemStatus?.os_name || 'Control Plane'}</span>
+		<div class="flex items-center justify-between gap-2 group-data-[collapsible=icon]:hidden">
+			<div class="flex flex-col gap-0.5 truncate">
+				<span class="truncate font-medium text-sidebar-foreground">
+					{cp.systemStatus?.hostname || 'Linux Host'}
+				</span>
+				<span class="truncate">{cp.systemStatus?.os_name || 'Control Plane'}</span>
+			</div>
+			<button
+				type="button"
+				onclick={() => {
+					if (sidebar.isMobile) sidebar.setOpenMobile(false);
+					modeStore.openModal();
+				}}
+				class="inline-flex sm:hidden shrink-0 items-center gap-1.5 rounded-md border border-sidebar-border px-2 py-1 text-[11px] font-medium text-sidebar-foreground hover:bg-sidebar-accent"
+				aria-label="Ubah Mode Server"
+			>
+				{#if modeStore.mode === 'vps'}
+					<ServerIcon class="size-3 text-primary" />
+					<span>VPS</span>
+				{:else if modeStore.mode === 'local'}
+					<LaptopIcon class="size-3 text-primary" />
+					<span>Lokal</span>
+				{:else}
+					<NetworkIcon class="size-3 text-primary" />
+					<span>Edge</span>
+				{/if}
+			</button>
 		</div>
 	</Sidebar.Footer>
 	<Sidebar.Rail />

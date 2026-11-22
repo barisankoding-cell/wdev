@@ -208,6 +208,18 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
+	updateSite: (
+		domain: string,
+		payload: Partial<CreateSitePayload> & { sudo_pass?: string }
+	) =>
+		apiFetch<{
+			status: string;
+			site?: SiteRecord;
+			message?: string;
+		}>(`/api/sites/${encodeURIComponent(domain)}`, {
+			method: 'PUT',
+			body: JSON.stringify(payload)
+		}),
 	enableSiteSSL: (domain: string, email = '', sudoPass?: string) =>
 		apiFetch<{ status: string; task_id?: number; domain?: string; message?: string }>('/api/sites/ssl', {
 			method: 'POST',

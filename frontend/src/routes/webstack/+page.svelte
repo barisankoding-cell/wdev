@@ -36,6 +36,7 @@
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import NetworkIcon from '@lucide/svelte/icons/network';
 	import LinkIcon from '@lucide/svelte/icons/link';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 
 	let sites = $state<SiteRecord[]>([]);
 	let zones = $state<ZoneInfo[]>([]);
@@ -45,8 +46,9 @@
 	let sslPending = $state<Record<string, boolean>>({});
 	let lastLoadedMode = $state<string | null>(null);
 
-	// Modal Tambah VHost
+	// Modal Tambah & Ubah VHost
 	let createOpen = $state(false);
+	let editingSite = $state<SiteRecord | null>(null);
 
 	// Modal Ekspos & SSL Edge (untuk situs yang belum terekspos)
 	let exposeOpen = $state(false);
@@ -182,6 +184,12 @@
 	});
 
 	function openCreate() {
+		editingSite = null;
+		createOpen = true;
+	}
+
+	function openEdit(site: SiteRecord) {
+		editingSite = site;
 		createOpen = true;
 	}
 
@@ -499,8 +507,8 @@
 			{/if}
 		</Empty.Root>
 	{:else}
-		<div class="flex flex-col overflow-hidden rounded-lg border bg-card">
-			<ResponsiveTableWrapper label="Daftar Virtual Host" class="rounded-none border-0">
+		<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
+			<ResponsiveTableWrapper label="Daftar Virtual Host" class="rounded-none border-0 bg-transparent">
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
@@ -672,6 +680,10 @@
 														</a>
 													{/snippet}
 												</DropdownMenu.Item>
+												<DropdownMenu.Item disabled={busySite} onclick={() => openEdit(site)}>
+													<PencilIcon />
+													<span>Ubah Virtual Host</span>
+												</DropdownMenu.Item>
 												{#if site.root_path && site.framework !== 'proxy'}
 													<DropdownMenu.Item>
 														{#snippet child({ props })}
@@ -735,6 +747,7 @@
 			totalItems={filteredSites.length}
 			pageSize={PAGE_SIZE}
 			itemLabel="virtual host"
+			class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
 		/>
 	</div>
 	{/if}
@@ -742,10 +755,14 @@
 
 <CreateVhostModal
 	bind:open={createOpen}
+	siteToEdit={editingSite}
 	{pdnsZones}
 	{parentDomains}
 	onRefreshZones={refreshZonesQuiet}
 	onCreated={handleVhostCreated}
+	onUpdated={async () => {
+		await loadSites();
+	}}
 />
 
 <!-- Modal Ekspos VHost ke VPS Edge Tunnel -->

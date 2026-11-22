@@ -760,63 +760,66 @@
 			{:else if auditRecords.length === 0}
 				<p class="text-muted-foreground py-8 text-center text-sm">Belum ada sesi terminal yang tercatat.</p>
 			{:else}
-				<ResponsiveTableWrapper label="Riwayat Audit Terminal PTY">
-					<Table>
-						<TableHeader>
-							<TableRow>
-								<TableHead>User OS</TableHead>
-								<TableHead>User Panel</TableHead>
-								<TableHead>IP Klien</TableHead>
-								<TableHead>CWD / Shell</TableHead>
-								<TableHead>Status</TableHead>
-								<TableHead>Mulai</TableHead>
-								<TableHead>Selesai</TableHead>
-							</TableRow>
-						</TableHeader>
-						<TableBody>
-							{#each paginatedAuditRecords as rec (rec.id)}
+				<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
+					<ResponsiveTableWrapper label="Riwayat Audit Terminal PTY" class="rounded-none border-0 bg-transparent">
+						<Table>
+							<TableHeader>
 								<TableRow>
-									<TableCell data-label="User OS">
-										<Badge variant={rec.target_user === 'root' ? 'destructive' : 'secondary'} class="font-mono text-xs">
-											{rec.target_user || 'unknown'}
-										</Badge>
-									</TableCell>
-									<TableCell data-label="User Panel" class="font-mono text-xs">
-										{rec.panel_user || '-'}
-									</TableCell>
-									<TableCell data-label="IP Klien" class="font-mono text-xs">
-										{rec.client_ip || '-'}
-									</TableCell>
-									<TableCell data-label="CWD / Shell" class="font-mono text-xs">
-										<div class="max-w-56 truncate" title={rec.cwd}>{rec.cwd}</div>
-										<div class="text-muted-foreground text-[11px]">{rec.shell}</div>
-									</TableCell>
-									<TableCell data-label="Status">
-										<Badge
-											variant={rec.status === 'active' ? 'default' : rec.status === 'idle_timeout' ? 'secondary' : 'outline'}
-											class="text-xs"
-										>
-											{rec.status}
-											{#if rec.status !== 'active'}(exit {rec.exit_code}){/if}
-										</Badge>
-									</TableCell>
-									<TableCell data-label="Mulai" class="text-xs whitespace-nowrap">
-										{formatTime(rec.started_at)}
-									</TableCell>
-									<TableCell data-label="Selesai" class="text-muted-foreground text-xs whitespace-nowrap">
-										{formatTime(rec.ended_at)}
-									</TableCell>
+									<TableHead>User OS</TableHead>
+									<TableHead>User Panel</TableHead>
+									<TableHead>IP Klien</TableHead>
+									<TableHead>CWD / Shell</TableHead>
+									<TableHead>Status</TableHead>
+									<TableHead>Mulai</TableHead>
+									<TableHead>Selesai</TableHead>
 								</TableRow>
-							{/each}
-						</TableBody>
-					</Table>
-				</ResponsiveTableWrapper>
-				<PaginationBar
-					bind:page={auditPage}
-					totalItems={auditRecords.length}
-					pageSize={AUDIT_PAGE_SIZE}
-					itemLabel="sesi audit"
-				/>
+							</TableHeader>
+							<TableBody>
+								{#each paginatedAuditRecords as rec (rec.id)}
+									<TableRow>
+										<TableCell data-label="User OS">
+											<Badge variant={rec.target_user === 'root' ? 'destructive' : 'secondary'} class="font-mono text-xs">
+												{rec.target_user || 'unknown'}
+											</Badge>
+										</TableCell>
+										<TableCell data-label="User Panel" class="font-mono text-xs">
+											{rec.panel_user || '-'}
+										</TableCell>
+										<TableCell data-label="IP Klien" class="font-mono text-xs">
+											{rec.client_ip || '-'}
+										</TableCell>
+										<TableCell data-label="CWD / Shell" class="font-mono text-xs">
+											<div class="max-w-56 truncate" title={rec.cwd}>{rec.cwd}</div>
+											<div class="text-muted-foreground text-[11px]">{rec.shell}</div>
+										</TableCell>
+										<TableCell data-label="Status">
+											<Badge
+												variant={rec.status === 'active' ? 'default' : rec.status === 'idle_timeout' ? 'secondary' : 'outline'}
+												class="text-xs"
+											>
+												{rec.status}
+												{#if rec.status !== 'active'}(exit {rec.exit_code}){/if}
+											</Badge>
+										</TableCell>
+										<TableCell data-label="Mulai" class="text-xs whitespace-nowrap">
+											{formatTime(rec.started_at)}
+										</TableCell>
+										<TableCell data-label="Selesai" class="text-muted-foreground text-xs whitespace-nowrap">
+											{formatTime(rec.ended_at)}
+										</TableCell>
+									</TableRow>
+								{/each}
+							</TableBody>
+						</Table>
+					</ResponsiveTableWrapper>
+					<PaginationBar
+						bind:page={auditPage}
+						totalItems={auditRecords.length}
+						pageSize={AUDIT_PAGE_SIZE}
+						itemLabel="sesi audit"
+						class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
+					/>
+				</div>
 			{/if}
 		</div>
 	</DialogContent>

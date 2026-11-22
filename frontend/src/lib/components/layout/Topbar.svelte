@@ -64,7 +64,7 @@
 			variant="outline"
 			size="sm"
 			onclick={() => modeStore.openModal()}
-			class="gap-1.5 px-2.5 h-8 text-xs font-medium border-primary/30 hover:border-primary"
+			class="hidden sm:inline-flex gap-1.5 px-2.5 h-8 text-xs font-medium border-primary/30 hover:border-primary"
 			aria-label="Pilih Mode Operasional Server"
 		>
 			{#if modeStore.mode === 'vps'}
