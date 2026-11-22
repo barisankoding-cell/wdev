@@ -1,684 +1,528 @@
 # wdev — Linux Developer Control Plane & Environment Manager
 
-Aplikasi manajemen lingkungan pengembangan & infrastruktur Linux terpadu dalam satu biner Go mandiri (**Web UI Dashboard**, **TUI Terminal**, dan **CLI**) untuk toolchain multi-versi, web stack lokal, Cloudflare Tunnel, PowerDNS Authoritative, serta Orca ADE. Seluruh automasi berjalan native di dalam biner Go — tanpa skrip `.sh`.
+[![Version](https://img.shields.io/badge/version-v2.5.0-blue.svg)](CHANGELOG.md)
+[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8.svg)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+`wdev` adalah aplikasi control plane manajemen lingkungan pengembangan dan infrastruktur server Linux terpadu dalam satu biner Go mandiri (**Web UI Dashboard**, **TUI Terminal**, **CLI**, dan **VPS Edge Agent**). Antarmuka web dibangun dengan SvelteKit 5 + Tailwind CSS v4 + `shadcn-svelte` dan disematkan langsung ke dalam biner via `go:embed`.
+
+Seluruh automasi runtime, provisioning, installer toolchain, virtual host, DNS, mail stack, dan panel keamanan berjalan native di dalam biner Go — menggantikan kumpulan skrip `.sh` wrapper lama (`node-switch`, `php-switch`, `pg-switch`, `dev-site`, `cf-tunnel`, `pdns-mgr`, `orca-*`).
 
 ---
 
-## Fitur Utama v2.0 (Go Control Plane)
+## Arsitektur 3-Mode Server (`wdev mode`)
 
-* 🌐 **Web UI Dashboard Tersemat (`wdev serve`)**: Antarmuka web modern & responsif di `http://localhost:3200` dengan live streaming log terminal via Server-Sent Events (SSE).
-* 🖥️ **TUI Terminal Dashboard (`wdev tui`)**: Dashboard terminal interaktif dengan indikator status layanan (🟢 Aktif / 🔴 Nonaktif).
-* 🗄️ **Penyimpanan State SQLite**: State profil tunnel, virtual host, dan DNS terintegrasi dan tersinkronisasi otomatis.
-* ⚡ **CLI Terpadu**:
-  * `wdev status`: Cek cepat status sistem, memori, disk, LAN IP, NetBird IP, dan layanan inti.
-  * `wdev site list|create|delete`: Manajemen virtual host Nginx (Laravel, WordPress, CI4/3, Symfony, Proxy) dengan SSL otomatis (`mkcert`).
-  * `wdev switch list|node|php|pg`: Pengelola versi runtime aktif.
-  * `wdev cf status|expose|unexpose`: Manajemen Cloudflare Tunnel multi-akun & routing ingress.
-  * `wdev pdns status|zone|record`: Manajemen PowerDNS & VPS Edge Gateway via Netbird.
-  * `wdev install <komponen>`: Pasang atau perbarui komponen modular.
+`wdev` mendukung tiga mode operasi yang dapat diubah kapan saja melalui Web UI maupun CLI (`wdev mode set <local|edge|vps>`):
+
+| Mode | Deskripsi | Penggunaan Utama |
+|---|---|---|
+| **`local`** | **Lokal Standalone** — Tanpa NetBird maupun VPS Edge Gateway. Virtual host memakai `/etc/hosts` lokal, SSL `mkcert`/self-signed, serta PowerDNS lokal opsional (`127.0.0.1:8081`). | Workstation / laptop developer |
+| **`edge`** | **Hybrid Edge Gateway (NetBird)** — Mesin lokal terhubung ke VPS Edge Gateway melalui mesh VPN **NetBird** (`100.64.0.0/10`) dan `wdev-edge-agent` untuk mengekspos situs, port, DNS, dan mail ke publik. | Developer lokal + VPS reverse proxy |
+| **`vps`** | **Full VPS Standalone (aaPanel Style)** — Nginx, PowerDNS Authoritative, Mail Server (Stalwart + SnappyMail), dan SSL Let's Encrypt (`certbot`) berjalan langsung di VPS publik tanpa NetBird. | Hosting server / VPS produksi mandiri |
+
+---
+
+## Fitur Utama (`v2.5.0`)
+
+### 1. Web UI Dashboard Tersemat (`wdev serve`)
+Antarmuka web modern dan responsif (termasuk optimasi layar sentuh/mobile) di port default `3200`, dilengkapi live streaming log task via Server-Sent Events (SSE) serta pengecekan dan pembaruan rilis GitHub otomatis dengan banner changelog dan auto-reload pasca-update:
+
+* **Status & Update (`/`)**: Pemantauan CPU total & per-core, load average (`1m`/`5m`/`15m`), RAM & Swap, Disk utama (`/`) serta drive eksternal / mount tambahan di `/mnt`, alamat IP (LAN, NetBird, IP publik VPS), status layanan inti, dan updater biner `wdev`.
+* **Web Stack & VHost (`/webstack`)**:
+  * Manajemen virtual host Nginx (`laravel`, `wordpress`, `ci4`, `ci3`, `symfony`, `static`, `proxy`) beserta folder picker dan sinkronisasi record A PowerDNS / eksposur Edge otomatis.
+  * Penerbitan SSL otomatis (`mkcert` lokal, Let's Encrypt via `certbot` untuk VPS, atau SSL Edge Gateway) lengkap dengan informasi masa berlaku sertifikat.
+  * **Konfigurasi & Inspeksi Layanan Inti**: Pengaturan parameter dan preset otomatis untuk **Nginx**, **PHP-FPM** (termasuk inspeksi runtime/ekstensi), **PostgreSQL** (termasuk pembuatan database dan manajemen role), serta **Redis / Valkey** (inspeksi keyspace, statistik hit-rate, dan flush DB) beserta penampil log unit systemd.
+* **Multi-Versi Runtime (`/switchers`)**: Berpindah versi aktif **Node.js**, **PHP CLI/FPM**, **PostgreSQL** (lengkap dengan migrasi cluster database aman antar versi mayor), dan **OpenJDK Java**.
+* **Toolchains & SDKs (`/toolchains`)**: Ringkasan toolchain terpasang, pemeriksaan pembaruan, serta sinkronisasi & audit duplikat `PATH` (`/etc/profile.d/wdev.sh`).
+* **Workspace & ADE (`/workspace`)**: Manajemen **Orca ADE** (Desktop GUI / Headless Server, autostart, pairing, pembaruan versi) dan konfigurasi **Orca Commit AI** (pemilihan AI agent, model, thinking level, dan preset prompt Conventional Commits / Gitmoji).
+* **File Manager (`/files`)**: Penjelajah berkas terpadu untuk Web Root (`/var/www`), direktori VHost, direktori Home, drive tambahan di `/mnt`, serta root kustom (`WDEV_FM_ROOTS`). Mendukung editor teks bawaan (hingga 4 MiB), preview gambar, pencarian file, upload (hingga 256 MiB), fetch URL remote, `chmod`, kompresi & ekstraksi arsip (`.zip`, `.tar`, `.gz`, `.tgz`).
+* **Terminal SSH / PTY (`/terminal`)**: Web terminal interaktif berbasis `xterm.js` + WebSocket PTY multi-sesi (maksimal 16 sesi, idle timeout 15 menit), pemilih user Linux & shell target, pengamanan *step-up root unlock* (berlaku 10 menit), serta audit log sesi PTY.
+* **Domain, DNS & Edge (`/powerdns`)**, **Cloudflare Tunnel (`/cloudflare`)**, **Mail Server (`/mail`)**, serta **Setup & Komponen (`/setup`)** dengan preset instalasi sesuai mode server dan instalasi batch/modular.
+
+### 2. Keamanan Panel (`aaPanel Security Architecture`)
+* **Security Entrance**: Path akses rahasia acak (`/<entrance>`); permintaan tanpa cookie entrance yang valid otomatis menerima halaman `404 Not Found`.
+* **Autentikasi & Anti-Brute-Force**: Hashing kata sandi PBKDF2-SHA256 (`210.000` iterasi), cookie sesi `HttpOnly` bertoken hash SHA-256, proteksi CSRF (`Origin`/`Referer`/`Sec-Fetch-Site`), header keamanan HTTP (`CSP`, `X-Frame-Options: DENY`, `HSTS`), serta lockout 15 menit setelah 5 kali percobaan gagal.
+* **Force HTTPS Port Panel (`wdev panel ssl on|off`)**: Melayani HTTP dan HTTPS di port panel yang sama menggunakan multiplexer TLS (`tls_mux`) dengan sertifikat ECDSA self-signed dan pengalihan otomatis HTTP ke HTTPS.
+* **Pengikatan Domain Panel (`wdev panel domain`)**: Ikat domain khusus (mis. `panel.domainanda.com`) via reverse proxy Nginx dengan SSL `letsencrypt`, `edge`, `local`, `external`, atau `none`, serta opsi **blokir akses langsung via IP** (`wdev panel block-ip on|off`).
+
+### 3. TUI Terminal (`wdev tui`) & Penyimpanan SQLite
+* **TUI Terminal Dashboard (`wdev tui`)**: Menu interaktif 9 kategori di terminal dengan ringkasan sistem dan indikator status layanan.
+* **State Terpadu SQLite (`modernc.org/sqlite`)**: Menyimpan state situs, profil tunnel, pengaturan panel, audit terminal, dan riwayat task pada `/etc/wdev/wdev.db` (atau `~/.config/wdev/wdev.db` untuk pengguna non-root).
 
 ---
 
 ## Mulai Cepat
 
-### 1. Instalasi Mandiri dari Biner Release (Stand-Alone)
+### 1. Instalasi Mandiri dari Biner Release
 
-Biner release `wdev` bersifat **mandiri (self-contained)** — seluruh Web UI tertanam via `go:embed` dan seluruh automasi instalasi/pembaruan dijalankan native oleh biner Go. Tidak ada skrip `.sh` yang perlu diunduh, disalin, atau dijalankan.
-
-Unduh aset rilis dari halaman GitHub Releases
-(`wdev-linux-amd64`, `wdev-linux-arm64`, atau `wdev-linux-armv7`), lalu:
+Unduh biner rilis untuk arsitektur Anda dari [GitHub Releases](https://github.com/barisankoding-cell/wdev/releases) (`wdev-linux-amd64`, `wdev-linux-arm64`, atau `wdev-linux-armv7`):
 
 ```bash
 chmod +x wdev-linux-amd64
 sudo ./wdev-linux-amd64 install
 ```
 
-Untuk update berikutnya tidak perlu unduh manual:
+Atau bila ingin memasang paket VPS lengkap ala aaPanel (membuat direktori sistem, mengaktifkan `panel ssl on`, memasang `wdev.service` di port `3200`, membuka port UFW `3200, 80, 443, 53, 25, 465, 587, 993`, lalu menampilkan kredensial panel):
 
 ```bash
-sudo wdev update --check      # cek versi terbaru
-sudo wdev update              # pasang biner terbaru + restart service
+# Letakkan biner 'wdev' di direktori yang sama dengan install.sh (atau /usr/local/bin/wdev)
+chmod +x wdev install.sh
+sudo bash install.sh
+```
+
+Lihat URL akses, Security Entrance, dan kredensial login panel aktif kapan saja:
+
+```bash
+sudo wdev panel default
+```
+
+### 2. Pembaruan Mandiri (`wdev update`)
+
+Untuk memperbarui biner `wdev` ke versi terbaru tanpa unduh manual:
+
+```bash
+sudo wdev update --check      # cek rilis terbaru di GitHub
+sudo wdev update              # unduh biner, verifikasi SHA256, backup wdev.bak, & restart service
 sudo wdev update --edge root@<IP-VPS> --edge-key ~/.ssh/id_ed25519
-sudo wdev update --source ~/projects/wdev   # bila tidak memakai rilis GitHub
+sudo wdev update --source ~/projects/wdev   # build langsung dari repositori source lokal
 ```
 
-`wdev update` memverifikasi SHA256, menyimpan biner lama sebagai
-`/usr/local/bin/wdev.bak`, dan me-restart `wdev.service`.
+`wdev update` memverifikasi checksum `.sha256`, menyimpan cadangan biner lama di `/usr/local/bin/wdev.bak`, dan me-restart `wdev.service` secara otomatis. Pembaruan juga dapat dipicu langsung dari banner Web UI Dashboard.
 
-Setelah update, jalankan migrasi mail satu kali:
-
-```bash
-sudo wdev install mail
-sudo wdev mail set-relay global <provider> <key>
-sudo wdev mail setup <domain>     # ulangi untuk tiap domain
-wdev mail status
-```
-
-Setelah instalasi selesai, Web Dashboard langsung aktif di:
-👉 **`http://localhost:3200`**
-
----
-
-### 2. Mengelola Layanan (CLI)
+### 3. Mengelola Layanan (`wdev service`)
 
 ```bash
-# Cek status layanan wdev
+# Cek status service wdev atau layanan lain (nginx, postgresql, stalwart, dll.)
 wdev service status wdev
+wdev service status nginx
 
-# Restart / Stop / Start layanan
+# Start / Stop / Restart / Reload layanan
 sudo wdev service restart wdev
 sudo wdev service stop wdev
 sudo wdev service start wdev
 
-# Lihat log real-time
+# Lihat log real-time systemd
 journalctl -u wdev.service -f
 ```
 
----
-
-### 3. Uninstall Layanan & Biner
-
-Untuk menghapus service systemd dan biner `wdev` secara mandiri dari biner:
+### 4. Uninstall Layanan & Biner
 
 ```bash
-# Hapus service systemd dan biner (data konfigurasi di /etc/wdev dipertahankan)
+# Hapus service systemd dan biner wdev (database & konfigurasi di /etc/wdev dipertahankan)
 sudo wdev uninstall
 
-# Atau hapus total termasuk seluruh database & konfigurasi
+# Atau hapus total termasuk database & seluruh konfigurasi
 sudo wdev uninstall --purge
 ```
 
----
+### 5. Build Manual dari Source (Pengembang)
 
-### 4. Instalasi Manual (Pengembang)
+Prasyarat: Go `1.27+`, Node.js `22+`, dan `pnpm`.
 
 ```bash
-# Build & install biner wdev secara global
-go build -ldflags="-s -w" -o wdev ./cmd/wdev
-sudo install -m 755 ./wdev /usr/local/bin/wdev
+# Build frontend SvelteKit + biner Go lengkap ke bin/wdev (via Makefile)
+make build
 
-# Pasang systemd service via CLI
+# Atau build manual langkah demi langkah
+cd frontend && pnpm install --frozen-lockfile && pnpm build && cd ..
+go build -trimpath -ldflags="-s -w" -o bin/wdev ./cmd/wdev
+sudo install -m 755 ./bin/wdev /usr/local/bin/wdev
+
+# Pasang systemd service
 sudo wdev install --port 3200
 
-# Atau jalankan secara langsung di terminal (foreground)
+# Atau jalankan langsung di foreground / TUI
 wdev serve
-
-# Atau jalankan Terminal UI Interaktif
 wdev tui
 ```
 
-### Mode Interaktif
+Target `Makefile` yang tersedia:
 
-Tanpa argumen, skrip menampilkan menu utama:
-
-1. Status & Pembaruan Sistem
-2. Pengelola Multi-Versi Runtime (Switchers)
-3. Web Stack & Domain Lokal (`wdev site`)
-4. Toolchains, Compilers & SDKs
-5. Workspace, ADE & Shell
-6. Cloudflare Tunnel & DNS
-7. PowerDNS & VPS Edge Gateway (Netbird)
-8. Instalasi Lengkap (Full Auto Setup)
-9. Instalasi Komponen Modular (19 Item)
-
-Struktur submenu:
-
-| Menu | Isi |
+| Target | Keterangan |
 |---|---|
-| `[1]` | Status layanan, cek update versi, perbarui semua, self-check |
-| `[2]` | Multi-versi Node.js, PHP, PostgreSQL, & Java OpenJDK (`wdev switch`) |
-| `[3]` | Vhost lokal, SSL (`mkcert`), PHP switch; eksposur publik diarahkan ke `[6]` atau `[7]` |
-| `[4]` | Rust, Go, Java, Flutter, Android SDK, Redis, build tools, & menu modular |
-| `[5]` | Orca ADE (Desktop GUI / Headless Server), Oh My Zsh & tema prompt |
-| `[6]` | Status, eksposur publik, akun, tunnel, sync, service, DNS, quick tunnel, custom routes & CIDR, Access, doctor, install |
-| `[7]` | Status VPS Edge, auto-deploy SSH Netbird, kelola zone domain, record DNS (A/CNAME/TXT/MX), ekspos port aplikasi (Node/Go/PHP) |
-| `[8]` | Instalasi penuh 14 langkah otomatis (dengan konfirmasi keamanan) |
-| `[9]` | Instalasi modular per komponen (19 pilihan komponen terstruktur per kategori) |
+| `make build` | Build frontend SvelteKit (`web/static`) dan biner Go ke `bin/wdev` |
+| `make build-go` | Build cepat biner Go tanpa rebuild frontend |
+| `make dev-ui` | Jalankan SvelteKit Vite dev server (port `5173`) |
+| `make run` / `make dev` | Build lalu jalankan `./bin/wdev serve --port 3200 --host 0.0.0.0` |
+| `make test` | Jalankan unit test (`go test -v ./internal/...`) |
+| `make clean` | Bersihkan `bin/`, `dist/`, dan file sementara |
+| `make next-version` | Deteksi versi SemVer berikutnya dari `version.go`, tag, dan Conventional Commits |
+| `make changelog` | Tampilkan pratinjau changelog sejak tag rilis terakhir |
+| `make release-dry` | Simulasi deteksi versi dan pratinjau changelog tanpa commit/tag/push |
+| `make release` | Otomasi rilis lengkap ke GitHub |
 
-### Opsi CLI
+---
 
+## Referensi CLI `wdev`
+
+### Antarmuka, Status & Layanan
 | Perintah | Keterangan |
 |---|---|
-| `wdev serve [--port 3200] [--host 0.0.0.0]` | Jalankan Web UI Dashboard |
-| `wdev tui` | Jalankan Terminal UI interaktif |
-| `wdev status` | Status layanan, versi, IP akses, dan status Orca |
-| `wdev check-updates`, `wdev -cu` | Bandingkan versi terpasang vs terbaru (tanpa instalasi) |
-| `wdev install all` | Instalasi lengkap seluruh stack |
-| `wdev install update` | Perbarui semua paket yang terpasang |
-| `wdev install self-check` | Validasi konfigurasi & lingkungan sistem |
-| `wdev install <komponen>` | Instal/perbarui komponen tertentu |
-| `wdev uninstall [--purge]` | Hapus service systemd & biner wdev |
+| `wdev serve [--port 3200] [--host 0.0.0.0] [--tls-cert ...] [--tls-key ...]` | Jalankan Web UI Dashboard (`alias: wdev web, wdev dashboard`) |
+| `wdev tui` | Jalankan Terminal UI interaktif (9 kategori menu) |
+| `wdev status` / `wdev check` / `wdev -c` | Ringkasan OS, uptime, load per-core, RAM, disk, IP, layanan inti, dan runtime |
+| `wdev check-updates` / `wdev -cu` | Bandingkan versi toolchain & paket OS terpasang vs terbaru |
+| `wdev mode [get \| set <local\|edge\|vps>]` | Lihat atau ubah arsitektur mode server |
+| `wdev service <install\|uninstall\|status\|start\|stop\|restart\|reload>` | Kelola unit `wdev.service` dan layanan systemd lain |
+| `wdev install [service]` | Pasang biner & systemd service `wdev` (auto-start) |
+| `wdev uninstall [--purge]` | Hapus systemd service dan biner `wdev` |
+| `wdev version` / `-v` | Tampilkan versi `wdev` |
 
-Komponen instalasi: `all`, `update`, `check-updates`, `self-check`, `base`, `node`, `rust`, `go`, `java`, `android`, `flutter`, `postgres`, `redis`, `nginx`, `php`, `composer`, `ssl`, `php-stack`, `cloudflare`, `mail`, `zsh`, `orca-desktop`, `orca-headless`, `orca-update`, `orca-uninstall`.
-
-Pemilih versi saat instalasi (lewat Web UI / TUI / argumen `wdev install`):
-
-| Komponen | Nilai | Default |
-|---|---|---|
-| Node.js | `20`, `22`, `24` | `22` |
-| Java | `17`, `21`, `25` | `21` |
-| Android API | `all`, `36`, `35`, `34` | `all` |
-| PostgreSQL | `16`, `17`, `18` | `18` |
-| PHP | `8.1`, `8.2`, `8.3`, `8.4`, `system` | `8.4` |
-| Zsh theme | `powerlevel10k`, `agnoster`, `robbyrussell` | `powerlevel10k` |
-
-Contoh:
-
+### Keamanan Panel & Domain (`wdev panel`)
 ```bash
-wdev install node
-wdev install php
-wdev install postgres
-wdev site sync
+sudo wdev panel default                          # tampilkan URL akses, entrance, username & password
+sudo wdev panel ssl on                           # aktifkan Force HTTPS di port panel (self-signed ECDSA)
+sudo wdev panel domain panel.example.com         # ikat domain HTTPS ke panel (default: letsencrypt, block IP)
+sudo wdev panel domain panel.example.com --ssl edge --allow-ip
+sudo wdev panel domain off                       # lepas domain panel & aktifkan kembali akses IP
+sudo wdev panel block-ip on|off                  # blokir atau izinkan akses langsung via nomor IP
+sudo wdev panel entrance rahasia123              # atur path security entrance (atau 'off')
+sudo wdev panel username adminbaru               # ubah username panel
+sudo wdev panel password '<sandi_baru>'          # ubah kata sandi panel
+sudo wdev panel auth on|off                      # aktifkan / nonaktifkan proteksi login
+sudo wdev panel reset                            # reset kredensial & security entrance ke nilai acak baru
 ```
 
-### Komponen yang Dipasang & Sumber Resmi
-
-`wdev` memprioritaskan instalasi dari **rilis binary/tarball resmi upstream** serta **repositori resmi vendor** (untuk service daemon) pada keluarga Debian/Ubuntu (`apt-get`) maupun Fedora/RHEL (`dnf`/`yum`), sekaligus menyatukan environment di `/etc/profile.d/wdev.sh` dan membersihkan duplikasi paket distro yang bentrok:
-
-| Komponen | Sumber & Jalur Kanonik |
-|---|---|
-| Dependensi dasar | `apt-get` / `dnf` (`gcc`, `clang`, `cmake`, `make`, `git`, `jq`, `curl`, dll.) |
-| Node.js | Tarball resmi `nodejs.org/dist/` di `/usr/local/lib/nodejs` (`current` + `/usr/local/bin`), switch via `wdev switch node` / Web UI |
-| Rust & Mold | `rustup` resmi di `/usr/local/cargo` & `/usr/local/rustup` + linker `mold` rilis GitHub `rui314/mold` di `/usr/local/mold` |
-| Golang | Tarball resmi `go.dev/dl/` di `/usr/local/go` |
-| OpenJDK Java | Tarball resmi **Eclipse Adoptium (Temurin)** di `/usr/lib/jvm/java-<ver>-temurin` + `update-alternatives` / `alternatives` |
-| Android SDK | Command line tools resmi Google di `/usr/local/android-sdk` |
-| Flutter | Repository resmi `flutter/flutter` (channel `stable`) di `/usr/local/flutter` |
-| PostgreSQL | Repo resmi **PGDG** (`apt.postgresql.org` / `download.postgresql.org`) + fallback repo sistem; multi-versi via `wdev switch pg` / Web UI |
-| Redis / Valkey | Repo resmi **`packages.redis.io`** (atau `valkey` pada Fedora) |
-| Nginx | Repo resmi **`nginx.org/packages/mainline`** (fallback otomatis ke repo sistem bila versi distro belum tersedia) + `/etc/nginx/sites-enabled/*` |
-| PHP & PHP-FPM | Repo resmi **Ondřej PPA** (Ubuntu), **Sury** (Debian), dan **Remi** (Fedora/RHEL) untuk `8.1`–`8.4` |
-| Composer | Installer resmi `getcomposer.org` (`self-update` saat dijalankan ulang) di `/usr/local/bin/composer` |
-| Local SSL | Rilis GitHub resmi `FiloSottile/mkcert` di `/usr/local/bin/mkcert` + CA lokal di `/etc/ssl/local-certs` |
-| Cloudflared | Rilis GitHub resmi `cloudflare/cloudflared` di `/usr/local/bin/cloudflared` |
-| Zsh | Paket `zsh` + Oh My Zsh, `zsh-autosuggestions`, `zsh-syntax-highlighting`, dan `powerlevel10k` (auto `git pull` saat update) |
-| Orca ADE | Rilis GitHub resmi `stablyai/orca`: paket `.deb` `orca-ide_<versi>_<arch>.deb` diekstrak ke `~/.local/lib/orca-ide` (Desktop GUI & Headless Server) dengan deteksi/pembaruan versi di Web UI & CLI |
-
-> **Auto Setup Idempoten (`wdev install all` / tombol Full Auto Setup):** Ketika dijalankan ulang, setiap langkah memeriksa versi/instalasi yang sudah ada terlebih dahulu—melewati unduhan bila sudah pada versi terbaru, memperbarui bila ada rilis lebih baru, serta menjaga `initdb`, layanan `systemd`, dan `/etc/profile.d/wdev.sh` tetap sinkron.
-
-### Perintah CLI `wdev`
-
+### Virtual Host, Runtime Switcher & Environment
 ```bash
-wdev status                          # Status sistem, layanan inti & runtime aktif
-wdev install <komponen>              # all, update, check-updates, self-check, base, node, rust, go, java, android, flutter, postgres, redis, nginx, php, composer, ssl, php-stack, cloudflare, mail, zsh, orca-desktop, orca-headless
-wdev switch <list|node|php|pg|java>  # Pengelola versi runtime aktif
-wdev site <list|create|delete>       # Virtual host Nginx + SSL + /etc/hosts
-wdev cf <status|expose|unexpose>     # Cloudflare Tunnel multi-akun
-wdev pdns <status|zone|record|...>   # PowerDNS Authoritative & VPS Edge Gateway
+# Virtual Host Nginx
+sudo wdev site list
+sudo wdev site create myapp.test /var/www/myapp 8.4 laravel
+sudo wdev site create mygo.test "" "" proxy 3221
+sudo wdev site ssl example.com --email admin@example.com   # terbitkan SSL Let's Encrypt (VPS)
+sudo wdev site sync
+sudo wdev site delete myapp.test
+
+# Multi-Versi Runtime Switcher
+wdev switch list
+wdev switch node 22
+sudo wdev switch php 8.4
+sudo wdev switch pg 18          # mendukung migrasi cluster database antar versi mayor
+sudo wdev switch java 21
+
+# Environment PATH & Audit Duplikat
+wdev env status
+sudo wdev env sync
+sudo wdev install audit
+sudo wdev install audit-fix
 ```
 
-### Padanan Perintah (tanpa skrip shell)
-
-Seluruh helper lama kini menjadi subperintah biner `wdev`:
-
+### Padanan Perintah Helper Lama
 | Helper lama | Perintah Go |
 |---|---|
 | `node-switch` | `wdev switch node <versi>` |
 | `php-switch` | `wdev switch php <versi>` |
 | `pg-switch` | `wdev switch pg <versi>` |
-| `dev-site` | `wdev site list\|create\|delete\|sync` |
+| `dev-site` | `wdev site list\|create\|ssl\|delete\|sync` |
 | `cf-tunnel` | `wdev cf status\|expose\|unexpose` |
-| `pdns-mgr` | `wdev pdns ...` (termasuk `wdev mail ...`) |
+| `pdns-mgr` | `wdev pdns ...` dan `wdev mail ...` |
 | `orca-switch` | `wdev orca switch <desktop\|headless\|status\|autostart>` |
 | `orca-update` | `wdev orca update` (atau `wdev install orca-update`) |
 | `orca-pair` | `wdev orca pair` |
 | `orca-desktop` | `wdev orca desktop` |
 
-Contoh:
+---
 
+## Komponen Instalasi, Preset & Sumber Resmi
+
+### Komponen `wdev install`
 ```bash
-wdev switch node 20
-sudo wdev switch php 8.3
-sudo wdev site create myapp.test /var/www/myapp 8.4 laravel
-sudo wdev site create mygo.test 3221 proxy
-sudo wdev site list
-sudo wdev site delete myapp.test
-
-sudo wdev install cloudflare
-sudo wdev cf expose myapp.test myapp.example.com --profile cf1
-sudo wdev cf status
-
-sudo wdev pdns status
-sudo wdev pdns zone add domainanda.com
-sudo wdev pdns expose api.domainanda.com 8080 --ssl
-sudo wdev pdns expose-site myapp.test myapp.domainanda.com --ssl
-sudo wdev pdns unexpose myapp.domainanda.com
+wdev install all                 # Full Auto Setup (14 langkah + pre/post-flight audit PATH)
+wdev install update              # Perbarui paket OS (apt/dnf), composer, rustup, flutter & unit Nginx/wdev
+wdev install check-updates       # Cek pembaruan komponen dan simulasi upgrade paket sistem
+wdev install self-check          # Validasi biner toolchain, sintaks Nginx, dan cache permission
+wdev install <komponen> [versi]  # Instal/perbarui komponen modular tertentu
 ```
 
-## Orca ADE (Debian/Ubuntu)
+Komponen modular yang didukung:
+`base`, `node`, `go`, `rust`, `java`, `nginx`, `php`, `composer`, `ssl`, `postgres`, `redis`, `php-stack`, `android`, `flutter`, `netbird`, `pdns`, `mail`, `cloudflare`, `zsh`, `orca-desktop`, `orca-headless`, `orca-update`, `orca-uninstall`.
 
-Installer & pembaruan Orca ADE ditangani langsung oleh biner Go `wdev` — tanpa
-skrip Bash. Paket resmi yang dipakai adalah `orca-ide_<versi>_<arch>.deb` dari
-rilis GitHub `stablyai/orca`, lalu diekstrak ke ruang user
-(`~/.local/lib/orca-ide`) sehingga tidak memerlukan `dpkg`/`apt` dan tidak
-bertabrakan dengan paket sistem.
+Pilihan versi komponen:
+
+| Komponen | Nilai Didukung | Default |
+|---|---|---|
+| Node.js | `20`, `22`, `24` | `22` |
+| Java OpenJDK | `17`, `21`, `25` | `21` |
+| PostgreSQL | `16`, `17`, `18` | `18` (Web UI) / `16` (CLI `install postgres` tanpa argumen & Full Auto Setup) |
+| PHP & PHP-FPM | `8.1`, `8.2`, `8.3`, `8.4` | `8.4` |
+| Zsh theme | `powerlevel10k`, `agnoster`, `robbyrussell` | `powerlevel10k` |
+
+Di Web UI (`/setup`), tersedia juga **Preset Instalasi per Mode** (instalasi batch terkurasi):
+* **Mode `local`**: *Workstation Development Lengkap*, *Web Stack & Database Lokal*, *Web Lokal + Cloudflare Tunnel*, *Mobile & Cross-Platform*.
+* **Mode `edge`**: *Edge Node Web & Database*, *Edge Workstation Developer + Tunnel*, *Edge Web Ringan (Tanpa DB)*, *Mobile & Cross-Platform*.
+* **Mode `vps`**: *Full VPS Hosting (Web + DB + DNS + Mail)*, *Produksi VPS (Web + Database)*, *DNS Authoritative & Mail Server VPS*, *Web Server VPS Ringan*.
+
+### Sumber Resmi & Jalur Kanonik
+
+`wdev` memprioritaskan **rilis binary/tarball resmi upstream** serta **repositori resmi vendor** pada keluarga Debian/Ubuntu (`apt-get`) maupun Fedora/RHEL (`dnf`/`yum`), menyatukan environment di `/etc/profile.d/wdev.sh`, dan membersihkan duplikasi paket distro yang bentrok:
+
+| Komponen | Sumber & Jalur Kanonik |
+|---|---|
+| Dependensi dasar | `apt-get` / `dnf` (`gcc`, `clang`, `cmake`, `make`, `git`, `jq`, `curl`, dll.) |
+| Node.js | Tarball resmi `nodejs.org/dist/` di `/usr/local/lib/nodejs` (`current` + symlink `/usr/local/bin`) |
+| Rust & Mold | `rustup` resmi di `/usr/local/cargo` & `/usr/local/rustup` + linker `mold` dari rilis GitHub `rui314/mold` di `/usr/local/mold` |
+| Golang | Tarball resmi `go.dev/dl/` di `/usr/local/go` |
+| OpenJDK Java | Tarball resmi **Eclipse Adoptium (Temurin)** di `/usr/lib/jvm/java-<ver>-temurin` + `update-alternatives` / `alternatives` |
+| Android SDK | Command line tools resmi Google di `/usr/local/android-sdk` (API 34, 35, platform-tools) |
+| Flutter | Repository resmi `flutter/flutter` (channel `stable`) di `/usr/local/flutter` |
+| PostgreSQL | Repo resmi **PGDG** (`apt.postgresql.org` / `download.postgresql.org`) + fallback repo sistem; mendukung migrasi cluster antar versi mayor |
+| Redis / Valkey | Repo resmi **`packages.redis.io`** (atau `valkey` pada Fedora/Debian) |
+| Nginx | Repo resmi **`nginx.org/packages/mainline`** (fallback otomatis ke repo sistem) + `/etc/nginx/sites-enabled/*` |
+| PHP & PHP-FPM | Repo resmi **Ondřej PPA** (Ubuntu), **Sury** (Debian), dan **Remi** (Fedora/RHEL) untuk `8.1`–`8.4` |
+| Composer | PHAR resmi `getcomposer.org/download/latest-stable/composer.phar` di `/usr/local/bin/composer` |
+| Local SSL | Rilis GitHub resmi `FiloSottile/mkcert` di `/usr/local/bin/mkcert` + sertifikat di `/etc/ssl/local-certs` |
+| Cloudflared | Rilis GitHub resmi `cloudflare/cloudflared` di `/usr/local/bin/cloudflared` |
+| NetBird | Repo resmi **`pkgs.netbird.io`** (service `netbird`) |
+| PowerDNS | Paket `pdns-server` + `pdns-backend-sqlite3` (`127.0.0.1:8081` API lokal atau `8081` NetBird pada VPS Edge) |
+| Mail Stack | Rilis resmi **Stalwart Mail Server** (`/usr/local/bin/stalwart`, `stalwart-cli`) + **SnappyMail** (`/var/www/snappymail`) |
+| Zsh & Font | Paket `zsh` + Oh My Zsh, `zsh-autosuggestions`, `zsh-syntax-highlighting`, `zsh-completions`, `powerlevel10k`, & Nerd Font (`MesloLGS NF`) |
+| Orca ADE | Rilis GitHub resmi `stablyai/orca`: ekstrak `.deb` ke `~/.local/lib/orca-ide` (Debian/Ubuntu) atau AppImage/tarball server (Fedora/RHEL) |
+
+---
+
+## Orca ADE & Orca Commit AI
+
+Installer dan pembaruan Orca ADE ditangani langsung oleh biner Go `wdev` tanpa skrip Bash. Pada Debian/Ubuntu, paket `.deb` resmi (`orca-ide_<versi>_<arch>.deb`) diekstrak ke ruang user (`~/.local/lib/orca-ide`) sehingga tidak bentrok dengan `dpkg`/`apt`.
 
 ```bash
 wdev orca update            # perbarui ke rilis resmi terbaru
 wdev install orca-desktop   # pasang / perbarui mode Desktop GUI
 wdev install orca-headless  # pasang / perbarui mode Headless Server
 wdev install orca-uninstall # hapus Orca ADE
+wdev orca pair              # tampilkan URL pairing + web client
+wdev orca status            # cek mode, versi, layanan, & pairing
+wdev orca switch headless   # beralih ke mode headless 24/7
+wdev orca switch desktop    # kembali ke Desktop GUI
 ```
-
-Dari Web UI, tombol **Perbarui ke vX.Y.Z** pada kartu Orca ADE memanggil alur
-yang sama. Proses update: unduh `.deb` resmi -> ekstrak dengan `dpkg-deb`
-(fallback `ar` + `tar`) -> ganti direktori aplikasi secara atomik -> aktifkan
-kembali layanan sesuai mode -> segarkan cache versi.
-
-Orca bersifat single-instance: hanya satu mode yang dipasang/dijalankan.
 
 | Mode | Perilaku |
 |---|---|
-| Desktop | Entri menu `orca-ide.desktop`, autostart opsional (`wdev orca autostart en`) |
-| Headless | Unit `orca.service` (systemd user, `Restart=always`) + `orca-update.timer` harian yang memanggil `wdev install orca-update`, `loginctl enable-linger` agar tetap jalan setelah boot tanpa login |
+| Desktop | Entri menu `orca-ide.desktop`, autostart opsional (`wdev orca switch autostart en`) |
+| Headless | Unit `orca.service` (systemd user, `Restart=always`) + `orca-update.timer` harian + `loginctl enable-linger` |
 
-Lokasi:
+**Konfigurasi Orca Commit AI** tersedia langsung di Web UI (halaman **Workspace & ADE**):
+* Mendeteksi otomatis agent AI yang terpasang di sistem (`opencode`, `antigravity`/`agy`, `claude`, `codex`, `copilot`, `cursor-agent`, `omp`, `pi`, `kimi`, `opencode2`, `jcode`, `dsh`, atau `custom`).
+* Pemilihan model per agent (dengan discovery model), *thinking level*, serta preset instruksi prompt (*Conventional Commits Indonesia*, *Conventional Commits English*, *Conventional + Ringkasan*, *Gitmoji + Conventional*, atau *Bawaan Orca*).
 
-- Aplikasi: `~/.local/lib/orca-ide`
-- Launcher: `~/.local/bin/{orca,orca-ide,orca-desktop,orca-pair,orca-switch,orca-update}` — semuanya **symlink ke biner `wdev`** (kecuali `orca-ide` yang menunjuk CLI resmi Orca), bukan skrip shell
-- Konfigurasi & state: `~/.config/orca` (`.mode`, `orca-runtime.json`, keypair pairing)
-- Unit systemd user: `~/.config/systemd/user`
-
-Dependensi: `dpkg-deb` (atau `ar` + `tar`) untuk mengekstrak paket `.deb`;
-Chromium/Chrome untuk Browser Automation (dideteksi otomatis).
-
-Pairing & mode:
-
-```bash
-wdev orca pair             # URL pairing + web client (via CLI resmi Orca)
-wdev orca status           # mode, versi, layanan, pairing
-wdev orca switch headless  # server 24/7
-wdev orca switch desktop   # kembali ke GUI
-```
-
-Perintah lama (`orca pair`, `orca switch status`, `orca update`, `orca-desktop`)
-tetap berfungsi karena merupakan symlink ke biner `wdev` yang sama.
+---
 
 ## Cloudflare Tunnel & DNS (Multi-Akun)
 
-Satu site lokal cukup diekspos lewat satu tunnel. Setiap akun Cloudflare = satu profil; satu profil = satu proses `cloudflared` + satu unit systemd + satu set credentials.
+Setiap akun Cloudflare dikelola sebagai satu profil terpisah (satu proses `cloudflared` + satu unit systemd + satu set kredensial):
 
-```
+```text
 /etc/wdev/cloudflare/accounts/<profil>.conf   # zone, mode, protocol, tunnel id
 /etc/wdev/cloudflare/accounts/<profil>.env    # TUNNEL_TOKEN untuk mode token (0600)
 /etc/wdev/cloudflare/routes/<profil>.conf     # custom ingress routes (HTTP/TCP/SSH/RDP/Unix)
 /etc/wdev/cloudflare/access/<profil>.conf     # aturan JWT Cloudflare Access per host
-/etc/wdev/exposures/<domain>.conf             # public-host <TAB> profil (sumber kebenaran)
-/etc/cloudflared/<profil>/config.yml          # generated oleh cf-tunnel sync
+/etc/wdev/exposures/<domain>.conf             # public-host <TAB> profil
+/etc/cloudflared/<profil>/config.yml          # generated oleh wdev
 /etc/cloudflared/<profil>/<uuid>.json         # credentials tunnel (0600)
 /etc/cloudflared/<profil>/cert.pem            # origin cert hasil login (0600)
 /etc/systemd/system/cloudflared-<profil>.service
 ```
 
-Aturan:
-
-- `accounts/*.conf`, `routes/*.conf`, `access/*.conf`, dan `exposures/*.conf` dikelola `wdev`/Web UI, jangan diedit manual.
-- `config.yml`, unit systemd, dan `server_name` Nginx bersifat generated.
-- Satu host publik (non-path) hanya boleh dimiliki satu site/route dan satu profil.
-
-### Instalasi
-
 ```bash
-sudo wdev install cloudflare   # pasang/update cloudflared
-wdev cf status                 # status tunnel, profil, dan eksposur aktif
-```
-
-Profil tunnel, ingress, dan unit systemd dikelola dari Web UI Dashboard
-(tab **Cloudflare**) atau lewat API `wdev`. Tidak ada helper Bash terpisah.
-
-- `local`: ingress dikelola file lokal (`/etc/cloudflared/<profil>/config.yml`), butuh `cert.pem` hasil `cloudflared tunnel login`.
-- `token`: tunnel dijalankan dengan `TUNNEL_TOKEN` di `accounts/<profil>.env` (0600); ingress diatur di dashboard Cloudflare.
-
-### Ekspos subdomain
-
-```bash
+sudo wdev install cloudflare
+wdev cf status
 wdev cf expose myapp.test app-dev.example.com --profile cf1
 wdev cf expose myapp.test example.com --profile cf1   # apex domain
 wdev cf unexpose myapp.test
-wdev cf status
 ```
 
-`expose` memvalidasi host terhadap zone profil, menulis state eksposur,
-meregenerasi `server_name` Nginx, menerbitkan sertifikat `mkcert` dengan SAN
-host publik, menyinkronkan ingress cloudflared, lalu membuat CNAME proxied ke
-`<uuid>.cfargotunnel.com`.
+* `expose` memvalidasi host terhadap zone profil, menulis state eksposur, meregenerasi `server_name` Nginx, menerbitkan sertifikat `mkcert` dengan SAN host publik, menyinkronkan ingress `cloudflared`, lalu membuat CNAME proxied ke `<uuid>.cfargotunnel.com`.
+* Batasan Cloudflare: Universal SSL gratis hanya mencakup `example.com` dan `*.example.com` (subdomain bertingkat butuh Total TLS/ACM); body upload Free/Pro ~100 MB; timeout origin ~100 detik.
 
-### Operasional
+---
 
-```bash
-wdev cf status
-sudo systemctl status cloudflared-<profil>
-sudo journalctl -u cloudflared-<profil> -f
-sudo cloudflared tunnel list          # passthrough langsung ke binary resmi
-```
+## PowerDNS, Standalone VPS & Edge Gateway
 
-### Batasan Platform Cloudflare
-
-| Batasan | Dampak |
-|---|---|
-| Universal SSL gratis hanya `example.com` dan `*.example.com` | Subdomain bertingkat (`foo.dev.example.com`) butuh Total TLS/ACM di Cloudflare agar TLS publik valid |
-| Tunnel harus di akun pemilik zone | Zone akun B tidak bisa memakai tunnel akun A; buat profil terpisah |
-| Body request Cloudflare Free/Pro ~100 MB | `client_max_body_size 128M` tidak tercapai lewat tunnel |
-| Timeout origin ~100 detik | Request panjang kena 524 |
-| Cache Cloudflare | Aset dev bisa tersaji lama; kirim `Cache-Control: no-store` atau Cache Rule bypass |
-
-## PowerDNS & VPS Edge Gateway (Native Go)
-
-Deployment VPS sepenuhnya native Go — biner `wdev` yang sama diunggah ke VPS lalu
-menjalankan provisioning sendiri (tanpa `vps-edge-setup.sh`, tanpa Python agent).
+PowerDNS Authoritative dapat dijalankan secara **standalone langsung di VPS/lokal** (`wdev install pdns`) maupun sebagai **VPS Edge Gateway** via NetBird (`wdev pdns deploy`).
 
 ```bash
+# Mode VPS Standalone (tanpa NetBird)
+sudo wdev install pdns
+sudo wdev pdns zone add domainanda.com
+
+# Mode Hybrid Edge Gateway (dari mesin lokal ke VPS via SSH + NetBird)
 wdev pdns deploy <ip-vps> --user root --key ~/.ssh/id_ed25519
+wdev pdns connect <netbird_ip> <public_ip> <api_key>
 wdev pdns status
 wdev pdns zone add domainanda.com
 wdev pdns expose api.domainanda.com 8080 --ssl
+wdev pdns expose-site myapp.test myapp.domainanda.com --ssl
+wdev pdns unexpose myapp.domainanda.com
 ```
 
-Yang diprovision di VPS: PowerDNS Authoritative + SQLite3 + REST API, Nginx
-(sites & stream), certbot, Postfix gateway, firewall, dan service
-`wdev-edge-agent` (`wdev edge-agent serve`) yang mengelola reverse proxy,
-sertifikat, serta TCP stream mail.
+### Fitur Zone & Diagnosa PowerDNS
+* `wdev pdns zone add <domain>` memvalidasi FQDN, membuat zone `Native` dengan `ns1.<domain>` dan `ns2.<domain>`, membuat glue A ke IP publik VPS, mengaktifkan `SOA-EDIT-API` / `SOA-EDIT=INCEPTION-INCREMENT`, memverifikasi SOA + NS (rollback bila gagal), serta otomatis membuat **vhost HTML statis default** untuk domain tersebut bila belum ada.
+* `wdev pdns zone doctor <domain>` memeriksa ketersediaan zone, NS `ns1`/`ns2`, glue A, delegasi NS dari resolver publik, serial SOA authoritative, dan keterjangkauan port 53.
+* `wdev pdns zone repair <domain>` memperbaiki SOA, NS, glue A, dan metadata serial pada zone bermasalah tanpa menyentuh record lain.
+* Penambahan record via `wdev pdns record add <zone> <name> <type> <val> [ttl]` bersifat *append* (tidak menimpa record lain dengan nama/tipe yang sama).
+* Pada VPS Edge Gateway (`wdev edge-agent provision --yes`), PowerDNS API (`8081`) dan Edge Agent (`8082`) hanya dibuka untuk subnet NetBird `100.64.0.0/10`.
 
-Provisioning bersifat destruktif dan **wajib konfirmasi**:
+---
+
+## Mail Server (Stalwart + SnappyMail)
+
+`wdev` mengelola **Stalwart Mail Server** dan webmail **SnappyMail** pada mode **`vps`**, **`edge`**, maupun **`local`**:
+
+* **Mode `vps`**: Stalwart, Nginx, PowerDNS, dan Let's Encrypt berjalan langsung di VPS publik.
+* **Mode `edge`**: Mail server berjalan di mesin lokal dan dipublikasikan melalui VPS Edge Gateway lewat **NetBird** (`100.64.0.0/10`) — Nginx stream TLS (`465`/`587`/`993`/`143`/`995`/`110`), Postfix queue (`25`), serta proxy HTTPS `webmail.<domain>` & `mailadmin.<domain>`.
+* **Mode `local`**: Mail stack berjalan lokal memakai `/etc/hosts` dan SSL lokal (`mkcert`/self-signed) untuk pengujian/dev.
+
+### Outbound SMTP: Lokal Default & Relay Eksternal Opsional
+
+* **Default**: Jika belum ada relay eksternal yang disetel, outbound memakai **SMTP lokal bawaan Stalwart (`mx` / direct)**.
+* **Relay Eksternal (Global atau Per-Domain)**: Mendukung `resend`, `brevo`, atau `custom` SMTP relay. Relay global disimpan di `MtaOutboundStrategy.route.else`; override per domain memakai cabang `sender_domain == '<domain>'`. Gunakan `local` untuk kembali ke SMTP lokal Stalwart, atau `off` (`unset-relay`) untuk menghapus override domain.
 
 ```bash
-wdev edge-agent provision --help   # lihat opsi
-wdev edge-agent provision --yes    # jalankan di VPS (root)
+# Instalasi & setup domain mail
+sudo wdev install mail
+sudo wdev mail setup domainanda.com
+sudo wdev mail setup domainanda.com --relay resend --relay-key <API_KEY>
+
+# Manajemen akun email
+wdev mail accounts [domain]
+wdev mail add-account halo@domainanda.com '<password_kuat>'
+wdev mail change-password halo@domainanda.com '<password_baru>'
+wdev mail admin-cred domainanda.com
+wdev mail admin-reset domainanda.com
+
+# Manajemen outbound relay & sinkronisasi DNS relay
+wdev mail set-relay global brevo <SMTP_KEY>
+wdev mail set-relay domainanda.com resend <RESEND_API_KEY>   # otomatis sync DNS Resend ke PowerDNS
+wdev mail set-relay domainanda.com local                    # gunakan SMTP lokal Stalwart
+wdev mail unset-relay domainanda.com                        # hapus override domain
+wdev mail relay-dns domainanda.com list|add|remove ...
+
+# Status, perbaikan, dan penghapusan domain
+wdev mail status                       # cek status service, port lokal & eksternal (25/465/587/993/8080)
+wdev mail repair-domain domainanda.com # perbaiki zone NS/SOA, A/MX/SPF/DMARC, vhost, & routing relay
+wdev mail delete-domain domainanda.com [--keep-dns]
 ```
 
-`wdev pdns deploy` memanggil `--yes` secara otomatis karena sudah melalui
-konfirmasi di mesin lokal. IP publik yang dideteksi dibatasi IPv4 agar record
-DNS `A` valid. API key PowerDNS dibuat sekali, disimpan di
-`/etc/wdev-edge/api_key.secret` (0600), dan ditulis ke `edge.conf`.
-
-Agent diekspos di port `8082` (API key di `/etc/wdev-edge/api_key.secret`);
-PowerDNS API di port `8081`. Keduanya hanya dibuka untuk subnet NetBird
-`100.64.0.0/10`.
-
-### Menambah zone domain
-
-```bash
-wdev pdns zone add domainanda.com
-```
-
-Yang dilakukan `wdev` saat menambah zone:
-
-1. Validasi FQDN (lowercase, tanpa protokol/slash).
-2. Membuat zone `Native` dengan nameserver `ns1.<domain>` dan `ns2.<domain>`.
-3. Membuat glue A untuk kedua nameserver ke IP publik VPS.
-4. Mengaktifkan `SOA-EDIT-API=INCEPTION-INCREMENT` agar serial otomatis naik.
-5. Memverifikasi SOA + NS benar-benar ada; jika gagal, zone dibatalkan (rollback).
-
-Diagnosa zone setelah ditambahkan:
-
-```bash
-wdev pdns zone doctor domainanda.com
-```
-
-Yang diperiksa: zone ada di PowerDNS, NS `ns1`/`ns2`, glue A ke IP publik VPS,
-delegasi NS dari resolver publik, glue publik, serial SOA authoritative vs
-PowerDNS, dan keterjangkauan port 53. Exit code non-zero jika ada kegagalan
-kritis. Tombol **Doctor** juga tersedia di Web UI pada tabel zone.
-
-Untuk zone lama yang dibuat sebelum perbaikan ini, SOA biasanya masih
-`a.misconfigured.dns.server.invalid` dengan serial `0`. Perbaiki dengan:
-
-```bash
-wdev pdns zone repair domainanda.com
-```
-
-Repair menulis ulang SOA (primary `ns1.<domain>`, serial baru), NS, glue A,
-dan metadata `SOA-EDIT-API=INCEPTION-INCREMENT`. Record lain tidak disentuh.
-Tombol **Repair** juga tersedia di Web UI.
-
-Setelah itu arahkan NS domain di registrar ke `ns1.<domain>` dan `ns2.<domain>`
-(glue IP opsional karena glue A sudah disediakan di zone). Record lain bisa
-ditambah lewat CLI/Web UI; penambahan record bersifat *append*, bukan menimpa
-record lain dengan nama/tipe yang sama.
-
-
-## Mail Server (Relay-Only, Multi-Domain)
-
-Mail server berjalan di mesin lokal (Stalwart + SnappyMail) dan hanya
-dipublikasikan lewat VPS Edge Gateway. Transport antar mesin memakai
-**NetBird** (`100.64.0.0/10`); Cloudflare Tunnel tidak dipakai untuk mail.
-
-```
-Internet -> VPS publik -> NetBird -> PC lokal
-  25   : Postfix queue -> [netbird]:25 (Stalwart)
-  465  : nginx stream TLS (Let's Encrypt) -> [netbird]:465
-  587  : nginx stream passthrough -> [netbird]:587 (STARTTLS)
-  993/143/995/110 : nginx stream -> [netbird]:<port>
-  443  : nginx -> webmail.<domain> / mailadmin.<domain> -> [netbird]:80/:8080
-```
-
-Aturan outbound:
-
-- **Direct MX / port 25 keluar tidak dipakai.** Semua email keluar lewat relay.
-- Relay default disimpan di `MtaOutboundStrategy.route.else`. Domain yang tidak
-  punya override otomatis memakai relay default.
-- Override per domain memakai cabang `sender_domain == '<domain>'`; satu domain
-  boleh memakai provider berbeda.
-- `direct`/`mx` ditolak API, CLI, dan UI. Gunakan `off` untuk menghapus override.
-
-```bash
-wdev mail set-relay global brevo <SMTP_KEY>   # relay default
-wdev mail set-relay domainA.com resend <KEY>  # override domain A
-wdev mail unset-relay domainA.com             # kembali ke default
-wdev mail status                              # mode + relay efektif
-wdev mail admin-cred domainA.com              # kredensial admin Stalwart
-```
-
-**DNS relay & pergantian provider.** wdev hanya mengelola record DNS relay
-yang dicatat sebagai miliknya. Daftarkan record (mis. DKIM CNAME dari dashboard
-provider) lewat kolom *Record DNS Relay* di modal Setel Relay atau CLI:
-
-```bash
-wdev mail relay-dns domainA.com list
-wdev mail relay-dns domainA.com add CNAME brevo1._domainkey.domainA.com b1.domainA.com.dkim.brevo.com
-wdev mail relay-dns domainA.com remove brevo   # hapus record milik provider brevo
-```
-
-Saat provider relay domain diganti (atau override dihapus), wdev otomatis
-menghapus record terkelola milik provider lama dan mempertahankan record
-provider lain maupun record manual. Record yang tidak pernah didaftarkan ke
-wdev tidak disentuh. `repair-domain` memasang ulang record terkelola yang hilang.
-
-DNS yang dibuat otomatis saat setup (inbound saja):
+DNS inbound yang dibuat otomatis oleh `wdev mail setup`:
 
 | Name | Type | Isi |
-| --- | --- | --- |
-| `mail.<domain>` | A | IP publik VPS |
+|---|---|---|
+| `mail.<domain>` | A | IP publik VPS (atau IP lokal pada mode `local`) |
 | `mx.<domain>` | A | IP publik VPS |
 | `webmail.<domain>` | A | IP publik VPS |
 | `mailadmin.<domain>` | A | IP publik VPS |
 | `@` | MX | `10 mail.<domain>.` |
-| `@` | TXT | `v=spf1 -all` (relay-only) |
-| `_dmarc` | TXT | `v=DMARC1; p=none; rua=mailto:dmarc@<domain>` |
+| `@` | TXT | `v=spf1 mx ~all` (SMTP lokal) atau `v=spf1 -all` (relay eksternal) |
+| `_dmarc` | TXT | `v=DMARC1; p=none; sp=none; rua=mailto:dmarc@<domain>` |
 
-Record MX/SPF/DMARC yang sudah ada **tidak ditimpa**; setup berhenti jika MX
-sudah menunjuk host lain. DKIM/SPF outbound bergantung pada provider relay dan
-harus dipasang di dashboard provider (checklist dicetak saat setup).
+> Catatan pengiriman internet publik: untuk pengiriman direct/inbound yang optimal di VPS, pastikan **PTR/rDNS** IP publik VPS menunjuk ke `mail.<domain>` dan port `25` tidak diblokir penyedia VPS. Penyimpanan data mail menggunakan `WDEV_MAIL_DATA` (default `/var/lib/wdev-mail`).
 
-Perbaikan & penghapusan domain (tersedia juga sebagai tombol di dashboard):
+---
 
-```bash
-wdev mail repair-domain domainA.com   # perbaiki NS/SOA zone, A/MX/SPF/DMARC, vhost VPS, routing relay
-wdev mail delete-domain domainA.com   # hapus domain + akun + vhost VPS; DNS tetap
-wdev mail delete-domain domainA.com --keep-dns  # sama, eksplisit pertahankan DNS
-```
+## Environment, PATH & Audit Duplikat
 
-`repair-domain` memaksa record MX ke `10 mail.<domain>.`, menyamakan A
-mail/mx/webmail/mailadmin ke IP publik VPS, memperbaiki NS/SOA/glue zone,
-menyegarkan vhost + stream mail di VPS, dan memulihkan cabang relay outbound
-yang menunjuk route tidak valid. SPF/DMARC kustom yang sudah ada tidak ditimpa.
-`delete-domain` menghapus akun & domain Stalwart, vhost webmail/admin, entri
-Postfix/stream, dan state lokal; record DNS hanya dihapus bila diminta dan
-hanya yang jelas milik domain tersebut.
-
-Prasyarat yang tidak bisa diotomasi: PTR/rDNS IP publik VPS harus menunjuk
-`mail.<domain>`, dan port 25 inbound harus dibuka oleh penyedia VPS.
-
-Penyimpanan lokal memakai `WDEV_MAIL_DATA` (default `/var/lib/wdev-mail`).
-
-### Memperbarui instalasi yang sudah ada
-
-`wdev install` hanya memasang **biner + systemd service** wdev. Perintah itu tidak
-memasang ulang mail stack dan tidak menulis ulang konfigurasi domain yang sudah
-ada. Untuk upgrade lengkap:
+`wdev` menyatukan konfigurasi `PATH` dan variabel toolchain ke satu sumber di `/etc/profile.d/wdev.sh` (`GOROOT`, `CARGO_HOME`, `RUSTUP_HOME`, `NODE_HOME`, `FLUTTER_ROOT`, `ANDROID_HOME`, `CAROOT`, dll.).
 
 ```bash
-# 1. Pasang biner/Web UI terbaru (dari rilis GitHub)
-sudo wdev update
-
-# Alternatif tanpa rilis GitHub: build dari source
-# go build -o wdev ./cmd/wdev && sudo ./wdev install
-
-# 2. Pasang/perbarui komponen mail (idempoten; aman jika sudah ada)
-sudo ./wdev install mail
-
-# 3. Perbarui edge agent di VPS (stream/vhost baru ada di biner ini)
-scp wdev root@<ip-vps>:/usr/local/bin/wdev-edge
-ssh root@<ip-vps> systemctl restart wdev-edge-agent
-
-# 4. Pastikan relay default ada (wajib untuk mode relay-only)
-sudo ./wdev mail set-relay global brevo <SMTP_KEY>
-
-# 5. Tulis ulang config domain lama: DNS, vhost, stream, sertifikat
-sudo ./wdev mail setup domainanda.com
-# ulangi untuk setiap domain; atau lewat Web UI -> Mail -> Setup Domain
+wdev env status        # cek sumber PATH, file legacy, dan drift symlink
+sudo wdev env sync     # bangun ulang /etc/profile.d/wdev.sh & rapikan ~/.bashrc / ~/.zshrc
+wdev install audit     # deteksi biner duplikat, paket distro bentrok, atau double PATH
+wdev install audit-fix # hapus duplikat otomatis dan selaraskan symlink kanonik
 ```
 
-`wdev mail setup` aman dijalankan berulang: DNS yang sudah benar tidak
-ditimpa, dan record MX milik provider lain akan menghentikan setup (tidak
-dihapus). Relay per domain lama otomatis dipromosikan menjadi relay default
-saat setup pertama.
+---
 
-Catatan:
+## Variabel Environment Konfigurasi
 
-- `go run ./cmd/wdev install` juga bekerja, tetapi menyalin biner sementara
-  hasil `go run`. Lebih aman `go build` dulu.
-- Perubahan kode edge agent hanya aktif setelah biner VPS diganti dan
-  `wdev-edge-agent` di-restart.
-- `wdev install all` tidak memasang mail stack; gunakan `wdev install mail`.
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `WDEV_ETC` | `/etc/wdev` (root) / `~/.config/wdev` | Direktori konfigurasi & kredensial `wdev` |
+| `WDEV_DB` | `<WDEV_ETC>/wdev.db` | Lokasi database SQLite state `wdev` |
+| `WDEV_PORT` | `3200` | Port HTTP/HTTPS Web Dashboard |
+| `WDEV_HOST` | `0.0.0.0` | Host binding server panel |
+| `WDEV_WWW_ROOT` | `/var/www` | Direktori dasar web root untuk vhost baru |
+| `WDEV_TLS_CERT` / `WDEV_TLS_KEY` | — | Path sertifikat & private key TLS kustom untuk `wdev serve` |
+| `WDEV_MAIL_DATA` | `/var/lib/wdev-mail` | Direktori penyimpanan data Stalwart & SnappyMail |
+| `WDEV_FM_ROOTS` | — | Root tambahan untuk File Manager (dipisahkan `:`) |
+
+---
 
 ## Distribusi & Rilis (Maintainer)
 
-Rilis dibangun otomatis oleh `.github/workflows/release.yml` saat tag `v*`
-di-push. Aset yang dihasilkan:
+Rilis multi-arsitektur (`wdev-linux-amd64`, `wdev-linux-arm64`, `wdev-linux-armv7` beserta checksum `.sha256`) dibangun otomatis oleh [`.github/workflows/release.yml`](.github/workflows/release.yml) setiap kali tag `v*` di-push.
 
-```
-wdev-linux-amd64        wdev-linux-amd64.sha256
-wdev-linux-arm64        wdev-linux-arm64.sha256
-wdev-linux-armv7        wdev-linux-armv7.sha256
-```
-
-Langkah merilis:
+Gunakan asisten rilis otomatis melalui `Makefile`:
 
 ```bash
-# 1. Ubah internal/version/version.go bila perlu (default digunakan saat build lokal)
-# 2. Commit perubahan
-git add -A && git commit -m "release: v2.1.0"
-git tag v2.1.0
-git push origin main --tags
+make next-version   # lihat deteksi versi SemVer otomatis dari Conventional Commits
+make release-dry    # pratinjau versi & changelog tanpa mengubah git
+make release        # update version.go, CHANGELOG.md, test, build, commit, tag, & push ke GitHub
 ```
 
-CI menjalankan test, membangun ketiga arsitektur dengan
-`-ldflags "-X wdev/internal/version.Version=<tag>"`, membuat checksum, lalu
-membuat GitHub Release. Pengguna menjalankan `sudo wdev update` untuk
-mendapatkan versi tersebut.
-
-Untuk pengguna yang tidak memakai rilis GitHub, update tetap bisa lewat
-`git pull` lalu `go build -o wdev ./cmd/wdev && sudo ./wdev install`.
-
-## Environment & PATH (Satu Sumber)
-
-PATH dan variabel toolchain hanya dihasilkan oleh wdev — tidak ada file
-`/etc/profile.d/*.sh` lain atau blok PATH manual di rc yang ikut campur.
+Atau rilis manual via git tag:
 
 ```bash
-wdev env status   # cek sumber PATH, file legacy, dan drift symlink
-wdev env sync     # bangun ulang /etc/profile.d/wdev.sh + rapikan rc shell
+git add -A && git commit -m "chore(release): bump version to v2.5.1"
+git tag v2.5.1
+git push origin master --tags
 ```
 
-### Deteksi Duplikat Otomatis
-
-Full Auto Setup (`wdev install all`) menjalankan audit **sebelum** (pre-flight)
-dan **sesudah** (post-flight) 14 langkah instalasi:
-
-```bash
-wdev install audit        # deteksi duplikat path / double PATH
-wdev install audit-fix    # perbaiki otomatis
-```
-
-Yang dideteksi:
-- biner tool yang punya lebih dari satu realpath (mis. `/usr/local/bin/node` + `/usr/bin/node`)
-- salinan asing di `/usr/local/bin` yang bukan symlink ke area kanonik
-- paket distro yang menghasilkan biner duplikat (`nodejs`, `golang-go`, `rustc`, `mkcert`, `composer`, `cloudflared`, dll.)
-- file `/etc/profile.d/*.sh` legacy di luar `wdev.sh`
-- direktori toolchain kedua di home (`.cargo`, `.rustup`, `.nvm`, `.pyenv`)
-- entri `_wdev_prepend_path` ganda di profil/rc
-
-Setiap langkah instalasi komponen tunggal (`node`, `rust`, `go`, `flutter`, `composer`)
-juga memanggil `GuardToolchainColumns` untuk memperingatkan duplikat lebih awal.
-Perbaikan otomatis menghapus paket distro duplikat, membuang salinan asing, lalu
-membangun ulang PATH tunggal. Symlink ke target identik **tidak** dianggap duplikat.
-
-`wdev env sync` bersifat idempoten:
-- menulis ulang `/etc/profile.d/wdev.sh` (GOROOT, CARGO_HOME, NODE_HOME, CAROOT, FLUTTER/ANDROID, ORCA_BROWSER)
-- menghapus file profile lama (`nodejs.sh`, `rust.sh`, `golang.sh`, `flutter.sh`, `orca-browser.sh`, `mkcert.sh`, dll.)
-- mengarahkan symlink `/usr/local/bin/*` ke sumber kanonik (`/usr/local/go`, `/usr/local/cargo`, `/usr/local/lib/nodejs/<versi>`)
-- menaruh blok terkelola di `~/.bashrc`/`~/.zshrc` yang hanya me-load `wdev.sh`, dan membuang blok PATH duplikat
+---
 
 ## Struktur Repo
 
-```
+```text
 wdev/
 ├── cmd/
 │   └── wdev/
-│       └── main.go
+│       └── main.go                 # Entrypoint CLI, launcher symlink Orca, & dispatch subperintah
+├── frontend/                       # Aplikasi Web UI (SvelteKit 5, Tailwind CSS v4, shadcn-svelte, xterm.js)
+│   └── src/
+│       ├── lib/                    # API client, stores, components, modals, types
+│       └── routes/                 # Halaman dashboard (webstack, switchers, files, terminal, mail, pdns, setup, dll.)
 ├── internal/
-│   ├── config/
-│ ├── edge/
-│ │ ├── agent.go
-│ │ └── provision.go
-│   ├── installer/
-│   │   ├── installer.go
-│   │   ├── official_repos.go
-│ │ ├── orca.go
-│ │ ├── orca_runtime.go
-│   │   ├── service.go
-│   │   └── toolchains.go
-│   ├── mail/
-│   ├── monitor/
-│   ├── pdns/
-│   ├── runner/
-│   ├── server/
-│   ├── site/
-│   ├── store/
-│   ├── switcher/
-│   └── tui/
-├── web/
-│   ├── embed.go
-│   └── static/
-├── README.md
-└── .gitignore
+│   ├── auth/                       # Security Entrance, PBKDF2, session, rate limit, panel domain & SSL
+│   ├── cloudflare/                 # Multi-akun Cloudflare Tunnel & DNS
+│   ├── config/                     # Konfigurasi global & env vars
+│   ├── edge/                       # Provisioner & daemon agent VPS Edge Gateway
+│   ├── filemanager/                # Backend File Manager, arsip, fetch URL, drive /mnt
+│   ├── installer/                  # Installer toolchain, repo resmi, audit PATH, Orca & Commit AI, PostgreSQL switch
+│   ├── mail/                       # Stalwart Mail Server, SnappyMail, outbound relay & DNS sync
+│   ├── monitor/                    # Telemetri CPU/RAM/Disk/Mount /mnt & status layanan
+│   ├── pdns/                       # PowerDNS Authoritative, mode server, zone doctor/repair
+│   ├── runner/                     # Task runner asinkron + log streaming SSE
+│   ├── server/                     # HTTP API server, TLS mux, WebSocket PTY, CSRF & security middleware
+│   ├── serviceconfig/              # Inspeksi, preset, & konfigurasi Nginx, PHP-FPM, PostgreSQL, Redis
+│   ├── site/                       # Virtual host Nginx, mkcert, & Let's Encrypt
+│   ├── store/                      # Penyimpanan state SQLite (modernc.org/sqlite)
+│   ├── switcher/                   # Pengelola multi-versi Node.js, PHP, PostgreSQL, Java
+│   ├── terminal/                   # Manajemen sesi PTY interaktif & audit
+│   ├── tui/                        # Terminal UI interaktif (9 kategori)
+│   ├── updater/                    # Auto-updater biner dari GitHub Releases / source lokal
+│   └── version/                    # Metadata versi rilis
+├── scripts/                        # Otomasi SemVer, changelog, & release (next-version.sh, changelog.sh, release.sh)
+├── web/                            # Asset hasil build frontend yang di-embed via go:embed
+├── .github/workflows/release.yml   # CI/CD build multi-arch & GitHub Release
+├── CHANGELOG.md
+├── install.sh                      # One-click installer VPS (aaPanel style)
+├── LICENSE                         # MIT License
+├── Makefile                        # Target build, test, dev, & release
+└── README.md
 ```
+
+---
 
 ## Catatan Keamanan
 
-- Perintah pada biner `wdev` membutuhkan `sudo` untuk menulis ke `/usr/local`, `/etc`, serta `/var`.
-- Default `DEV_LAN_ACCESS=0`: Redis/PostgreSQL hanya mendengarkan di localhost. Akses LAN harus dibuka eksplisit dengan `--lan` dan mewajibkan password non-default.
-- Default password Redis/PostgreSQL bersifat publik. Ganti lewat variabel environment bila layanan akan diakses dari luar mesin.
-- Log instalasi (`/var/log/dev-install.log`) dibuat dengan mode `600` dan tidak menampilkan nilai password.
-- CA `mkcert` ditambahkan ke trust store sistem dan browser; hanya untuk pengembangan lokal.
-- Kredensial Cloudflare (`accounts/*.conf`, `cert.pem`, `*.json`, `.env`) disimpan mode `0600` di bawah `/etc/wdev` dan `/etc/cloudflared`; jangan di-commit.
-- Gunakan API token Cloudflare ber-scope minimal (`Zone:DNS:Edit`, `Zone:Read`), bukan Global API Key.
-- Tunnel mengekspos vhost ke internet. Pasang Cloudflare Access dari dashboard Zero Trust untuk site yang bukan demo statis.
-- Jangan menambahkan host publik ke `/etc/hosts`; itu memotong jalur tunnel di mesin lokal.
-- Jangan commit kredensial, token, atau berkas `.env`; gunakan `.gitignore` yang disertakan.
-- Review perubahan konfigurasi sebelum menjalankan perintah `wdev` sebagai root.
+* Perintah sistem pada biner `wdev` memerlukan hak akses `root` / `sudo` untuk menulis ke `/usr/local`, `/etc`, dan `/var`.
+* **Keamanan Panel**: Selalu pertahankan Security Entrance (`wdev panel entrance`), proteksi login (`wdev panel auth on`), serta aktifkan HTTPS (`wdev panel ssl on` atau `wdev panel domain <domain>`) sebelum mengekspos panel ke jaringan publik.
+* **Terminal PTY**: Sesi shell root melalui Web UI dilindungi oleh *step-up authentication* dengan masa berlaku izin sementara (10 menit) dan pencatatan audit.
+* **Database & Cache**: Default Redis/PostgreSQL mendengarkan di localhost; jangan membuka akses eksternal tanpa kata sandi kuat dan pembatasan firewall.
+* **Kredensial & Rahasia**: Kredensial Cloudflare, API key PowerDNS/Edge (`/etc/wdev-edge/api_key.secret`), kredensial mail (`/etc/wdev/mail-*.cred`), dan file `.env` disimpan dengan izin `0600` dan tidak boleh di-commit ke Git.
+* **Local CA `mkcert`**: Hanya untuk pengembangan lokal; jangan gunakan sertifikat `mkcert` di lingkungan produksi publik.
+* Jangan menambahkan host publik yang diekspos lewat Cloudflare Tunnel ke `/etc/hosts` lokal karena akan memotong jalur tunnel.
+
+---
 
 ## Lisensi
 
-Belum ada lisensi yang disertakan pada repo ini.
+Proyek ini dilisensikan di bawah **[MIT License](LICENSE)** — Copyright (c) 2026 `barisankoding-cell`.

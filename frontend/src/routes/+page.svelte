@@ -319,7 +319,8 @@
 			? st.public_ip
 			: (modeStore.publicIP && modeStore.publicIP !== '-' ? modeStore.publicIP : '')}
 		{@const lanIP = st.lan_ip || ''}
-		{@const netbirdIP = st.netbird_ip && st.netbird_ip !== '-' ? st.netbird_ip : ''}
+		{@const netbirdInstalled = Boolean((st.services || []).find((s) => s.name === 'netbird')?.installed)}
+		{@const netbirdIP = netbirdInstalled && st.netbird_ip && st.netbird_ip !== '-' ? st.netbird_ip : ''}
 		<Card.Root class="gap-0 py-0">
 			<Card.Header class="border-b px-4 py-3 [.border-b]:pb-3 sm:px-5">
 				<div class="flex flex-wrap items-center justify-between gap-2">
@@ -598,7 +599,7 @@
 						</dd>
 					</div>
 
-					<div class="flex flex-col gap-1 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+					<div class="flex flex-col gap-1 py-2 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
 						<dt class="shrink-0 font-medium text-muted-foreground">IP Jaringan Lokal (LAN)</dt>
 						<dd class="flex min-w-0 items-center justify-between gap-2 sm:justify-end">
 							<span class={cn('truncate font-mono text-xs font-medium', lanIP ? 'text-success' : 'text-muted-foreground')}>
@@ -618,25 +619,27 @@
 						</dd>
 					</div>
 
-					<div class="flex flex-col gap-1 py-2 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">IP NetBird VPN (Mesh)</dt>
-						<dd class="flex min-w-0 items-center justify-between gap-2 sm:justify-end">
-							<span class="truncate font-mono text-xs font-medium text-foreground">
-								{netbirdIP || '-'}
-							</span>
-							{#if netbirdIP}
-								<Button
-									variant="ghost"
-									size="icon-xs"
-									class="fm-touch-btn shrink-0"
-									aria-label="Salin IP NetBird"
-									onclick={() => copyAddress(netbirdIP, 'IP NetBird')}
-								>
-									<CopyIcon />
-								</Button>
-							{/if}
-						</dd>
-					</div>
+					{#if netbirdInstalled}
+						<div class="flex flex-col gap-1 py-2 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+							<dt class="shrink-0 font-medium text-muted-foreground">IP NetBird VPN (Mesh)</dt>
+							<dd class="flex min-w-0 items-center justify-between gap-2 sm:justify-end">
+								<span class="truncate font-mono text-xs font-medium text-foreground">
+									{netbirdIP || '-'}
+								</span>
+								{#if netbirdIP}
+									<Button
+										variant="ghost"
+										size="icon-xs"
+										class="fm-touch-btn shrink-0"
+										aria-label="Salin IP NetBird"
+										onclick={() => copyAddress(netbirdIP, 'IP NetBird')}
+									>
+										<CopyIcon />
+									</Button>
+								{/if}
+							</dd>
+						</div>
+					{/if}
 				</dl>
 			</Card.Content>
 		</Card.Root>

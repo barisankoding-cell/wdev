@@ -332,8 +332,12 @@ func main() {
 			if edgeCfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(edgeCfg.VPSPublicIP) {
 				stats.PublicIP = edgeCfg.VPSPublicIP
 			}
-			if stats.ServerMode == "vps" && stats.PublicIP != "" {
-				stats.NetbirdIP = stats.PublicIP
+		}
+		hasNetbird := false
+		for _, s := range stats.Services {
+			if s.Name == "netbird" && s.Installed {
+				hasNetbird = true
+				break
 			}
 		}
 		fmt.Printf("=== wdev Status Sistem ===\n")
@@ -356,10 +360,10 @@ func main() {
 				pub = "-"
 			}
 			fmt.Printf("IP VPS:     %s\n", pub)
-			if stats.NetbirdIP != "" && stats.NetbirdIP != "-" && stats.NetbirdIP != pub {
+			if hasNetbird && stats.NetbirdIP != "" && stats.NetbirdIP != "-" && stats.NetbirdIP != pub {
 				fmt.Printf("NetBird IP: %s\n", stats.NetbirdIP)
 			}
-		} else {
+		} else if hasNetbird {
 			fmt.Printf("NetBird IP: %s\n", stats.NetbirdIP)
 		}
 		fmt.Println("\nLayanan Inti:")

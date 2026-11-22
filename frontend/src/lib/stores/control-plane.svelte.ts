@@ -85,6 +85,7 @@ class ControlPlaneStore {
 	isTaskRunning = $state(false);
 	currentTaskName = $state('wdev-runner');
 	lastTaskStatus = $state<'idle' | 'running' | 'success' | 'failed'>('idle');
+	pendingPanelDomainURL = $state('');
 	terminalLogs = $state<TerminalLogEntry[]>([]);
 	recentTasks = $state<TaskRecord[]>([]);
 
@@ -369,6 +370,9 @@ class ControlPlaneStore {
 			const cleanTask = (evt.message || '').replace(/^Memulai:\s*/, '').trim();
 			if (cleanTask) {
 				this.currentTaskName = cleanTask;
+				if (!evt.replay && !cleanTask.startsWith('Bind Domain Panel')) {
+					this.pendingPanelDomainURL = '';
+				}
 			}
 			if (!evt.replay && cleanTask === 'Pembaruan Biner wdev') {
 				this.armSelfUpdateReload();
@@ -386,6 +390,9 @@ class ControlPlaneStore {
 			this.isTaskRunning = false;
 			const ok = evt.status === 'success';
 			this.lastTaskStatus = ok ? 'success' : 'failed';
+			if (!evt.replay && !ok) {
+				this.pendingPanelDomainURL = '';
+			}
 			this.appendTerminalLog({
 				type: 'finish',
 				status: evt.status,
@@ -431,9 +438,21 @@ class ControlPlaneStore {
 		this.terminalOpen = true;
 	}
 
+	setPendingPanelDomainURL(url: string) {
+		this.pendingPanelDomainURL = url;
+		if (url && !this.isTaskRunning) {
+			this.lastTaskStatus = 'running';
+		}
+	}
+
+	clearPendingPanelDomainURL() {
+		this.pendingPanelDomainURL = '';
+	}
+
 	clearTerminal() {
 		this.terminalLogs = [];
 		this.clearedSeq = this.lastSeq;
+		this.pendingPanelDomainURL = '';
 		if (!this.isTaskRunning) {
 			this.lastTaskStatus = 'idle';
 		}

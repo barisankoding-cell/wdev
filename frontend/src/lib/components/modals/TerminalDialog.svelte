@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Tabs from '#lib/components/ui/tabs/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -12,6 +13,8 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import CheckIcon from '@lucide/svelte/icons/check';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 	import { tick } from 'svelte';
 
 	let activeTab = $state<'live' | 'history'>('live');
@@ -46,16 +49,24 @@
 		}
 	});
 
-	async function copyLogs() {
-		const text = cp.terminalLogs.map((l) => l.message).join('\n');
+	async function copyText(text: string, msg: string) {
 		if (!text) return;
 		try {
 			await navigator.clipboard.writeText(text);
-			copied = true;
-			toast.success('Log terminal disalin ke clipboard');
-			setTimeout(() => (copied = false), 1500);
+			toast.success(msg);
+			return true;
 		} catch {
-			toast.error('Gagal menyalin log ke clipboard');
+			toast.error('Gagal menyalin ke clipboard');
+			return false;
+		}
+	}
+
+	async function copyLogs() {
+		const text = cp.terminalLogs.map((l) => l.message).join('\n');
+		if (!text) return;
+		if (await copyText(text, 'Log terminal disalin ke clipboard')) {
+			copied = true;
+			setTimeout(() => (copied = false), 1500);
 		}
 	}
 </script>
@@ -128,7 +139,61 @@
 				{/if}
 			</div>
 
-			<Tabs.Content value="live" class="mt-0 flex min-h-0 flex-1 flex-col">
+			<Tabs.Content value="live" class="mt-0 flex min-h-0 flex-1 flex-col gap-2">
+				{#if cp.pendingPanelDomainURL && cp.lastTaskStatus !== 'failed'}
+					<Alert.Root
+						class={cn(
+							'py-2.5',
+							cp.lastTaskStatus === 'success'
+								? 'border-emerald-500/40 bg-emerald-500/10'
+								: 'border-primary/30 bg-primary/5'
+						)}
+					>
+						<ShieldCheckIcon
+							class={cn(
+								'size-4',
+								cp.lastTaskStatus === 'success'
+									? 'text-emerald-600 dark:text-emerald-400'
+									: 'text-primary'
+							)}
+						/>
+						<Alert.Title class="text-xs sm:text-sm font-semibold">
+							{cp.lastTaskStatus === 'success' ? 'URL Domain Panel Baru Siap' : 'Target URL Domain Panel Baru'}
+						</Alert.Title>
+						<Alert.Description class="mt-1 space-y-2 text-xs">
+							<p>
+								{cp.lastTaskStatus === 'success'
+									? 'Proses selesai. Akses panel melalui URL resmi berikut:'
+									: 'Setelah proses di Live Terminal selesai, panel dapat diakses melalui:'}
+							</p>
+							<div class="flex flex-wrap items-center gap-2">
+								<code class="bg-background rounded border px-2 py-1 font-mono text-xs">{cp.pendingPanelDomainURL}</code>
+								<Button
+									size="sm"
+									variant="outline"
+									class="h-7 px-2 text-xs"
+									onclick={() => copyText(cp.pendingPanelDomainURL, 'URL panel disalin ke clipboard')}
+								>
+									<CopyIcon class="size-3.5" />
+									Salin
+								</Button>
+								{#if cp.lastTaskStatus === 'success'}
+									<Button
+										size="sm"
+										class="h-7 px-2 text-xs"
+										href={cp.pendingPanelDomainURL}
+										target="_blank"
+										rel="noopener"
+									>
+										<ExternalLinkIcon class="size-3.5" />
+										Buka Panel Baru
+									</Button>
+								{/if}
+							</div>
+						</Alert.Description>
+					</Alert.Root>
+				{/if}
+
 				<!-- Scrollable live log panel needs tabindex="0" for keyboard scrolling -->
 				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 				<div

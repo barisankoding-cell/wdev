@@ -107,14 +107,31 @@
 			if (!res) return;
 
 			if (res.status === 'started') {
-				pendingTargetURL = res.target_url || '';
+				const targetURL = res.target_url || '';
+				pendingTargetURL = '';
+				cp.setPendingPanelDomainURL(targetURL);
+				authStore.closePanelDomain();
 				cp.openTerminal(`Bind Domain Panel HTTPS: ${target}`);
 				toast.success('Konfigurasi domain panel dimulai', {
 					description: 'Pantau proses SSL & Nginx di Live Terminal. Setelah selesai, akses lewat URL domain baru.'
 				});
 			} else {
+				const entrancePath = status?.entrance_path || '';
+				const boundURL = `https://${target}${entrancePath}`;
 				toast.success(`Domain panel ${target} berhasil disimpan.`);
-				await loadStatus();
+				if (blockDirectIP && status) {
+					pendingTargetURL = boundURL;
+					status = {
+						...status,
+						domain: target,
+						bound: true,
+						domain_url: boundURL,
+						ssl_enabled: true,
+						block_direct_ip: true
+					};
+				} else {
+					await loadStatus();
+				}
 			}
 		} catch (err) {
 			errorMsg = err instanceof ApiError || err instanceof Error ? err.message : 'Gagal mengikat domain panel';
@@ -176,6 +193,7 @@
 		try {
 			const res = await api.unbindPanelDomain(true);
 			pendingTargetURL = '';
+			cp.clearPendingPanelDomainURL();
 			const dnsNote =
 				res.dns_records_deleted && res.dns_records_deleted > 0
 					? ` (${res.dns_records_deleted} record DNS dihapus)`

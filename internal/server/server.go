@@ -612,6 +612,17 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func (s *Server) applyPDNSModeToStats(stats *monitor.SystemStats) {
+	if stats == nil || s.pdnsMgr == nil {
+		return
+	}
+	stats.ServerMode = s.pdnsMgr.GetMode()
+	cfg := s.pdnsMgr.LoadConfig()
+	if cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
+		stats.PublicIP = cfg.VPSPublicIP
+	}
+}
+
 // Handlers
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true" {
@@ -622,18 +633,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if s.pdnsMgr != nil {
-		stats.ServerMode = s.pdnsMgr.GetMode()
-		cfg := s.pdnsMgr.LoadConfig()
-		if cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
-			stats.PublicIP = cfg.VPSPublicIP
-		}
-		if stats.ServerMode == "vps" {
-			if stats.PublicIP != "" && pdns.IsPublicIPv4String(stats.PublicIP) {
-				stats.NetbirdIP = stats.PublicIP
-			}
-		}
-	}
+	s.applyPDNSModeToStats(stats)
 	if s.svcCfgMgr != nil && stats != nil {
 		var wg sync.WaitGroup
 		for i := range stats.Services {

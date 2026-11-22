@@ -150,8 +150,13 @@ func (t *TUI) renderSystemSummary() {
 		if cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
 			stats.PublicIP = cfg.VPSPublicIP
 		}
-		if stats.ServerMode == "vps" && stats.PublicIP != "" {
-			stats.NetbirdIP = stats.PublicIP
+	}
+
+	hasNetbird := false
+	for _, s := range stats.Services {
+		if s.Name == "netbird" && s.Installed {
+			hasNetbird = true
+			break
 		}
 	}
 
@@ -164,13 +169,20 @@ func (t *TUI) renderSystemSummary() {
 		} else {
 			netVal = "-"
 		}
+	} else if !hasNetbird {
+		netLabel = ""
+		netVal = ""
 	}
 
 	fmt.Printf(" %sOS:%s %-25s  %sUptime:%s %s\n", Bold, Reset, stats.OSName, Bold, Reset, stats.UptimeString)
 	fmt.Printf(" %sRAM:%s %d/%d MB (%d%%)       %sDisk:%s   %d/%d GB (%d%%)\n",
 		Bold, Reset, stats.MemUsedMB, stats.MemTotalMB, stats.MemPercent,
 		Bold, Reset, stats.DiskUsedGB, stats.DiskTotalGB, stats.DiskPercent)
-	fmt.Printf(" %sLAN IP:%s %-22s  %s%s%s %s\n", Bold, Reset, stats.LanIP, Bold, Reset, netLabel, netVal)
+	if netLabel != "" {
+		fmt.Printf(" %sLAN IP:%s %-22s  %s%s%s %s\n", Bold, Reset, stats.LanIP, Bold, Reset, netLabel, netVal)
+	} else {
+		fmt.Printf(" %sLAN IP:%s %s\n", Bold, Reset, stats.LanIP)
+	}
 	fmt.Printf("%s------------------------------------------------------------------------%s\n", Dim, Reset)
 }
 

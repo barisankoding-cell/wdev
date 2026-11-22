@@ -84,11 +84,11 @@
 		</Sidebar.Inset>
 	</Sidebar.Provider>
 
-	<TerminalDialog />
 	<ServiceConfigModal />
 	<ChangeCredsModal />
 	<PanelDomainModal />
 	<ModeSwitchModal />
+	<TerminalDialog />
 	<SudoDialog />
 	<ConfirmDialog />
 {/if}

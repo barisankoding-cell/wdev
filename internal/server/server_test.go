@@ -21,6 +21,7 @@ import (
 	"wdev/internal/config"
 	"wdev/internal/installer"
 	"wdev/internal/mail"
+	"wdev/internal/monitor"
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
 	"wdev/internal/serviceconfig"
@@ -2206,5 +2207,43 @@ func TestHandleWorkspaceOrcaAIValidation(t *testing.T) {
 	srv.mux.ServeHTTP(recMethod, reqMethod)
 	if recMethod.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405 for DELETE, got %d", recMethod.Code)
+	}
+}
+
+func TestApplyPDNSModeToStatsDoesNotOverwriteNetbirdIP(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("failed to create test store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{WdevEtc: dir, HTTPHost: "127.0.0.1", HTTPPort: "3200"}
+	pdnsMgr := pdns.New(cfg, db)
+	if err := pdnsMgr.SetMode("vps"); err != nil {
+		t.Fatalf("SetMode(vps) failed: %v", err)
+	}
+	confData := "VPS_NETBIRD_IP=\"127.0.0.1\"\nVPS_PUBLIC_IP=\"174.128.205.124\"\nAPI_KEY=\"test-key\"\nPDNS_PORT=\"8081\"\nAGENT_PORT=\"8082\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "edge-dns.conf"), []byte(confData), 0600); err != nil {
+		t.Fatalf("write edge-dns.conf failed: %v", err)
+	}
+
+	srv := &Server{cfg: cfg, store: db, pdnsMgr: pdnsMgr}
+	stats := &monitor.SystemStats{
+		NetbirdIP: "-",
+		Services: []monitor.ServiceStatus{
+			{Name: "netbird", Installed: false},
+		},
+	}
+	srv.applyPDNSModeToStats(stats)
+
+	if stats.ServerMode != "vps" {
+		t.Fatalf("ServerMode = %q, want vps", stats.ServerMode)
+	}
+	if stats.PublicIP != "174.128.205.124" {
+		t.Fatalf("PublicIP = %q, want 174.128.205.124", stats.PublicIP)
+	}
+	if stats.NetbirdIP != "-" {
+		t.Fatalf("NetbirdIP = %q, want '-' (must not copy VPS PublicIP when NetBird is not installed)", stats.NetbirdIP)
 	}
 }
