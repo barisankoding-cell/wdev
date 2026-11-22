@@ -24,34 +24,51 @@ import (
 )
 
 type SystemStats struct {
-	WdevVersion  string            `json:"wdev_version"`
-	Hostname     string            `json:"hostname"`
-	OSName       string            `json:"os_name"`
-	Kernel       string            `json:"kernel"`
-	UptimeString string            `json:"uptime_string"`
-	LoadAvg       string            `json:"load_avg"`
-	CPUCores      int               `json:"cpu_cores"`
-	CPUCoresUsage []CPUCoreUsage    `json:"cpu_cores_usage,omitempty"`
-	LoadPercent   int               `json:"load_percent"`
-	Load1m       float64           `json:"load_1m"`
-	Load5m       float64           `json:"load_5m"`
-	Load15m      float64           `json:"load_15m"`
-	Load1mPct    int               `json:"load_1m_percent"`
-	Load5mPct    int               `json:"load_5m_percent"`
-	Load15mPct   int               `json:"load_15m_percent"`
-	MemTotalMB   int64             `json:"mem_total_mb"`
-	MemUsedMB    int64             `json:"mem_used_mb"`
-	MemPercent   int               `json:"mem_percent"`
-	DiskTotalGB  int64             `json:"disk_total_gb"`
-	DiskUsedGB   int64             `json:"disk_used_gb"`
-	DiskPercent  int               `json:"disk_percent"`
-	MountDrives  []MountDriveInfo  `json:"mount_drives,omitempty"`
-	LanIP        string            `json:"lan_ip"`
-	NetbirdIP    string            `json:"netbird_ip"`
-	PublicIP     string            `json:"public_ip,omitempty"`
-	ServerMode   string            `json:"server_mode,omitempty"`
-	Services     []ServiceStatus   `json:"services"`
-	Runtimes     map[string]string `json:"runtimes"`
+	WdevVersion     string            `json:"wdev_version"`
+	Hostname        string            `json:"hostname"`
+	OSName          string            `json:"os_name"`
+	Kernel          string            `json:"kernel"`
+	KernelFull      string            `json:"kernel_full,omitempty"`
+	BootMode        string            `json:"boot_mode,omitempty"`
+	UptimeString    string            `json:"uptime_string"`
+	UptimeSeconds   int64             `json:"uptime_seconds"`
+	LoadAvg         string            `json:"load_avg"`
+	CPUCores        int               `json:"cpu_cores"`
+	CPUModel        string            `json:"cpu_model,omitempty"`
+	CPUSockets      int               `json:"cpu_sockets,omitempty"`
+	CPUUsagePercent float64           `json:"cpu_usage_percent"`
+	IODelayPercent  float64           `json:"io_delay_percent"`
+	CPUCoresUsage   []CPUCoreUsage    `json:"cpu_cores_usage,omitempty"`
+	LoadPercent     int               `json:"load_percent"`
+	Load1m          float64           `json:"load_1m"`
+	Load5m          float64           `json:"load_5m"`
+	Load15m         float64           `json:"load_15m"`
+	Load1mPct       int               `json:"load_1m_percent"`
+	Load5mPct       int               `json:"load_5m_percent"`
+	Load15mPct      int               `json:"load_15m_percent"`
+	MemTotalMB      int64             `json:"mem_total_mb"`
+	MemUsedMB       int64             `json:"mem_used_mb"`
+	MemPercent      int               `json:"mem_percent"`
+	MemTotalBytes   uint64            `json:"mem_total_bytes"`
+	MemUsedBytes    uint64            `json:"mem_used_bytes"`
+	MemPercentExact float64           `json:"mem_percent_exact"`
+	SwapTotalBytes  uint64            `json:"swap_total_bytes"`
+	SwapUsedBytes   uint64            `json:"swap_used_bytes"`
+	SwapPercent     float64           `json:"swap_percent"`
+	KSMSharingBytes uint64            `json:"ksm_sharing_bytes"`
+	DiskTotalGB     int64             `json:"disk_total_gb"`
+	DiskUsedGB      int64             `json:"disk_used_gb"`
+	DiskPercent     int               `json:"disk_percent"`
+	DiskTotalBytes  uint64            `json:"disk_total_bytes"`
+	DiskUsedBytes   uint64            `json:"disk_used_bytes"`
+	DiskPercentExact float64          `json:"disk_percent_exact"`
+	MountDrives     []MountDriveInfo  `json:"mount_drives,omitempty"`
+	LanIP           string            `json:"lan_ip"`
+	NetbirdIP       string            `json:"netbird_ip"`
+	PublicIP        string            `json:"public_ip,omitempty"`
+	ServerMode      string            `json:"server_mode,omitempty"`
+	Services        []ServiceStatus   `json:"services"`
+	Runtimes        map[string]string `json:"runtimes"`
 }
 
 type CPUCoreUsage struct {
@@ -149,15 +166,19 @@ func Collect() (*SystemStats, error) {
 
 	osName := getOSName()
 	kernel := getKernel()
-	uptimeStr := getUptime()
+	kernelFull := getKernelFull(kernel)
+	bootMode := getBootMode()
+	uptimeStr, uptimeSec := getUptimeInfo()
 	loadAvg, cpuCores, l1, l5, l15, p1, p5, p15 := getLoadAvgInfo()
-	memTotal, memUsed, memPct := getMemInfo()
-	diskTotal, diskUsed, diskPct := getDiskInfo("/")
+	cpuModel, cpuSockets := getCPUHardwareInfo()
+	memStats := getDetailedMemInfo()
+	diskTotal, diskUsed, diskTotalBytes, diskUsedBytes, diskPct, diskPctExact := getDetailedDiskInfo("/")
 	mountDrives := DetectMountDrives()
 	lanIP, netbirdIP, publicIP := getNetworkIPs()
 	services := getServiceStatuses()
 	runtimes := getRuntimeVersions()
-	cpuCoresUsage := getCPUCoresUsage()
+	cpuCoresUsage, cpuUsagePct, ioDelayPct := getCPUUsageMetrics()
+	ksmBytes := getKSMSharingBytes()
 
 	serverMode := ""
 	if publicIP != "" && publicIP != "-" && publicIP != "127.0.0.1" {
@@ -165,34 +186,51 @@ func Collect() (*SystemStats, error) {
 	}
 
 	return &SystemStats{
-		WdevVersion:   version.Version,
-		Hostname:      hostname,
-		OSName:        osName,
-		Kernel:        kernel,
-		UptimeString:  uptimeStr,
-		LoadAvg:       loadAvg,
-		CPUCores:      cpuCores,
-		CPUCoresUsage: cpuCoresUsage,
-		LoadPercent:   p1,
-		Load1m:       l1,
-		Load5m:       l5,
-		Load15m:      l15,
-		Load1mPct:    p1,
-		Load5mPct:    p5,
-		Load15mPct:   p15,
-		MemTotalMB:   memTotal,
-		MemUsedMB:    memUsed,
-		MemPercent:   memPct,
-		DiskTotalGB:  diskTotal,
-		DiskUsedGB:   diskUsed,
-		DiskPercent:  diskPct,
-		MountDrives:  mountDrives,
-		LanIP:        lanIP,
-		NetbirdIP:    netbirdIP,
-		PublicIP:     publicIP,
-		ServerMode:    serverMode,
-		Services:     services,
-		Runtimes:     runtimes,
+		WdevVersion:      version.Version,
+		Hostname:         hostname,
+		OSName:           osName,
+		Kernel:           kernel,
+		KernelFull:       kernelFull,
+		BootMode:         bootMode,
+		UptimeString:     uptimeStr,
+		UptimeSeconds:    uptimeSec,
+		LoadAvg:          loadAvg,
+		CPUCores:         cpuCores,
+		CPUModel:         cpuModel,
+		CPUSockets:       cpuSockets,
+		CPUUsagePercent:  cpuUsagePct,
+		IODelayPercent:   ioDelayPct,
+		CPUCoresUsage:    cpuCoresUsage,
+		LoadPercent:      p1,
+		Load1m:           l1,
+		Load5m:           l5,
+		Load15m:          l15,
+		Load1mPct:        p1,
+		Load5mPct:        p5,
+		Load15mPct:       p15,
+		MemTotalMB:       memStats.totalMB,
+		MemUsedMB:        memStats.usedMB,
+		MemPercent:       memStats.percentInt,
+		MemTotalBytes:    memStats.totalBytes,
+		MemUsedBytes:     memStats.usedBytes,
+		MemPercentExact:  memStats.percentExact,
+		SwapTotalBytes:   memStats.swapTotalBytes,
+		SwapUsedBytes:    memStats.swapUsedBytes,
+		SwapPercent:      memStats.swapPercent,
+		KSMSharingBytes:  ksmBytes,
+		DiskTotalGB:      diskTotal,
+		DiskUsedGB:       diskUsed,
+		DiskPercent:      diskPct,
+		DiskTotalBytes:   diskTotalBytes,
+		DiskUsedBytes:    diskUsedBytes,
+		DiskPercentExact: diskPctExact,
+		MountDrives:      mountDrives,
+		LanIP:            lanIP,
+		NetbirdIP:        netbirdIP,
+		PublicIP:         publicIP,
+		ServerMode:       serverMode,
+		Services:         services,
+		Runtimes:         runtimes,
 	}, nil
 }
 
@@ -221,25 +259,51 @@ func getKernel() string {
 	return ""
 }
 
-func getUptime() string {
+func getKernelFull(fallback string) string {
+	out, err := exec.Command("uname", "-s", "-r", "-v").Output()
+	if err == nil {
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			return trimmed
+		}
+	}
+	if fallback != "" {
+		return "Linux " + fallback
+	}
+	return ""
+}
+
+func getBootMode() string {
+	if dirExists("/sys/firmware/efi") {
+		return "EFI"
+	}
+	if dirExists("/sys/firmware") {
+		return "Legacy BIOS"
+	}
+	return "-"
+}
+
+func getUptimeInfo() (string, int64) {
 	data, err := os.ReadFile("/proc/uptime")
 	if err != nil {
-		return "N/A"
+		return "N/A", 0
 	}
 	parts := strings.Fields(string(data))
 	if len(parts) == 0 {
-		return "N/A"
+		return "N/A", 0
 	}
 	secondsFloat, _ := strconv.ParseFloat(parts[0], 64)
 	totalSec := int64(secondsFloat)
+	if totalSec < 0 {
+		totalSec = 0
+	}
 	days := totalSec / 86400
 	hours := (totalSec % 86400) / 3600
 	minutes := (totalSec % 3600) / 60
 
 	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes), totalSec
 	}
-	return fmt.Sprintf("%dh %dm", hours, minutes)
+	return fmt.Sprintf("%dh %dm", hours, minutes), totalSec
 }
 
 func loadToPercent(load float64, cpuCores int) int {
@@ -284,16 +348,35 @@ func getLoadAvgInfo() (summary string, cpuCores int, l1, l5, l15 float64, p1, p5
 }
 
 type coreTickSample struct {
-	idle  uint64
-	total uint64
+	idle   uint64
+	iowait uint64
+	total  uint64
 }
 
+const aggregateCPUKey = -1
+
 var (
-	cpuMu            sync.RWMutex
-	prevCPUTicks     map[int]coreTickSample
-	lastCPUTickTime  time.Time
-	cachedCoresUsage []CPUCoreUsage
+	cpuMu             sync.RWMutex
+	prevCPUTicks      map[int]coreTickSample
+	lastCPUTickTime   time.Time
+	cachedCoresUsage  []CPUCoreUsage
+	cachedAggCPUUsage float64
+	cachedIODelay     float64
 )
+
+func round2(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+func clampPercent2(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0
+	}
+	if v >= 100 {
+		return 100
+	}
+	return round2(v)
+}
 
 func parseProcStat(content string) map[int]coreTickSample {
 	res := make(map[int]coreTickSample)
@@ -308,13 +391,14 @@ func parseProcStat(content string) map[int]coreTickSample {
 			continue
 		}
 		name := fields[0]
-		if name == "cpu" {
-			continue // skip aggregate cpu line
-		}
-		coreIDStr := strings.TrimPrefix(name, "cpu")
-		coreID, err := strconv.Atoi(coreIDStr)
-		if err != nil {
-			continue
+		coreID := aggregateCPUKey
+		if name != "cpu" {
+			coreIDStr := strings.TrimPrefix(name, "cpu")
+			parsedID, err := strconv.Atoi(coreIDStr)
+			if err != nil {
+				continue
+			}
+			coreID = parsedID
 		}
 
 		var values []uint64
@@ -346,8 +430,9 @@ func parseProcStat(content string) map[int]coreTickSample {
 		nonIdle := user + nice + sys + irq + softirq + steal
 		total := idleTotal + nonIdle
 		res[coreID] = coreTickSample{
-			idle:  idleTotal,
-			total: total,
+			idle:   idleTotal,
+			iowait: iowait,
+			total:  total,
 		}
 	}
 	return res
@@ -356,6 +441,9 @@ func parseProcStat(content string) map[int]coreTickSample {
 func calculateCoresUsage(prev, curr map[int]coreTickSample) []CPUCoreUsage {
 	var list []CPUCoreUsage
 	for coreID, curSamp := range curr {
+		if coreID == aggregateCPUKey {
+			continue
+		}
 		prevSamp, ok := prev[coreID]
 		if !ok {
 			continue
@@ -383,6 +471,31 @@ func calculateCoresUsage(prev, curr map[int]coreTickSample) []CPUCoreUsage {
 	return list
 }
 
+func calculateAggregateCPUAndIODelay(prev, curr map[int]coreTickSample) (cpuPct, ioDelayPct float64) {
+	prevAgg, okPrev := prev[aggregateCPUKey]
+	currAgg, okCurr := curr[aggregateCPUKey]
+	if !okPrev || !okCurr {
+		return 0, 0
+	}
+	totalDelta := int64(currAgg.total) - int64(prevAgg.total)
+	if totalDelta <= 0 {
+		return 0, 0
+	}
+	idleDelta := int64(currAgg.idle) - int64(prevAgg.idle)
+	if idleDelta < 0 {
+		idleDelta = 0
+	}
+	if totalDelta >= idleDelta {
+		usedDelta := totalDelta - idleDelta
+		cpuPct = clampPercent2(float64(usedDelta) / float64(totalDelta) * 100.0)
+	}
+	iowaitDelta := int64(currAgg.iowait) - int64(prevAgg.iowait)
+	if iowaitDelta > 0 {
+		ioDelayPct = clampPercent2(float64(iowaitDelta) / float64(totalDelta) * 100.0)
+	}
+	return cpuPct, ioDelayPct
+}
+
 func startCPUSampler() {
 	raw, err := os.ReadFile("/proc/stat")
 	if err == nil {
@@ -402,6 +515,7 @@ func startCPUSampler() {
 		cpuMu.Lock()
 		if len(prevCPUTicks) > 0 {
 			cachedCoresUsage = calculateCoresUsage(prevCPUTicks, curr)
+			cachedAggCPUUsage, cachedIODelay = calculateAggregateCPUAndIODelay(prevCPUTicks, curr)
 		}
 		prevCPUTicks = curr
 		lastCPUTickTime = time.Now()
@@ -409,87 +523,219 @@ func startCPUSampler() {
 	}
 }
 
-func getCPUCoresUsage() []CPUCoreUsage {
+func getCPUUsageMetrics() ([]CPUCoreUsage, float64, float64) {
 	cpuMu.RLock()
 	cached := cachedCoresUsage
+	aggCached := cachedAggCPUUsage
+	ioCached := cachedIODelay
 	lastTime := lastCPUTickTime
 	hasPrev := len(prevCPUTicks) > 0
 	cpuMu.RUnlock()
 
-	if len(cached) > 0 && time.Since(lastTime) < 5*time.Second {
+	if hasPrev && time.Since(lastTime) < 5*time.Second && (len(cached) > 0 || aggCached > 0 || ioCached > 0) {
 		res := make([]CPUCoreUsage, len(cached))
 		copy(res, cached)
-		return res
+		return res, aggCached, ioCached
 	}
 
 	raw1, err := os.ReadFile("/proc/stat")
 	if err != nil {
-		return nil
+		return nil, 0, 0
 	}
 	sample1 := parseProcStat(string(raw1))
-	if len(sample1) <= 1 {
-		return nil
+	if len(sample1) == 0 {
+		return nil, 0, 0
 	}
 
 	cpuMu.Lock()
 	if hasPrev && time.Since(lastTime) < 10*time.Second {
 		usage := calculateCoresUsage(prevCPUTicks, sample1)
+		aggPct, ioPct := calculateAggregateCPUAndIODelay(prevCPUTicks, sample1)
 		prevCPUTicks = sample1
 		lastCPUTickTime = time.Now()
 		cachedCoresUsage = usage
+		cachedAggCPUUsage = aggPct
+		cachedIODelay = ioPct
 		cpuMu.Unlock()
-		return usage
+		return usage, aggPct, ioPct
 	}
 	cpuMu.Unlock()
 
 	time.Sleep(150 * time.Millisecond)
 	raw2, err := os.ReadFile("/proc/stat")
 	if err != nil {
-		return nil
+		return nil, 0, 0
 	}
 	sample2 := parseProcStat(string(raw2))
 	usage := calculateCoresUsage(sample1, sample2)
+	aggPct, ioPct := calculateAggregateCPUAndIODelay(sample1, sample2)
 
 	cpuMu.Lock()
 	prevCPUTicks = sample2
 	lastCPUTickTime = time.Now()
 	cachedCoresUsage = usage
+	cachedAggCPUUsage = aggPct
+	cachedIODelay = ioPct
 	cpuMu.Unlock()
 
-	return usage
+	return usage, aggPct, ioPct
 }
 
-func getMemInfo() (totalMB int64, usedMB int64, percent int) {
-	data, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, 0, 0
-	}
+func parseCPUInfo(content string) (model string, sockets int) {
+	physicalIDs := make(map[string]struct{})
+	var fallbackModel string
 
-	var totalKB, availKB int64
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 2 {
-			switch fields[0] {
-			case "MemTotal:":
-				totalKB, _ = strconv.ParseInt(fields[1], 10, 64)
-			case "MemAvailable:":
-				availKB, _ = strconv.ParseInt(fields[1], 10, 64)
+		line := scanner.Text()
+		idx := strings.IndexByte(line, ':')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		if val == "" {
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "model name":
+			if model == "" {
+				model = val
 			}
+		case "model", "hardware", "cpu model", "processor":
+			if fallbackModel == "" && !isDigits(val) {
+				fallbackModel = val
+			}
+		case "physical id":
+			physicalIDs[val] = struct{}{}
 		}
 	}
 
-	if totalKB > 0 {
-		usedKB := totalKB - availKB
-		totalMB = totalKB / 1024
-		usedMB = usedKB / 1024
-		percent = int((float64(usedKB) / float64(totalKB)) * 100)
+	if model == "" {
+		model = fallbackModel
 	}
-	return
+	sockets = len(physicalIDs)
+	if sockets <= 0 {
+		sockets = 1
+	}
+	return model, sockets
 }
 
-func getDiskInfo(path string) (totalGB int64, usedGB int64, percent int) {
-	totalGB, usedGB, _, _, _, percent, _ = readDiskUsage(path, syscall.Statfs)
+func getCPUHardwareInfo() (string, int) {
+	data, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		return "", 1
+	}
+	return parseCPUInfo(string(data))
+}
+
+type detailedMemStats struct {
+	totalMB        int64
+	usedMB         int64
+	percentInt     int
+	totalBytes     uint64
+	usedBytes      uint64
+	percentExact   float64
+	swapTotalBytes uint64
+	swapUsedBytes  uint64
+	swapPercent    float64
+}
+
+func parseDetailedMemInfo(content string) detailedMemStats {
+	var totalKB, availKB, freeKB, buffersKB, cachedKB int64
+	var swapTotalKB, swapFreeKB int64
+	hasAvail := false
+
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		val, _ := strconv.ParseInt(fields[1], 10, 64)
+		switch fields[0] {
+		case "MemTotal:":
+			totalKB = val
+		case "MemAvailable:":
+			availKB = val
+			hasAvail = true
+		case "MemFree:":
+			freeKB = val
+		case "Buffers:":
+			buffersKB = val
+		case "Cached:":
+			cachedKB = val
+		case "SwapTotal:":
+			swapTotalKB = val
+		case "SwapFree:":
+			swapFreeKB = val
+		}
+	}
+
+	if !hasAvail {
+		availKB = freeKB + buffersKB + cachedKB
+	}
+	if availKB > totalKB {
+		availKB = totalKB
+	}
+
+	var res detailedMemStats
+	if totalKB > 0 {
+		usedKB := totalKB - availKB
+		if usedKB < 0 {
+			usedKB = 0
+		}
+		res.totalMB = totalKB / 1024
+		res.usedMB = usedKB / 1024
+		res.totalBytes = uint64(totalKB) * 1024
+		res.usedBytes = uint64(usedKB) * 1024
+		ratio := float64(usedKB) / float64(totalKB) * 100.0
+		res.percentInt = int(ratio)
+		res.percentExact = clampPercent2(ratio)
+	}
+
+	if swapTotalKB > 0 {
+		swapUsedKB := swapTotalKB - swapFreeKB
+		if swapUsedKB < 0 {
+			swapUsedKB = 0
+		}
+		res.swapTotalBytes = uint64(swapTotalKB) * 1024
+		res.swapUsedBytes = uint64(swapUsedKB) * 1024
+		res.swapPercent = clampPercent2(float64(swapUsedKB) / float64(swapTotalKB) * 100.0)
+	}
+
+	return res
+}
+
+func getDetailedMemInfo() detailedMemStats {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return detailedMemStats{}
+	}
+	return parseDetailedMemInfo(string(data))
+}
+
+func getKSMSharingBytes() uint64 {
+	data, err := os.ReadFile("/sys/kernel/mm/ksm/pages_sharing")
+	if err != nil {
+		return 0
+	}
+	pages, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil || pages == 0 {
+		return 0
+	}
+	pageSize := os.Getpagesize()
+	if pageSize <= 0 {
+		pageSize = 4096
+	}
+	return pages * uint64(pageSize)
+}
+
+func getDetailedDiskInfo(path string) (totalGB, usedGB int64, totalBytes, usedBytes uint64, percent int, percentExact float64) {
+	totalGB, usedGB, _, totalBytes, usedBytes, percent, _ = readDiskUsage(path, syscall.Statfs)
+	if totalBytes > 0 {
+		percentExact = clampPercent2(float64(usedBytes) / float64(totalBytes) * 100.0)
+	}
 	return
 }
 

@@ -39,6 +39,14 @@
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
+	import CpuIcon from '@lucide/svelte/icons/cpu';
+	import ClockIcon from '@lucide/svelte/icons/clock';
+	import MemoryStickIcon from '@lucide/svelte/icons/memory-stick';
+	import ServerIcon from '@lucide/svelte/icons/server';
+	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import CircleCheckIcon from '@lucide/svelte/icons/circle-check';
+	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
+	import LayersIcon from '@lucide/svelte/icons/layers';
 
 	let refreshingServices = $state(false);
 	let servicePending = $state<Record<string, boolean>>({});
@@ -77,6 +85,34 @@
 		const b = bytes ?? 0;
 		if (b >= 1024 * 1024) return `${Math.round(b / (1024 * 1024))} MB`;
 		return '0 GB';
+	}
+
+	function formatBinaryBytes(bytes: number): string {
+		if (!bytes || bytes <= 0) return '0 B';
+		const gib = 1024 * 1024 * 1024;
+		const mib = 1024 * 1024;
+		const kib = 1024;
+		if (bytes >= gib) return `${(bytes / gib).toFixed(2)} GiB`;
+		if (bytes >= mib) return `${(bytes / mib).toFixed(2)} MiB`;
+		if (bytes >= kib) return `${(bytes / kib).toFixed(2)} KiB`;
+		return `${Math.round(bytes)} B`;
+	}
+
+	function formatUptimeClock(seconds: number | undefined, fallback: string): string {
+		if (seconds == null || seconds < 0) return fallback || 'N/A';
+		const total = Math.floor(seconds);
+		const days = Math.floor(total / 86400);
+		const hours = Math.floor((total % 86400) / 3600);
+		const mins = Math.floor((total % 3600) / 60);
+		const secs = total % 60;
+		const hms = [hours, mins, secs].map((n) => String(n).padStart(2, '0')).join(':');
+		return days > 0 ? `${days} hari ${hms}` : hms;
+	}
+
+	function getProgressToneClass(pct: number): string {
+		if (pct >= 90) return '[&>[data-slot=progress-indicator]]:bg-destructive';
+		if (pct >= 75) return '[&>[data-slot=progress-indicator]]:bg-warning';
+		return '';
 	}
 
 	async function copyAddress(val: string, label: string) {
@@ -248,176 +284,268 @@
 		</Alert.Root>
 	{/if}
 
-	<!-- System Metrics -->
+	<!-- System Node Summary (Proxmox-style Unified Panel) -->
 	{#if !cp.systemStatus}
-		<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
-			{#each [1, 2, 3, 4] as idx (idx)}
-				<Card.Root>
-					<Card.Header>
-						<Skeleton class="h-4 w-24" />
-						<Skeleton class="h-7 w-28" />
-					</Card.Header>
-					<Card.Content class="mt-auto flex flex-col gap-2.5">
-						<Skeleton class="h-1 w-full" />
-						<Skeleton class="h-12 w-full" />
-					</Card.Content>
-				</Card.Root>
-			{/each}
-		</div>
+		<Card.Root>
+			<Card.Header class="border-b">
+				<Skeleton class="h-5 w-64" />
+			</Card.Header>
+			<Card.Content class="flex flex-col gap-5 pt-4">
+				<div class="grid grid-cols-1 gap-x-8 gap-y-4 md:grid-cols-2">
+					{#each [1, 2, 3, 4, 5, 6] as idx (idx)}
+						<div class="flex flex-col gap-2">
+							<div class="flex items-center justify-between gap-2">
+								<Skeleton class="h-4 w-24" />
+								<Skeleton class="h-4 w-32" />
+							</div>
+							<Skeleton class="h-1.5 w-full" />
+						</div>
+					{/each}
+				</div>
+				<Separator />
+				<div class="flex flex-col gap-2.5">
+					{#each [1, 2, 3, 4, 5] as idx (idx)}
+						<div class="flex items-center justify-between gap-4">
+							<Skeleton class="h-4 w-28" />
+							<Skeleton class="h-4 w-56" />
+						</div>
+					{/each}
+				</div>
+			</Card.Content>
+		</Card.Root>
 	{:else}
 		{@const st = cp.systemStatus}
 		{@const cpuCores = st.cpu_cores && st.cpu_cores > 0 ? st.cpu_cores : 1}
-		{@const loadPct = st.load_percent ?? st.load_1m_percent ?? 0}
-		{@const load1Pct = st.load_1m_percent ?? loadPct}
-		{@const load5Pct = st.load_5m_percent ?? 0}
-		{@const load15Pct = st.load_15m_percent ?? 0}
-		{@const load1Raw = (st.load_1m ?? 0).toFixed(2)}
-		{@const load5Raw = (st.load_5m ?? 0).toFixed(2)}
-		{@const load15Raw = (st.load_15m ?? 0).toFixed(2)}
-		<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
-			<Card.Root>
-				<Card.Header>
-					<div class="flex items-center justify-between gap-2">
-						<Card.Description>Sistem Operasi</Card.Description>
-						{#if st.hostname}
-							<Badge variant="outline" class="max-w-32 truncate font-mono text-[10px]">
-								{st.hostname}
-							</Badge>
-						{/if}
+		{@const cpuPct = st.cpu_usage_percent ?? Math.min(st.load_percent ?? 0, 100)}
+		{@const ioDelayPct = st.io_delay_percent ?? 0}
+		{@const memTotalBytes = st.mem_total_bytes ?? st.mem_total_mb * 1024 * 1024}
+		{@const memUsedBytes = st.mem_used_bytes ?? st.mem_used_mb * 1024 * 1024}
+		{@const memPctExact = st.mem_percent_exact ?? st.mem_percent}
+		{@const diskTotalBytes = st.disk_total_bytes ?? st.disk_total_gb * 1024 * 1024 * 1024}
+		{@const diskUsedBytes = st.disk_used_bytes ?? st.disk_used_gb * 1024 * 1024 * 1024}
+		{@const diskPctExact = st.disk_percent_exact ?? st.disk_percent}
+		{@const swapTotalBytes = st.swap_total_bytes ?? 0}
+		{@const swapUsedBytes = st.swap_used_bytes ?? 0}
+		{@const swapPct = st.swap_percent ?? 0}
+		{@const ksmBytes = st.ksm_sharing_bytes ?? 0}
+		{@const uptimeLabel = formatUptimeClock(st.uptime_seconds, st.uptime_string)}
+		{@const cpuHardwareLabel = st.cpu_model
+			? `${cpuCores} x ${st.cpu_model} (${st.cpu_sockets || 1} Socket)`
+			: `${cpuCores} vCPU`}
+		{@const installedServices = (st.services || []).filter((s) => s.installed)}
+		{@const activeServicesCount = installedServices.filter((s) => s.active).length}
+		{@const updatesCount = installedServices.filter((s) => s.has_update).length}
+		{@const hasPanelUpdate = Boolean(updaterStatus?.has_update)}
+		{@const totalPendingUpdates = updatesCount + (hasPanelUpdate ? 1 : 0)}
+		<Card.Root class="gap-0 py-0">
+			<Card.Header class="border-b px-4 py-3 [.border-b]:pb-3 sm:px-5">
+				<div class="flex flex-wrap items-center justify-between gap-2">
+					<div class="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+						<span class="inline-flex items-center gap-1.5 font-semibold text-primary">
+							<ServerIcon class="size-4 shrink-0" aria-hidden="true" />
+							<span class="truncate">{st.hostname || 'localhost'}</span>
+						</span>
+						<span class="font-mono text-xs text-muted-foreground tabular-nums">
+							(Uptime: {uptimeLabel})
+						</span>
 					</div>
-					<Card.Title class="text-base leading-snug break-words">{st.os_name}</Card.Title>
-				</Card.Header>
-				<Card.Content class="mt-auto">
-					<div class="flex flex-col gap-1 rounded-md border bg-muted/40 px-2.5 py-2 text-xs">
-						<div class="flex items-center justify-between gap-2">
-							<span class="shrink-0 text-muted-foreground">Uptime</span>
-							<span class="font-mono text-[11px] font-medium tabular-nums">
-								{st.uptime_string}
-							</span>
-						</div>
-						{#if st.kernel}
-							<div class="flex items-baseline justify-between gap-2">
-								<span class="shrink-0 text-muted-foreground">Kernel</span>
-								<span class="min-w-0 break-all text-right font-mono text-[11px] text-muted-foreground">
-									{st.kernel}
+					{#if st.os_name}
+						<Badge variant="outline" class="max-w-full truncate font-normal text-xs">
+							{st.os_name}
+						</Badge>
+					{/if}
+				</div>
+			</Card.Header>
+
+			<Card.Content class="flex flex-col gap-5 px-4 py-4 sm:px-5 sm:py-5">
+				<!-- Upper 2-Column Resource Telemetry -->
+				<div class="flex flex-col gap-4">
+					<!-- Row 1: CPU usage & Load average | IO delay -->
+					<div class="grid grid-cols-1 items-start gap-x-8 gap-y-3.5 md:grid-cols-2">
+						<div class="flex flex-col gap-3">
+							<div class="flex flex-col gap-1.5">
+								<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
+									<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
+										<CpuIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+										<span>CPU usage</span>
+									</span>
+									<span class="font-mono text-xs tabular-nums text-foreground">
+										{cpuPct.toFixed(2)}% of {cpuCores} {cpuCores === 1 ? 'CPU' : 'CPUs'}
+									</span>
+								</div>
+								<Progress
+									value={Math.min(cpuPct, 100)}
+									max={100}
+									class={cn('h-1.5', getProgressToneClass(cpuPct))}
+									aria-label="CPU usage"
+								/>
+							</div>
+
+							<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
+								<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
+									<ActivityIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+									<span>Load average</span>
+								</span>
+								<span class="font-mono text-xs tabular-nums text-foreground">
+									{st.load_avg || '-'}
 								</span>
 							</div>
-						{/if}
-					</div>
-				</Card.Content>
-			</Card.Root>
+						</div>
 
-			<Card.Root>
-				<Card.Header>
-					<div class="flex items-center justify-between gap-2">
-						<Card.Description>Load Average</Card.Description>
-						<Badge variant="outline" class="font-mono text-[10px]">{cpuCores} vCPU</Badge>
-					</div>
-					<Card.Title
-						class={cn(
-							'font-mono text-xl font-semibold tracking-tight tabular-nums',
-							loadPct > 100 ? 'text-destructive' : loadPct >= 75 && 'text-warning'
-						)}
-					>
-						{loadPct}%
-					</Card.Title>
-				</Card.Header>
-				<Card.Content class="mt-auto flex flex-col gap-2.5">
-					<Progress value={Math.min(loadPct, 100)} max={100} aria-label="Persentase Load Average CPU" />
-					<div
-						class="grid grid-cols-3 divide-x divide-border/60 rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono tabular-nums"
-					>
-						<div class="flex flex-col pr-2 leading-tight">
-							<span class="text-[10px] text-muted-foreground">1m</span>
-							<span class="mt-0.5 text-xs font-semibold">{load1Pct}%</span>
-							<span class="text-[10px] text-muted-foreground">{load1Raw}</span>
-						</div>
-						<div class="flex flex-col px-2 leading-tight">
-							<span class="text-[10px] text-muted-foreground">5m</span>
-							<span class="mt-0.5 text-xs font-semibold">{load5Pct}%</span>
-							<span class="text-[10px] text-muted-foreground">{load5Raw}</span>
-						</div>
-						<div class="flex flex-col pl-2 leading-tight">
-							<span class="text-[10px] text-muted-foreground">15m</span>
-							<span class="mt-0.5 text-xs font-semibold">{load15Pct}%</span>
-							<span class="text-[10px] text-muted-foreground">{load15Raw}</span>
+						<div class="flex flex-col gap-1.5">
+							<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
+								<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
+									<ClockIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+									<span>IO delay</span>
+								</span>
+								<span class="font-mono text-xs tabular-nums text-foreground">
+									{ioDelayPct.toFixed(2)}%
+								</span>
+							</div>
+							<Progress
+								value={Math.min(ioDelayPct, 100)}
+								max={100}
+								class={cn('h-1.5', getProgressToneClass(ioDelayPct))}
+								aria-label="IO delay"
+							/>
 						</div>
 					</div>
-				</Card.Content>
-			</Card.Root>
 
-			<Card.Root>
-				<Card.Header>
-					<div class="flex items-center justify-between gap-2">
-						<Card.Description>Memori (RAM)</Card.Description>
-						{#if st.mem_total_mb > 0}
-							<Badge variant="outline" class="font-mono text-[10px]">
-								{(st.mem_total_mb / 1024).toFixed(1)} GB
-							</Badge>
-						{/if}
-					</div>
-					<Card.Title
-						class={cn(
-							'font-mono text-xl font-semibold tracking-tight tabular-nums',
-							st.mem_percent >= 90 ? 'text-destructive' : st.mem_percent >= 75 && 'text-warning'
-						)}
-					>
-						{st.mem_percent}%
-					</Card.Title>
-				</Card.Header>
-				<Card.Content class="mt-auto flex flex-col gap-2.5">
-					<Progress value={st.mem_percent} max={100} aria-label="Penggunaan RAM" />
-					<div class="flex flex-col gap-1 rounded-md border bg-muted/40 px-2.5 py-2 text-xs">
-						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Terpakai</span>
-							<span class="font-mono text-[11px] font-medium tabular-nums">
-								{st.mem_used_mb} / {st.mem_total_mb} MB
-							</span>
+					<!-- Row 2: RAM usage | KSM sharing -->
+					<div class="grid grid-cols-1 items-start gap-x-8 gap-y-3.5 md:grid-cols-2">
+						<div class="flex flex-col gap-1.5">
+							<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
+								<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
+									<MemoryStickIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+									<span>RAM usage</span>
+								</span>
+								<span class="font-mono text-xs tabular-nums text-foreground">
+									{memPctExact.toFixed(2)}% ({formatBinaryBytes(memUsedBytes)} of {formatBinaryBytes(memTotalBytes)})
+								</span>
+							</div>
+							<Progress
+								value={Math.min(memPctExact, 100)}
+								max={100}
+								class={cn('h-1.5', getProgressToneClass(memPctExact))}
+								aria-label="RAM usage"
+							/>
 						</div>
-						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Tersedia</span>
-							<span class="font-mono text-[11px] text-muted-foreground tabular-nums">
-								{Math.max(st.mem_total_mb - st.mem_used_mb, 0)} MB
-							</span>
-						</div>
-					</div>
-				</Card.Content>
-			</Card.Root>
 
-			<Card.Root>
-				<Card.Header>
-					<div class="flex items-center justify-between gap-2">
-						<Card.Description>Disk Root</Card.Description>
-						<Badge variant="outline" class="font-mono text-[10px]">/</Badge>
-					</div>
-					<Card.Title
-						class={cn(
-							'font-mono text-xl font-semibold tracking-tight tabular-nums',
-							st.disk_percent >= 90 ? 'text-destructive' : st.disk_percent >= 80 && 'text-warning'
-						)}
-					>
-						{st.disk_percent}%
-					</Card.Title>
-				</Card.Header>
-				<Card.Content class="mt-auto flex flex-col gap-2.5">
-					<Progress value={st.disk_percent} max={100} aria-label="Penggunaan Disk" />
-					<div class="flex flex-col gap-1 rounded-md border bg-muted/40 px-2.5 py-2 text-xs">
-						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Terpakai</span>
-							<span class="font-mono text-[11px] font-medium tabular-nums">
-								{st.disk_used_gb} / {st.disk_total_gb} GB
+						<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
+							<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
+								<LayersIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+								<span>KSM sharing</span>
 							</span>
-						</div>
-						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Tersedia</span>
-							<span class="font-mono text-[11px] text-muted-foreground tabular-nums">
-								{Math.max(st.disk_total_gb - st.disk_used_gb, 0)} GB
+							<span class="font-mono text-xs tabular-nums text-foreground">
+								{formatBinaryBytes(ksmBytes)}
 							</span>
 						</div>
 					</div>
-				</Card.Content>
-			</Card.Root>
-		</div>
+
+					<!-- Row 3: / HD space | SWAP usage -->
+					<div class="grid grid-cols-1 items-start gap-x-8 gap-y-3.5 md:grid-cols-2">
+						<div class="flex flex-col gap-1.5">
+							<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
+								<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
+									<HardDriveIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+									<span>/ HD space</span>
+								</span>
+								<span class="font-mono text-xs tabular-nums text-foreground">
+									{diskPctExact.toFixed(2)}% ({formatBinaryBytes(diskUsedBytes)} of {formatBinaryBytes(diskTotalBytes)})
+								</span>
+							</div>
+							<Progress
+								value={Math.min(diskPctExact, 100)}
+								max={100}
+								class={cn('h-1.5', getProgressToneClass(diskPctExact))}
+								aria-label="Penggunaan disk root"
+							/>
+						</div>
+
+						<div class="flex flex-col gap-1.5">
+							<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
+								<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
+									<RefreshCwIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+									<span>SWAP usage</span>
+								</span>
+								<span class="font-mono text-xs tabular-nums text-foreground">
+									{#if swapTotalBytes > 0}
+										{swapPct.toFixed(2)}% ({formatBinaryBytes(swapUsedBytes)} of {formatBinaryBytes(swapTotalBytes)})
+									{:else}
+										0.00% (Tidak aktif)
+									{/if}
+								</span>
+							</div>
+							<Progress
+								value={Math.min(swapPct, 100)}
+								max={100}
+								class={cn('h-1.5', getProgressToneClass(swapPct))}
+								aria-label="SWAP usage"
+							/>
+						</div>
+					</div>
+				</div>
+
+				<Separator />
+
+				<!-- Lower Hardware & Kernel Metadata Table -->
+				<dl class="flex flex-col divide-y divide-border/50 text-xs sm:text-[13px]">
+					<div class="flex flex-col gap-0.5 py-2 first:pt-0 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+						<dt class="shrink-0 font-medium text-muted-foreground">CPU(s)</dt>
+						<dd class="min-w-0 font-mono text-xs break-words text-foreground sm:text-right">
+							{cpuHardwareLabel}
+						</dd>
+					</div>
+
+					<div class="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+						<dt class="shrink-0 font-medium text-muted-foreground">Kernel Version</dt>
+						<dd class="min-w-0 font-mono text-xs break-words text-foreground sm:text-right">
+							{st.kernel_full || (st.kernel ? `Linux ${st.kernel}` : '-')}
+						</dd>
+					</div>
+
+					<div class="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+						<dt class="shrink-0 font-medium text-muted-foreground">Boot Mode</dt>
+						<dd class="min-w-0 font-mono text-xs text-foreground sm:text-right">
+							{st.boot_mode || '-'}
+						</dd>
+					</div>
+
+					<div class="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+						<dt class="shrink-0 font-medium text-muted-foreground">Manager Version</dt>
+						<dd class="min-w-0 font-mono text-xs text-foreground sm:text-right">
+							wdev/{st.wdev_version || updaterStatus?.current || '-'}
+						</dd>
+					</div>
+
+					<div class="flex flex-col gap-1.5 py-2 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+						<dt class="shrink-0 font-medium text-muted-foreground">Repository Status</dt>
+						<dd class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:justify-end">
+							<span class="inline-flex items-center gap-1.5 text-foreground">
+								<CircleCheckIcon class="size-3.5 shrink-0 text-success" aria-hidden="true" />
+								<span>{activeServicesCount}/{installedServices.length} layanan aktif</span>
+							</span>
+							{#if totalPendingUpdates > 0}
+								<button
+									type="button"
+									class="inline-flex min-h-6 items-center gap-1.5 rounded px-1.5 py-0.5 text-foreground transition-colors hover:bg-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+									onclick={refreshServices}
+								>
+									<CircleAlertIcon class="size-3.5 shrink-0 text-warning" aria-hidden="true" />
+									<span>{totalPendingUpdates} pembaruan tersedia</span>
+									<ChevronRightIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+								</button>
+							{:else}
+								<span class="inline-flex items-center gap-1.5 text-foreground">
+									<CircleCheckIcon class="size-3.5 shrink-0 text-success" aria-hidden="true" />
+									<span>Semua paket mutakhir</span>
+								</span>
+							{/if}
+						</dd>
+					</div>
+				</dl>
+			</Card.Content>
+		</Card.Root>
 
 		<!-- Drive Tambahan (/mnt) -->
 		{#if st.mount_drives && st.mount_drives.length > 0}

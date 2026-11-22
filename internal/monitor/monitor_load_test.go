@@ -42,8 +42,11 @@ cpu1 520 100 160 2580 50 0 25 10 0 0
 intr 12350
 `
 	s1 := parseProcStat(sampleStat1)
-	if len(s1) != 2 {
-		t.Fatalf("expected 2 cores parsed, got %d", len(s1))
+	if len(s1) != 3 {
+		t.Fatalf("expected aggregate cpu + 2 cores parsed, got %d", len(s1))
+	}
+	if _, ok := s1[aggregateCPUKey]; !ok {
+		t.Fatalf("expected aggregate cpu in s1")
 	}
 	if _, ok := s1[0]; !ok {
 		t.Fatalf("expected cpu0 in s1")
@@ -53,8 +56,27 @@ intr 12350
 	}
 
 	s2 := parseProcStat(sampleStat2)
-	if len(s2) != 2 {
-		t.Fatalf("expected 2 cores parsed, got %d", len(s2))
+	if len(s2) != 3 {
+		t.Fatalf("expected aggregate cpu + 2 cores parsed, got %d", len(s2))
+	}
+
+	aggPct, ioDelayPct := calculateAggregateCPUAndIODelay(s1, s2)
+	// Aggregate:
+	// prev: idle=5100, nonIdle=1570, total=6670
+	// curr: idle=5150, nonIdle=1730, total=6880
+	// totalDelta=210, idleDelta=50, usedDelta=160 -> 76.19%, iowaitDelta=0 -> 0.00%
+	if aggPct != 76.19 {
+		t.Fatalf("expected 76.19%% aggregate CPU usage, got %.2f%%", aggPct)
+	}
+	if ioDelayPct != 0 {
+		t.Fatalf("expected 0%% IO delay, got %.2f%%", ioDelayPct)
+	}
+
+	// Verify IO delay calculation when iowait increases
+	s3 := parseProcStat(`cpu  1100 200 350 5050 142 0 60 20 0 0`)
+	_, ioPct3 := calculateAggregateCPUAndIODelay(s2, s3)
+	if ioPct3 != 100 {
+		t.Fatalf("expected 100%% IO delay when all delta ticks are iowait, got %.2f%%", ioPct3)
 	}
 
 	usages := calculateCoresUsage(s1, s2)
@@ -102,5 +124,52 @@ func TestIsPublicIPv4(t *testing.T) {
 		if got := IsPublicIPv4(parsed.To4()); got != tc.want {
 			t.Errorf("IsPublicIPv4(%s) = %v, want %v", tc.ip, got, tc.want)
 		}
+	}
+}
+
+func TestParseCPUInfo(t *testing.T) {
+	sample := `processor	: 0
+model name	: Intel(R) Core(TM) i3-10110U CPU @ 2.10GHz
+physical id	: 0
+
+processor	: 1
+model name	: Intel(R) Core(TM) i3-10110U CPU @ 2.10GHz
+physical id	: 0
+
+processor	: 2
+model name	: Intel(R) Core(TM) i3-10110U CPU @ 2.10GHz
+physical id	: 1
+`
+	model, sockets := parseCPUInfo(sample)
+	if model != "Intel(R) Core(TM) i3-10110U CPU @ 2.10GHz" {
+		t.Fatalf("unexpected model: %q", model)
+	}
+	if sockets != 2 {
+		t.Fatalf("expected 2 sockets, got %d", sockets)
+	}
+}
+
+func TestParseDetailedMemInfo(t *testing.T) {
+	sample := `MemTotal:       32684032 kB
+MemFree:        10000000 kB
+MemAvailable:   13128000 kB
+SwapTotal:       8388608 kB
+SwapFree:        8350340 kB
+`
+	m := parseDetailedMemInfo(sample)
+	if m.totalBytes != 32684032*1024 {
+		t.Fatalf("unexpected mem total bytes: %d", m.totalBytes)
+	}
+	if m.usedBytes != (32684032-13128000)*1024 {
+		t.Fatalf("unexpected mem used bytes: %d", m.usedBytes)
+	}
+	if m.percentExact != 59.83 {
+		t.Fatalf("expected 59.83%% memory usage, got %.2f%%", m.percentExact)
+	}
+	if m.swapTotalBytes != 8388608*1024 {
+		t.Fatalf("unexpected swap total bytes: %d", m.swapTotalBytes)
+	}
+	if m.swapPercent != 0.46 {
+		t.Fatalf("expected 0.46%% swap usage, got %.2f%%", m.swapPercent)
 	}
 }

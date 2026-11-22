@@ -1,6 +1,12 @@
 import { api, ApiError } from '#lib/api/client.js';
 import { toast } from 'svelte-sonner';
 
+export interface LoginResult {
+	ok: boolean;
+	error?: string;
+	status?: number;
+}
+
 class AuthStore {
 	authChecked = $state(false);
 	isAuthenticated = $state(false);
@@ -46,18 +52,21 @@ class AuthStore {
 		}
 	}
 
-	async login(user: string, pass: string): Promise<boolean> {
+	async login(user: string, pass: string): Promise<LoginResult> {
 		this.loading = true;
 		try {
 			const res = await api.login({ username: user, password: pass });
 			this.username = res.username;
 			this.isAuthenticated = true;
-			toast.success('Login berhasil', { description: `Selamat datang kembali, ${res.username}!` });
-			return true;
+			toast.success('Login berhasil', { description: `Selamat datang kembali, ${res.username}.` });
+			return { ok: true };
 		} catch (err) {
-			const msg = err instanceof ApiError ? err.message : 'Login gagal. Periksa kembali username dan password.';
-			toast.error('Autentikasi Gagal', { description: msg });
-			return false;
+			const msg =
+				err instanceof ApiError
+					? err.message
+					: 'Tidak dapat terhubung ke server wdev. Periksa koneksi jaringan atau status layanan.';
+			const status = err instanceof ApiError ? err.status : 0;
+			return { ok: false, error: msg, status };
 		} finally {
 			this.loading = false;
 		}
