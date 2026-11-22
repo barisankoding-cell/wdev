@@ -432,7 +432,7 @@
 							{#if config.orca_mode === 'headless'}
 								Saat menyimpan, layanan Orca Headless akan dihentikan sebentar lalu dimulai ulang secara otomatis agar pengaturan tidak tertimpa oleh cache memori.
 								<span class="mt-1 block text-xs text-muted-foreground">
-									Catatan Web Client: jika sebelumnya Anda mengubah setelan AI di UI browser Orca, muat ulang tab Web Client (atau bersihkan cache <code class="font-mono">orca.web.settings.v1</code> di browser) karena Web Client memprioritaskan cache browser.
+									Catatan Web Client: Orca Web Client tidak memuat <code class="font-mono">sourceControlAi</code> dari server dan menyimpan salinannya di browser (<code class="font-mono">orca.web.settings.v1</code>). Jika memakai Web Client, pastikan agent/model/prompt yang sama juga dipilih di Settings Web Client agar tidak menimpa pengaturan server dengan nilai kosong.
 								</span>
 							{:else}
 								Orca sedang berjalan. Pastikan aplikasi Orca Desktop tidak sedang menimpa database profil saat menyimpan.
