@@ -1,5 +1,14 @@
 # Changelog
 
+## [v2.6.0] - 2026-11-22
+
+### 🚀 Fitur Baru
+- feat: tambah fitur ubah virtual host dan rapikan UI mobile (6f514e6)
+- feat: tambahkan paginasi pada daftar layanan dan riwayat (8b8d856)
+
+### 🐛 Perbaikan Bug
+- fix: pulihkan server_name kosong dan rapikan pengelolaan DNS (202e9e8)
+
 ## [v2.5.1] - 2026-11-22
 
 ### 🐛 Perbaikan Bug
