@@ -104,28 +104,28 @@ type OrcaCommitAISummary struct {
 
 // OrcaCommitAIConfig merepresentasikan konfigurasi lengkap AI Commit Generator Orca ADE.
 type OrcaCommitAIConfig struct {
-	DBExists             bool                           `json:"db_exists"`
-	DBPath               string                         `json:"db_path"`
-	ProfileID            string                         `json:"profile_id"`
-	OrcaInstalled        bool                           `json:"orca_installed"`
-	OrcaRunning          bool                           `json:"orca_running"`
-	OrcaMode             string                         `json:"orca_mode"`
-	Enabled              bool                           `json:"enabled"`
-	AgentID              string                         `json:"agent_id"`
-	AgentLabel           string                         `json:"agent_label"`
-	ModelID              string                         `json:"model_id"`
-	ThinkingLevel        string                         `json:"thinking_level"`
-	CustomAgentCommand   string                         `json:"custom_agent_command"`
-	CustomPrompt         string                         `json:"custom_prompt"`
-	CommandInputTemplate string                         `json:"command_input_template"`
-	DefaultTUIAgent      string                         `json:"default_tui_agent"`
-	RepoCount            int                            `json:"repo_count"`
-	RepoOverrideCount    int                            `json:"repo_override_count"`
-	SelectedModelsByAgent map[string]string             `json:"selected_models_by_agent"`
-	SelectedThinkingByModel map[string]string           `json:"selected_thinking_by_model"`
-	CachedModelsByAgent  map[string][]OrcaCommitAIModel `json:"cached_models_by_agent"`
-	AvailableAgents      []OrcaCommitAIAgentOption      `json:"available_agents"`
-	TemplatePresets      []OrcaCommitTemplatePreset     `json:"template_presets"`
+	DBExists                bool                           `json:"db_exists"`
+	DBPath                  string                         `json:"db_path"`
+	ProfileID               string                         `json:"profile_id"`
+	OrcaInstalled           bool                           `json:"orca_installed"`
+	OrcaRunning             bool                           `json:"orca_running"`
+	OrcaMode                string                         `json:"orca_mode"`
+	Enabled                 bool                           `json:"enabled"`
+	AgentID                 string                         `json:"agent_id"`
+	AgentLabel              string                         `json:"agent_label"`
+	ModelID                 string                         `json:"model_id"`
+	ThinkingLevel           string                         `json:"thinking_level"`
+	CustomAgentCommand      string                         `json:"custom_agent_command"`
+	CustomPrompt            string                         `json:"custom_prompt"`
+	CommandInputTemplate    string                         `json:"command_input_template"`
+	DefaultTUIAgent         string                         `json:"default_tui_agent"`
+	RepoCount               int                            `json:"repo_count"`
+	RepoOverrideCount       int                            `json:"repo_override_count"`
+	SelectedModelsByAgent   map[string]string              `json:"selected_models_by_agent"`
+	SelectedThinkingByModel map[string]string              `json:"selected_thinking_by_model"`
+	CachedModelsByAgent     map[string][]OrcaCommitAIModel `json:"cached_models_by_agent"`
+	AvailableAgents         []OrcaCommitAIAgentOption      `json:"available_agents"`
+	TemplatePresets         []OrcaCommitTemplatePreset     `json:"template_presets"`
 }
 
 // OrcaCommitAISaveInput adalah payload penyimpanan konfigurasi AI Commit Orca.
@@ -951,9 +951,11 @@ func ConfigureDefaultOrcaCommitAI(ctx context.Context, cb LogCallback) error {
 		cb(fmt.Sprintf("  Prompt      : %s", prompt))
 	}
 
-	_, err = SaveOrcaCommitAIConfig(ctx, cb, OrcaCommitAISaveInput{
+	_, err = SetOrcaCommitAIDesiredState(ctx, cb, OrcaCommitAISaveInput{
 		Enabled:               true,
 		AgentID:               chosenAgent,
+		ModelID:               cur.ModelID,
+		ThinkingLevel:         cur.ThinkingLevel,
 		CustomAgentCommand:    cur.CustomAgentCommand,
 		CustomPrompt:          prompt,
 		UpdateDefaultTUIAgent: chosenAgent != "custom",

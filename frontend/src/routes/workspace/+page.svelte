@@ -221,6 +221,21 @@
 									{/if}
 								</span>
 							</div>
+							{#if orca.sync_status?.managed}
+								<Separator />
+								<div class="flex items-center justify-between gap-2">
+									<span class="text-muted-foreground">Sinkronisasi Commit AI</span>
+									<span class="text-right font-medium">
+										{#if orca.sync_status.in_sync}
+											<span class="text-emerald-600 dark:text-emerald-400">Sinkron</span>
+										{:else if orca.sync_status.state === 'blocked'}
+											<span class="text-amber-600 dark:text-amber-400">Tertahan (Orca terbuka)</span>
+										{:else}
+											<span class="text-destructive">Perlu Sinkron</span>
+										{/if}
+									</span>
+								</div>
+							{/if}
 						{/if}
 					</div>
 				</Card.Content>

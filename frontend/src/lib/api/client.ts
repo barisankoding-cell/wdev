@@ -21,6 +21,7 @@ import type {
 	OrcaCommitAIConfig,
 	OrcaCommitAIModelsResult,
 	OrcaCommitAISavePayload,
+	OrcaCommitAISyncStatus,
 	PanelDomainStatus,
 	PDNSExposePayload,
 	PHPConfig,
@@ -278,10 +279,22 @@ export const api = {
 		return apiFetch<OrcaCommitAIModelsResult>(`/api/workspace/orca-ai/models?${params.toString()}`);
 	},
 	saveOrcaCommitAI: (payload: OrcaCommitAISavePayload) =>
-		apiFetch<{ status: string; message: string; config: OrcaCommitAIConfig }>('/api/workspace/orca-ai', {
-			method: 'POST',
-			body: JSON.stringify(payload)
-		}),
+		apiFetch<{ status: string; message: string; config: OrcaCommitAIConfig; sync?: OrcaCommitAISyncStatus }>(
+			'/api/workspace/orca-ai',
+			{
+				method: 'POST',
+				body: JSON.stringify(payload)
+			}
+		),
+	getOrcaCommitAISync: () => apiFetch<OrcaCommitAISyncStatus>('/api/workspace/orca-ai/sync'),
+	applyOrcaCommitAISync: (force = true) =>
+		apiFetch<{ status: string; message: string; sync?: OrcaCommitAISyncStatus }>(
+			'/api/workspace/orca-ai/sync',
+			{
+				method: 'POST',
+				body: JSON.stringify({ force })
+			}
+		),
 
 	// Install & Tasks & Self-Update
 	triggerInstall: (component: string, version?: string, sudoPass?: string) =>

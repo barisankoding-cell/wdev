@@ -3,7 +3,7 @@
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
-	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Badge, type BadgeVariant } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -13,7 +13,11 @@
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { api } from '#lib/api/client.js';
-	import type { OrcaCommitAIConfig, OrcaCommitAIModel } from '#lib/types/api.js';
+	import type {
+		OrcaCommitAIConfig,
+		OrcaCommitAIModel,
+		OrcaCommitAISyncStatus
+	} from '#lib/types/api.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -33,6 +37,8 @@
 	let loadError = $state('');
 	let formError = $state('');
 	let config = $state<OrcaCommitAIConfig | null>(null);
+	let syncStatus = $state<OrcaCommitAISyncStatus | null>(null);
+	let syncing = $state(false);
 
 	// Form state
 	let enabled = $state(true);
@@ -58,6 +64,24 @@
 	const selectedModelObj = $derived(
 		models.find((m) => m.id === modelId) ?? null
 	);
+
+	const syncBadge = $derived.by((): { label: string; variant: BadgeVariant } => {
+		if (!syncStatus?.managed) return { label: 'Belum dikelola', variant: 'outline' };
+		switch (syncStatus.state) {
+			case 'synced':
+				return { label: 'Sinkron', variant: 'secondary' };
+			case 'drift':
+				return { label: 'Perlu Sinkron', variant: 'destructive' };
+			case 'blocked':
+				return { label: 'Orca Aktif', variant: 'destructive' };
+			case 'conflict':
+				return { label: 'Konflik', variant: 'destructive' };
+			case 'error':
+				return { label: 'Error', variant: 'destructive' };
+			default:
+				return { label: 'Belum dikelola', variant: 'outline' };
+		}
+	});
 
 	const hasMissingSelectedModel = $derived(
 		Boolean(modelId) && !models.some((m) => m.id === modelId)
@@ -205,10 +229,40 @@
 		}
 	}
 
-	$effect(() => {
-		if (open) {
-			void loadConfig();
+	async function loadSyncStatus() {
+		try {
+			syncStatus = await api.getOrcaCommitAISync();
+		} catch {
+			// Status sinkron bersifat informatif; jangan mengganggu form utama.
 		}
+	}
+
+	async function handleApplySync() {
+		syncing = true;
+		formError = '';
+		try {
+			const res = await api.applyOrcaCommitAISync();
+			syncStatus = res.sync ?? (await api.getOrcaCommitAISync());
+			await loadConfig();
+			if (syncStatus?.in_sync) {
+				toast.success(res.message || 'Orca Commit AI sudah sinkron.');
+			} else {
+				toast.error(res.message || 'Sinkronisasi belum berhasil.');
+			}
+		} catch (err) {
+			formError = err instanceof Error ? err.message : 'Gagal menerapkan sinkronisasi';
+			toast.error(formError);
+		} finally {
+			syncing = false;
+		}
+	}
+
+	$effect(() => {
+		if (!open) return;
+		void loadConfig();
+		void loadSyncStatus();
+		const timer = setInterval(() => void loadSyncStatus(), 10000);
+		return () => clearInterval(timer);
 	});
 
 	async function handleSubmit(e: SubmitEvent) {
@@ -238,7 +292,14 @@
 				clear_repo_overrides: clearRepoOverrides
 			});
 			config = res.config;
-			toast.success(res.message || 'Konfigurasi Orca Commit AI berhasil disimpan.');
+			syncStatus = res.sync ?? null;
+			if (syncStatus && !syncStatus.in_sync) {
+				formError = res.message || 'Konfigurasi disimpan, tetapi Orca belum sinkron.';
+				toast.error(formError);
+				await loadConfig();
+				return;
+			}
+			toast.success(res.message || 'Konfigurasi Orca Commit AI berhasil disimpan dan disinkronkan.');
 			onSaved?.(res.config);
 			open = false;
 		} catch (err) {
@@ -256,6 +317,7 @@
 				<Dialog.Title id="orca-ai-dialog-title" class="flex items-center gap-2">
 					<SparklesIcon class="size-4 text-primary" />
 					Konfigurasi Orca Commit AI
+					<Badge variant={syncBadge.variant} class="text-[10px]">{syncBadge.label}</Badge>
 				</Dialog.Title>
 				<Button
 					type="button"
@@ -302,6 +364,53 @@
 						<Alert.Title>Penyimpanan Gagal</Alert.Title>
 						<Alert.Description>{formError}</Alert.Description>
 					</Alert.Root>
+				{/if}
+
+				{#if syncStatus?.managed}
+					<div class="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 text-sm">
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<div class="flex items-center gap-2">
+								<span class="font-medium">Status Sinkronisasi</span>
+								<Badge variant={syncBadge.variant} class="text-[10px]">{syncBadge.label}</Badge>
+							</div>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={syncing || loading || saving}
+								onclick={handleApplySync}
+							>
+								{#if syncing}
+									<Spinner data-icon="inline-start" />
+									Menerapkan...
+								{:else}
+									Terapkan Ulang
+								{/if}
+							</Button>
+						</div>
+						{#if syncStatus.last_applied_at_ms}
+							<p class="text-muted-foreground text-xs">
+								Terakhir diterapkan: {new Date(syncStatus.last_applied_at_ms).toLocaleString('id-ID')}
+								· revisi Orca #{syncStatus.settings_revision}
+							</p>
+						{/if}
+						{#if syncStatus.drift?.length}
+							<p class="text-destructive text-xs">Perbedaan: {syncStatus.drift.join(', ')}</p>
+						{/if}
+						{#if syncStatus.orca_desktop_open}
+							<p class="text-warning text-xs">
+								Orca Desktop sedang terbuka. Tutup agar wdev bisa menulis konfigurasi tanpa ditimpa.
+							</p>
+						{/if}
+						{#if syncStatus.cloud_linked}
+							<p class="text-muted-foreground text-xs">
+								Profil Orca terhubung cloud — pengaturan dapat ditimpa saat sinkronisasi cloud. wdev akan menerapkan ulang otomatis setiap 30 detik.
+							</p>
+						{/if}
+						{#if syncStatus.last_error}
+							<p class="text-destructive text-xs">{syncStatus.last_error}</p>
+						{/if}
+					</div>
 				{/if}
 
 				{#if !config.db_exists}

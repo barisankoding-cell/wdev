@@ -38,21 +38,22 @@ import (
 )
 
 type Server struct {
-	cfg         *config.Config
-	store       *store.Store
-	runner      *runner.Runner
-	installer   *installer.Installer
-	siteMgr     *site.Manager
-	switcherMgr *switcher.Manager
-	cfMgr       *cloudflare.Manager
-	pdnsMgr     *pdns.Manager
-	mailMgr     *mail.Manager
-	authMgr     *auth.Manager
-	svcCfgMgr   *serviceconfig.Manager
-	fileMgr     *filemanager.Manager
-	termMgr     *terminal.Manager
-	termSec     *terminalSecurityState
-	mux         *http.ServeMux
+	cfg            *config.Config
+	store          *store.Store
+	runner         *runner.Runner
+	installer      *installer.Installer
+	siteMgr        *site.Manager
+	switcherMgr    *switcher.Manager
+	cfMgr          *cloudflare.Manager
+	pdnsMgr        *pdns.Manager
+	mailMgr        *mail.Manager
+	authMgr        *auth.Manager
+	svcCfgMgr      *serviceconfig.Manager
+	fileMgr        *filemanager.Manager
+	termMgr        *terminal.Manager
+	termSec        *terminalSecurityState
+	mux            *http.ServeMux
+	orcaSyncCancel context.CancelFunc
 }
 
 func New(
@@ -140,6 +141,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/workspace/status", s.handleWorkspaceStatus)
 	s.mux.HandleFunc("/api/workspace/orca-ai", s.handleWorkspaceOrcaAI)
 	s.mux.HandleFunc("/api/workspace/orca-ai/models", s.handleWorkspaceOrcaAIModels)
+	s.mux.HandleFunc("/api/workspace/orca-ai/sync", s.handleWorkspaceOrcaAISync)
 	s.mux.HandleFunc("/api/setup/components", s.handleSetupComponents)
 	s.mux.HandleFunc("/api/install", s.handleInstall)
 	s.mux.HandleFunc("/api/tasks", s.handleTasks)
@@ -588,6 +590,13 @@ func (s *Server) Start() error {
 	}
 	fmt.Println("✓ Info Kredensial & Security URL: jalankan 'wdev panel default'")
 	fmt.Println("==================================================================")
+
+	s.startOrcaCommitAISyncLoop()
+	defer func() {
+		if s.orcaSyncCancel != nil {
+			s.orcaSyncCancel()
+		}
+	}()
 
 	handler := s.wrapSecurityHeaders(s.wrapPanelDomain(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.mux)))))
 	return s.listenAndServeMux(ln, handler)
@@ -3102,19 +3111,20 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type OrcaInfo struct {
-		Installed     bool                          `json:"installed"`
-		Active        bool                          `json:"active"`
-		StatusText    string                        `json:"status_text"`
-		Mode          string                        `json:"mode"`
-		Version       string                        `json:"version"`
-		LatestVersion string                        `json:"latest_version,omitempty"`
-		HasUpdate     bool                          `json:"has_update"`
-		Port          int                           `json:"port,omitempty"`
-		PID           int                           `json:"pid,omitempty"`
-		WebClientURL  string                        `json:"web_client_url,omitempty"`
-		PairingURL    string                        `json:"pairing_url,omitempty"`
-		Endpoint      string                        `json:"endpoint,omitempty"`
-		CommitAI      *installer.OrcaCommitAISummary `json:"commit_ai,omitempty"`
+		Installed     bool                              `json:"installed"`
+		Active        bool                              `json:"active"`
+		StatusText    string                            `json:"status_text"`
+		Mode          string                            `json:"mode"`
+		Version       string                            `json:"version"`
+		LatestVersion string                            `json:"latest_version,omitempty"`
+		HasUpdate     bool                              `json:"has_update"`
+		Port          int                               `json:"port,omitempty"`
+		PID           int                               `json:"pid,omitempty"`
+		WebClientURL  string                            `json:"web_client_url,omitempty"`
+		PairingURL    string                            `json:"pairing_url,omitempty"`
+		Endpoint      string                            `json:"endpoint,omitempty"`
+		CommitAI      *installer.OrcaCommitAISummary    `json:"commit_ai,omitempty"`
+		SyncStatus    *installer.OrcaCommitAISyncStatus `json:"sync_status,omitempty"`
 	}
 
 	type ShellInfo struct {
@@ -3229,6 +3239,9 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		data.Orca.WebClientURL = web
 	}
 	data.Orca.CommitAI = installer.GetOrcaCommitAISummary(r.Context())
+	if syncStatus, syncErr := installer.GetOrcaCommitAISyncStatus(r.Context()); syncErr == nil && syncStatus != nil && syncStatus.Managed {
+		data.Orca.SyncStatus = syncStatus
+	}
 
 	// 2. Shell info
 	if _, err := exec.LookPath("zsh"); err == nil {
@@ -3282,7 +3295,7 @@ func (s *Server) handleWorkspaceOrcaAI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Payload konfigurasi Commit AI tidak valid")
 			return
 		}
-		cfg, err := installer.SaveOrcaCommitAIConfig(r.Context(), nil, payload)
+		syncStatus, err := installer.SetOrcaCommitAIDesiredState(r.Context(), nil, payload)
 		if err != nil {
 			switch {
 			case errors.Is(err, installer.ErrOrcaCommitAIValidation):
@@ -3294,10 +3307,19 @@ func (s *Server) handleWorkspaceOrcaAI(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		cfg, cfgErr := installer.GetOrcaCommitAIConfig(r.Context())
+		if cfgErr != nil {
+			cfg = nil
+		}
+		message := "Konfigurasi Orca Commit AI berhasil disimpan dan disinkronkan."
+		if syncStatus != nil && !syncStatus.InSync {
+			message = "Konfigurasi disimpan, tetapi sinkronisasi belum selesai: " + syncStatus.State
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "saved",
-			"message": "Konfigurasi Orca Commit AI berhasil disimpan.",
+			"message": message,
 			"config":  cfg,
+			"sync":    syncStatus,
 		})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")

@@ -239,6 +239,34 @@ export interface OrcaCommitAISavePayload {
 	clear_repo_overrides: boolean;
 }
 
+export interface OrcaCommitAISyncSide {
+	enabled: boolean;
+	agent_id: string;
+	model_id: string;
+	thinking_level: string;
+	custom_prompt: string;
+	custom_agent_command: string;
+	repo_override_count: number;
+}
+
+export interface OrcaCommitAISyncStatus {
+	managed: boolean;
+	in_sync: boolean;
+	state: 'unmanaged' | 'synced' | 'drift' | 'blocked' | 'conflict' | 'error';
+	drift?: string[];
+	desired?: OrcaCommitAISyncSide;
+	actual?: OrcaCommitAISyncSide;
+	last_applied_at_ms?: number;
+	last_error?: string;
+	profile_id: string;
+	db_path: string;
+	cloud_linked: boolean;
+	orca_running: boolean;
+	orca_desktop_open: boolean;
+	settings_revision: number;
+	settings_updated_at_ms: number;
+}
+
 export interface OrcaInfo {
 	installed: boolean;
 	active: boolean;
@@ -253,6 +281,7 @@ export interface OrcaInfo {
 	pairing_url?: string;
 	endpoint?: string;
 	commit_ai?: OrcaCommitAISummary;
+	sync_status?: OrcaCommitAISyncStatus;
 }
 
 export interface ShellInfo {
