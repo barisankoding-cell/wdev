@@ -1,6 +1,7 @@
 <script lang="ts">
 	import './layout.css';
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { ModeWatcher } from 'mode-watcher';
 	import { Toaster } from '#lib/components/ui/sonner/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
@@ -20,9 +21,39 @@
 	import { themeStore } from '#lib/stores/theme.svelte.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
+	import {
+		DEFAULT_SEO_DESCRIPTION,
+		DEFAULT_SEO_TITLE,
+		getPageMeta,
+		syncMetaDescription
+	} from '#lib/page-meta.js';
 	import type { LayoutProps } from './$types';
 
 	let { children }: LayoutProps = $props();
+
+	const seoHead = $derived.by(() => {
+		if (!authStore.authChecked) {
+			return {
+				title: DEFAULT_SEO_TITLE,
+				description: DEFAULT_SEO_DESCRIPTION
+			};
+		}
+		if (authStore.authEnabled && !authStore.isAuthenticated) {
+			return {
+				title: 'Masuk — wdev Control Plane',
+				description: 'Masuk ke panel kontrol server wdev untuk mengelola infrastruktur dan layanan Anda.'
+			};
+		}
+		const meta = getPageMeta(page.url.pathname, modeStore.mode);
+		return {
+			title: meta.seoTitle,
+			description: meta.description
+		};
+	});
+
+	$effect(() => {
+		syncMetaDescription(seoHead.description);
+	});
 
 	onMount(() => {
 		themeStore.init();
@@ -48,6 +79,10 @@
 		}
 	});
 </script>
+
+<svelte:head>
+	<title>{seoHead.title}</title>
+</svelte:head>
 
 <ModeWatcher />
 <Toaster richColors position="bottom-right" />

@@ -44,6 +44,11 @@
 	import * as Sheet from '#lib/components/ui/sheet/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { cn } from '#lib/utils.js';
+	import {
+		hasOpenModal,
+		registerActionSheet,
+		registerDismissableMenu
+	} from '#lib/modal-overlay.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { FileEntry, FileListResult, FileRootInfo } from '#lib/types/api.js';
 	import ArrowDownIcon from '@lucide/svelte/icons/arrow-down';
@@ -1069,6 +1074,21 @@
 		contextMenu = null;
 	}
 
+	function closeMobileActionSheets() {
+		mobileFolderSheetOpen = false;
+		mobileEntrySheetOpen = false;
+		mobileBulkSheetOpen = false;
+	}
+
+	$effect(() => {
+		const unregMenu = registerDismissableMenu(closeContextMenu);
+		const unregSheet = registerActionSheet(closeMobileActionSheets);
+		return () => {
+			unregMenu();
+			unregSheet();
+		};
+	});
+
 	function openTerminalAt(targetPath: string) {
 		closeContextMenu();
 		const clean = targetPath.trim();
@@ -1086,10 +1106,6 @@
 		return TEXT_EXTS.has(ext) || lower.startsWith('.env') || lower === 'dockerfile' || lower === 'makefile';
 	}
 </script>
-
-<svelte:head>
-	<title>File Manager - wdev Control Plane</title>
-</svelte:head>
 
 {#snippet entryIcon(entry: FileEntry, extraClass = '')}
 	{#if entry.is_dir}
@@ -1759,11 +1775,15 @@
 													<DropdownMenu.Root>
 														<DropdownMenu.Trigger>
 															{#snippet child({ props })}
+																{@const triggerOnClick = props.onclick as ((e: MouseEvent) => void) | undefined}
 																<Button
 																	variant="outline"
 																	size="xs"
-																	onclick={(e) => e.stopPropagation()}
 																	{...props}
+																	onclick={(e) => {
+																		e.stopPropagation();
+																		triggerOnClick?.(e);
+																	}}
 																>
 																	Aksi
 																	<ChevronDownIcon data-icon="inline-end" />
@@ -2445,7 +2465,7 @@
 </Dialog>
 
 <!-- Mobile Sticky Bottom Action Bar (Selection & Clipboard) -->
-{#if hasMobileBottomBar}
+{#if hasMobileBottomBar && !hasOpenModal()}
 	<div
 		data-fm-bottom-bar="true"
 		class="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))] shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden"

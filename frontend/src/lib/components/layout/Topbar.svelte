@@ -8,6 +8,7 @@
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import { themeStore, type ThemePreference } from '#lib/stores/theme.svelte.js';
+	import { getPageMeta } from '#lib/page-meta.js';
 	import { cn } from '#lib/utils.js';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -23,25 +24,7 @@
 	import LaptopIcon from '@lucide/svelte/icons/laptop';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
 
-	const PAGE_TITLES = $derived<Record<string, string>>({
-		'/': 'Status & Pembaruan Sistem',
-		'/webstack': 'Web Stack & Virtual Host',
-		'/switchers': 'Pengelola Multi-Versi Runtime',
-		'/toolchains': 'Toolchains, Compilers & SDKs',
-		'/workspace': 'Workspace, ADE & Shell',
-		'/files': 'File Manager',
-		'/terminal': 'Terminal SSH (PTY)',
-		'/powerdns':
-			modeStore.mode === 'edge' ? 'PowerDNS & VPS Edge Gateway' : 'Domain & DNS Manager',
-		'/cloudflare': 'Cloudflare Tunnel & DNS',
-		'/mail':
-			modeStore.mode === 'edge'
-				? 'Mail Server & Outbound Relay'
-				: 'Mail Server Standalone',
-		'/setup': 'Instalasi, Modular & Riwayat Tugas'
-	});
-
-	const pageTitle = $derived(PAGE_TITLES[page.url.pathname] ?? 'wdev Dashboard');
+	const pageTitle = $derived(getPageMeta(page.url.pathname, modeStore.mode).title);
 
 	const themeOptions: { value: ThemePreference; label: string }[] = [
 		{ value: 'system', label: 'Ikuti Sistem' },

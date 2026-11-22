@@ -192,10 +192,6 @@
 	}
 </script>
 
-<svelte:head>
-	<title>Masuk — wdev Control Plane</title>
-</svelte:head>
-
 <div class="login-shell grid min-h-[100dvh] w-full bg-background text-foreground lg:grid-cols-[minmax(360px,430px)_1fr]">
 	<!-- Desktop Architectural Infrastructure Rail -->
 	<aside

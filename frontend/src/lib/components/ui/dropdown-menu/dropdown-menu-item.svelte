@@ -1,21 +1,50 @@
 <script lang="ts">
 	import { DropdownMenu as DropdownMenuPrimitive } from "bits-ui";
 	import { cn } from "#lib/utils.js";
+	import { getDropdownMenuController } from "./dropdown-menu-context.js";
 
 	let {
 		ref = $bindable(null),
 		class: className,
 		inset,
 		variant = "default",
+		disabled = false,
+		closeOnSelect = true,
+		onclick,
+		onSelect,
 		...restProps
 	}: DropdownMenuPrimitive.ItemProps & {
 		inset?: boolean;
 		variant?: "default" | "destructive";
 	} = $props();
+
+	const menuController = getDropdownMenuController();
+
+	type ItemClickEvent = Parameters<NonNullable<DropdownMenuPrimitive.ItemProps["onclick"]>>[0];
+
+	function handleClick(e: ItemClickEvent) {
+		if (disabled) return;
+		onclick?.(e);
+		// Tutup menu walau handler mengubah `disabled` secara sinkron (sebelum MenuItemState.onclick).
+		if (closeOnSelect !== false && !e.defaultPrevented) {
+			menuController?.close();
+		}
+	}
+
+	function handleSelect(e: Event) {
+		onSelect?.(e);
+		if (closeOnSelect !== false && !e.defaultPrevented) {
+			menuController?.close();
+		}
+	}
 </script>
 
 <DropdownMenuPrimitive.Item
 	bind:ref
+	{disabled}
+	{closeOnSelect}
+	onclick={handleClick}
+	onSelect={handleSelect}
 	data-slot="dropdown-menu-item"
 	data-inset={inset}
 	data-variant={variant}

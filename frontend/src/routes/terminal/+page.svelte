@@ -340,10 +340,6 @@
 	});
 </script>
 
-<svelte:head>
-	<title>Terminal SSH (PTY) - wdev Control Plane</title>
-</svelte:head>
-
 <div class="space-y-4">
 	<!-- Header -->
 	<div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
