@@ -9,6 +9,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore, MODE_LABELS, type ServerMode } from '#lib/stores/mode.svelte.js';
@@ -337,6 +338,11 @@
 	});
 
 	let tasks = $state<TaskRecord[]>([]);
+	const TASK_PAGE_SIZE = 10;
+	let taskPage = $state(1);
+	const paginatedTasks = $derived(
+		tasks.slice((taskPage - 1) * TASK_PAGE_SIZE, taskPage * TASK_PAGE_SIZE)
+	);
 	let logDialogOpen = $state(false);
 	let selectedTask = $state<TaskRecord | null>(null);
 
@@ -1015,7 +1021,7 @@
 								</Table.Cell>
 							</Table.Row>
 						{:else}
-							{#each tasks as t (t.id)}
+							{#each paginatedTasks as t (t.id)}
 								<Table.Row>
 									<Table.Cell data-label="Tugas" class="font-medium">{t.command}</Table.Cell>
 									<Table.Cell data-label="Status">
@@ -1043,6 +1049,12 @@
 					</Table.Body>
 				</Table.Root>
 			</ResponsiveTableWrapper>
+			<PaginationBar
+				bind:page={taskPage}
+				totalItems={tasks.length}
+				pageSize={TASK_PAGE_SIZE}
+				itemLabel="riwayat tugas"
+			/>
 		</Card.Content>
 	</Card.Root>
 </div>

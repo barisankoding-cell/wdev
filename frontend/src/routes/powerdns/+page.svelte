@@ -20,6 +20,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
@@ -53,15 +54,13 @@
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
-	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
-	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
-	import ChevronsLeftIcon from '@lucide/svelte/icons/chevrons-left';
-	import ChevronsRightIcon from '@lucide/svelte/icons/chevrons-right';
 	import UnplugIcon from '@lucide/svelte/icons/unplug';
 
 	type ActiveTab = 'zones' | 'expose' | 'proxy';
 	type ExposeFilter = 'all' | 'exposed' | 'local';
 	type ProxyFilter = 'all' | 'vhost' | 'service';
+
+	const PAGE_SIZE = 10;
 
 	let edge = $state<EdgeConfig | null>(null);
 	let zones = $state<ZoneInfo[]>([]);
@@ -110,6 +109,10 @@
 	let currentZone = $state('');
 	let rrsets = $state<RRSet[]>([]);
 	let recordsLoading = $state(false);
+	let recordPage = $state(1);
+	const paginatedRRSets = $derived(
+		rrsets.slice((recordPage - 1) * PAGE_SIZE, recordPage * PAGE_SIZE)
+	);
 	let recName = $state('');
 	let recType = $state('A');
 	let recContent = $state('');
@@ -199,7 +202,6 @@
 	});
 
 	// Pagination (Maximal 10 data per page)
-	const PAGE_SIZE = 10;
 	let zonePage = $state(1);
 	let exposePage = $state(1);
 	let proxyPage = $state(1);
@@ -623,6 +625,7 @@
 
 	async function openRecordsModal(zoneName: string) {
 		currentZone = zoneName;
+		recordPage = 1;
 		recName = '';
 		recContent = '';
 		recType = 'A';
@@ -1144,73 +1147,6 @@
 		{/if}
 	</Card.Root>
 
-	{#snippet paginationControls(
-		currentPage: number,
-		totalPages: number,
-		totalItems: number,
-		onPageChange: (p: number) => void
-	)}
-		{#if totalItems > 0}
-			{@const startItem = (currentPage - 1) * PAGE_SIZE + 1}
-			{@const endItem = Math.min(currentPage * PAGE_SIZE, totalItems)}
-			<div class="flex flex-col items-center justify-between gap-3 border-t bg-muted/10 px-4 py-2.5 sm:flex-row">
-				<div class="text-xs text-muted-foreground">
-					Menampilkan <span class="font-medium text-foreground">{startItem}</span>–<span class="font-medium text-foreground">{endItem}</span> dari <span class="font-medium text-foreground">{totalItems}</span> data
-				</div>
-				{#if totalPages > 1}
-					<div class="flex items-center gap-1.5">
-						<Button
-							variant="outline"
-							size="xs"
-							disabled={currentPage <= 1}
-							onclick={() => onPageChange(1)}
-							aria-label="Halaman pertama"
-						>
-							<ChevronsLeftIcon class="size-3.5" />
-						</Button>
-						<Button
-							variant="outline"
-							size="xs"
-							disabled={currentPage <= 1}
-							onclick={() => onPageChange(currentPage - 1)}
-							aria-label="Halaman sebelumnya"
-						>
-							<ChevronLeftIcon class="size-3.5" />
-							<span class="hidden sm:inline">Sebelumnya</span>
-						</Button>
-
-						<div class="flex items-center gap-1 px-1.5 text-xs text-muted-foreground">
-							<span>Hal.</span>
-							<span class="font-semibold text-foreground">{currentPage}</span>
-							<span>/</span>
-							<span class="font-semibold text-foreground">{totalPages}</span>
-						</div>
-
-						<Button
-							variant="outline"
-							size="xs"
-							disabled={currentPage >= totalPages}
-							onclick={() => onPageChange(currentPage + 1)}
-							aria-label="Halaman berikutnya"
-						>
-							<span class="hidden sm:inline">Berikutnya</span>
-							<ChevronRightIcon class="size-3.5" />
-						</Button>
-						<Button
-							variant="outline"
-							size="xs"
-							disabled={currentPage >= totalPages}
-							onclick={() => onPageChange(totalPages)}
-							aria-label="Halaman terakhir"
-						>
-							<ChevronsRightIcon class="size-3.5" />
-						</Button>
-					</div>
-				{/if}
-			</div>
-		{/if}
-	{/snippet}
-
 	<!-- Pengelolaan DNS & Edge Gateway (Tabbed) -->
 	<Card.Root class="gap-0 py-0">
 		<Tabs.Root value={activeTab} onValueChange={handleTabChange} class="gap-0">
@@ -1492,7 +1428,12 @@
 					</Table.Root>
 				</ResponsiveTableWrapper>
 			</div>
-			{@render paginationControls(zonePage, totalZonePages, filteredZones.length, (p) => (zonePage = p))}
+			<PaginationBar
+				bind:page={zonePage}
+				totalItems={filteredZones.length}
+				pageSize={PAGE_SIZE}
+				itemLabel="zone"
+			/>
 		{/if}
 				</div>
 			</Tabs.Content>
@@ -1733,7 +1674,12 @@
 									</Table.Root>
 								</ResponsiveTableWrapper>
 							</div>
-							{@render paginationControls(exposePage, totalExposePages, filteredSites.length, (p) => (exposePage = p))}
+							<PaginationBar
+								bind:page={exposePage}
+								totalItems={filteredSites.length}
+								pageSize={PAGE_SIZE}
+								itemLabel="virtual host"
+							/>
 						{/if}
 					</div>
 				</Tabs.Content>
@@ -1953,7 +1899,12 @@
 									</Table.Root>
 								</ResponsiveTableWrapper>
 							</div>
-							{@render paginationControls(proxyPage, totalProxyPages, filteredExposures.length, (p) => (proxyPage = p))}
+							<PaginationBar
+								bind:page={proxyPage}
+								totalItems={filteredExposures.length}
+								pageSize={PAGE_SIZE}
+								itemLabel="proxy"
+							/>
 						{/if}
 					</div>
 				</Tabs.Content>
@@ -2147,7 +2098,7 @@
 								</Table.Cell>
 							</Table.Row>
 						{:else}
-							{#each rrsets as rr (rr.name + ':' + rr.type)}
+							{#each paginatedRRSets as rr (rr.name + ':' + rr.type)}
 								{@const isProtected = rr.type === 'SOA' || rr.type === 'NS'}
 								{@const cleanName = rr.name.replace(/\.$/, '')}
 								{@const isEdgeProxy = exposures.some((p) => p.domain === cleanName)}
@@ -2220,6 +2171,12 @@
 					</Table.Body>
 				</Table.Root>
 			</ResponsiveTableWrapper>
+			<PaginationBar
+				bind:page={recordPage}
+				totalItems={rrsets.length}
+				pageSize={PAGE_SIZE}
+				itemLabel="record DNS"
+			/>
 		</div>
 
 		<Dialog.Footer>

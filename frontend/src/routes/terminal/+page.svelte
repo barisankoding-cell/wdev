@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api, ApiError } from '#lib/api/client.js';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import PtyTerminalPane, {
 		type TerminalPaneMeta,
 		type TerminalPaneStatus
@@ -87,6 +88,11 @@
 	let auditOpen = $state(false);
 	let auditLoading = $state(false);
 	let auditRecords = $state<TerminalAuditRecord[]>([]);
+	const AUDIT_PAGE_SIZE = 10;
+	let auditPage = $state(1);
+	const paginatedAuditRecords = $derived(
+		auditRecords.slice((auditPage - 1) * AUDIT_PAGE_SIZE, auditPage * AUDIT_PAGE_SIZE)
+	);
 
 	const activeTab = $derived(tabs.find((t) => t.id === activeTabId) ?? null);
 	const activePane = $derived(activeTab && !activeTab.locked ? paneRefs[activeTab.id] : undefined);
@@ -247,6 +253,7 @@
 	async function openAuditDialog() {
 		auditOpen = true;
 		auditLoading = true;
+		auditPage = 1;
 		try {
 			auditRecords = await api.getTerminalAudit(50);
 		} catch (err) {
@@ -767,7 +774,7 @@
 							</TableRow>
 						</TableHeader>
 						<TableBody>
-							{#each auditRecords as rec (rec.id)}
+							{#each paginatedAuditRecords as rec (rec.id)}
 								<TableRow>
 									<TableCell data-label="User OS">
 										<Badge variant={rec.target_user === 'root' ? 'destructive' : 'secondary'} class="font-mono text-xs">
@@ -804,6 +811,12 @@
 						</TableBody>
 					</Table>
 				</ResponsiveTableWrapper>
+				<PaginationBar
+					bind:page={auditPage}
+					totalItems={auditRecords.length}
+					pageSize={AUDIT_PAGE_SIZE}
+					itemLabel="sesi audit"
+				/>
 			{/if}
 		</div>
 	</DialogContent>

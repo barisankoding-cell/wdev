@@ -1,12 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
+	import * as Tabs from '#lib/components/ui/tabs/index.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
+	import * as Empty from '#lib/components/ui/empty/index.js';
+	import * as InputGroup from '#lib/components/ui/input-group/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
@@ -15,6 +19,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
@@ -37,6 +42,12 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import GlobeIcon from '@lucide/svelte/icons/globe';
+	import UsersIcon from '@lucide/svelte/icons/users';
+	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
+	import MailIcon from '@lucide/svelte/icons/mail';
+	import SearchIcon from '@lucide/svelte/icons/search';
+	import CheckIcon from '@lucide/svelte/icons/check';
 
 	let mailStatus = $state<MailStatus | null>(null);
 	let domainGroups = $state<DomainAccounts[]>([]);
@@ -138,6 +149,79 @@
 		domainFilter ? domainGroups.filter((g) => g.domain === domainFilter) : domainGroups
 	);
 
+	// Tabs & Search
+	type ActiveTab = 'domains' | 'accounts' | 'ports';
+	let activeTab = $state<ActiveTab>('domains');
+	let domainSearch = $state('');
+	let accountSearch = $state('');
+
+	function handleTabChange(val: string) {
+		activeTab = val as ActiveTab;
+	}
+
+	// Pagination (Max 10 data per page)
+	const PAGE_SIZE = 10;
+	let domainPage = $state(1);
+	let accountPage = $state(1);
+
+	$effect(() => {
+		void domainSearch;
+		domainPage = 1;
+	});
+
+	$effect(() => {
+		void domainFilter;
+		void accountSearch;
+		accountPage = 1;
+	});
+
+	const allMailDomains = $derived(mailStatus?.domains || []);
+	const filteredMailDomains = $derived.by(() => {
+		const q = domainSearch.trim().toLowerCase();
+		if (!q) return allMailDomains;
+		return allMailDomains.filter((d) => d.domain.toLowerCase().includes(q));
+	});
+	const paginatedMailDomains = $derived(
+		filteredMailDomains.slice((domainPage - 1) * PAGE_SIZE, domainPage * PAGE_SIZE)
+	);
+
+	type FlatAccountItem = {
+		domain: string;
+		webmail: string;
+		relay: (typeof domainGroups)[number]['relay'];
+		account: (typeof domainGroups)[number]['accounts'][number];
+	};
+
+	const flatAccounts = $derived.by(() => {
+		const list: FlatAccountItem[] = [];
+		for (const grp of filteredGroups) {
+			for (const acc of grp.accounts || []) {
+				list.push({
+					domain: grp.domain,
+					webmail: grp.webmail,
+					relay: grp.relay,
+					account: acc
+				});
+			}
+		}
+		return list;
+	});
+
+	const filteredAccounts = $derived.by(() => {
+		const q = accountSearch.trim().toLowerCase();
+		if (!q) return flatAccounts;
+		return flatAccounts.filter(
+			(item) =>
+				item.account.email.toLowerCase().includes(q) ||
+				(item.account.name && item.account.name.toLowerCase().includes(q)) ||
+				item.domain.toLowerCase().includes(q)
+		);
+	});
+
+	const paginatedAccounts = $derived(
+		filteredAccounts.slice((accountPage - 1) * PAGE_SIZE, accountPage * PAGE_SIZE)
+	);
+
 	const zoneDomains = $derived(
 		Array.from(
 			new Set(
@@ -180,7 +264,13 @@
 		}
 	}
 
-	onMount(loadMail);
+	onMount(async () => {
+		const tabParam = page.url.searchParams.get('tab');
+		if (tabParam === 'domains' || tabParam === 'accounts' || tabParam === 'ports') {
+			activeTab = tabParam;
+		}
+		await loadMail();
+	});
 
 	$effect(() => {
 		if (cp.refreshTick > 0) loadMail();
@@ -645,8 +735,9 @@
 </script>
 
 <div class="flex flex-col gap-5 sm:gap-6">
+	<!-- Page Header -->
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-		<div>
+		<div class="min-w-0 max-w-2xl">
 			{#if modeStore.mode === 'vps'}
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Mail Server &amp; Webmail</h1>
 				<p class="text-sm text-muted-foreground">
@@ -664,7 +755,11 @@
 				</p>
 			{/if}
 		</div>
-		<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+		<div class="flex shrink-0 flex-wrap items-center gap-2">
+			<StatusBadge
+				tone={mailStatus?.stalwart_active ? 'success' : 'warning'}
+				label={mailStatus?.stalwart_active ? 'Mail Stack Aktif' : 'Belum Aktif'}
+			/>
 			<Button
 				variant="outline"
 				size="sm"
@@ -683,13 +778,14 @@
 				<SettingsIcon data-icon="inline-start" />
 				Setel Relay
 			</Button>
-			<Button size="sm" class="col-span-2 sm:col-span-1" onclick={openSetupModal}>
+			<Button size="sm" onclick={openSetupModal}>
 				<MailPlusIcon data-icon="inline-start" />
-				Setup Domain Mail
+				Setup Domain
 			</Button>
 		</div>
 	</div>
 
+	<!-- Contextual Alerts -->
 	{#if modeStore.mode === 'local'}
 		<Alert.Root class="border-muted-foreground/30 bg-muted/40">
 			<InfoIcon />
@@ -737,32 +833,50 @@
 		</Alert.Root>
 	{/if}
 
-	<!-- Metrics -->
-	<div class="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-		<Card.Root>
-			<Card.Header>
-				<Card.Description>Stalwart Mail Engine</Card.Description>
-				<div class="pt-1">
+	<!-- Unified Mail Server Topology & Status Strip (PowerDNS Style) -->
+	<Card.Root class="gap-0 py-0">
+		<div class="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2.5">
+			<div class="flex items-center gap-2">
+				<MailIcon class="size-4 text-primary" aria-hidden="true" />
+				<span class="text-sm font-semibold">Topologi &amp; Status Layanan Mail</span>
+				<Badge variant="outline" class="font-normal">
+					{(mailStatus?.mode || modeStore.mode) === 'vps'
+						? 'Full VPS Mail'
+						: (mailStatus?.mode || modeStore.mode) === 'local'
+							? 'Lokal Standalone'
+							: 'Edge Gateway Mail'}
+				</Badge>
+			</div>
+			<div class="flex flex-wrap items-center gap-3 text-xs tabular-nums text-muted-foreground">
+				<span><strong class="font-semibold text-foreground">{allMailDomains.length}</strong> Domain</span>
+				<span><strong class="font-semibold text-foreground">{totalAccounts}</strong> Akun Email</span>
+				<span><strong class="font-semibold text-foreground">{openPortCount}/{stalwartPorts.length}</strong> Port Aktif</span>
+			</div>
+		</div>
+
+		<div class="grid divide-y sm:grid-cols-2 lg:grid-cols-4 sm:divide-x sm:divide-y-0">
+			<!-- Col 1: Stalwart Engine & Ports -->
+			<div class="flex flex-col gap-2 p-4">
+				<div class="flex items-center justify-between gap-2">
+					<span class="text-xs text-muted-foreground">Stalwart Mail Engine</span>
 					<StatusBadge
 						tone={mailStatus?.stalwart_active ? 'success' : 'warning'}
 						label={mailStatus?.stalwart_active ? 'Aktif (Running)' : 'Nonaktif'}
 					/>
 				</div>
-			</Card.Header>
-			<Card.Content class="flex flex-col gap-1.5">
-				<div class="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-					<span>{(mailStatus?.mode || modeStore.mode) === 'local' ? 'Listener Lokal' : 'Uji Dalam & Luar'}</span>
+				<div class="flex items-center justify-between gap-1 text-[11px] text-muted-foreground">
+					<span>Listener Port</span>
 					<span class="font-mono tabular-nums">
 						{#if !mailStatus}
 							...
 						{:else if (mailStatus.mode || modeStore.mode) === 'local'}
-							{openPortCount}/{stalwartPorts.length} aktif
+							{openPortCount}/{stalwartPorts.length} lokal
 						{:else}
 							{publicOpenCount}/{publicMailPorts.length} publik · {openPortCount}/{stalwartPorts.length} listen
 						{/if}
 					</span>
 				</div>
-				<div class="grid grid-cols-3 gap-1 sm:flex sm:flex-wrap sm:gap-1.5" aria-label="Status port Stalwart">
+				<div class="flex flex-wrap gap-1" aria-label="Status port Stalwart">
 					{#each stalwartPorts as item (item.port)}
 						{@const isLocalMode = (mailStatus?.mode || modeStore.mode) === 'local'}
 						{@const isInternal = Boolean(item.internal_only || item.port === 8080)}
@@ -782,19 +896,19 @@
 										: isLocalMode
 											? `${item.label} (Port ${item.port}): Aktif lokal`
 											: isOutsideOpen
-												? `${item.label} (Port ${item.port}): Terbuka penuh — listen lokal & IP VPS publik terjangkau dari luar`
+												? `${item.label} (Port ${item.port}): Terbuka penuh — listen lokal & IP publik terjangkau dari luar`
 												: isOutsideBlocked
-													? `${item.label} (Port ${item.port}): Kuning — listen lokal berhasil, namun terblokir dari luar (cek Firewall VPS / Security Group / ISP)`
-													: `${item.label} (Port ${item.port}): Kuning — listen lokal berhasil, namun uji koneksi dari luar belum terjangkau`}
+													? `${item.label} (Port ${item.port}): Kuning — listen lokal berhasil, namun terblokir dari luar (cek Firewall VPS / ISP)`
+													: `${item.label} (Port ${item.port}): Kuning — listen lokal berhasil, namun uji koneksi luar belum terjangkau`}
 							class={!mailStatus
-								? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-border bg-secondary px-1 py-0.5 font-mono text-[10.5px] font-medium text-secondary-foreground tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
+								? 'inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-secondary-foreground tabular-nums'
 								: !item.open
-									? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-destructive/35 bg-destructive/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-destructive tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
+									? 'inline-flex items-center gap-1 rounded-md border border-destructive/35 bg-destructive/15 px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-destructive tabular-nums'
 									: isInternal
-										? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-border bg-secondary px-1 py-0.5 font-mono text-[10.5px] font-medium text-secondary-foreground tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
+										? 'inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-secondary-foreground tabular-nums'
 										: isOutsideOpen
-											? 'inline-flex items-center justify-center gap-0.5 rounded-md border border-success/35 bg-success/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-success tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'
-											: 'inline-flex items-center justify-center gap-0.5 rounded-md border border-amber-500/35 bg-amber-500/15 px-1 py-0.5 font-mono text-[10.5px] font-medium text-amber-700 dark:text-amber-400 tabular-nums sm:min-w-[3.25rem] sm:gap-1 sm:px-1.5 sm:text-[11px]'}
+											? 'inline-flex items-center gap-1 rounded-md border border-success/35 bg-success/15 px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-success tabular-nums'
+											: 'inline-flex items-center gap-1 rounded-md border border-amber-500/35 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-amber-700 dark:text-amber-400 tabular-nums'}
 						>
 							<span
 								class={!mailStatus
@@ -813,231 +927,390 @@
 						</span>
 					{/each}
 				</div>
-				{#if mailStatus && (mailStatus.mode || modeStore.mode) !== 'local'}
-					{#if blockedOutsidePorts.length > 0}
-						<p class="text-[10.5px] leading-snug text-amber-600 dark:text-amber-400">
-							Kuning = di dalam berhasil listen, tetapi dari luar terblokir firewall/ISP.
-						</p>
-					{:else if unverifiedOutsidePorts.length > 0}
-						<p class="text-[10.5px] leading-snug text-amber-600 dark:text-amber-400">
-							Kuning = di dalam berhasil listen; uji koneksi dari luar belum terjangkau (klik Segarkan untuk menguji ulang).
-						</p>
-					{/if}
-				{/if}
-			</Card.Content>
-		</Card.Root>
+			</div>
 
-		<Card.Root>
-			<Card.Header>
-				<Card.Description>SnappyMail Webmail</Card.Description>
-				<div class="pt-1">
-					<StatusBadge
-						tone={mailStatus?.snappymail_active ? 'success' : 'warning'}
-						label={mailStatus?.snappymail_active ? 'Siap / Aktif' : 'Belum Terpasang'}
-					/>
+			<!-- Col 2: SnappyMail Webmail -->
+			<div class="flex flex-col justify-between gap-2 p-4">
+				<div class="flex flex-col gap-1">
+					<div class="flex items-center justify-between gap-2">
+						<span class="text-xs text-muted-foreground">SnappyMail Webmail</span>
+						<StatusBadge
+							tone={mailStatus?.snappymail_active ? 'success' : 'warning'}
+							label={mailStatus?.snappymail_active ? 'Siap / Aktif' : 'Belum Terpasang'}
+						/>
+					</div>
+					<p class="truncate font-mono text-xs text-muted-foreground">/var/www/snappymail</p>
 				</div>
-			</Card.Header>
-			<Card.Content>
-				<p class="font-mono text-xs text-muted-foreground">/var/www/snappymail</p>
-			</Card.Content>
-		</Card.Root>
+				<p class="text-[11px] text-muted-foreground">
+					Webmail modern berbasis PHP untuk akses kotak pos via browser.
+				</p>
+			</div>
 
-		<Card.Root>
-			<Card.Header>
-				<Card.Description>Kapasitas Disk Bebas</Card.Description>
-				<Card.Title class="font-mono text-base">
-					{mailStatus?.storage_free ? `${mailStatus.storage_free} Bebas` : '-'}
-				</Card.Title>
-			</Card.Header>
-			<Card.Content>
-				<p class="text-xs text-muted-foreground">Penyimpanan Maildir / RocksDB</p>
-			</Card.Content>
-		</Card.Root>
+			<!-- Col 3: Storage -->
+			<div class="flex flex-col justify-between gap-2 p-4">
+				<div class="flex flex-col gap-1">
+					<span class="text-xs text-muted-foreground">Kapasitas Disk Bebas</span>
+					<div class="flex items-baseline gap-1.5">
+						<span class="font-mono text-base font-semibold tabular-nums">
+							{mailStatus?.storage_free ? `${mailStatus.storage_free} Bebas` : '-'}
+						</span>
+					</div>
+				</div>
+				<p class="text-[11px] text-muted-foreground">Penyimpanan kotak pos Maildir &amp; RocksDB</p>
+			</div>
 
-		<Card.Root>
-			<Card.Header>
-				<Card.Description>Total Domain &amp; Akun</Card.Description>
-				<Card.Title class="text-base">
-					{domainGroups.length} Domain, {totalAccounts} Akun
-				</Card.Title>
-			</Card.Header>
-			<Card.Content>
-				<p class="text-xs text-muted-foreground">Tersimpan di Stalwart DB</p>
-			</Card.Content>
-		</Card.Root>
-	</div>
-
-	<!-- Domain & Relay Table -->
-	<section class="flex flex-col gap-3">
-		<div>
-			<h2 class="text-lg font-semibold tracking-tight">Status Domain &amp; Outbound SMTP</h2>
-			<p class="text-xs text-muted-foreground">
-				Default memakai SMTP lokal Stalwart (direct MX) atau relay default bila disetel; dapat di-override per domain (Resend, Brevo, Custom SMTP, atau SMTP Lokal).
-			</p>
+			<!-- Col 4: Relay Outbound Default -->
+			<div class="flex flex-col justify-between gap-2 p-4">
+				<div class="flex flex-col gap-1">
+					<div class="flex items-center justify-between gap-2">
+						<span class="text-xs text-muted-foreground">Relay Outbound Default</span>
+						<StatusBadge
+							tone={mailStatus?.global_relay?.host ? 'info' : 'success'}
+							label={mailStatus?.global_relay?.host
+								? (mailStatus.global_relay.provider?.toUpperCase() || 'RELAY AKTIF')
+								: 'SMTP LOKAL'}
+						/>
+					</div>
+					<p class="truncate font-mono text-xs text-muted-foreground">
+						{#if mailStatus?.global_relay?.host}
+							{mailStatus.global_relay.host}:{mailStatus.global_relay.port}
+						{:else}
+							Stalwart SMTP (Direct MX)
+						{/if}
+					</p>
+				</div>
+				<div class="flex items-center justify-between text-[11px] text-muted-foreground">
+					<span>Override: {Object.keys(mailStatus?.domain_relays || {}).length} domain</span>
+					<Button
+						variant="ghost"
+						size="xs"
+						class="h-6 px-1.5 text-[11px]"
+						onclick={() => openRelayModal('global')}
+					>
+						Ubah
+					</Button>
+				</div>
+			</div>
 		</div>
+	</Card.Root>
 
-		<ResponsiveTableWrapper label="Tabel Status Outbound SMTP per Domain">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>Domain</Table.Head>
-						<Table.Head>Mode / Provider</Table.Head>
-						<Table.Head>SMTP / Relay Host</Table.Head>
-						<Table.Head>Username / Sumber</Table.Head>
-						<Table.Head>Panel Admin</Table.Head>
-						<Table.Head>Webmail</Table.Head>
-						<Table.Head class="text-right">Aksi</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
-					{#if !mailStatus?.domains || mailStatus.domains.length === 0}
-						<Table.Row>
-							<Table.Cell colspan={7} class="py-6 text-center text-muted-foreground">
-								Belum ada domain mail terdaftar di sistem.
-							</Table.Cell>
-						</Table.Row>
+	<!-- Pengelolaan Mail Server (Tabbed) -->
+	<Card.Root class="gap-0 py-0">
+		<Tabs.Root value={activeTab} onValueChange={handleTabChange} class="gap-0">
+			<div class="flex flex-col border-b">
+				<div class="flex flex-col gap-3 px-4 pt-3.5 pb-2.5 sm:flex-row sm:items-center sm:justify-between">
+					<div>
+						{#if activeTab === 'domains'}
+							<div class="flex items-center gap-2">
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Domain &amp; Outbound SMTP</h2>
+								<Badge variant="secondary" class="tabular-nums">{allMailDomains.length}</Badge>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Status domain mail, kredensial admin, webmail, dan rute pengiriman SMTP lokal / relay pihak ketiga.
+							</p>
+						{:else if activeTab === 'accounts'}
+							<div class="flex items-center gap-2">
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Daftar Akun Email</h2>
+								<Badge variant="secondary" class="tabular-nums">{flatAccounts.length}</Badge>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Kelola akun kotak pos user, hak akses administrator, dan kata sandi di server Stalwart.
+							</p>
+						{:else}
+							<div class="flex items-center gap-2">
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Status Port &amp; Protokol Mail</h2>
+								<Badge variant="secondary" class="tabular-nums">{openPortCount}/{stalwartPorts.length} Aktif</Badge>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Diagnostik listener port lokal dan uji keterjangkauan dari internet (Firewall / ISP check).
+							</p>
+						{/if}
+					</div>
+
+					<div class="flex flex-wrap items-center gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={refreshing}
+							onclick={() => loadMail(true)}
+						>
+							{#if refreshing}
+								<Spinner data-icon="inline-start" />
+								Menyegarkan...
+							{:else}
+								<RefreshCwIcon data-icon="inline-start" />
+								Segarkan
+							{/if}
+						</Button>
+						{#if activeTab === 'domains'}
+							<Button variant="outline" size="sm" onclick={() => openRelayModal('global')}>
+								<SettingsIcon data-icon="inline-start" />
+								Setel Relay
+							</Button>
+							<Button size="sm" onclick={openSetupModal}>
+								<MailPlusIcon data-icon="inline-start" />
+								Setup Domain
+							</Button>
+						{:else if activeTab === 'accounts'}
+							<Button size="sm" onclick={() => openAddAccount(domainFilter)}>
+								<UserPlusIcon data-icon="inline-start" />
+								Tambah Email
+							</Button>
+						{/if}
+					</div>
+				</div>
+
+				<div class="px-4">
+					<Tabs.List
+						variant="line"
+						aria-label="Tab Pengelolaan Mail Server"
+						class="h-11 group-data-horizontal/tabs:h-11 w-full flex-nowrap items-stretch justify-start gap-1.5 overflow-x-auto overflow-y-hidden rounded-none bg-transparent p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-2"
+					>
+						<Tabs.Trigger
+							value="domains"
+							class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
+						>
+							<GlobeIcon aria-hidden="true" class="size-3.5" />
+							<span>Domain &amp; Relay</span>
+							<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
+								{allMailDomains.length}
+							</span>
+						</Tabs.Trigger>
+
+						<Tabs.Trigger
+							value="accounts"
+							class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
+						>
+							<UsersIcon aria-hidden="true" class="size-3.5" />
+							<span>Akun Email</span>
+							<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
+								{flatAccounts.length}
+							</span>
+						</Tabs.Trigger>
+
+						<Tabs.Trigger
+							value="ports"
+							class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
+						>
+							<ShieldCheckIcon aria-hidden="true" class="size-3.5" />
+							<span>Port &amp; Protokol</span>
+							<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
+								{openPortCount}/{stalwartPorts.length}
+							</span>
+						</Tabs.Trigger>
+					</Tabs.List>
+				</div>
+			</div>
+
+			<!-- Tab 1: Status Domain & Outbound SMTP -->
+			<Tabs.Content value="domains" class="mt-0">
+				<div>
+					<div class="flex flex-col gap-2.5 border-b bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+						<search class="w-full sm:max-w-xs">
+							<InputGroup.Root class="h-8 bg-background">
+								<InputGroup.Addon align="inline-start">
+									<SearchIcon />
+								</InputGroup.Addon>
+								<InputGroup.Input
+									type="search"
+									placeholder="Cari domain mail..."
+									aria-label="Cari domain mail"
+									bind:value={domainSearch}
+								/>
+							</InputGroup.Root>
+						</search>
+
+						<div class="flex items-center gap-2">
+							<span class="text-xs text-muted-foreground">
+								{filteredMailDomains.length} dari {allMailDomains.length} domain
+							</span>
+						</div>
+					</div>
+
+					{#if allMailDomains.length === 0}
+						<div class="p-4">
+							<Empty.Root class="border-0 py-8">
+								<Empty.Header>
+									<Empty.Media variant="icon">
+										<GlobeIcon />
+									</Empty.Media>
+									<Empty.Title>Belum ada domain mail</Empty.Title>
+									<Empty.Description>
+										Daftarkan domain mail pertama untuk mulai mengelola kotak pos Stalwart dan webmail SnappyMail.
+									</Empty.Description>
+								</Empty.Header>
+								<Empty.Content>
+									<Button size="sm" onclick={openSetupModal}>
+										<MailPlusIcon data-icon="inline-start" />
+										Setup Domain Pertama
+									</Button>
+								</Empty.Content>
+							</Empty.Root>
+						</div>
+					{:else if filteredMailDomains.length === 0}
+						<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+							<p class="text-sm text-muted-foreground">Tidak ada domain yang cocok dengan "{domainSearch}".</p>
+							<Button variant="outline" size="xs" onclick={() => (domainSearch = '')}>
+								Reset Pencarian
+							</Button>
+						</div>
 					{:else}
-						{#each mailStatus.domains as dom (dom.domain)}
-							{@const domRelay = mailStatus.domain_relays?.[dom.domain]}
-							{@const outboundRoute = mailStatus.outbound_routes?.[dom.domain]}
-							{@const isLocalOverride = outboundRoute === 'mx' && !domRelay?.host}
-							{@const activeRelay = isLocalOverride ? null : (domRelay?.host ? domRelay : mailStatus.global_relay)}
-							{@const isOverride = Boolean(domRelay?.host) || isLocalOverride}
-							<Table.Row>
-								<Table.Cell data-label="Domain" class="font-semibold">{dom.domain}</Table.Cell>
-								<Table.Cell data-label="Provider">
-									{#if isLocalOverride}
-										<StatusBadge tone="success" label="SMTP LOKAL (DIRECT)" />
-									{:else if activeRelay?.host}
-										<StatusBadge
-											tone={activeRelay.provider === 'resend'
-												? 'info'
-												: activeRelay.provider === 'brevo'
-													? 'success'
-													: 'warning'}
-											label={`${isOverride ? '' : 'DEFAULT · '}${activeRelay.provider.toUpperCase()}`}
-										/>
-									{:else}
-										<StatusBadge tone="success" label="DEFAULT · SMTP LOKAL" />
-									{/if}
-								</Table.Cell>
-								<Table.Cell data-label="Host:Port" class="font-mono text-xs">
-									{#if isLocalOverride}
-										Stalwart SMTP (Direct MX)
-									{:else if activeRelay?.host}
-										{activeRelay.host}:{activeRelay.port}
-									{:else}
-										Stalwart SMTP (Direct MX)
-									{/if}
-								</Table.Cell>
-								<Table.Cell data-label="Username">
-									<div class="text-xs">{activeRelay?.username || '-'}</div>
-									<div class="text-[11px] text-muted-foreground">
-										{#if isLocalOverride}
-											override SMTP lokal
-										{:else if domRelay?.host}
-											override domain
-										{:else if activeRelay?.host}
-											ikut relay default
-										{:else}
-											SMTP lokal bawaan
-										{/if}
-									</div>
-								</Table.Cell>
-								<Table.Cell data-label="Admin">
-									<Button
-										variant="outline"
-										size="xs"
-										href={dom.admin_url}
-										target="_blank"
-										rel="noopener noreferrer"
-									>
-										Panel
-										<ExternalLinkIcon data-icon="inline-end" />
-									</Button>
-								</Table.Cell>
-								<Table.Cell data-label="Webmail">
-									<Button
-										variant="outline"
-										size="xs"
-										href={dom.webmail}
-										target="_blank"
-										rel="noopener noreferrer"
-									>
-										Webmail
-										<ExternalLinkIcon data-icon="inline-end" />
-									</Button>
-								</Table.Cell>
-								<Table.Cell data-label="Aksi" class="text-right">
-									{@const pendingAction = domainPending[dom.domain]}
-									<div class="flex justify-end">
-										<DropdownMenu.Root>
-											<DropdownMenu.Trigger>
-												{#snippet child({ props })}
+						<div class="p-3 sm:p-0">
+							<ResponsiveTableWrapper label="Tabel Status Outbound SMTP per Domain" class="rounded-none border-0 bg-transparent">
+								<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
+									<Table.Header>
+										<Table.Row>
+											<Table.Head scope="col">Domain</Table.Head>
+											<Table.Head scope="col">Mode / Provider</Table.Head>
+											<Table.Head scope="col">SMTP / Relay Host</Table.Head>
+											<Table.Head scope="col">Username / Sumber</Table.Head>
+											<Table.Head scope="col">Panel Admin</Table.Head>
+											<Table.Head scope="col">Webmail</Table.Head>
+											<Table.Head scope="col" class="text-right">Aksi</Table.Head>
+										</Table.Row>
+									</Table.Header>
+									<Table.Body>
+										{#each paginatedMailDomains as dom (dom.domain)}
+											{@const domRelay = mailStatus?.domain_relays?.[dom.domain]}
+											{@const outboundRoute = mailStatus?.outbound_routes?.[dom.domain]}
+											{@const isLocalOverride = outboundRoute === 'mx' && !domRelay?.host}
+											{@const activeRelay = isLocalOverride ? null : (domRelay?.host ? domRelay : mailStatus?.global_relay)}
+											{@const isOverride = Boolean(domRelay?.host) || isLocalOverride}
+											{@const pendingAction = domainPending[dom.domain]}
+											<Table.Row>
+												<Table.Cell data-label="Domain" class="font-semibold">{dom.domain}</Table.Cell>
+												<Table.Cell data-label="Provider">
+													{#if isLocalOverride}
+														<StatusBadge tone="success" label="SMTP LOKAL (DIRECT)" />
+													{:else if activeRelay?.host}
+														<StatusBadge
+															tone={activeRelay.provider === 'resend'
+																? 'info'
+																: activeRelay.provider === 'brevo'
+																	? 'success'
+																	: 'warning'}
+															label={`${isOverride ? '' : 'DEFAULT · '}${activeRelay.provider.toUpperCase()}`}
+														/>
+													{:else}
+														<StatusBadge tone="success" label="DEFAULT · SMTP LOKAL" />
+													{/if}
+												</Table.Cell>
+												<Table.Cell data-label="Host:Port" class="font-mono text-xs">
+													{#if isLocalOverride}
+														Stalwart SMTP (Direct MX)
+													{:else if activeRelay?.host}
+														{activeRelay.host}:{activeRelay.port}
+													{:else}
+														Stalwart SMTP (Direct MX)
+													{/if}
+												</Table.Cell>
+												<Table.Cell data-label="Username">
+													<div class="text-xs">{activeRelay?.username || '-'}</div>
+													<div class="text-[11px] text-muted-foreground">
+														{#if isLocalOverride}
+															override SMTP lokal
+														{:else if domRelay?.host}
+															override domain
+														{:else if activeRelay?.host}
+															ikut relay default
+														{:else}
+															SMTP lokal bawaan
+														{/if}
+													</div>
+												</Table.Cell>
+												<Table.Cell data-label="Admin">
 													<Button
 														variant="outline"
 														size="xs"
-														disabled={Boolean(pendingAction)}
-														{...props}
+														href={dom.admin_url}
+														target="_blank"
+														rel="noopener noreferrer"
 													>
-														{#if pendingAction === 'repair'}
-															<Spinner data-icon="inline-start" />
-															Memperbaiki...
-														{:else if pendingAction === 'reset-admin'}
-															<Spinner data-icon="inline-start" />
-															Mereset...
-														{:else if pendingAction === 'unset-relay'}
-															<Spinner data-icon="inline-start" />
-															Menghapus...
-														{:else}
-															Aksi
-															<ChevronDownIcon data-icon="inline-end" />
-														{/if}
+														Panel
+														<ExternalLinkIcon data-icon="inline-end" />
 													</Button>
-												{/snippet}
-											</DropdownMenu.Trigger>
-											<DropdownMenu.Content align="end" class="w-48">
-												<DropdownMenu.Group>
-													<DropdownMenu.Label class="text-xs text-muted-foreground">
-														{dom.domain}
-													</DropdownMenu.Label>
-													<DropdownMenu.Separator />
-													<DropdownMenu.Item onclick={() => openRelayModal(dom.domain)}>
-														<SettingsIcon />
-														<span>{isOverride ? 'Ubah Relay' : 'Setel Relay'}</span>
-													</DropdownMenu.Item>
-													{#if isOverride}
-														<DropdownMenu.Item
-															disabled={Boolean(pendingAction)}
-															onclick={() => removeRelayOverride(dom.domain)}
-														>
-															<RefreshCwIcon />
-															<span>Hapus Override</span>
-														</DropdownMenu.Item>
-													{/if}
-													<DropdownMenu.Item
-														disabled={Boolean(pendingAction)}
+												</Table.Cell>
+												<Table.Cell data-label="Webmail">
+													<Button
+														variant="outline"
+														size="xs"
+														href={dom.webmail}
+														target="_blank"
+														rel="noopener noreferrer"
+													>
+														Webmail
+														<ExternalLinkIcon data-icon="inline-end" />
+													</Button>
+												</Table.Cell>
+												<Table.Cell data-label="Aksi" class="text-right">
+													<div class="flex justify-end">
+														<DropdownMenu.Root>
+															<DropdownMenu.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																		variant="outline"
+																		size="xs"
+																		disabled={Boolean(pendingAction)}
+																		{...props}
+																	>
+																		{#if pendingAction === 'repair'}
+																			<Spinner data-icon="inline-start" />
+																			Memperbaiki...
+																		{:else if pendingAction === 'reset-admin'}
+																			<Spinner data-icon="inline-start" />
+																			Mereset...
+																		{:else if pendingAction === 'unset-relay'}
+																			<Spinner data-icon="inline-start" />
+																			Menghapus...
+																		{:else}
+																			Aksi
+																			<ChevronDownIcon data-icon="inline-end" />
+																		{/if}
+																	</Button>
+																{/snippet}
+															</DropdownMenu.Trigger>
+															<DropdownMenu.Content align="end" class="w-48">
+																<DropdownMenu.Group>
+																	<DropdownMenu.Label class="text-xs text-muted-foreground">
+																		{dom.domain}
+																	</DropdownMenu.Label>
+																	<DropdownMenu.Separator />
+																	<DropdownMenu.Item onclick={() => openRelayModal(dom.domain)}>
+																		<SettingsIcon />
+																		<span>{isOverride ? 'Ubah Relay' : 'Setel Relay'}</span>
+																	</DropdownMenu.Item>
+																	{#if isOverride}
+																		<DropdownMenu.Item
+																				disabled={Boolean(pendingAction)}
+																onclick={() => removeRelayOverride(dom.domain)}
+																		>
+																			<RefreshCwIcon />
+																			<span>Hapus Override</span>
+																		</DropdownMenu.Item>
+																	{/if}
+																	<DropdownMenu.Item
+																		disabled={Boolean(pendingAction)}
 														onclick={() => resetAdmin(dom.domain)}
-													>
-														<KeyRoundIcon />
-														<span>Reset Admin</span>
-													</DropdownMenu.Item>
-													<DropdownMenu.Item
-														disabled={Boolean(pendingAction)}
+																	>
+																		<KeyRoundIcon />
+																		<span>Reset Admin</span>
+																	</DropdownMenu.Item>
+																	<DropdownMenu.Item
+																		disabled={Boolean(pendingAction)}
 														onclick={() => repairDomain(dom.domain)}
-													>
-														<WrenchIcon />
-														<span>Perbaiki</span>
-													</DropdownMenu.Item>
-													<DropdownMenu.Separator />
-													<DropdownMenu.Item
-														variant="destructive"
-														disabled={Boolean(pendingAction)}
+																	>
+																		<WrenchIcon />
+																		<span>Perbaiki</span>
+																	</DropdownMenu.Item>
+																	<DropdownMenu.Separator />
+																	<DropdownMenu.Item
+																		variant="destructive"
+															disabled={Boolean(pendingAction)}
 														onclick={() => openDeleteDomainModal(dom.domain)}
-													>
-														<Trash2Icon />
-														<span>Hapus Domain</span>
-													</DropdownMenu.Item>
+																	>
+																		<Trash2Icon />
+																		<span>Hapus Domain</span>
+																	</DropdownMenu.Item>
 												</DropdownMenu.Group>
 											</DropdownMenu.Content>
 										</DropdownMenu.Root>
@@ -1045,161 +1318,348 @@
 								</Table.Cell>
 							</Table.Row>
 						{/each}
-					{/if}
 				</Table.Body>
 			</Table.Root>
 		</ResponsiveTableWrapper>
-	</section>
+	</div>
+{/if}
 
-	<!-- Accounts Table -->
-	<section class="flex flex-col gap-3">
-		<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-			<div>
-				<h2 class="text-base font-semibold tracking-tight sm:text-lg">Daftar Akun Email per Domain</h2>
-				<p class="text-xs text-muted-foreground">Akun kotak pos yang terdaftar di server Stalwart.</p>
-			</div>
-			<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-				<Select.Root type="single" bind:value={domainFilter}>
-					<Select.Trigger class="w-full sm:w-48" aria-label="Filter domain email">
-						{domainFilter || 'Semua Domain'}
-					</Select.Trigger>
-					<Select.Content>
-						<Select.Group>
-							<Select.Item value="">Semua Domain</Select.Item>
-							{#each mailStatus?.domains || [] as dom (dom.domain)}
-								<Select.Item value={dom.domain}>{dom.domain}</Select.Item>
-							{/each}
-						</Select.Group>
-					</Select.Content>
-				</Select.Root>
-				<Button size="sm" class="w-full sm:w-auto" onclick={() => openAddAccount(domainFilter)}>
-					<UserPlusIcon data-icon="inline-start" />
-					Tambah Email
-				</Button>
-			</div>
-		</div>
+					<PaginationBar
+						bind:page={domainPage}
+						totalItems={filteredMailDomains.length}
+						pageSize={PAGE_SIZE}
+						itemLabel="domain email"
+					/>
+				</div>
+			</Tabs.Content>
 
-		<ResponsiveTableWrapper label="Tabel Akun Email">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>Domain</Table.Head>
-						<Table.Head>Alamat Email</Table.Head>
-						<Table.Head>Nama / ID Akun</Table.Head>
-						<Table.Head>Tipe / Role</Table.Head>
-						<Table.Head>Outbound Relay</Table.Head>
-						<Table.Head class="text-right">Aksi</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
+			<!-- Tab 2: Daftar Akun Email -->
+			<Tabs.Content value="accounts" class="mt-0">
+				<div>
+					<div class="flex flex-col gap-2.5 border-b bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+						<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2.5 w-full sm:w-auto">
+							<search class="w-full sm:w-64">
+								<InputGroup.Root class="h-8 bg-background">
+									<InputGroup.Addon align="inline-start">
+										<SearchIcon />
+									</InputGroup.Addon>
+									<InputGroup.Input
+										type="search"
+										placeholder="Cari email / nama..."
+										aria-label="Cari akun email"
+										bind:value={accountSearch}
+									/>
+								</InputGroup.Root>
+							</search>
+
+							<Select.Root type="single" bind:value={domainFilter}>
+								<Select.Trigger class="h-8 w-full sm:w-44 text-xs" aria-label="Filter domain email">
+									{domainFilter || 'Semua Domain'}
+								</Select.Trigger>
+								<Select.Content>
+									<Select.Group>
+										<Select.Item value="">Semua Domain</Select.Item>
+										{#each mailStatus?.domains || [] as dom (dom.domain)}
+											<Select.Item value={dom.domain}>{dom.domain}</Select.Item>
+										{/each}
+									</Select.Group>
+								</Select.Content>
+							</Select.Root>
+						</div>
+
+						<div class="flex items-center gap-2">
+							<span class="text-xs text-muted-foreground">
+								{filteredAccounts.length} dari {flatAccounts.length} akun
+							</span>
+						</div>
+					</div>
+
 					{#if accountsError}
-						<Table.Row>
-							<Table.Cell colspan={6} class="py-6 text-center text-muted-foreground">
-								{accountsError}
-							</Table.Cell>
-						</Table.Row>
-					{:else if filteredGroups.every((g) => (g.accounts?.length ?? 0) === 0)}
-						<Table.Row>
-							<Table.Cell colspan={6} class="py-6 text-center text-muted-foreground">
-								Tidak ada akun email yang cocok dengan filter.
-							</Table.Cell>
-						</Table.Row>
+						<div class="flex flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+							<p class="text-sm text-destructive">{accountsError}</p>
+							<Button variant="outline" size="sm" onclick={() => loadMail(true)}>
+								<RefreshCwIcon data-icon="inline-start" />
+								Coba Lagi
+							</Button>
+						</div>
+					{:else if flatAccounts.length === 0}
+						<div class="p-4">
+							<Empty.Root class="border-0 py-8">
+								<Empty.Header>
+									<Empty.Media variant="icon">
+										<UsersIcon />
+									</Empty.Media>
+									<Empty.Title>Belum ada akun email</Empty.Title>
+									<Empty.Description>
+										Tambahkan kotak pos user pertama Anda untuk mulai mengirim dan menerima pesan.
+									</Empty.Description>
+								</Empty.Header>
+								<Empty.Content>
+									<Button size="sm" onclick={() => openAddAccount(domainFilter)}>
+										<UserPlusIcon data-icon="inline-start" />
+										Tambah Email Sekarang
+									</Button>
+								</Empty.Content>
+							</Empty.Root>
+						</div>
+					{:else if filteredAccounts.length === 0}
+						<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+							<p class="text-sm text-muted-foreground">Tidak ada akun email yang cocok dengan kriteria filter.</p>
+							<Button
+								variant="outline"
+								size="xs"
+								onclick={() => {
+									accountSearch = '';
+									domainFilter = '';
+								}}
+							>
+								Reset Filter &amp; Pencarian
+							</Button>
+						</div>
 					{:else}
-						{#each filteredGroups as grp (grp.domain)}
-							{#each grp.accounts || [] as acc (acc.id)}
-								<Table.Row>
-									<Table.Cell data-label="Domain" class="font-semibold">{grp.domain}</Table.Cell>
-									<Table.Cell data-label="Email" class="font-medium">{acc.email}</Table.Cell>
-									<Table.Cell data-label="ID" class="font-mono text-xs text-muted-foreground">
-										{acc.name || acc.id}
-									</Table.Cell>
-									<Table.Cell data-label="Role">
-										<StatusBadge
-											tone={acc.is_admin ? 'warning' : 'success'}
-											label={acc.is_admin ? 'Administrator' : 'Kotak Pos User'}
-										/>
-									</Table.Cell>
-									<Table.Cell data-label="Relay">
-										{#if grp.relay?.host}
-											<Badge variant="secondary">
-												{grp.relay.provider.toUpperCase()} ({grp.relay.host})
-											</Badge>
-										{:else if mailStatus?.outbound_routes?.[grp.domain] === 'mx'}
-											<Badge variant="outline">SMTP Lokal (Direct)</Badge>
-										{:else if mailStatus?.global_relay?.host}
-											<Badge variant="outline">
-												Default ({mailStatus.global_relay.provider.toUpperCase()})
-											</Badge>
-										{:else}
-											<Badge variant="outline">SMTP Lokal</Badge>
-										{/if}
-									</Table.Cell>
-									<Table.Cell data-label="Aksi" class="text-right">
-										<div class="flex justify-end">
-											<DropdownMenu.Root>
-												<DropdownMenu.Trigger>
-													{#snippet child({ props })}
-														<Button
-															variant="outline"
-															size="xs"
-															disabled={Boolean(accountPending[acc.email])}
-															{...props}
-														>
-															{#if accountPending[acc.email]}
-																<Spinner data-icon="inline-start" />
-																Menghapus...
-															{:else}
-																Aksi
-																<ChevronDownIcon data-icon="inline-end" />
-															{/if}
-														</Button>
-													{/snippet}
-												</DropdownMenu.Trigger>
-												<DropdownMenu.Content align="end" class="w-48">
-													<DropdownMenu.Group>
-														<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
-															{acc.email}
-														</DropdownMenu.Label>
+						<div class="p-3 sm:p-0">
+							<ResponsiveTableWrapper label="Tabel Akun Email" class="rounded-none border-0 bg-transparent">
+								<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
+									<Table.Header>
+										<Table.Row>
+											<Table.Head scope="col">Domain</Table.Head>
+											<Table.Head scope="col">Alamat Email</Table.Head>
+											<Table.Head scope="col">Nama / ID Akun</Table.Head>
+											<Table.Head scope="col">Tipe / Role</Table.Head>
+											<Table.Head scope="col">Outbound Relay</Table.Head>
+											<Table.Head scope="col" class="text-right">Aksi</Table.Head>
+										</Table.Row>
+									</Table.Header>
+									<Table.Body>
+										{#each paginatedAccounts as item (item.account.id)}
+											{@const grp = item}
+											{@const acc = item.account}
+											{@const isPending = Boolean(accountPending[acc.email])}
+											<Table.Row>
+												<Table.Cell data-label="Domain" class="font-semibold">{grp.domain}</Table.Cell>
+												<Table.Cell data-label="Email" class="font-medium">{acc.email}</Table.Cell>
+												<Table.Cell data-label="ID" class="font-mono text-xs text-muted-foreground">
+													{acc.name || acc.id}
+												</Table.Cell>
+												<Table.Cell data-label="Role">
+													<StatusBadge
+														tone={acc.is_admin ? 'warning' : 'success'}
+														label={acc.is_admin ? 'Administrator' : 'Kotak Pos User'}
+													/>
+												</Table.Cell>
+												<Table.Cell data-label="Relay">
+													{#if grp.relay?.host}
+														<Badge variant="secondary">
+															{grp.relay.provider.toUpperCase()} ({grp.relay.host})
+														</Badge>
+													{:else if mailStatus?.outbound_routes?.[grp.domain] === 'mx'}
+														<Badge variant="outline">SMTP Lokal (Direct)</Badge>
+													{:else if mailStatus?.global_relay?.host}
+														<Badge variant="secondary">
+															DEFAULT ({mailStatus.global_relay.provider.toUpperCase()})
+														</Badge>
+													{:else}
+														<Badge variant="outline">Default (SMTP Lokal)</Badge>
+													{/if}
+												</Table.Cell>
+												<Table.Cell data-label="Aksi" class="text-right">
+													<div class="flex justify-end">
+														<DropdownMenu.Root>
+															<DropdownMenu.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																						variant="outline"
+																		size="xs"
+														disabled={isPending}
+														{...props}
+																	>
+																		{#if isPending}
+																			<Spinner data-icon="inline-start" />
+																			Menghapus...
+																		{:else}
+																			Aksi
+																			<ChevronDownIcon data-icon="inline-end" />
+																		{/if}
+																	</Button>
+																{/snippet}
+															</DropdownMenu.Trigger>
+															<DropdownMenu.Content align="end" class="w-48">
+																<DropdownMenu.Group>
+																	<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+																		{acc.email}
+																	</DropdownMenu.Label>
+																	<DropdownMenu.Separator />
+																	<DropdownMenu.Item>
+																		{#snippet child({ props })}
+																			<a href={grp.webmail} target="_blank" rel="noopener noreferrer" {...props}>
+																<ExternalLinkIcon />
+																<span>Buka Webmail</span>
+															</a>
+														{/snippet}
+													</DropdownMenu.Item>
+													<DropdownMenu.Item
+														disabled={isPending}
+													onclick={() => openEditAccountPass(acc.email)}
+													>
+														<KeyRoundIcon />
+														<span>Ubah Password</span>
+													</DropdownMenu.Item>
+													{#if !acc.is_admin}
 														<DropdownMenu.Separator />
-														<DropdownMenu.Item>
-															{#snippet child({ props })}
-																<a href={grp.webmail} target="_blank" rel="noopener noreferrer" {...props}>
-																	<ExternalLinkIcon />
-																	<span>Buka Webmail</span>
-																</a>
-															{/snippet}
-														</DropdownMenu.Item>
 														<DropdownMenu.Item
-															disabled={Boolean(accountPending[acc.email])}
-															onclick={() => openEditAccountPass(acc.email)}
+															variant="destructive"
+															disabled={isPending}
+															onclick={() => deleteAccount(acc.email)}
 														>
-															<KeyRoundIcon />
-															<span>Ubah Password</span>
+															<Trash2Icon />
+															<span>Hapus Akun</span>
 														</DropdownMenu.Item>
-														{#if !acc.is_admin}
-															<DropdownMenu.Separator />
-															<DropdownMenu.Item
-																variant="destructive"
-																disabled={Boolean(accountPending[acc.email])}
-																onclick={() => deleteAccount(acc.email)}
-															>
-																<Trash2Icon />
-																<span>Hapus Akun</span>
-															</DropdownMenu.Item>
-														{/if}
-													</DropdownMenu.Group>
-												</DropdownMenu.Content>
-											</DropdownMenu.Root>
-										</div>
-									</Table.Cell>
-								</Table.Row>
-							{/each}
+													{/if}
+												</DropdownMenu.Group>
+											</DropdownMenu.Content>
+										</DropdownMenu.Root>
+									</div>
+								</Table.Cell>
+							</Table.Row>
 						{/each}
-					{/if}
 				</Table.Body>
 			</Table.Root>
 		</ResponsiveTableWrapper>
-	</section>
+	</div>
+{/if}
+
+					<PaginationBar
+						bind:page={accountPage}
+						totalItems={filteredAccounts.length}
+						pageSize={PAGE_SIZE}
+						itemLabel="akun email"
+					/>
+				</div>
+			</Tabs.Content>
+
+			<!-- Tab 3: Status Port & Protokol Mail -->
+			<Tabs.Content value="ports" class="mt-0">
+				<div>
+					<div class="flex flex-col gap-2.5 border-b bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+						<div class="flex items-center gap-2">
+							<ShieldCheckIcon class="size-4 text-muted-foreground" />
+							<span class="text-xs font-medium text-foreground">
+								Diagnostik Port Stalwart Mail Server &amp; Akses Internet
+							</span>
+						</div>
+						<span class="text-xs text-muted-foreground">
+							{openPortCount} dari {stalwartPorts.length} port beroperasi
+						</span>
+					</div>
+
+					<div class="p-3 sm:p-0">
+						<ResponsiveTableWrapper label="Tabel Status Port & Protokol Mail" class="rounded-none border-0 bg-transparent">
+							<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
+								<Table.Header>
+									<Table.Row>
+										<Table.Head scope="col">Port</Table.Head>
+										<Table.Head scope="col">Protokol / Layanan</Table.Head>
+										<Table.Head scope="col">Listener Lokal</Table.Head>
+										<Table.Head scope="col">Akses Internet / Publik</Table.Head>
+										<Table.Head scope="col">Keterangan / Rekomendasi</Table.Head>
+									</Table.Row>
+								</Table.Header>
+								<Table.Body>
+									{#each stalwartPorts as item (item.port)}
+										{@const isLocalMode = (mailStatus?.mode || modeStore.mode) === 'local'}
+										{@const isInternal = Boolean(item.internal_only || item.port === 8080)}
+										{@const isInsideOpen = Boolean(item.local ?? item.open)}
+										{@const isOutsideOpen = isLocalMode
+											? isInsideOpen && !isInternal
+											: isInsideOpen && !isInternal && Boolean(item.external_checked) && Boolean(item.public)}
+										{@const isOutsideBlocked = !isLocalMode && item.open && !isInternal && Boolean(item.external_checked) && !item.public}
+										{@const isLocalUnverified = !isLocalMode && item.open && !isInternal && !item.external_checked}
+										<Table.Row>
+											<Table.Cell data-label="Port" class="font-mono text-sm font-bold">
+												{item.port}
+											</Table.Cell>
+											<Table.Cell data-label="Layanan">
+												<div class="font-semibold">{item.label}</div>
+												<div class="font-mono text-xs text-muted-foreground">
+													{item.port === 25
+														? 'SMTP Inbound (Server-to-Server)'
+														: item.port === 465
+															? 'SMTPS (Implicit TLS Client Submission)'
+															: item.port === 587
+																? 'Submission (STARTTLS Client Auth)'
+																: item.port === 993
+																	? 'IMAPS (Secure Mailbox Fetch)'
+																	: 'Stalwart Web Management UI'}
+												</div>
+											</Table.Cell>
+											<Table.Cell data-label="Lokal">
+												{#if isInsideOpen}
+													<StatusBadge tone="success" label="Listening (Aktif)" />
+												{:else}
+													<StatusBadge tone="destructive" label="Mati (Nonaktif)" />
+												{/if}
+											</Table.Cell>
+											<Table.Cell data-label="Publik">
+												{#if isInternal}
+													<StatusBadge tone="neutral" label="Internal Saja (Nginx Proxy)" />
+												{:else if isLocalMode}
+													<StatusBadge tone="info" label="Mode Lokal (Non-Publik)" />
+												{:else if isOutsideOpen}
+													<StatusBadge tone="success" label="Terbuka Penuh" />
+												{:else if isOutsideBlocked}
+													<StatusBadge tone="warning" label="Terblokir Firewall / ISP" />
+												{:else if isLocalUnverified}
+													<StatusBadge tone="warning" label="Belum Terverifikasi" />
+												{:else}
+													<StatusBadge tone="destructive" label="Tertutup" />
+												{/if}
+											</Table.Cell>
+											<Table.Cell data-label="Keterangan" class="text-xs text-muted-foreground">
+												{#if item.port === 25}
+													{#if isOutsideBlocked}
+														Port 25 sering diblokir oleh provider internet / cloud untuk mencegah spam. Gunakan <strong>Relay Outbound SMTP</strong> (Resend / Brevo) untuk pengiriman email keluar.
+													{:else}
+														Wajib terbuka dua arah agar mail server lain dapat mengirim email masuk (inbound) ke domain Anda.
+													{/if}
+												{:else if item.port === 465 || item.port === 587}
+													Digunakan oleh aplikasi email (Outlook, Thunderbird, Apple Mail, dsb) untuk otentikasi kirim pesan.
+												{:else if item.port === 993}
+													Digunakan oleh SnappyMail Webmail dan aplikasi email untuk sinkronisasi folder inbox (IMAP over SSL).
+												{:else}
+													Panel admin Stalwart diakses aman melalui reverse proxy Nginx pada port 8080 internal.
+												{/if}
+											</Table.Cell>
+										</Table.Row>
+									{/each}
+								</Table.Body>
+							</Table.Root>
+						</ResponsiveTableWrapper>
+					</div>
+
+					{#if (mailStatus?.mode || modeStore.mode) !== 'local'}
+						<div class="border-t p-4">
+							{#if blockedOutsidePorts.length > 0}
+								<Alert.Root class="border-amber-500/30 bg-amber-500/5">
+									<InfoIcon class="text-amber-600 dark:text-amber-400" />
+									<Alert.Title class="font-semibold text-amber-700 dark:text-amber-400">
+										Port Terblokir dari Luar ({blockedOutsidePorts.map((p) => p.port).join(', ')})
+									</Alert.Title>
+									<Alert.Description class="text-xs leading-relaxed text-muted-foreground">
+										Port berhasil listen di server lokal, tetapi koneksi dari internet terblokir. Pastikan port forwarding pada router/firewall VPS dibuka (Security Group AWS/GCP/Alibaba/DigitalOcean). Bila Port 25 terblokir oleh ISP, Anda dapat menggunakan tombol <strong>Setel Relay</strong> di atas untuk merutekan outbound via Resend atau Brevo.
+									</Alert.Description>
+								</Alert.Root>
+							{:else}
+								<div class="flex items-center gap-2 text-xs text-muted-foreground">
+									<CheckIcon class="size-4 text-success" />
+									<span>Seluruh pengujian port listener &amp; konektivitas mail server berjalan optimal.</span>
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			</Tabs.Content>
+		</Tabs.Root>
+	</Card.Root>
 </div>
 
 <!-- Add Email Account Dialog -->

@@ -16,6 +16,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import CreateVhostModal from '#lib/components/modals/CreateVhostModal.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
@@ -126,6 +127,18 @@
 				(s.root_path || '').toLowerCase().includes(q) ||
 				(s.exposed_to || '').toLowerCase().includes(q)
 		);
+	});
+
+	// Pagination (Max 10 data per page)
+	const PAGE_SIZE = 10;
+	let sitePage = $state(1);
+	const paginatedSites = $derived(
+		filteredSites.slice((sitePage - 1) * PAGE_SIZE, sitePage * PAGE_SIZE)
+	);
+
+	$effect(() => {
+		const _ = searchQuery;
+		sitePage = 1;
 	});
 
 	async function loadSites() {
@@ -486,23 +499,24 @@
 			{/if}
 		</Empty.Root>
 	{:else}
-		<ResponsiveTableWrapper label="Daftar Virtual Host">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>{isLocal ? 'Domain Lokal' : 'Domain'}</Table.Head>
-						<Table.Head>Framework</Table.Head>
-						<Table.Head>Target Runtime</Table.Head>
-						<Table.Head>Document Root</Table.Head>
-						<Table.Head>SSL</Table.Head>
-						{#if isEdge}
-							<Table.Head>Tunnel VPS Edge</Table.Head>
-						{/if}
-						<Table.Head class="text-right">Aksi</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
-					{#each filteredSites as site (site.domain)}
+		<div class="flex flex-col overflow-hidden rounded-lg border bg-card">
+			<ResponsiveTableWrapper label="Daftar Virtual Host" class="rounded-none border-0">
+				<Table.Root>
+					<Table.Header>
+						<Table.Row>
+							<Table.Head>{isLocal ? 'Domain Lokal' : 'Domain'}</Table.Head>
+							<Table.Head>Framework</Table.Head>
+							<Table.Head>Target Runtime</Table.Head>
+							<Table.Head>Document Root</Table.Head>
+							<Table.Head>SSL</Table.Head>
+							{#if isEdge}
+								<Table.Head>Tunnel VPS Edge</Table.Head>
+							{/if}
+							<Table.Head class="text-right">Aksi</Table.Head>
+						</Table.Row>
+					</Table.Header>
+					<Table.Body>
+						{#each paginatedSites as site (site.domain)}
 						{@const proto = site.ssl_enabled ? 'https://' : 'http://'}
 						{@const hasLetsEncrypt = site.ssl_enabled && site.ssl_provider === 'letsencrypt'}
 						{@const sslExpiry = formatSSLExpiry(site.ssl_expires_at, site.ssl_days_left)}
@@ -716,6 +730,13 @@
 				</Table.Body>
 			</Table.Root>
 		</ResponsiveTableWrapper>
+		<PaginationBar
+			bind:page={sitePage}
+			totalItems={filteredSites.length}
+			pageSize={PAGE_SIZE}
+			itemLabel="virtual host"
+		/>
+	</div>
 	{/if}
 </div>
 

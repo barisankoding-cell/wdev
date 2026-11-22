@@ -10,6 +10,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
+	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { TunnelStatus } from '#lib/types/api.js';
@@ -26,6 +27,20 @@
 	let profile = $state('');
 	let submitting = $state(false);
 	let exposureDeleting = $state<Record<string, boolean>>({});
+
+	// Pagination (Max 10 data per page)
+	const PAGE_SIZE = 10;
+	let exposurePage = $state(1);
+	const allExposures = $derived(cfStatus?.exposures || []);
+	const paginatedExposures = $derived(
+		allExposures.slice((exposurePage - 1) * PAGE_SIZE, exposurePage * PAGE_SIZE)
+	);
+
+	$effect(() => {
+		if (allExposures.length === 0) {
+			exposurePage = 1;
+		}
+	});
 
 	async function loadCloudflare() {
 		try {
@@ -162,25 +177,26 @@
 
 	<section class="flex flex-col gap-3">
 		<h2 class="text-lg font-semibold tracking-tight">Daftar Domain Publik Aktif</h2>
-		<ResponsiveTableWrapper label="Tabel Domain Publik Cloudflare">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>Domain Lokal</Table.Head>
-						<Table.Head>Domain Publik</Table.Head>
-						<Table.Head>Profil</Table.Head>
-						<Table.Head class="text-right">Aksi</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
-					{#if !cfStatus?.exposures || cfStatus.exposures.length === 0}
+		<div class="flex flex-col overflow-hidden rounded-lg border bg-card">
+			<ResponsiveTableWrapper label="Tabel Domain Publik Cloudflare" class="rounded-none border-0">
+				<Table.Root>
+					<Table.Header>
 						<Table.Row>
-							<Table.Cell colspan={4} class="py-6 text-center text-muted-foreground">
-								Belum ada exposure Cloudflare Tunnel.
-							</Table.Cell>
+							<Table.Head>Domain Lokal</Table.Head>
+							<Table.Head>Domain Publik</Table.Head>
+							<Table.Head>Profil</Table.Head>
+							<Table.Head class="text-right">Aksi</Table.Head>
 						</Table.Row>
-					{:else}
-						{#each cfStatus.exposures as exp (exp.local_domain)}
+					</Table.Header>
+					<Table.Body>
+						{#if allExposures.length === 0}
+							<Table.Row>
+								<Table.Cell colspan={4} class="py-6 text-center text-muted-foreground">
+									Belum ada exposure Cloudflare Tunnel.
+								</Table.Cell>
+							</Table.Row>
+						{:else}
+							{#each paginatedExposures as exp (exp.local_domain)}
 							<Table.Row>
 								<Table.Cell data-label="Domain Lokal" class="font-mono text-xs">{exp.local_domain}</Table.Cell>
 								<Table.Cell data-label="Domain Publik">
@@ -252,5 +268,12 @@
 				</Table.Body>
 			</Table.Root>
 		</ResponsiveTableWrapper>
-	</section>
+		<PaginationBar
+			bind:page={exposurePage}
+			totalItems={allExposures.length}
+			pageSize={PAGE_SIZE}
+			itemLabel="domain publik"
+		/>
+	</div>
+</section>
 </div>
