@@ -10,18 +10,19 @@ import (
 	"syscall"
 )
 
-// MountDriveInfo merepresentasikan partisi atau drive tambahan yang terpasang (seperti di /mnt).
+// MountDriveInfo merepresentasikan partisi atau drive tambahan yang terpasang (seperti di /mnt atau media eksternal).
 type MountDriveInfo struct {
-	Name       string `json:"name"`
-	MountPoint string `json:"mount_point"`
-	Device     string `json:"device,omitempty"`
-	FSType     string `json:"fs_type,omitempty"`
-	TotalGB    int64  `json:"total_gb"`
-	UsedGB     int64  `json:"used_gb"`
-	FreeGB     int64  `json:"free_gb"`
-	TotalBytes uint64 `json:"total_bytes"`
-	UsedBytes  uint64 `json:"used_bytes"`
-	Percent    int    `json:"percent"`
+	Name         string  `json:"name"`
+	MountPoint   string  `json:"mount_point"`
+	Device       string  `json:"device,omitempty"`
+	FSType       string  `json:"fs_type,omitempty"`
+	TotalGB      int64   `json:"total_gb"`
+	UsedGB       int64   `json:"used_gb"`
+	FreeGB       int64   `json:"free_gb"`
+	TotalBytes   uint64  `json:"total_bytes"`
+	UsedBytes    uint64  `json:"used_bytes"`
+	Percent      int     `json:"percent"`
+	PercentExact float64 `json:"percent_exact,omitempty"`
 }
 
 var ignoredMountFSTypes = map[string]bool{
@@ -209,18 +210,195 @@ func detectMountDrives(baseDir, mountsPath string, statfsFn statfsFunc) []MountD
 		if !ok {
 			continue
 		}
+		var pctExact float64
+		if totalBytes > 0 {
+			pctExact = clampPercent2(float64(usedBytes) / float64(totalBytes) * 100.0)
+		}
 		drives = append(drives, MountDriveInfo{
-			Name:       formatMountDriveName(cleanBase, rm.mountPoint),
-			MountPoint: rm.mountPoint,
-			Device:     rm.device,
-			FSType:     rm.fsType,
-			TotalGB:    totalGB,
-			UsedGB:     usedGB,
-			FreeGB:     freeGB,
-			TotalBytes: totalBytes,
-			UsedBytes:  usedBytes,
-			Percent:    pct,
+			Name:         formatMountDriveName(cleanBase, rm.mountPoint),
+			MountPoint:   rm.mountPoint,
+			Device:       rm.device,
+			FSType:       rm.fsType,
+			TotalGB:      totalGB,
+			UsedGB:       usedGB,
+			FreeGB:       freeGB,
+			TotalBytes:   totalBytes,
+			UsedBytes:    usedBytes,
+			Percent:      pct,
+			PercentExact: pctExact,
 		})
+	}
+
+	sort.Slice(drives, func(i, j int) bool {
+		return drives[i].MountPoint < drives[j].MountPoint
+	})
+
+	return drives
+}
+
+var ignoredOtherMountFSTypes = map[string]bool{
+	"tmpfs":                    true,
+	"ramfs":                    true,
+	"devfs":                    true,
+	"overlay":                  true,
+	"squashfs":                 true,
+	"bpf":                      true,
+	"fuse.portal":              true,
+	"fuse.gvfsd-fuse":          true,
+	"fuse.lxcfs":               true,
+	"fuse.xdg-document-portal": true,
+}
+
+func isIgnoredOtherMountFS(fsType string) bool {
+	return ignoredMountFSTypes[fsType] || ignoredOtherMountFSTypes[fsType]
+}
+
+func isSystemOrVirtualMountPoint(mp string) bool {
+	clean := filepath.Clean(mp)
+	if clean == "/" || clean == "/boot" || strings.HasPrefix(clean, "/boot/") ||
+		clean == "/proc" || strings.HasPrefix(clean, "/proc/") ||
+		clean == "/sys" || strings.HasPrefix(clean, "/sys/") ||
+		clean == "/dev" || strings.HasPrefix(clean, "/dev/") ||
+		clean == "/tmp" ||
+		clean == "/snap" || strings.HasPrefix(clean, "/snap/") ||
+		strings.HasPrefix(clean, "/var/lib/docker/") ||
+		strings.HasPrefix(clean, "/var/lib/containers/") ||
+		strings.HasPrefix(clean, "/var/lib/kubelet/") ||
+		strings.HasPrefix(clean, "/var/lib/lxcfs") {
+		return true
+	}
+	if clean == "/run" || strings.HasPrefix(clean, "/run/") {
+		// Izinkan /run/media/* karena udisks2/systemd me-mount USB & drive eksternal di sana.
+		if clean == "/run/media" || strings.HasPrefix(clean, "/run/media/") {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// DetectOtherMounts mendeteksi seluruh disk eksternal dan mount tambahan aktif selain root & partisi sistem.
+func DetectOtherMounts() []MountDriveInfo {
+	return detectOtherMounts("/proc/mounts", syscall.Statfs, DetectMountDrives())
+}
+
+func detectOtherMounts(mountsPath string, statfsFn statfsFunc, mntFallback []MountDriveInfo) []MountDriveInfo {
+	type rawMount struct {
+		mountPoint string
+		device     string
+		fsType     string
+	}
+
+	var entries []rawMount
+	var rootDevice, rootFSType string
+
+	if f, err := os.Open(mountsPath); err == nil {
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) < 3 {
+				continue
+			}
+			dev := unescapeProcMountField(fields[0])
+			mp := filepath.Clean(unescapeProcMountField(fields[1]))
+			fsType := strings.ToLower(strings.TrimSpace(fields[2]))
+
+			if mp == "/" {
+				rootDevice = dev
+				rootFSType = fsType
+				continue
+			}
+			entries = append(entries, rawMount{
+				mountPoint: mp,
+				device:     dev,
+				fsType:     fsType,
+			})
+		}
+	}
+
+	byMount := make(map[string]rawMount)
+	for _, rm := range entries {
+		if isIgnoredOtherMountFS(rm.fsType) {
+			delete(byMount, rm.mountPoint)
+			continue
+		}
+		if isSystemOrVirtualMountPoint(rm.mountPoint) {
+			continue
+		}
+		if rm.device == "none" || rm.device == "udev" || rm.device == "portal" {
+			continue
+		}
+		if rootDevice != "" && rm.device == rootDevice && rm.fsType == rootFSType {
+			continue
+		}
+		st, statErr := os.Stat(rm.mountPoint)
+		if statErr != nil || !st.IsDir() {
+			continue
+		}
+		byMount[rm.mountPoint] = rm
+	}
+
+	var drives []MountDriveInfo
+	seenDevSize := make(map[string]int) // dedup bind-mount perangkat + ukuran identik
+
+	// Urutkan agar mount path yang lebih pendek dipilih lebih dulu saat deduplikasi bind-mount.
+	paths := make([]string, 0, len(byMount))
+	for mp := range byMount {
+		paths = append(paths, mp)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		if len(paths[i]) != len(paths[j]) {
+			return len(paths[i]) < len(paths[j])
+		}
+		return paths[i] < paths[j]
+	})
+
+	for _, mp := range paths {
+		rm := byMount[mp]
+		totalGB, usedGB, freeGB, totalBytes, usedBytes, pct, ok := readDiskUsage(rm.mountPoint, statfsFn)
+		if !ok || totalBytes == 0 {
+			continue
+		}
+		if rm.device != "" {
+			key := fmt.Sprintf("%s|%s|%d", rm.device, rm.fsType, totalBytes)
+			if _, exists := seenDevSize[key]; exists {
+				continue
+			}
+			seenDevSize[key] = len(drives)
+		}
+		pctExact := clampPercent2(float64(usedBytes) / float64(totalBytes) * 100.0)
+		label := filepath.Base(rm.mountPoint)
+		if label == "" || label == "." || label == "/" {
+			label = rm.mountPoint
+		}
+		drives = append(drives, MountDriveInfo{
+			Name:         fmt.Sprintf("%s (%s)", label, rm.mountPoint),
+			MountPoint:   rm.mountPoint,
+			Device:       rm.device,
+			FSType:       rm.fsType,
+			TotalGB:      totalGB,
+			UsedGB:       usedGB,
+			FreeGB:       freeGB,
+			TotalBytes:   totalBytes,
+			UsedBytes:    usedBytes,
+			Percent:      pct,
+			PercentExact: pctExact,
+		})
+	}
+
+	// Sertakan fallback /mnt jika belum ada di hasil /proc/mounts.
+	present := make(map[string]bool, len(drives))
+	for _, d := range drives {
+		present[d.MountPoint] = true
+	}
+	for _, extra := range mntFallback {
+		if !present[extra.MountPoint] && extra.TotalBytes > 0 {
+			if extra.PercentExact == 0 {
+				extra.PercentExact = clampPercent2(float64(extra.UsedBytes) / float64(extra.TotalBytes) * 100.0)
+			}
+			drives = append(drives, extra)
+		}
 	}
 
 	sort.Slice(drives, func(i, j int) bool {

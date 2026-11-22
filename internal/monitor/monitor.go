@@ -36,33 +36,32 @@ type SystemStats struct {
 	CPUCores        int               `json:"cpu_cores"`
 	CPUModel        string            `json:"cpu_model,omitempty"`
 	CPUSockets      int               `json:"cpu_sockets,omitempty"`
-	CPUUsagePercent float64           `json:"cpu_usage_percent"`
-	IODelayPercent  float64           `json:"io_delay_percent"`
-	CPUCoresUsage   []CPUCoreUsage    `json:"cpu_cores_usage,omitempty"`
-	LoadPercent     int               `json:"load_percent"`
-	Load1m          float64           `json:"load_1m"`
-	Load5m          float64           `json:"load_5m"`
-	Load15m         float64           `json:"load_15m"`
-	Load1mPct       int               `json:"load_1m_percent"`
-	Load5mPct       int               `json:"load_5m_percent"`
-	Load15mPct      int               `json:"load_15m_percent"`
-	MemTotalMB      int64             `json:"mem_total_mb"`
-	MemUsedMB       int64             `json:"mem_used_mb"`
-	MemPercent      int               `json:"mem_percent"`
-	MemTotalBytes   uint64            `json:"mem_total_bytes"`
-	MemUsedBytes    uint64            `json:"mem_used_bytes"`
-	MemPercentExact float64           `json:"mem_percent_exact"`
-	SwapTotalBytes  uint64            `json:"swap_total_bytes"`
-	SwapUsedBytes   uint64            `json:"swap_used_bytes"`
-	SwapPercent     float64           `json:"swap_percent"`
-	KSMSharingBytes uint64            `json:"ksm_sharing_bytes"`
-	DiskTotalGB     int64             `json:"disk_total_gb"`
-	DiskUsedGB      int64             `json:"disk_used_gb"`
-	DiskPercent     int               `json:"disk_percent"`
-	DiskTotalBytes  uint64            `json:"disk_total_bytes"`
-	DiskUsedBytes   uint64            `json:"disk_used_bytes"`
-	DiskPercentExact float64          `json:"disk_percent_exact"`
-	MountDrives     []MountDriveInfo  `json:"mount_drives,omitempty"`
+	CPUUsagePercent  float64           `json:"cpu_usage_percent"`
+	CPUCoresUsage    []CPUCoreUsage    `json:"cpu_cores_usage,omitempty"`
+	LoadPercent      int               `json:"load_percent"`
+	Load1m           float64           `json:"load_1m"`
+	Load5m           float64           `json:"load_5m"`
+	Load15m          float64           `json:"load_15m"`
+	Load1mPct        int               `json:"load_1m_percent"`
+	Load5mPct        int               `json:"load_5m_percent"`
+	Load15mPct       int               `json:"load_15m_percent"`
+	MemTotalMB       int64             `json:"mem_total_mb"`
+	MemUsedMB        int64             `json:"mem_used_mb"`
+	MemPercent       int               `json:"mem_percent"`
+	MemTotalBytes    uint64            `json:"mem_total_bytes"`
+	MemUsedBytes     uint64            `json:"mem_used_bytes"`
+	MemPercentExact  float64           `json:"mem_percent_exact"`
+	SwapTotalBytes   uint64            `json:"swap_total_bytes"`
+	SwapUsedBytes    uint64            `json:"swap_used_bytes"`
+	SwapPercent      float64           `json:"swap_percent"`
+	DiskTotalGB      int64             `json:"disk_total_gb"`
+	DiskUsedGB       int64             `json:"disk_used_gb"`
+	DiskPercent      int               `json:"disk_percent"`
+	DiskTotalBytes   uint64            `json:"disk_total_bytes"`
+	DiskUsedBytes    uint64            `json:"disk_used_bytes"`
+	DiskPercentExact float64           `json:"disk_percent_exact"`
+	MountDrives      []MountDriveInfo  `json:"mount_drives,omitempty"`
+	OtherMounts      []MountDriveInfo  `json:"other_mounts,omitempty"`
 	LanIP           string            `json:"lan_ip"`
 	NetbirdIP       string            `json:"netbird_ip"`
 	PublicIP        string            `json:"public_ip,omitempty"`
@@ -174,11 +173,11 @@ func Collect() (*SystemStats, error) {
 	memStats := getDetailedMemInfo()
 	diskTotal, diskUsed, diskTotalBytes, diskUsedBytes, diskPct, diskPctExact := getDetailedDiskInfo("/")
 	mountDrives := DetectMountDrives()
+	otherMounts := detectOtherMounts("/proc/mounts", syscall.Statfs, mountDrives)
 	lanIP, netbirdIP, publicIP := getNetworkIPs()
 	services := getServiceStatuses()
 	runtimes := getRuntimeVersions()
-	cpuCoresUsage, cpuUsagePct, ioDelayPct := getCPUUsageMetrics()
-	ksmBytes := getKSMSharingBytes()
+	cpuCoresUsage, cpuUsagePct := getCPUUsageMetrics()
 
 	serverMode := ""
 	if publicIP != "" && publicIP != "-" && publicIP != "127.0.0.1" {
@@ -199,7 +198,6 @@ func Collect() (*SystemStats, error) {
 		CPUModel:         cpuModel,
 		CPUSockets:       cpuSockets,
 		CPUUsagePercent:  cpuUsagePct,
-		IODelayPercent:   ioDelayPct,
 		CPUCoresUsage:    cpuCoresUsage,
 		LoadPercent:      p1,
 		Load1m:           l1,
@@ -217,7 +215,6 @@ func Collect() (*SystemStats, error) {
 		SwapTotalBytes:   memStats.swapTotalBytes,
 		SwapUsedBytes:    memStats.swapUsedBytes,
 		SwapPercent:      memStats.swapPercent,
-		KSMSharingBytes:  ksmBytes,
 		DiskTotalGB:      diskTotal,
 		DiskUsedGB:       diskUsed,
 		DiskPercent:      diskPct,
@@ -225,6 +222,7 @@ func Collect() (*SystemStats, error) {
 		DiskUsedBytes:    diskUsedBytes,
 		DiskPercentExact: diskPctExact,
 		MountDrives:      mountDrives,
+		OtherMounts:      otherMounts,
 		LanIP:            lanIP,
 		NetbirdIP:        netbirdIP,
 		PublicIP:         publicIP,
@@ -361,7 +359,6 @@ var (
 	lastCPUTickTime   time.Time
 	cachedCoresUsage  []CPUCoreUsage
 	cachedAggCPUUsage float64
-	cachedIODelay     float64
 )
 
 func round2(v float64) float64 {
@@ -471,15 +468,15 @@ func calculateCoresUsage(prev, curr map[int]coreTickSample) []CPUCoreUsage {
 	return list
 }
 
-func calculateAggregateCPUAndIODelay(prev, curr map[int]coreTickSample) (cpuPct, ioDelayPct float64) {
+func calculateAggregateCPUUsage(prev, curr map[int]coreTickSample) float64 {
 	prevAgg, okPrev := prev[aggregateCPUKey]
 	currAgg, okCurr := curr[aggregateCPUKey]
 	if !okPrev || !okCurr {
-		return 0, 0
+		return 0
 	}
 	totalDelta := int64(currAgg.total) - int64(prevAgg.total)
 	if totalDelta <= 0 {
-		return 0, 0
+		return 0
 	}
 	idleDelta := int64(currAgg.idle) - int64(prevAgg.idle)
 	if idleDelta < 0 {
@@ -487,13 +484,9 @@ func calculateAggregateCPUAndIODelay(prev, curr map[int]coreTickSample) (cpuPct,
 	}
 	if totalDelta >= idleDelta {
 		usedDelta := totalDelta - idleDelta
-		cpuPct = clampPercent2(float64(usedDelta) / float64(totalDelta) * 100.0)
+		return clampPercent2(float64(usedDelta) / float64(totalDelta) * 100.0)
 	}
-	iowaitDelta := int64(currAgg.iowait) - int64(prevAgg.iowait)
-	if iowaitDelta > 0 {
-		ioDelayPct = clampPercent2(float64(iowaitDelta) / float64(totalDelta) * 100.0)
-	}
-	return cpuPct, ioDelayPct
+	return 0
 }
 
 func startCPUSampler() {
@@ -515,7 +508,7 @@ func startCPUSampler() {
 		cpuMu.Lock()
 		if len(prevCPUTicks) > 0 {
 			cachedCoresUsage = calculateCoresUsage(prevCPUTicks, curr)
-			cachedAggCPUUsage, cachedIODelay = calculateAggregateCPUAndIODelay(prevCPUTicks, curr)
+			cachedAggCPUUsage = calculateAggregateCPUUsage(prevCPUTicks, curr)
 		}
 		prevCPUTicks = curr
 		lastCPUTickTime = time.Now()
@@ -523,62 +516,59 @@ func startCPUSampler() {
 	}
 }
 
-func getCPUUsageMetrics() ([]CPUCoreUsage, float64, float64) {
+func getCPUUsageMetrics() ([]CPUCoreUsage, float64) {
 	cpuMu.RLock()
 	cached := cachedCoresUsage
 	aggCached := cachedAggCPUUsage
-	ioCached := cachedIODelay
 	lastTime := lastCPUTickTime
 	hasPrev := len(prevCPUTicks) > 0
 	cpuMu.RUnlock()
 
-	if hasPrev && time.Since(lastTime) < 5*time.Second && (len(cached) > 0 || aggCached > 0 || ioCached > 0) {
+	if hasPrev && time.Since(lastTime) < 5*time.Second && (len(cached) > 0 || aggCached > 0) {
 		res := make([]CPUCoreUsage, len(cached))
 		copy(res, cached)
-		return res, aggCached, ioCached
+		return res, aggCached
 	}
 
 	raw1, err := os.ReadFile("/proc/stat")
 	if err != nil {
-		return nil, 0, 0
+		return nil, 0
 	}
 	sample1 := parseProcStat(string(raw1))
 	if len(sample1) == 0 {
-		return nil, 0, 0
+		return nil, 0
 	}
 
 	cpuMu.Lock()
 	if hasPrev && time.Since(lastTime) < 10*time.Second {
 		usage := calculateCoresUsage(prevCPUTicks, sample1)
-		aggPct, ioPct := calculateAggregateCPUAndIODelay(prevCPUTicks, sample1)
+		aggPct := calculateAggregateCPUUsage(prevCPUTicks, sample1)
 		prevCPUTicks = sample1
 		lastCPUTickTime = time.Now()
 		cachedCoresUsage = usage
 		cachedAggCPUUsage = aggPct
-		cachedIODelay = ioPct
 		cpuMu.Unlock()
-		return usage, aggPct, ioPct
+		return usage, aggPct
 	}
 	cpuMu.Unlock()
 
 	time.Sleep(150 * time.Millisecond)
 	raw2, err := os.ReadFile("/proc/stat")
 	if err != nil {
-		return nil, 0, 0
+		return nil, 0
 	}
 	sample2 := parseProcStat(string(raw2))
 	usage := calculateCoresUsage(sample1, sample2)
-	aggPct, ioPct := calculateAggregateCPUAndIODelay(sample1, sample2)
+	aggPct := calculateAggregateCPUUsage(sample1, sample2)
 
 	cpuMu.Lock()
 	prevCPUTicks = sample2
 	lastCPUTickTime = time.Now()
 	cachedCoresUsage = usage
 	cachedAggCPUUsage = aggPct
-	cachedIODelay = ioPct
 	cpuMu.Unlock()
 
-	return usage, aggPct, ioPct
+	return usage, aggPct
 }
 
 func parseCPUInfo(content string) (model string, sockets int) {
@@ -713,22 +703,6 @@ func getDetailedMemInfo() detailedMemStats {
 		return detailedMemStats{}
 	}
 	return parseDetailedMemInfo(string(data))
-}
-
-func getKSMSharingBytes() uint64 {
-	data, err := os.ReadFile("/sys/kernel/mm/ksm/pages_sharing")
-	if err != nil {
-		return 0
-	}
-	pages, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
-	if err != nil || pages == 0 {
-		return 0
-	}
-	pageSize := os.Getpagesize()
-	if pageSize <= 0 {
-		pageSize = 4096
-	}
-	return pages * uint64(pageSize)
 }
 
 func getDetailedDiskInfo(path string) (totalGB, usedGB int64, totalBytes, usedBytes uint64, percent int, percentExact float64) {

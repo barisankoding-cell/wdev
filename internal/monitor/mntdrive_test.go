@@ -82,3 +82,73 @@ func TestDetectMountDrivesEmptyReturnsNil(t *testing.T) {
 		t.Fatalf("expected no drives when /mnt is unmounted, got %+v", drives)
 	}
 }
+
+func TestDetectOtherMountsFiltersSystemAndIncludesExternal(t *testing.T) {
+	tmp := t.TempDir()
+	usbDir := filepath.Join(tmp, "usb-backup")
+	rcloneDir := filepath.Join(tmp, "cloud-drive")
+	dataDir := filepath.Join(tmp, "data")
+
+	for _, dir := range []string{usbDir, rcloneDir, dataDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mountsFile := filepath.Join(tmp, "mounts")
+	mountsContent := strings.Join([]string{
+		"/dev/nvme0n1p6 / ext4 rw,relatime 0 0",
+		"/dev/nvme0n1p6 /home ext4 rw,relatime 0 0",
+		"/dev/nvme0n1p4 /boot ext4 rw,relatime 0 0",
+		"/dev/nvme0n1p5 /boot/efi vfat rw 0 0",
+		"tmpfs /tmp tmpfs rw 0 0",
+		"/dev/loop0 /snap/core/123 squashfs ro 0 0",
+		fmt.Sprintf("/dev/sdb1 %s exfat rw 0 0", usbDir),
+		fmt.Sprintf("remote: %s fuse.rclone rw 0 0", rcloneDir),
+		fmt.Sprintf("/dev/sdc1 %s ext4 rw 0 0", dataDir),
+		fmt.Sprintf("/dev/sdc1 %s/bind ext4 rw 0 0", dataDir),
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(mountsFile, []byte(mountsContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeStatfs := func(path string, buf *syscall.Statfs_t) error {
+		const blocksPerGiB = (1024 * 1024 * 1024) / 4096
+		buf.Bsize = 4096
+		switch path {
+		case usbDir:
+			buf.Blocks = 200 * blocksPerGiB
+			buf.Bfree = 50 * blocksPerGiB
+			return nil
+		case rcloneDir:
+			buf.Blocks = 1000 * blocksPerGiB
+			buf.Bfree = 900 * blocksPerGiB
+			return nil
+		case dataDir:
+			buf.Blocks = 500 * blocksPerGiB
+			buf.Bfree = 250 * blocksPerGiB
+			return nil
+		default:
+			return syscall.ENOENT
+		}
+	}
+
+	got := detectOtherMounts(mountsFile, fakeStatfs, nil)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 external/other mounts, got %d (%+v)", len(got), got)
+	}
+	byMP := map[string]MountDriveInfo{}
+	for _, d := range got {
+		byMP[d.MountPoint] = d
+	}
+	if d, ok := byMP[usbDir]; !ok || d.PercentExact != 75 || d.FSType != "exfat" {
+		t.Fatalf("unexpected usb mount: %+v", d)
+	}
+	if d, ok := byMP[rcloneDir]; !ok || d.PercentExact != 10 || d.FSType != "fuse.rclone" {
+		t.Fatalf("unexpected rclone mount: %+v", d)
+	}
+	if d, ok := byMP[dataDir]; !ok || d.PercentExact != 50 {
+		t.Fatalf("unexpected data mount: %+v", d)
+	}
+}

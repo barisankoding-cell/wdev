@@ -30,6 +30,7 @@ export interface MountDriveInfo {
 	total_bytes: number;
 	used_bytes: number;
 	percent: number;
+	percent_exact?: number;
 }
 
 export interface SystemStats {
@@ -46,7 +47,6 @@ export interface SystemStats {
 	cpu_model?: string;
 	cpu_sockets?: number;
 	cpu_usage_percent?: number;
-	io_delay_percent?: number;
 	cpu_cores_usage?: CPUCoreUsage[];
 	load_percent?: number;
 	load_1m?: number;
@@ -64,7 +64,6 @@ export interface SystemStats {
 	swap_total_bytes?: number;
 	swap_used_bytes?: number;
 	swap_percent?: number;
-	ksm_sharing_bytes?: number;
 	disk_total_gb: number;
 	disk_used_gb: number;
 	disk_percent: number;
@@ -72,6 +71,7 @@ export interface SystemStats {
 	disk_used_bytes?: number;
 	disk_percent_exact?: number;
 	mount_drives?: MountDriveInfo[];
+	other_mounts?: MountDriveInfo[];
 	lan_ip: string;
 	netbird_ip: string;
 	public_ip?: string;

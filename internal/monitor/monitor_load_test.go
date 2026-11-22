@@ -60,23 +60,13 @@ intr 12350
 		t.Fatalf("expected aggregate cpu + 2 cores parsed, got %d", len(s2))
 	}
 
-	aggPct, ioDelayPct := calculateAggregateCPUAndIODelay(s1, s2)
+	aggPct := calculateAggregateCPUUsage(s1, s2)
 	// Aggregate:
 	// prev: idle=5100, nonIdle=1570, total=6670
 	// curr: idle=5150, nonIdle=1730, total=6880
-	// totalDelta=210, idleDelta=50, usedDelta=160 -> 76.19%, iowaitDelta=0 -> 0.00%
+	// totalDelta=210, idleDelta=50, usedDelta=160 -> 76.19%
 	if aggPct != 76.19 {
 		t.Fatalf("expected 76.19%% aggregate CPU usage, got %.2f%%", aggPct)
-	}
-	if ioDelayPct != 0 {
-		t.Fatalf("expected 0%% IO delay, got %.2f%%", ioDelayPct)
-	}
-
-	// Verify IO delay calculation when iowait increases
-	s3 := parseProcStat(`cpu  1100 200 350 5050 142 0 60 20 0 0`)
-	_, ioPct3 := calculateAggregateCPUAndIODelay(s2, s3)
-	if ioPct3 != 100 {
-		t.Fatalf("expected 100%% IO delay when all delta ticks are iowait, got %.2f%%", ioPct3)
 	}
 
 	usages := calculateCoresUsage(s1, s2)
