@@ -4,6 +4,7 @@
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import { useSidebar } from '#lib/components/ui/sidebar/index.js';
+	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
@@ -87,14 +88,10 @@
 </script>
 
 <Sidebar.Root collapsible="icon">
-	<Sidebar.Header class="border-b border-sidebar-border px-3 py-3">
-		<div class="flex items-center gap-3 overflow-hidden">
-			<div
-				class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground"
-			>
-				W
-			</div>
-			<div class="flex min-w-0 flex-col">
+	<Sidebar.Header class="border-b border-sidebar-border px-3 py-3 group-data-[collapsible=icon]:px-2">
+		<div class="flex items-center gap-3 overflow-hidden group-data-[collapsible=icon]:justify-center">
+			<WdevLogo class="size-8" />
+			<div class="flex min-w-0 flex-col group-data-[collapsible=icon]:hidden">
 				<span class="truncate text-sm font-bold tracking-tight">wdev</span>
 				<span class="truncate text-xs text-muted-foreground">
 					Control Plane {cp.systemStatus?.wdev_version ? `v${cp.systemStatus.wdev_version}` : ''}

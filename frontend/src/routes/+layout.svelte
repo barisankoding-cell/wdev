@@ -14,6 +14,8 @@
 	import PanelDomainModal from '#lib/components/modals/PanelDomainModal.svelte';
 	import ModeSwitchModal from '#lib/components/modals/ModeSwitchModal.svelte';
 	import Login from '#lib/components/auth/Login.svelte';
+	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
+	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { themeStore } from '#lib/stores/theme.svelte.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
@@ -52,9 +54,12 @@
 
 {#if !authStore.authChecked}
 	<div class="flex min-h-screen w-full items-center justify-center bg-background">
-		<div class="flex flex-col items-center gap-3">
-			<div class="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
-			<span class="text-xs text-muted-foreground">Memuat panel wdev...</span>
+		<div class="flex flex-col items-center gap-3.5">
+			<WdevLogo class="size-12 shadow-sm" decorative={false} />
+			<div class="flex items-center gap-2 text-xs text-muted-foreground">
+				<Spinner class="size-3.5 text-primary" />
+				<span>Memuat panel wdev...</span>
+			</div>
 		</div>
 	</div>
 {:else if authStore.authEnabled && !authStore.isAuthenticated}

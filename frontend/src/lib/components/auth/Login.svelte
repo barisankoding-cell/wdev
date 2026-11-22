@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import * as Collapsible from '#lib/components/ui/collapsible/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
@@ -11,12 +11,11 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { themeStore, type ThemePreference } from '#lib/stores/theme.svelte.js';
+	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
 	import { cn } from '#lib/utils.js';
-	import { toast } from 'svelte-sonner';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
-	import CopyIcon from '@lucide/svelte/icons/copy';
 	import EyeIcon from '@lucide/svelte/icons/eye';
 	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
 	import LockIcon from '@lucide/svelte/icons/lock';
@@ -24,24 +23,10 @@
 	import MonitorIcon from '@lucide/svelte/icons/monitor';
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
-	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 	import SunIcon from '@lucide/svelte/icons/sun';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import UserIcon from '@lucide/svelte/icons/user';
-
-	const CLI_COMMANDS = [
-		{
-			id: 'default',
-			label: 'Lihat kredensial & URL entrance',
-			cmd: 'sudo wdev panel default'
-		},
-		{
-			id: 'reset',
-			label: 'Reset kata sandi admin baru',
-			cmd: 'sudo wdev panel password <sandi_baru>'
-		}
-	] as const;
 
 	const themeOptions: { value: ThemePreference; label: string }[] = [
 		{ value: 'system', label: 'Ikuti Sistem' },
@@ -54,7 +39,6 @@
 	let showPassword = $state(false);
 	let capsLockOn = $state(false);
 	let recoveryOpen = $state(false);
-	let copiedCmdId = $state<string | null>(null);
 
 	// Client-side validation state synced with interaction timing (blur / submit)
 	let usernameDirty = $state(false);
@@ -70,13 +54,7 @@
 	// Polite screen-reader live region announcement (debounced after blur)
 	let liveAnnouncement = $state('');
 	let announceTimer: ReturnType<typeof setTimeout> | null = null;
-	let copyTimer: ReturnType<typeof setTimeout> | null = null;
 	let lastAnnouncedField = '';
-
-	// Environment telemetry (observed directly from browser location & authStore)
-	let endpointHost = $state('localhost');
-	let isHTTPS = $state(false);
-	let isLoopback = $state(true);
 
 	let usernameInputRef = $state<HTMLInputElement | null>(null);
 	let passwordInputRef = $state<HTMLInputElement | null>(null);
@@ -110,26 +88,8 @@
 
 	const isLockedOut = $derived(serverErrorStatus === 429);
 
-	const transportLabel = $derived(
-		isHTTPS ? 'HTTPS Terenkripsi' : isLoopback ? 'HTTP Loopback Lokal' : 'HTTP (Belum TLS)'
-	);
-
-	onMount(() => {
-		if (typeof window !== 'undefined') {
-			const { host, hostname, protocol } = window.location;
-			endpointHost = host || hostname || 'localhost';
-			isHTTPS = protocol === 'https:';
-			isLoopback =
-				hostname === 'localhost' ||
-				hostname === '127.0.0.1' ||
-				hostname === '[::1]' ||
-				hostname === '::1';
-		}
-	});
-
 	onDestroy(() => {
 		if (announceTimer) clearTimeout(announceTimer);
-		if (copyTimer) clearTimeout(copyTimer);
 	});
 
 	function scheduleFieldAnnouncement(fieldKey: 'username' | 'password', label: string, msg: string) {
@@ -197,20 +157,6 @@
 		}
 	}
 
-	async function copyCommand(id: string, cmd: string) {
-		try {
-			await navigator.clipboard.writeText(cmd);
-			copiedCmdId = id;
-			toast.success('Perintah CLI disalin ke clipboard');
-			if (copyTimer) clearTimeout(copyTimer);
-			copyTimer = setTimeout(() => {
-				copiedCmdId = null;
-			}, 1800);
-		} catch {
-			toast.error('Gagal menyalin perintah ke clipboard');
-		}
-	}
-
 	async function handleSubmit(e: SubmitEvent) {
 		e.preventDefault();
 		if (authStore.loading) return;
@@ -258,76 +204,25 @@
 	>
 		<div class="relative z-10 flex flex-col gap-10">
 			<div class="flex items-center gap-3">
-				<div
-					class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-base font-bold text-primary-foreground"
-					aria-hidden="true"
-				>
-					W
-				</div>
+				<WdevLogo class="size-9" />
 				<div class="flex min-w-0 flex-col">
 					<span class="text-base font-semibold tracking-tight text-terminal-foreground">wdev</span>
-					<span class="text-xs text-terminal-foreground/70">Linux Developer Control Plane</span>
+					<span class="text-xs text-terminal-foreground/70">Server Control Plane</span>
 				</div>
 			</div>
 
 			<div class="flex flex-col gap-3">
 				<h2 class="text-xl leading-snug font-semibold tracking-tight text-balance text-terminal-foreground">
-					Satu portal kendali untuk seluruh layanan server Anda.
+					Satu portal kendali untuk layanan server Anda.
 				</h2>
 				<p class="max-w-[36ch] text-sm leading-relaxed text-pretty text-terminal-foreground/75">
-					Kelola web stack, runtime multi-versi, DNS PowerDNS, mail server, dan terminal root dari sesi administrator yang terisolasi.
+					Masuk menggunakan akun administrator berwenang untuk mengelola layanan dan konfigurasi sistem secara terpusat.
 				</p>
-			</div>
-
-			<div class="rounded-lg border border-white/12 bg-white/[0.03] p-4">
-				<dl class="flex flex-col gap-3 text-xs">
-					<div class="flex items-center justify-between gap-3">
-						<dt class="text-terminal-foreground/65">Host Panel</dt>
-						<dd class="truncate font-mono text-terminal-foreground">{endpointHost}</dd>
-					</div>
-					<div class="h-px bg-white/10" aria-hidden="true"></div>
-					<div class="flex items-center justify-between gap-3">
-						<dt class="text-terminal-foreground/65">Transpor</dt>
-						<dd class="flex items-center gap-1.5 font-medium">
-							{#if isHTTPS}
-								<LockIcon class="size-3.5 text-success" aria-hidden="true" />
-								<span class="text-success">{transportLabel}</span>
-							{:else if isLoopback}
-								<MonitorIcon class="size-3.5 text-terminal-foreground/80" aria-hidden="true" />
-								<span class="text-terminal-foreground">{transportLabel}</span>
-							{:else}
-								<TriangleAlertIcon class="size-3.5 text-warning" aria-hidden="true" />
-								<span class="text-warning">{transportLabel}</span>
-							{/if}
-						</dd>
-					</div>
-					<div class="h-px bg-white/10" aria-hidden="true"></div>
-					<div class="flex items-center justify-between gap-3">
-						<dt class="text-terminal-foreground/65">Security Entrance</dt>
-						<dd class="flex items-center gap-1.5 font-medium">
-							<ShieldCheckIcon
-								class={cn(
-									'size-3.5',
-									authStore.entranceEnabled ? 'text-success' : 'text-terminal-foreground/60'
-								)}
-								aria-hidden="true"
-							/>
-							<span class={authStore.entranceEnabled ? 'text-terminal-foreground' : 'text-terminal-foreground/70'}>
-								{authStore.entranceEnabled ? 'Aktif (Terverifikasi)' : 'Tidak Aktif'}
-							</span>
-						</dd>
-					</div>
-					<div class="h-px bg-white/10" aria-hidden="true"></div>
-					<div class="flex items-center justify-between gap-3">
-						<dt class="text-terminal-foreground/65">Proteksi Brute-Force</dt>
-						<dd class="font-mono text-terminal-foreground/90">5 gagal / 15 menit</dd>
-					</div>
-				</dl>
 			</div>
 		</div>
 
 		<footer class="relative z-10 flex flex-col gap-1 text-xs text-terminal-foreground/65">
-			<p>Verifikasi PBKDF2-SHA256 dengan sesi cookie HttpOnly dan perlindungan CSRF.</p>
+			<p>Akses terbatas hanya untuk administrator yang berwenang.</p>
 		</footer>
 	</aside>
 
@@ -335,12 +230,7 @@
 	<div class="flex min-h-[100dvh] min-w-0 flex-col bg-background">
 		<header class="flex items-center justify-between gap-3 px-4 pt-[max(1rem,env(safe-area-inset-top,0px))] pb-2 sm:px-8 sm:pt-6 lg:justify-end">
 			<div class="flex items-center gap-2.5 lg:hidden">
-				<div
-					class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground"
-					aria-hidden="true"
-				>
-					W
-				</div>
+				<WdevLogo class="size-8" />
 				<div class="flex min-w-0 flex-col">
 					<span class="text-sm leading-tight font-semibold tracking-tight">wdev</span>
 					<span class="text-xs leading-tight text-muted-foreground">Control Plane</span>
@@ -548,19 +438,9 @@
 					</Button>
 				</form>
 
-				{#if !isHTTPS && !isLoopback}
-					<Alert.Root class="border-warning/40 bg-warning/10 text-foreground">
-						<TriangleAlertIcon class="text-warning" />
-						<Alert.Title class="text-xs font-medium">Koneksi HTTP Tanpa Enkripsi</Alert.Title>
-						<Alert.Description class="text-xs text-muted-foreground">
-							Aktifkan TLS langsung di port panel dengan <code class="font-mono text-foreground">sudo wdev panel ssl on</code> atau ikat domain HTTPS.
-						</Alert.Description>
-					</Alert.Root>
-				{/if}
-
 				<Separator />
 
-				<!-- CLI Recovery Help (placed below submit button so mobile keyboards never cover primary actions) -->
+				<!-- Administrator Access Recovery Note (placed below submit button so mobile keyboards never cover primary actions) -->
 				<Collapsible.Root bind:open={recoveryOpen} class="flex min-w-0 w-full flex-col gap-3">
 					<Collapsible.Trigger>
 						{#snippet child({ props })}
@@ -583,51 +463,11 @@
 					</Collapsible.Trigger>
 
 					<Collapsible.Content class="min-w-0 rounded-lg border border-border bg-muted/40 p-3.5">
-						<div class="flex min-w-0 flex-col gap-3">
-							<p class="text-xs leading-relaxed text-muted-foreground">
-								Jalankan perintah berikut melalui terminal SSH server dengan hak akses root atau sudo:
-							</p>
-							{#each CLI_COMMANDS as item (item.id)}
-								<div class="flex min-w-0 flex-col gap-1.5">
-									<span class="text-xs font-medium text-foreground">{item.label}</span>
-									<div class="flex min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5">
-										<code class="min-w-0 flex-1 overflow-x-auto font-mono text-xs whitespace-nowrap text-foreground select-all">
-											{item.cmd}
-										</code>
-										<Button
-											type="button"
-											variant="ghost"
-											size="icon-sm"
-											class="shrink-0"
-											aria-label={`Salin perintah ${item.cmd}`}
-											onclick={() => copyCommand(item.id, item.cmd)}
-										>
-											{#if copiedCmdId === item.id}
-												<CheckIcon class="text-success" />
-											{:else}
-												<CopyIcon />
-											{/if}
-										</Button>
-									</div>
-								</div>
-							{/each}
-						</div>
+						<p class="text-xs leading-relaxed text-muted-foreground">
+							Untuk alasan keamanan, pemulihan atau pengaturan ulang kredensial hanya dapat dilakukan langsung oleh administrator melalui terminal SSH server dengan hak akses root atau sudo.
+						</p>
 					</Collapsible.Content>
 				</Collapsible.Root>
-
-				<!-- Mobile Compact Endpoint Telemetry (kept below the fold under the form) -->
-				<div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground lg:hidden">
-					<span class="font-mono text-foreground">{endpointHost}</span>
-					<span class="flex items-center gap-1.5">
-						{#if isHTTPS}
-							<LockIcon class="size-3.5 text-success" aria-hidden="true" />
-							<span class="text-success">{transportLabel}</span>
-						{:else}
-							<ShieldCheckIcon class="size-3.5 text-primary" aria-hidden="true" />
-							<span>{authStore.entranceEnabled ? 'Entrance Aktif' : transportLabel}</span>
-						{/if}
-					</span>
-				</div>
 			</div>
 		</main>
 	</div>
