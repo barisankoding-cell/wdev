@@ -1,5 +1,15 @@
 # Changelog
 
+## [v2.7.0] - 2026-11-22
+
+### 🚀 Fitur Baru
+- feat: sinkronkan konfigurasi Commit AI Orca secara otomatis (148b82e)
+
+### 🐛 Perbaikan Bug
+- fix: buat modal konfigurasi Commit AI nyaman di layar kecil (f08fcd8)
+- fix: perjelas sinkronisasi pengaturan AI Orca Web Client (ef7c3d7)
+- fix: sinkronkan konfigurasi Orca Commit AI pada mode headless (d8a0334)
+
 ## [v2.6.0] - 2026-11-22
 
 ### 🚀 Fitur Baru
