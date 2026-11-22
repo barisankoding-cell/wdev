@@ -341,6 +341,26 @@ func orcaBinaryVersion(ctx context.Context, home, appDir string) string {
 	return strings.TrimSpace(line)
 }
 
+func userSystemctlEnv(user, home string) []string {
+	env := os.Environ()
+	if home != "" {
+		env = append(env, "HOME="+home)
+	}
+	if user != "" {
+		env = append(env, "USER="+user, "LOGNAME="+user)
+		if u, err := osuser.Lookup(user); err == nil {
+			runtimeDir := "/run/user/" + u.Uid
+			if fi, statErr := os.Stat(runtimeDir); statErr == nil && fi.IsDir() {
+				env = append(env, "XDG_RUNTIME_DIR="+runtimeDir)
+				if _, busErr := os.Stat(filepath.Join(runtimeDir, "bus")); busErr == nil {
+					env = append(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+filepath.Join(runtimeDir, "bus"))
+				}
+			}
+		}
+	}
+	return env
+}
+
 // runAsUser menjalankan perintah sebagai user target (mis. systemctl --user).
 func runAsUser(ctx context.Context, cb LogCallback, user, home, name string, args ...string) error {
 	if cb != nil {
@@ -356,17 +376,7 @@ func runAsUser(ctx context.Context, cb LogCallback, user, home, name string, arg
 	default:
 		cmd = exec.CommandContext(ctx, name, args...)
 	}
-	env := append(os.Environ(), "HOME="+home, "USER="+user, "LOGNAME="+user)
-	if u, err := osuser.Lookup(user); err == nil {
-		runtimeDir := "/run/user/" + u.Uid
-		if fi, statErr := os.Stat(runtimeDir); statErr == nil && fi.IsDir() {
-			env = append(env, "XDG_RUNTIME_DIR="+runtimeDir)
-			if _, busErr := os.Stat(filepath.Join(runtimeDir, "bus")); busErr == nil {
-				env = append(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+filepath.Join(runtimeDir, "bus"))
-			}
-		}
-	}
-	cmd.Env = env
+	cmd.Env = userSystemctlEnv(user, home)
 	out, err := cmd.CombinedOutput()
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		if line != "" && cb != nil {
@@ -381,11 +391,22 @@ func orcaUserUnitExists(home string) bool {
 	return err == nil
 }
 
+func isSystemOrcaServiceActive(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "orca.service").Run() == nil
+}
+
 func stopOrcaService(ctx context.Context, cb LogCallback, user, home string) {
 	if orcaUserUnitExists(home) {
 		_ = runAsUser(ctx, cb, user, home, "systemctl", "--user", "stop", "orca.service")
 	}
 	_ = exec.CommandContext(ctx, "systemctl", "stop", "orca.service").Run()
+}
+
+func startOrcaService(ctx context.Context, cb LogCallback, user, home string, useUserUnit bool) error {
+	if useUserUnit {
+		return orcaUserSystemctl(ctx, cb, user, home, "start", "orca.service")
+	}
+	return exec.CommandContext(ctx, "systemctl", "start", "orca.service").Run()
 }
 
 // wdevExecutable menentukan biner wdev yang dipakai untuk symlink helper Orca.

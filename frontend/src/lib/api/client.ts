@@ -18,6 +18,9 @@ import type {
 	ManagedRelayRecord,
 	ModeResponse,
 	NginxConfig,
+	OrcaCommitAIConfig,
+	OrcaCommitAIModelsResult,
+	OrcaCommitAISavePayload,
 	PanelDomainStatus,
 	PDNSExposePayload,
 	PHPConfig,
@@ -256,6 +259,17 @@ export const api = {
 	// Workspace
 	getWorkspaceStatus: (refresh = false) =>
 		apiFetch<WorkspaceStatus>(refresh ? '/api/workspace/status?refresh=1' : '/api/workspace/status'),
+	getOrcaCommitAI: () => apiFetch<OrcaCommitAIConfig>('/api/workspace/orca-ai'),
+	getOrcaCommitAIModels: (agent: string, refresh = false) => {
+		const params = new URLSearchParams({ agent });
+		if (refresh) params.set('refresh', '1');
+		return apiFetch<OrcaCommitAIModelsResult>(`/api/workspace/orca-ai/models?${params.toString()}`);
+	},
+	saveOrcaCommitAI: (payload: OrcaCommitAISavePayload) =>
+		apiFetch<{ status: string; message: string; config: OrcaCommitAIConfig }>('/api/workspace/orca-ai', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
 
 	// Install & Tasks & Self-Update
 	triggerInstall: (component: string, version?: string, sudoPass?: string) =>

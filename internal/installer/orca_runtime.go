@@ -121,11 +121,10 @@ func setOrcaAutostart(user, home string, enable bool) error {
 
 func orcaServiceActive(ctx context.Context, user, home string) bool {
 	cmd := exec.CommandContext(ctx, "systemctl", "--user", "is-active", "--quiet", "orca.service")
-	cmd.Env = orcaEnv(home)
 	if os.Geteuid() == 0 && user != "" && user != "root" {
 		cmd = exec.CommandContext(ctx, "runuser", "-u", user, "--", "systemctl", "--user", "is-active", "--quiet", "orca.service")
-		cmd.Env = orcaEnv(home)
 	}
+	cmd.Env = userSystemctlEnv(user, home)
 	return cmd.Run() == nil
 }
 

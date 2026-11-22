@@ -2151,3 +2151,60 @@ func TestPanelDomainDetectsProxyPortBlocksReplaceAndDeletesDNS(t *testing.T) {
 		t.Fatalf("expected panel2.erposoft.my.id bound after rebind, got %q", authMgr.GetPanelDomain())
 	}
 }
+
+func TestHandleWorkspaceOrcaAIValidation(t *testing.T) {
+	srv := newTestServer()
+	srv.mux.HandleFunc("/api/workspace/orca-ai", srv.handleWorkspaceOrcaAI)
+	srv.mux.HandleFunc("/api/workspace/orca-ai/models", srv.handleWorkspaceOrcaAIModels)
+
+	// GET harus sukses mengembalikan katalog agent & preset
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/workspace/orca-ai", nil)
+	recGet := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recGet, reqGet)
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("GET /api/workspace/orca-ai = %d, body=%s", recGet.Code, recGet.Body.String())
+	}
+	if !strings.Contains(recGet.Body.String(), `"available_agents"`) || !strings.Contains(recGet.Body.String(), `"template_presets"`) || !strings.Contains(recGet.Body.String(), `"cached_models_by_agent"`) {
+		t.Fatalf("unexpected GET /api/workspace/orca-ai body: %s", recGet.Body.String())
+	}
+
+	// GET /api/workspace/orca-ai/models untuk copilot (static list)
+	reqModels := httptest.NewRequest(http.MethodGet, "/api/workspace/orca-ai/models?agent=copilot", nil)
+	recModels := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recModels, reqModels)
+	if recModels.Code != http.StatusOK || !strings.Contains(recModels.Body.String(), `"claude-sonnet-4.6"`) {
+		t.Fatalf("GET /api/workspace/orca-ai/models?agent=copilot = %d, body=%s", recModels.Code, recModels.Body.String())
+	}
+
+	// GET /api/workspace/orca-ai/models tanpa agent / agent invalid -> 400
+	reqBadModelAgent := httptest.NewRequest(http.MethodGet, "/api/workspace/orca-ai/models?agent=invalid", nil)
+	recBadModelAgent := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recBadModelAgent, reqBadModelAgent)
+	if recBadModelAgent.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid model agent, got %d", recBadModelAgent.Code)
+	}
+
+	// POST dengan agent tidak valid -> 400
+	reqBadAgent := httptest.NewRequest(http.MethodPost, "/api/workspace/orca-ai", strings.NewReader(`{"enabled":true,"agent_id":"invalid-agent"}`))
+	recBadAgent := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recBadAgent, reqBadAgent)
+	if recBadAgent.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid agent, got %d body=%s", recBadAgent.Code, recBadAgent.Body.String())
+	}
+
+	// POST custom tanpa command -> 400
+	reqBadCustom := httptest.NewRequest(http.MethodPost, "/api/workspace/orca-ai", strings.NewReader(`{"enabled":true,"agent_id":"custom","custom_agent_command":""}`))
+	recBadCustom := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recBadCustom, reqBadCustom)
+	if recBadCustom.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty custom command, got %d body=%s", recBadCustom.Code, recBadCustom.Body.String())
+	}
+
+	// Method DELETE -> 405
+	reqMethod := httptest.NewRequest(http.MethodDelete, "/api/workspace/orca-ai", nil)
+	recMethod := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recMethod, reqMethod)
+	if recMethod.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for DELETE, got %d", recMethod.Code)
+	}
+}

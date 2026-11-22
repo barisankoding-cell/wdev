@@ -138,6 +138,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/sudo/verify", s.handleSudoVerify)
 	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
 	s.mux.HandleFunc("/api/workspace/status", s.handleWorkspaceStatus)
+	s.mux.HandleFunc("/api/workspace/orca-ai", s.handleWorkspaceOrcaAI)
+	s.mux.HandleFunc("/api/workspace/orca-ai/models", s.handleWorkspaceOrcaAIModels)
 	s.mux.HandleFunc("/api/setup/components", s.handleSetupComponents)
 	s.mux.HandleFunc("/api/install", s.handleInstall)
 	s.mux.HandleFunc("/api/tasks", s.handleTasks)
@@ -2497,12 +2499,7 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 	case "orca-ai":
 		taskName = "Konfigurasi Orca Commit AI"
 		fn = func(ctx context.Context, cb func(string)) error {
-			cb("==> Mengonfigurasi default AI commit message generator Orca...")
-			_, userHome := installer.ResolveTargetUserAndHome()
-			cfgDir := filepath.Join(userHome, ".config", "orca")
-			_ = os.MkdirAll(cfgDir, 0755)
-			cb("✓ Konfigurasi Git Commit AI Orca siap.")
-			return nil
+			return installer.ConfigureDefaultOrcaCommitAI(ctx, cb)
 		}
 	case "sync-hosts", "sync":
 		taskName = "Sinkronisasi Hosts & SSL"
@@ -3033,18 +3030,19 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type OrcaInfo struct {
-		Installed     bool   `json:"installed"`
-		Active        bool   `json:"active"`
-		StatusText    string `json:"status_text"`
-		Mode          string `json:"mode"`
-		Version       string `json:"version"`
-		LatestVersion string `json:"latest_version,omitempty"`
-		HasUpdate     bool   `json:"has_update"`
-		Port          int    `json:"port,omitempty"`
-		PID           int    `json:"pid,omitempty"`
-		WebClientURL  string `json:"web_client_url,omitempty"`
-		PairingURL    string `json:"pairing_url,omitempty"`
-		Endpoint      string `json:"endpoint,omitempty"`
+		Installed     bool                          `json:"installed"`
+		Active        bool                          `json:"active"`
+		StatusText    string                        `json:"status_text"`
+		Mode          string                        `json:"mode"`
+		Version       string                        `json:"version"`
+		LatestVersion string                        `json:"latest_version,omitempty"`
+		HasUpdate     bool                          `json:"has_update"`
+		Port          int                           `json:"port,omitempty"`
+		PID           int                           `json:"pid,omitempty"`
+		WebClientURL  string                        `json:"web_client_url,omitempty"`
+		PairingURL    string                        `json:"pairing_url,omitempty"`
+		Endpoint      string                        `json:"endpoint,omitempty"`
+		CommitAI      *installer.OrcaCommitAISummary `json:"commit_ai,omitempty"`
 	}
 
 	type ShellInfo struct {
@@ -3158,6 +3156,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		data.Orca.PairingURL = pairing
 		data.Orca.WebClientURL = web
 	}
+	data.Orca.CommitAI = installer.GetOrcaCommitAISummary(r.Context())
 
 	// 2. Shell info
 	if _, err := exec.LookPath("zsh"); err == nil {
@@ -3194,6 +3193,66 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	data.Shell.NerdFont = installer.DetectNerdFont(userHome)
 
 	writeJSON(w, http.StatusOK, data)
+}
+
+func (s *Server) handleWorkspaceOrcaAI(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg, err := installer.GetOrcaCommitAIConfig(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, cfg)
+	case http.MethodPost:
+		var payload installer.OrcaCommitAISaveInput
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "Payload konfigurasi Commit AI tidak valid")
+			return
+		}
+		cfg, err := installer.SaveOrcaCommitAIConfig(r.Context(), nil, payload)
+		if err != nil {
+			switch {
+			case errors.Is(err, installer.ErrOrcaCommitAIValidation):
+				writeError(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, installer.ErrOrcaCommitAIConflict):
+				writeError(w, http.StatusConflict, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "saved",
+			"message": "Konfigurasi Orca Commit AI berhasil disimpan.",
+			"config":  cfg,
+		})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+	}
+}
+
+func (s *Server) handleWorkspaceOrcaAIModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	agentID := strings.TrimSpace(r.URL.Query().Get("agent"))
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "Parameter agent wajib diisi")
+		return
+	}
+	forceRefresh := r.URL.Query().Get("refresh") == "1"
+	res, err := installer.DiscoverOrcaCommitAIModels(r.Context(), agentID, forceRefresh)
+	if err != nil {
+		if errors.Is(err, installer.ErrOrcaCommitAIValidation) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {

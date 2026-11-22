@@ -131,6 +131,97 @@ export interface ToolchainStatus {
 	install_component: string;
 }
 
+export interface OrcaThinkingLevel {
+	id: string;
+	label: string;
+}
+
+export interface OrcaCommitAIModel {
+	id: string;
+	label: string;
+	description?: string;
+	thinkingLevels?: OrcaThinkingLevel[];
+	defaultThinkingLevel?: string;
+	isDefault?: boolean;
+	source?: string;
+}
+
+export interface OrcaCommitAIModelsResult {
+	agent_id: string;
+	default_model_id: string;
+	supports_discovery: boolean;
+	models: OrcaCommitAIModel[];
+	selected_model: string;
+	thinking_level?: string;
+	live_discovered: boolean;
+	discovery_error?: string;
+}
+
+export interface OrcaCommitAISummary {
+	configured: boolean;
+	enabled: boolean;
+	agent_id: string;
+	agent_label: string;
+	model_id?: string;
+	thinking_level?: string;
+	has_custom_prompt: boolean;
+	repo_count: number;
+	repo_override_count: number;
+}
+
+export interface OrcaCommitAIAgentOption {
+	id: string;
+	label: string;
+	binary?: string;
+	installed: boolean;
+	path?: string;
+	supports_tui: boolean;
+}
+
+export interface OrcaCommitTemplatePreset {
+	id: string;
+	label: string;
+	description: string;
+	prompt: string;
+}
+
+export interface OrcaCommitAIConfig {
+	db_exists: boolean;
+	db_path: string;
+	profile_id: string;
+	orca_installed: boolean;
+	orca_running: boolean;
+	orca_mode: string;
+	enabled: boolean;
+	agent_id: string;
+	agent_label: string;
+	model_id: string;
+	thinking_level: string;
+	custom_agent_command: string;
+	custom_prompt: string;
+	command_input_template: string;
+	default_tui_agent: string;
+	repo_count: number;
+	repo_override_count: number;
+	selected_models_by_agent: Record<string, string>;
+	selected_thinking_by_model: Record<string, string>;
+	cached_models_by_agent: Record<string, OrcaCommitAIModel[]>;
+	available_agents: OrcaCommitAIAgentOption[];
+	template_presets: OrcaCommitTemplatePreset[];
+}
+
+export interface OrcaCommitAISavePayload {
+	enabled: boolean;
+	agent_id: string;
+	model_id: string;
+	thinking_level: string;
+	discovered_models?: OrcaCommitAIModel[];
+	custom_agent_command: string;
+	custom_prompt: string;
+	update_default_tui_agent: boolean;
+	clear_repo_overrides: boolean;
+}
+
 export interface OrcaInfo {
 	installed: boolean;
 	active: boolean;
@@ -144,6 +235,7 @@ export interface OrcaInfo {
 	web_client_url?: string;
 	pairing_url?: string;
 	endpoint?: string;
+	commit_ai?: OrcaCommitAISummary;
 }
 
 export interface ShellInfo {

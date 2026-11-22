@@ -10,6 +10,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
+	import OrcaCommitAiModal from '#lib/components/modals/OrcaCommitAiModal.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { WorkspaceStatus } from '#lib/types/api.js';
@@ -24,12 +25,14 @@
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 
 	let workspace = $state<WorkspaceStatus | null>(null);
 	let loading = $state(true);
 	let refreshing = $state(false);
 	let orcaActionPending = $state<'start' | 'stop' | 'restart' | null>(null);
 	let pairModalOpen = $state(false);
+	let commitAiModalOpen = $state(false);
 
 	async function loadWorkspace(forceRefresh = false) {
 		if (forceRefresh) refreshing = true;
@@ -185,6 +188,40 @@
 								</div>
 							{/if}
 						{/if}
+						{#if orca.commit_ai}
+							<Separator />
+							<div class="flex items-center justify-between gap-2">
+								<span class="text-muted-foreground">Commit AI Agent</span>
+								<span class="text-right font-mono font-semibold">
+									{#if orca.commit_ai.enabled}
+										{orca.commit_ai.agent_label || orca.commit_ai.agent_id}
+									{:else}
+										Nonaktif
+									{/if}
+								</span>
+							</div>
+							{#if orca.commit_ai.enabled && orca.commit_ai.model_id}
+								<Separator />
+								<div class="flex items-center justify-between gap-2">
+									<span class="text-muted-foreground">Model Commit AI</span>
+									<span class="max-w-[60%] truncate text-right font-mono font-medium">
+										{orca.commit_ai.model_id}{orca.commit_ai.thinking_level ? ` (${orca.commit_ai.thinking_level})` : ''}
+									</span>
+								</div>
+							{/if}
+							<Separator />
+							<div class="flex items-center justify-between gap-2">
+								<span class="text-muted-foreground">Template Commit</span>
+								<span class="text-right font-medium">
+									{orca.commit_ai.has_custom_prompt ? 'Template Kustom / Preset' : 'Default Orca'}
+									{#if orca.commit_ai.repo_override_count > 0}
+										<span class="ml-1 text-amber-600 dark:text-amber-400">
+											({orca.commit_ai.repo_override_count} override repo)
+										</span>
+									{/if}
+								</span>
+							</div>
+						{/if}
 					</div>
 				</Card.Content>
 
@@ -264,7 +301,8 @@
 						>
 							{isHeadless ? 'Mode Desktop' : 'Mode Headless'}
 						</Button>
-						<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('orca-ai')}>
+						<Button variant="outline" size="sm" onclick={() => (commitAiModalOpen = true)}>
+							<SparklesIcon data-icon="inline-start" />
 							Commit AI
 						</Button>
 						<Button variant="destructive" size="sm" onclick={() => cp.triggerInstall('orca-uninstall')}>
@@ -464,3 +502,5 @@
 		</Dialog.Content>
 	</Dialog.Root>
 {/if}
+
+<OrcaCommitAiModal bind:open={commitAiModalOpen} onSaved={() => loadWorkspace(false)} />
