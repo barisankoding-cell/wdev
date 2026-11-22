@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.5.1] - 2026-11-22
+
+### 🐛 Perbaikan Bug
+- fix: tampilkan IP NetBird hanya saat layanan terpasang (18e5ab2)
+
 ## [v2.5.0] - 2026-11-22
 
 ### 🚀 Fitur Baru
