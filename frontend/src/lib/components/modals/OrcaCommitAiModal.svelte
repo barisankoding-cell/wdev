@@ -314,8 +314,8 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
-		<Dialog.Header>
+	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-4 sm:max-w-2xl sm:p-6">
+		<Dialog.Header class="shrink-0 border-b border-border/40 pb-3">
 			<div class="flex items-center justify-between gap-2 pr-6">
 				<Dialog.Title id="orca-ai-dialog-title" class="flex items-center gap-2">
 					<SparklesIcon class="size-4 text-primary" />
@@ -339,28 +339,31 @@
 		</Dialog.Header>
 
 		{#if loading}
-			<div class="flex flex-col gap-4 py-2">
+			<div class="flex flex-col gap-4 py-4">
 				<Skeleton class="h-12 w-full" />
 				<Skeleton class="h-20 w-full" />
 				<Skeleton class="h-32 w-full" />
 			</div>
 		{:else if loadError}
-			<Alert.Root variant="destructive" role="alert">
-				<AlertCircleIcon />
-				<Alert.Title>Gagal Memuat Konfigurasi</Alert.Title>
-				<Alert.Description>{loadError}</Alert.Description>
-			</Alert.Root>
-			<Dialog.Footer>
+			<div class="py-4">
+				<Alert.Root variant="destructive" role="alert">
+					<AlertCircleIcon />
+					<Alert.Title>Gagal Memuat Konfigurasi</Alert.Title>
+					<Alert.Description>{loadError}</Alert.Description>
+				</Alert.Root>
+			</div>
+			<Dialog.Footer class="shrink-0 border-t border-border/40 pt-3">
 				<Button type="button" variant="outline" onclick={() => loadConfig()}>Coba Lagi</Button>
 				<Button type="button" variant="ghost" onclick={() => (open = false)}>Tutup</Button>
 			</Dialog.Footer>
 		{:else if config}
 			<form
 				onsubmit={handleSubmit}
-				class="flex flex-col gap-5"
+				class="flex min-h-0 flex-1 flex-col"
 				aria-labelledby="orca-ai-dialog-title"
 				novalidate
 			>
+				<div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overscroll-contain py-4 pr-1">
 				{#if formError}
 					<Alert.Root variant="destructive" role="alert">
 						<AlertCircleIcon />
@@ -690,8 +693,9 @@
 						</p>
 					</div>
 				</div>
+				</div>
 
-				<Dialog.Footer class="gap-2 sm:justify-end">
+				<Dialog.Footer class="shrink-0 gap-2 border-t border-border/40 pt-3 pb-[env(safe-area-inset-bottom,0px)] sm:justify-end sm:pb-0">
 					<Button type="button" variant="outline" disabled={saving} onclick={() => (open = false)}>
 						Batal
 					</Button>
