@@ -16,6 +16,7 @@ func withOrcaCommitAISyncHooks(t *testing.T, home string, svcActive, procActive 
 	origUserSvc := orcaUserSvcActiveFn
 	origSysSvc := orcaSysSvcActiveFn
 	origProc := orcaProcessActiveFn
+	origAnyProc := orcaAnyProcessActiveFn
 	origStop := stopOrcaForCommitAIFn
 	origStart := startOrcaForCommitAIFn
 	t.Cleanup(func() {
@@ -23,15 +24,17 @@ func withOrcaCommitAISyncHooks(t *testing.T, home string, svcActive, procActive 
 		orcaUserSvcActiveFn = origUserSvc
 		orcaSysSvcActiveFn = origSysSvc
 		orcaProcessActiveFn = origProc
+		orcaAnyProcessActiveFn = origAnyProc
 		stopOrcaForCommitAIFn = origStop
 		startOrcaForCommitAIFn = origStart
-		orcaCommitAIPostApplyVerifyWait = 1500 * time.Millisecond
+		orcaCommitAIPostApplyVerifyWait = 2500 * time.Millisecond
 	})
 
 	resolveOrcaCommitUserFn = func() (string, string) { return "", home }
 	orcaUserSvcActiveFn = func(context.Context, string, string) bool { return *svcActive }
 	orcaSysSvcActiveFn = func(context.Context) bool { return false }
 	orcaProcessActiveFn = func(context.Context, string) bool { return *procActive }
+	orcaAnyProcessActiveFn = func(context.Context, string) bool { return *svcActive || *procActive }
 	stopOrcaForCommitAIFn = func(context.Context, LogCallback, string, string) { *stopCount++ }
 	startOrcaForCommitAIFn = func(context.Context, LogCallback, string, string, bool) error {
 		*startCount++
@@ -262,4 +265,59 @@ func TestOrcaCommitAISyncDetectsMirrorInconsistency(t *testing.T) {
 	if !found {
 		t.Fatalf("expected mirror drift, got %v", status.Drift)
 	}
+}
+
+func TestOrcaCommitAISyncPopulatesRuntimeHostKeys(t *testing.T) {
+	home := t.TempDir()
+	dbPath := setupTestOrcaProfileDB(t, home, "local-default", 10, testOrcaCommitAISettings(), nil, nil)
+
+	// Simulasikan dokumen UI dari Web Client mode Headless yang mencatat host runtime:web-123.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiPayload := `{"setupScriptPromptDismissedRepoIds":["generation-v1:runtime:web-123\u0000repo-1"]}`
+	if _, err := db.Exec(`INSERT INTO profile_state_documents (domain, payload, domain_version, revision, updated_at, content_hash) VALUES ('ui', ?, 1, 10, 1000, ?)`, uiPayload, sha256Hex(uiPayload)); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	svcActive, procActive := true, false
+	stopCount, startCount := 0, 0
+	withOrcaCommitAISyncHooks(t, home, &svcActive, &procActive, &stopCount, &startCount)
+
+	ctx := context.Background()
+	status, err := SetOrcaCommitAIDesiredState(ctx, nil, OrcaCommitAISaveInput{
+		Enabled:            true,
+		AgentID:            "omp",
+		ModelID:            "reikurouter/reiku/gpt-6-luna",
+		ThinkingLevel:      "medium",
+		CustomPrompt:       "Bahasa Indonesia",
+		ClearRepoOverrides: true,
+		DiscoveredModels: []OrcaCommitAIModel{
+			{ID: "reikurouter/reiku/gpt-6-luna", Label: "GPT-6 Luna", Source: "discovered"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.InSync || status.OrcaDesktopOpen {
+		t.Fatalf("expected synced and OrcaDesktopOpen=false in headless mode, got %+v", status)
+	}
+
+	mutateTestOrcaSettings(t, dbPath, func(settings map[string]any) {
+		sc := settings["sourceControlAi"].(map[string]any)
+		commitModels := sc["modelOverridesByOperation"].(map[string]any)["commitMessage"].(map[string]any)
+		byHost := commitModels["selectedModelByAgentByHost"].(map[string]any)
+		if byHost["runtime:web-123"].(map[string]any)["omp"] != "reikurouter/reiku/gpt-6-luna" {
+			t.Fatalf("expected runtime:web-123 host model synced, got %v", byHost)
+		}
+		if _, hasLocal := byHost["local"]; hasLocal {
+			t.Fatalf("local key should stay removed from selectedModelByAgentByHost, got %v", byHost)
+		}
+		discByHost := sc["discoveredModelsByAgentByHost"].(map[string]any)
+		if _, hasRuntimeDisc := discByHost["runtime:web-123"]; !hasRuntimeDisc {
+			t.Fatalf("expected discoveredModelsByAgentByHost populated for runtime:web-123")
+		}
+	})
 }

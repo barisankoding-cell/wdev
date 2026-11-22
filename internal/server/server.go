@@ -3163,9 +3163,9 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		data.Orca.Installed = true
 	}
 
-	if monitor.IsSystemdServiceActive("orca") {
+	if installer.IsOrcaServiceActive(r.Context(), targetUser, userHome) {
 		data.Orca.Active = true
-	} else if out, err := exec.Command("pgrep", "-f", "orca-ide").Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+	} else if monitor.IsSystemdServiceActive("orca") {
 		data.Orca.Active = true
 	}
 

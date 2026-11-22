@@ -23,7 +23,7 @@ const (
 
 // Jeda sebelum verifikasi ulang setelah Orca dihidupkan kembali.
 // Dibuat var supaya bisa dipercepat di unit test.
-var orcaCommitAIPostApplyVerifyWait = 1500 * time.Millisecond
+var orcaCommitAIPostApplyVerifyWait = 2500 * time.Millisecond
 
 // Status sinkronisasi yang ditampilkan ke panel wdev.
 const (
@@ -103,6 +103,7 @@ type orcaCommitAIActualState struct {
 	SettingsRevision   int64
 	SettingsUpdatedAt  int64
 	MirrorDrift        []string
+	HostModelDrift     []string
 }
 
 func orcaCommitAIStatePath(home string) string {
@@ -358,6 +359,20 @@ func readOrcaCommitAIActualState(ctx context.Context) (*orcaCommitAIActualState,
 	}
 	actual.ThinkingLevel = thinkingByModel[actual.ModelID]
 
+	if actual.AgentID != "" && actual.AgentID != "custom" && actual.ModelID != "" {
+		runtimeHostKeys := collectKnownOrcaRuntimeHostKeysFromDB(ctx, db)
+		if len(runtimeHostKeys) > 0 {
+			commitChoice := getMap(getMap(sc, "modelOverridesByOperation"), "commitMessage")
+			byHost := getMap(commitChoice, "selectedModelByAgentByHost")
+			for _, hostKey := range runtimeHostKeys {
+				hostMap := getMap(byHost, hostKey)
+				if getString(hostMap, actual.AgentID) != actual.ModelID {
+					actual.HostModelDrift = append(actual.HostModelDrift, fmt.Sprintf("model host %s belum sinkron", hostKey))
+				}
+			}
+		}
+	}
+
 	var reposPayload string
 	if err := db.QueryRowContext(ctx,
 		`SELECT payload FROM profile_state_documents WHERE domain = 'repos'`,
@@ -420,6 +435,7 @@ func compareOrcaCommitAIDesired(d *OrcaCommitAIDesiredState, a *orcaCommitAIActu
 	if d.ClearRepoOverrides && a.RepoOverrideCount > 0 {
 		drift = append(drift, fmt.Sprintf("override per-repo (%d)", a.RepoOverrideCount))
 	}
+	drift = append(drift, a.HostModelDrift...)
 	return append(drift, a.MirrorDrift...)
 }
 
@@ -429,12 +445,13 @@ func GetOrcaCommitAISyncStatus(ctx context.Context) (*OrcaCommitAISyncStatus, er
 	profileID, dbPath := ResolveOrcaProfileDBPath(home)
 	st, loadErr := LoadOrcaCommitAISyncState(home)
 
+	desktopOpen := orcaProcessActiveFn(ctx, user)
 	status := &OrcaCommitAISyncStatus{
 		ProfileID:       profileID,
 		DBPath:          dbPath,
 		CloudLinked:     orcaProfileIsCloudLinked(home),
-		OrcaRunning:     (home != "" && orcaUserSvcActiveFn(ctx, user, home)) || orcaSysSvcActiveFn(ctx) || orcaProcessActiveFn(ctx, user),
-		OrcaDesktopOpen: orcaProcessActiveFn(ctx, user),
+		OrcaRunning:     (home != "" && orcaUserSvcActiveFn(ctx, user, home)) || orcaSysSvcActiveFn(ctx) || desktopOpen || orcaAnyProcessActiveFn(ctx, user),
+		OrcaDesktopOpen: desktopOpen,
 		State:           orcaCommitAISyncStateUnmanaged,
 		InSync:          true,
 	}

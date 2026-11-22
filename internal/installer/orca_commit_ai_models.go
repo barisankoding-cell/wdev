@@ -932,7 +932,7 @@ func sanitizeDiscoveredModelsForDB(models []OrcaCommitAIModel) []map[string]any 
 	return out
 }
 
-func applyModelSelectionToContainer(container map[string]any, agentID, modelID, thinkingLevel string, keepHostKeys bool) {
+func applyModelSelectionToContainer(container map[string]any, agentID, modelID, thinkingLevel string, keepHostKeys bool, extraHostKeys ...string) {
 	byAgent := ensureMap(container, "selectedModelByAgent")
 	if modelID != "" {
 		byAgent[agentID] = modelID
@@ -947,6 +947,16 @@ func applyModelSelectionToContainer(container map[string]any, agentID, modelID, 
 			delete(localMap, agentID)
 			if len(localMap) == 0 {
 				delete(byHost, localCommitMessageHostKey)
+			}
+		}
+		for _, hostKey := range extraHostKeys {
+			hostKey = strings.TrimSpace(hostKey)
+			if hostKey == "" || hostKey == localCommitMessageHostKey {
+				continue
+			}
+			if modelID != "" {
+				hostMap := ensureMap(byHost, hostKey)
+				hostMap[agentID] = modelID
 			}
 		}
 		for hostKey, raw := range byHost {
@@ -969,7 +979,7 @@ func applyModelSelectionToContainer(container map[string]any, agentID, modelID, 
 	}
 }
 
-func applyDiscoveredModelsToContainer(container map[string]any, agentID string, sanitized []map[string]any) {
+func applyDiscoveredModelsToContainer(container map[string]any, agentID string, sanitized []map[string]any, extraHostKeys ...string) {
 	if len(sanitized) == 0 {
 		return
 	}
@@ -979,4 +989,12 @@ func applyDiscoveredModelsToContainer(container map[string]any, agentID string, 
 	byHost := ensureMap(container, "discoveredModelsByAgentByHost")
 	localMap := ensureMap(byHost, localCommitMessageHostKey)
 	localMap[agentID] = sanitized
+	for _, hostKey := range extraHostKeys {
+		hostKey = strings.TrimSpace(hostKey)
+		if hostKey == "" || hostKey == localCommitMessageHostKey {
+			continue
+		}
+		hostMap := ensureMap(byHost, hostKey)
+		hostMap[agentID] = sanitized
+	}
 }

@@ -35,7 +35,10 @@ const (
 	defaultGitmojiEnglishPromp = "Start with a relevant Gitmoji followed by Conventional Commits prefix (e.g. ✨ feat: ...). Keep the subject line under 72 characters and explain key changes concisely."
 )
 
-var validProfileIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+var (
+	validProfileIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	runtimeHostKeyRe = regexp.MustCompile(`runtime:[A-Za-z0-9_.:-]+`)
+)
 
 // Test hooks for unit tests without touching the host's live Orca directory.
 var (
@@ -43,6 +46,7 @@ var (
 	orcaUserSvcActiveFn     = orcaServiceActive
 	orcaSysSvcActiveFn      = isSystemOrcaServiceActive
 	orcaProcessActiveFn     = isOrcaIDEProcessRunning
+	orcaAnyProcessActiveFn  = isAnyOrcaProcessRunning
 	stopOrcaForCommitAIFn   = stopOrcaService
 	startOrcaForCommitAIFn  = startOrcaService
 )
@@ -284,15 +288,146 @@ func isOrcaInstalledForHome(home string) bool {
 	return err == nil
 }
 
-func isOrcaIDEProcessRunning(ctx context.Context, user string) bool {
+func listOrcaProcesses(ctx context.Context, user string) string {
 	var cmd *exec.Cmd
 	if user != "" {
-		cmd = exec.CommandContext(ctx, "pgrep", "-u", user, "-f", "orca-ide")
+		cmd = exec.CommandContext(ctx, "pgrep", "-u", user, "-af", "orca")
 	} else {
-		cmd = exec.CommandContext(ctx, "pgrep", "-f", "orca-ide")
+		cmd = exec.CommandContext(ctx, "pgrep", "-af", "orca")
 	}
 	out, err := cmd.Output()
-	return err == nil && len(strings.TrimSpace(string(out))) > 0
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func stripPgrepPID(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+	if sp := strings.IndexAny(trimmed, " \t"); sp > 0 {
+		prefix := trimmed[:sp]
+		allDigits := true
+		for _, r := range prefix {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return strings.TrimSpace(trimmed[sp+1:])
+		}
+	}
+	return trimmed
+}
+
+func isShellOrProbeCmd(fields []string) bool {
+	if len(fields) == 0 {
+		return true
+	}
+	exe := filepath.Base(fields[0])
+	switch exe {
+	case "pgrep", "pkill", "ps", "grep", "bash", "sh", "zsh":
+		return true
+	}
+	return false
+}
+
+// isOrcaDesktopCmdline membedakan proses Electron Orca Desktop GUI dari daemon
+// Headless (`orca-ide ... serve --supervise --force`, `orcad-server.js`, dan
+// Chromium headless milik Orca).
+func isOrcaDesktopCmdline(line string) bool {
+	cmd := stripPgrepPID(line)
+	if cmd == "" {
+		return false
+	}
+	fields := strings.Fields(cmd)
+	if isShellOrProbeCmd(fields) {
+		return false
+	}
+	exeBase := filepath.Base(fields[0])
+	isOrcaBinary := exeBase == "orca-ide" || exeBase == "orca.AppImage" || strings.HasSuffix(fields[0], "/orca-ide")
+	if !isOrcaBinary {
+		return false
+	}
+	for _, tok := range fields[1:] {
+		if tok == "serve" || tok == "pair" || tok == "status" || tok == "switch" || tok == "mode" || tok == "update" ||
+			tok == "--version" || tok == "-v" || tok == "--help" || tok == "-h" ||
+			strings.Contains(tok, "serve-supervisor") ||
+			strings.Contains(tok, "out/cli/index.js") ||
+			strings.Contains(tok, "orcad-server.js") ||
+			strings.Contains(tok, "--web-client-root") ||
+			strings.Contains(tok, "--ozone-platform=headless") {
+			return false
+		}
+	}
+	return true
+}
+
+func isAnyOrcaCmdline(line string) bool {
+	cmd := stripPgrepPID(line)
+	if cmd == "" {
+		return false
+	}
+	fields := strings.Fields(cmd)
+	if isShellOrProbeCmd(fields) {
+		return false
+	}
+	exeBase := filepath.Base(fields[0])
+	if exeBase == "orca-ide" || exeBase == "orca.AppImage" || strings.HasSuffix(fields[0], "/orca-ide") {
+		for _, tok := range fields[1:] {
+			if tok == "--version" || tok == "-v" || tok == "--help" || tok == "-h" {
+				return false
+			}
+		}
+		return true
+	}
+	for _, tok := range fields[1:] {
+		if strings.HasSuffix(tok, "/orcad-server.js") || tok == "orcad-server.js" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOrcaDesktopProcess(pgrepOutput string) bool {
+	for _, line := range strings.Split(pgrepOutput, "\n") {
+		if isOrcaDesktopCmdline(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyOrcaProcess(pgrepOutput string) bool {
+	for _, line := range strings.Split(pgrepOutput, "\n") {
+		if isAnyOrcaCmdline(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isOrcaIDEProcessRunning(ctx context.Context, user string) bool {
+	return hasOrcaDesktopProcess(listOrcaProcesses(ctx, user))
+}
+
+func isAnyOrcaProcessRunning(ctx context.Context, user string) bool {
+	return hasAnyOrcaProcess(listOrcaProcesses(ctx, user))
+}
+
+// IsOrcaServiceActive memeriksa apakah layanan Orca Headless (user/system systemd)
+// atau proses server/desktop Orca sedang berjalan.
+func IsOrcaServiceActive(ctx context.Context, user, home string) bool {
+	if home != "" && orcaUserSvcActiveFn(ctx, user, home) {
+		return true
+	}
+	if orcaSysSvcActiveFn(ctx) {
+		return true
+	}
+	return orcaProcessActiveFn(ctx, user) || orcaAnyProcessActiveFn(ctx, user)
 }
 
 func commandTemplateFromPrompt(prompt string) string {
@@ -363,19 +498,31 @@ func sha256Hex(s string) string {
 
 func repoHasCommitMessageOverride(repo map[string]any) bool {
 	sc := getMap(repo, "sourceControlAi")
-	if sc == nil {
-		return false
-	}
-	if ao := getMap(sc, "actionOverrides"); ao != nil {
-		if _, exists := ao["commitMessage"]; exists {
+	if sc != nil {
+		if strings.TrimSpace(getString(sc, "customAgentCommand")) != "" {
 			return true
 		}
-	}
-	if instr := getMap(sc, "instructionsByOperation"); instr != nil {
-		if val, exists := instr["commitMessage"]; exists {
-			if str, ok := val.(string); ok && strings.TrimSpace(str) != "" {
+		if ao := getMap(sc, "actionOverrides"); ao != nil {
+			if _, exists := ao["commitMessage"]; exists {
 				return true
 			}
+		}
+		if instr := getMap(sc, "instructionsByOperation"); instr != nil {
+			if val, exists := instr["commitMessage"]; exists {
+				if str, ok := val.(string); ok && strings.TrimSpace(str) != "" {
+					return true
+				}
+			}
+		}
+		if modOv := getMap(sc, "modelOverridesByOperation"); modOv != nil {
+			if _, exists := modOv["commitMessage"]; exists {
+				return true
+			}
+		}
+	}
+	if legacy := getMap(repo, "commitMessageAi"); legacy != nil {
+		if strings.TrimSpace(getString(legacy, "customAgentCommand")) != "" {
+			return true
 		}
 	}
 	return false
@@ -391,12 +538,13 @@ func GetOrcaCommitAIConfig(ctx context.Context) (*OrcaCommitAIConfig, error) {
 	userSvcActive := home != "" && orcaUserSvcActiveFn(ctx, user, home)
 	sysSvcActive := orcaSysSvcActiveFn(ctx)
 	procActive := orcaProcessActiveFn(ctx, user)
+	anyProcActive := orcaAnyProcessActiveFn(ctx, user)
 
 	cfg := &OrcaCommitAIConfig{
 		DBPath:                  dbPath,
 		ProfileID:               profileID,
 		OrcaInstalled:           isOrcaInstalledForHome(home),
-		OrcaRunning:             userSvcActive || sysSvcActive || procActive,
+		OrcaRunning:             userSvcActive || sysSvcActive || procActive || anyProcActive,
 		OrcaMode:                readOrcaMode(home),
 		Enabled:                 true,
 		CommandInputTemplate:    orcaBasePromptToken,
@@ -548,7 +696,7 @@ func GetOrcaCommitAISummary(ctx context.Context) *OrcaCommitAISummary {
 func waitForOrcaProcessExit(ctx context.Context, user string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if !orcaProcessActiveFn(ctx, user) {
+		if !orcaProcessActiveFn(ctx, user) && !orcaAnyProcessActiveFn(ctx, user) {
 			return
 		}
 		select {
@@ -595,6 +743,10 @@ func cleanRepoSourceControlCommitOverride(item map[string]any, enabled bool, syn
 		}
 		if _, hasLegacyAgent := sc["agentId"]; hasLegacyAgent {
 			delete(sc, "agentId")
+			changed = true
+		}
+		if _, hasCustomCmd := sc["customAgentCommand"]; hasCustomCmd {
+			delete(sc, "customAgentCommand")
 			changed = true
 		}
 		if ao := getMap(sc, "actionOverrides"); ao != nil {
@@ -648,6 +800,10 @@ func cleanRepoSourceControlCommitOverride(item map[string]any, enabled bool, syn
 			}
 			if getString(legacy, "customPrompt") != prompt {
 				legacy["customPrompt"] = prompt
+				changed = true
+			}
+			if _, hasCustomCmd := legacy["customAgentCommand"]; hasCustomCmd {
+				delete(legacy, "customAgentCommand")
 				changed = true
 			}
 		}
@@ -734,6 +890,41 @@ func SaveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommi
 		cb(fmt.Sprintf("✓ Konfigurasi Orca Commit AI (%s) berhasil disimpan permanen.", spec.Label))
 	}
 	return GetOrcaCommitAIConfig(ctx)
+}
+
+type sqlQueryContexter interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func queryKnownOrcaRuntimeHostKeys(ctx context.Context, q sqlQueryContexter) []string {
+	rows, err := q.QueryContext(ctx, `SELECT payload FROM profile_state_documents WHERE domain IN ('settings', 'ui', 'repos', 'projectHostSetups', 'workspaceSession')`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var keys []string
+	for rows.Next() {
+		var payload string
+		if rows.Scan(&payload) != nil {
+			continue
+		}
+		for _, m := range runtimeHostKeyRe.FindAllString(payload, -1) {
+			if !seen[m] {
+				seen[m] = true
+				keys = append(keys, m)
+			}
+		}
+	}
+	return keys
+}
+
+func collectKnownOrcaRuntimeHostKeysFromDB(ctx context.Context, db *sql.DB) []string {
+	return queryKnownOrcaRuntimeHostKeys(ctx, db)
+}
+
+func collectKnownOrcaRuntimeHostKeys(ctx context.Context, conn *sql.Conn) []string {
+	return queryKnownOrcaRuntimeHostKeys(ctx, conn)
 }
 
 func applyOrcaCommitAIToDB(
@@ -835,15 +1026,16 @@ func applyOrcaCommitAIToDB(
 		modelID := strings.TrimSpace(input.ModelID)
 		thinkingLevel := strings.TrimSpace(input.ThinkingLevel)
 		sanitizedDiscovered := sanitizeDiscoveredModelsForDB(input.DiscoveredModels)
+		runtimeHostKeys := collectKnownOrcaRuntimeHostKeys(ctx, conn)
 
 		modelOverrides := ensureMap(sc, "modelOverridesByOperation")
 		commitModelChoice := ensureMap(modelOverrides, "commitMessage")
-		applyModelSelectionToContainer(commitModelChoice, spec.ID, modelID, thinkingLevel, true)
-		applyModelSelectionToContainer(sc, spec.ID, modelID, thinkingLevel, true)
-		applyModelSelectionToContainer(legacy, spec.ID, modelID, thinkingLevel, true)
+		applyModelSelectionToContainer(commitModelChoice, spec.ID, modelID, thinkingLevel, true, runtimeHostKeys...)
+		applyModelSelectionToContainer(sc, spec.ID, modelID, thinkingLevel, true, runtimeHostKeys...)
+		applyModelSelectionToContainer(legacy, spec.ID, modelID, thinkingLevel, true, runtimeHostKeys...)
 
-		applyDiscoveredModelsToContainer(sc, spec.ID, sanitizedDiscovered)
-		applyDiscoveredModelsToContainer(legacy, spec.ID, sanitizedDiscovered)
+		applyDiscoveredModelsToContainer(sc, spec.ID, sanitizedDiscovered, runtimeHostKeys...)
+		applyDiscoveredModelsToContainer(legacy, spec.ID, sanitizedDiscovered, runtimeHostKeys...)
 	}
 
 	newSettingsBytes, err := json.Marshal(settings)

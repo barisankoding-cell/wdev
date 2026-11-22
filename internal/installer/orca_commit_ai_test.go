@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -460,5 +461,28 @@ func TestOrcaCommitAIModelParsersAndPersistence(t *testing.T) {
 	}
 	if len(extractCachedModelsMapFromSettings(settings)["opencode"]) == 0 {
 		t.Fatalf("expected discoveredModelsByAgent persisted in settings")
+	}
+}
+
+func TestOrcaProcessDetectionSeparatesHeadlessAndDesktop(t *testing.T) {
+	headlessOut := strings.Join([]string{
+		"1572807 /home/dietpi/.local/lib/orca-ide/orca-ide /home/dietpi/.config/orca/serve-supervisor/abc/out/cli/index.js serve --supervise --force",
+		"1572986 /home/dietpi/.config/orca/orcad-artifacts/bin/node /home/dietpi/.config/orca/orcad-artifacts/0.1.0/orcad-server.js --bind 0.0.0.0 --web-client-root /home/dietpi/.local/lib/orca-ide/resources/app.asar.unpacked/out/renderer",
+		"1573346 /usr/lib/chromium/chromium --type=renderer --ozone-platform=headless --user-data-dir=/home/dietpi/.config/orca/browser-chromium",
+		"1579000 bash -c pgrep -af orca",
+	}, "\n")
+	if hasOrcaDesktopProcess(headlessOut) {
+		t.Fatalf("headless serve/orcad must not be detected as Orca Desktop")
+	}
+	if !hasAnyOrcaProcess(headlessOut) {
+		t.Fatalf("expected hasAnyOrcaProcess to detect headless serve/orcad")
+	}
+
+	desktopOut := "210001 /home/dietpi/.local/lib/orca-ide/orca-ide --enable-crashpad\n"
+	if !hasOrcaDesktopProcess(desktopOut) {
+		t.Fatalf("expected hasOrcaDesktopProcess to detect Orca Desktop GUI")
+	}
+	if !hasAnyOrcaProcess(desktopOut) {
+		t.Fatalf("expected hasAnyOrcaProcess to detect Orca Desktop GUI")
 	}
 }

@@ -244,6 +244,9 @@
 			const res = await api.applyOrcaCommitAISync();
 			syncStatus = res.sync ?? (await api.getOrcaCommitAISync());
 			await loadConfig();
+			if (config) {
+				onSaved?.(config);
+			}
 			if (syncStatus?.in_sync) {
 				toast.success(res.message || 'Orca Commit AI sudah sinkron.');
 			} else {
@@ -426,7 +429,14 @@
 						<InfoIcon />
 						<Alert.Title>Layanan Orca Sedang Aktif</Alert.Title>
 						<Alert.Description>
-							Saat menyimpan, layanan Orca Headless akan dihentikan sebentar lalu dimulai ulang secara otomatis agar pengaturan tidak tertimpa oleh cache memori.
+							{#if config.orca_mode === 'headless'}
+								Saat menyimpan, layanan Orca Headless akan dihentikan sebentar lalu dimulai ulang secara otomatis agar pengaturan tidak tertimpa oleh cache memori.
+								<span class="mt-1 block text-xs text-muted-foreground">
+									Catatan Web Client: jika sebelumnya Anda mengubah setelan AI di UI browser Orca, muat ulang tab Web Client (atau bersihkan cache <code class="font-mono">orca.web.settings.v1</code> di browser) karena Web Client memprioritaskan cache browser.
+								</span>
+							{:else}
+								Orca sedang berjalan. Pastikan aplikasi Orca Desktop tidak sedang menimpa database profil saat menyimpan.
+							{/if}
 						</Alert.Description>
 					</Alert.Root>
 				{/if}
