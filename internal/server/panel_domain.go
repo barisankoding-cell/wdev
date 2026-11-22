@@ -169,7 +169,7 @@ func (s *Server) cleanupPanelDomainResources(targetDomain string, deleteSite boo
 		}
 	}
 
-	if deleteSite && s.siteMgr != nil && hasSite {
+	if deleteSite && s.siteMgr != nil {
 		_ = s.siteMgr.DeleteSite(targetDomain)
 	}
 	return deletedDNS

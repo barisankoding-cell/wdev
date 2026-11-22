@@ -303,6 +303,9 @@ func main() {
 		cfg.TLSCert = *tlsCertFlag
 		cfg.TLSKey = *tlsKeyFlag
 
+		if _, err := siteMgr.RepairEmptyServerNamesInVHosts(); err != nil {
+			fmt.Fprintf(os.Stderr, "Peringatan: perbaikan server_name vhost gagal: %v\n", err)
+		}
 		if _, err := siteMgr.EnsureProxyHTTPSForPHPVhosts(); err != nil {
 			fmt.Fprintf(os.Stderr, "Peringatan: sinkronisasi FastCGI HTTPS vhost gagal: %v\n", err)
 		}

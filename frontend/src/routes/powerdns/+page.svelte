@@ -7,7 +7,10 @@
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
+	import * as Tabs from '#lib/components/ui/tabs/index.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
+	import * as Empty from '#lib/components/ui/empty/index.js';
+	import * as InputGroup from '#lib/components/ui/input-group/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
@@ -21,6 +24,7 @@
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
+	import { cn } from '#lib/utils.js';
 	import type {
 		EdgeConfig,
 		ProxyExposure,
@@ -44,21 +48,47 @@
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
+	import NetworkIcon from '@lucide/svelte/icons/network';
+	import SearchIcon from '@lucide/svelte/icons/search';
+	import CopyIcon from '@lucide/svelte/icons/copy';
+	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
+	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import ChevronsLeftIcon from '@lucide/svelte/icons/chevrons-left';
+	import ChevronsRightIcon from '@lucide/svelte/icons/chevrons-right';
+	import UnplugIcon from '@lucide/svelte/icons/unplug';
+
+	type ActiveTab = 'zones' | 'expose' | 'proxy';
+	type ExposeFilter = 'all' | 'exposed' | 'local';
+	type ProxyFilter = 'all' | 'vhost' | 'service';
 
 	let edge = $state<EdgeConfig | null>(null);
 	let zones = $state<ZoneInfo[]>([]);
 	let sites = $state<SiteRecord[]>([]);
 	let exposures = $state<ProxyExposure[]>([]);
+	let initialLoading = $state(true);
 	let zonesError = $state('');
 	let exposuresError = $state('');
 	let glueGuideOpen = $state(false);
 	let refreshingAll = $state(false);
 	let refreshingExposures = $state(false);
 	let startingPDNS = $state(false);
+	let lastLoadedMode = $state<string | null>(null);
 	let zonePending = $state<Record<string, 'doctor' | 'repair' | 'delete'>>({});
 	let unexposingPending = $state<Record<string, boolean>>({});
 	let recordPending = $state<Record<string, boolean>>({});
+
+	// Tabs & Filters
+	let activeTab = $state<ActiveTab>('zones');
+	let zoneTabRef = $state<HTMLButtonElement | null>(null);
+	let exposeTabRef = $state<HTMLButtonElement | null>(null);
+	let proxyTabRef = $state<HTMLButtonElement | null>(null);
+	let zoneSearch = $state('');
+	let exposeSearch = $state('');
+	let exposeFilter = $state<ExposeFilter>('all');
+	let proxySearch = $state('');
+	let proxyFilter = $state<ProxyFilter>('all');
 
 	// Add Zone Dialog
 	let addZoneOpen = $state(false);
@@ -116,10 +146,132 @@
 	let connAgentPort = $state('8082');
 	let connecting = $state(false);
 
+	const isEdge = $derived(modeStore.mode === 'edge');
+	const isVPS = $derived(modeStore.mode === 'vps');
+	const isLocal = $derived(modeStore.mode === 'local');
+
 	const selectedSiteObj = $derived(sites.find((s) => s.domain === exposeSiteDomain) ?? null);
 	const defaultZoneName = $derived(
 		zones.length > 0 ? zones[0].name.replace(/\.$/, '') : 'example.com'
 	);
+
+	const exposedSitesCount = $derived(sites.filter((s) => Boolean(s.exposed_to)).length);
+	const localOnlySitesCount = $derived(sites.length - exposedSitesCount);
+	const vhostExposuresCount = $derived(exposures.filter((e) => Boolean(e.local_site)).length);
+	const serviceExposuresCount = $derived(exposures.length - vhostExposuresCount);
+
+	const filteredZones = $derived.by(() => {
+		const q = zoneSearch.trim().toLowerCase();
+		if (!q) return zones;
+		return zones.filter(
+			(z) => z.name.toLowerCase().includes(q) || z.kind.toLowerCase().includes(q)
+		);
+	});
+
+	const filteredSites = $derived.by(() => {
+		const q = exposeSearch.trim().toLowerCase();
+		return sites.filter((s) => {
+			if (exposeFilter === 'exposed' && !s.exposed_to) return false;
+			if (exposeFilter === 'local' && s.exposed_to) return false;
+			if (!q) return true;
+			return (
+				s.domain.toLowerCase().includes(q) ||
+				(s.root_path || '').toLowerCase().includes(q) ||
+				(s.exposed_to || '').toLowerCase().includes(q) ||
+				(s.framework || '').toLowerCase().includes(q)
+			);
+		});
+	});
+
+	const filteredExposures = $derived.by(() => {
+		const q = proxySearch.trim().toLowerCase();
+		return exposures.filter((exp) => {
+			if (proxyFilter === 'vhost' && !exp.local_site) return false;
+			if (proxyFilter === 'service' && exp.local_site) return false;
+			if (!q) return true;
+			return (
+				exp.domain.toLowerCase().includes(q) ||
+				(exp.local_site || '').toLowerCase().includes(q) ||
+				(exp.target || '').toLowerCase().includes(q) ||
+				(exp.config_file || '').toLowerCase().includes(q)
+			);
+		});
+	});
+
+	// Pagination (Maximal 10 data per page)
+	const PAGE_SIZE = 10;
+	let zonePage = $state(1);
+	let exposePage = $state(1);
+	let proxyPage = $state(1);
+
+	const totalZonePages = $derived(Math.max(1, Math.ceil(filteredZones.length / PAGE_SIZE)));
+	const paginatedZones = $derived(
+		filteredZones.slice((zonePage - 1) * PAGE_SIZE, zonePage * PAGE_SIZE)
+	);
+
+	const totalExposePages = $derived(Math.max(1, Math.ceil(filteredSites.length / PAGE_SIZE)));
+	const paginatedSites = $derived(
+		filteredSites.slice((exposePage - 1) * PAGE_SIZE, exposePage * PAGE_SIZE)
+	);
+
+	const totalProxyPages = $derived(Math.max(1, Math.ceil(filteredExposures.length / PAGE_SIZE)));
+	const paginatedExposures = $derived(
+		filteredExposures.slice((proxyPage - 1) * PAGE_SIZE, proxyPage * PAGE_SIZE)
+	);
+
+	$effect(() => {
+		const _ = zoneSearch;
+		zonePage = 1;
+	});
+
+	$effect(() => {
+		const _ = `${exposeSearch}:${exposeFilter}`;
+		exposePage = 1;
+	});
+
+	$effect(() => {
+		const _ = `${proxySearch}:${proxyFilter}`;
+		proxyPage = 1;
+	});
+
+	$effect(() => {
+		if (zonePage > totalZonePages) {
+			zonePage = totalZonePages;
+		}
+	});
+
+	$effect(() => {
+		if (exposePage > totalExposePages) {
+			exposePage = totalExposePages;
+		}
+	});
+
+	$effect(() => {
+		if (proxyPage > totalProxyPages) {
+			proxyPage = totalProxyPages;
+		}
+	});
+
+	async function copyText(val: string, label: string) {
+		if (!val || val === '-') return;
+		try {
+			await navigator.clipboard.writeText(val);
+			toast.success(`${label} (${val}) disalin.`);
+		} catch {
+			toast.error(`Gagal menyalin ${label}.`);
+		}
+	}
+
+	function handleTabChange(val: string) {
+		if (val !== 'zones' && val !== 'expose' && val !== 'proxy') return;
+		activeTab = val;
+		const target = val === 'zones' ? zoneTabRef : val === 'expose' ? exposeTabRef : proxyTabRef;
+		target?.scrollIntoView({
+			block: 'nearest',
+			inline: 'nearest',
+			container: 'nearest'
+		} as ScrollIntoViewOptions);
+	}
 
 	async function loadAll(showProgress = false) {
 		if (showProgress) refreshingAll = true;
@@ -134,15 +286,16 @@
 			if (st.agent_port) connAgentPort = st.agent_port;
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Gagal memuat status PowerDNS');
-		} finally {
-			refreshingAll = false;
 		}
 
 		await Promise.all([
 			loadZones(),
 			modeStore.mode === 'edge' ? loadExposures() : Promise.resolve((exposures = [])),
-			modeStore.mode === 'edge' ? loadLocalSites() : Promise.resolve()
+			modeStore.mode === 'edge' ? loadLocalSites() : Promise.resolve((sites = []))
 		]);
+
+		refreshingAll = false;
+		initialLoading = false;
 	}
 
 	async function loadZones() {
@@ -163,6 +316,23 @@
 		} catch (err) {
 			exposures = [];
 			exposuresError = err instanceof Error ? err.message : 'Edge VPS tidak dapat dihubungi';
+		} finally {
+			refreshingExposures = false;
+		}
+	}
+
+	async function refreshActiveTab() {
+		if (activeTab === 'zones') {
+			await loadZones();
+			return;
+		}
+		if (activeTab === 'proxy') {
+			await loadExposures(true);
+			return;
+		}
+		refreshingExposures = true;
+		try {
+			await Promise.all([loadLocalSites(), loadExposures(false)]);
 		} finally {
 			refreshingExposures = false;
 		}
@@ -190,15 +360,34 @@
 	}
 
 	onMount(async () => {
+		const tabParam = page.url.searchParams.get('tab');
+		if (tabParam === 'zones' || tabParam === 'proxy' || tabParam === 'expose') {
+			activeTab = tabParam;
+		}
 		await loadAll();
 		const preExpose = page.url.searchParams.get('expose');
 		if (preExpose) {
+			activeTab = 'expose';
 			openExposeModal('site', preExpose);
 		}
 	});
 
 	$effect(() => {
+		if (!isEdge && (activeTab === 'expose' || activeTab === 'proxy')) {
+			activeTab = 'zones';
+		}
+	});
+
+	$effect(() => {
 		if (cp.refreshTick > 0) loadAll();
+	});
+
+	$effect(() => {
+		const currentMode = modeStore.mode;
+		if (lastLoadedMode !== null && lastLoadedMode !== currentMode) {
+			void loadAll();
+		}
+		lastLoadedMode = currentMode;
 	});
 
 	function suggestPublicDomain(localDomain: string) {
@@ -574,14 +763,15 @@
 </script>
 
 <div class="flex flex-col gap-5 sm:gap-6">
+	<!-- Page Header -->
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-		<div>
-			{#if modeStore.mode === 'vps'}
+		<div class="min-w-0 max-w-2xl">
+			{#if isVPS}
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Domain &amp; DNS Manager</h1>
 				<p class="text-sm text-muted-foreground">
-					Authoritative DNS Server &amp; Manajemen Domain Langsung di Cloud VPS (aaPanel Style).
+					Authoritative DNS server dan manajemen domain langsung di Cloud VPS.
 				</p>
-			{:else if modeStore.mode === 'local'}
+			{:else if isLocal}
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Domain &amp; DNS Manager (Lokal)</h1>
 				<p class="text-sm text-muted-foreground">
 					PowerDNS Authoritative mandiri di 127.0.0.1:8081 &amp; port 53 tanpa NetBird maupun VPS Edge.
@@ -589,35 +779,41 @@
 			{:else}
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">PowerDNS &amp; VPS Edge Gateway</h1>
 				<p class="text-sm text-muted-foreground">
-					Authoritative DNS mandiri &amp; reverse-proxy SSL Let's Encrypt otomatis di VPS Edge via NetBird.
+					Authoritative DNS mandiri dan reverse-proxy SSL Let's Encrypt otomatis di VPS Edge via NetBird.
 				</p>
 			{/if}
 		</div>
-		<div class="flex flex-wrap items-center gap-2">
-			{#if modeStore.mode !== 'edge'}
+
+		<div class="flex shrink-0 flex-wrap items-center gap-2">
+			{#if !isEdge}
 				<StatusBadge
 					tone={edge?.reachable ? 'success' : edge?.has_local_pdns ? 'warning' : 'destructive'}
 					label={edge?.reachable
-						? 'PowerDNS Lokal Aktif (127.0.0.1:8081)'
+						? 'PowerDNS Aktif'
 						: edge?.has_local_pdns
-							? 'PowerDNS Terpasang (Nonaktif)'
-							: 'PowerDNS Belum Terpasang'}
+							? 'PowerDNS Nonaktif'
+							: 'Belum Terpasang'}
 				/>
 				{#if !edge?.reachable && !edge?.has_local_pdns}
 					<Button size="sm" onclick={() => cp.triggerInstall('pdns')}>
 						Install PowerDNS
 					</Button>
 				{/if}
-				<Button size="sm" variant={edge?.reachable ? 'default' : 'outline'} onclick={() => (addZoneOpen = true)}>
-					<PlusIcon data-icon="inline-start" />
-					Tambah Zone
-				</Button>
-				{#if modeStore.mode === 'vps'}
-					<Button variant="outline" size="sm" onclick={() => (glueGuideOpen = !glueGuideOpen)}>
+				{#if isVPS}
+					<Button
+						variant="outline"
+						size="sm"
+						aria-expanded={glueGuideOpen}
+						onclick={() => (glueGuideOpen = !glueGuideOpen)}
+					>
 						<BookOpenIcon data-icon="inline-start" />
 						Panduan Nameserver
 					</Button>
 				{/if}
+				<Button size="sm" variant={edge?.reachable ? 'default' : 'outline'} onclick={() => (addZoneOpen = true)}>
+					<PlusIcon data-icon="inline-start" />
+					Tambah Zone
+				</Button>
 			{:else}
 				{#if edge}
 					<StatusBadge
@@ -637,7 +833,8 @@
 		</div>
 	</div>
 
-	{#if modeStore.mode === 'local'}
+	<!-- Contextual Alerts -->
+	{#if isLocal}
 		<Alert.Root class="border-muted-foreground/30 bg-muted/40">
 			<InfoIcon />
 			<Alert.Title>Mode Lokal Standalone Aktif</Alert.Title>
@@ -652,7 +849,7 @@
 		</Alert.Root>
 	{/if}
 
-	{#if modeStore.mode !== 'edge' && edge && !edge.reachable}
+	{#if !isEdge && edge && !edge.reachable}
 		<Alert.Root variant="destructive">
 			<TriangleAlertIcon />
 			<Alert.Title>
@@ -683,7 +880,7 @@
 				</div>
 			</Alert.Description>
 		</Alert.Root>
-	{:else if modeStore.mode === 'edge' && edge && !edge.reachable}
+	{:else if isEdge && edge && !edge.reachable}
 		<Alert.Root variant="destructive">
 			<TriangleAlertIcon />
 			<Alert.Title>VPS Edge Gateway Belum Terhubung</Alert.Title>
@@ -699,23 +896,47 @@
 		</Alert.Root>
 	{/if}
 
-	{#if modeStore.mode === 'vps' && glueGuideOpen}
+	{#if isVPS && glueGuideOpen}
 		<Alert.Root class="border-primary/40 bg-primary/5">
 			<InfoIcon class="text-primary" />
-			<Alert.Title class="font-semibold text-primary">Petunjuk Integrasi Domain (aaPanel Nameserver Style)</Alert.Title>
-			<Alert.Description class="space-y-2 text-xs leading-relaxed text-muted-foreground mt-2">
+			<Alert.Title class="font-semibold text-primary">Petunjuk Integrasi Domain (Child Nameserver)</Alert.Title>
+			<Alert.Description class="mt-2 space-y-2 text-xs leading-relaxed text-muted-foreground">
 				<p>
 					Agar seluruh domain utama dan subdomain mengarah langsung ke VPS ini:
 				</p>
-				<ol class="list-decimal list-inside space-y-1">
+				<ol class="list-inside list-decimal space-y-1.5">
 					<li>Buka panel registrar domain Anda (Niagahoster, Rumahweb, Namecheap, Cloudflare, dll).</li>
 					<li>Cari menu <strong>Child Nameserver / Host Records / Glue Records</strong> pada domain utama Anda.</li>
 					<li>
-						Daftarkan:
-						<br />
-						<code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">ns1.{defaultZoneName}</code> &rarr; <code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">{edge?.vps_public_ip || 'IP_PUBLIK_VPS'}</code>
-						<br />
-						<code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">ns2.{defaultZoneName}</code> &rarr; <code class="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground font-semibold">{edge?.vps_public_ip || 'IP_PUBLIK_VPS'}</code>
+						Daftarkan pasangan glue record berikut:
+						<div class="mt-1.5 flex flex-col gap-1.5 sm:flex-row sm:flex-wrap">
+							<span class="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 font-mono text-foreground">
+								ns1.{defaultZoneName} &rarr; {edge?.vps_public_ip || 'IP_PUBLIK_VPS'}
+								{#if edge?.vps_public_ip}
+									<Button
+										variant="ghost"
+										size="icon-xs"
+										aria-label="Salin ns1"
+										onclick={() => copyText(`ns1.${defaultZoneName}`, 'Nameserver 1')}
+									>
+										<CopyIcon />
+									</Button>
+								{/if}
+							</span>
+							<span class="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 font-mono text-foreground">
+								ns2.{defaultZoneName} &rarr; {edge?.vps_public_ip || 'IP_PUBLIK_VPS'}
+								{#if edge?.vps_public_ip}
+									<Button
+										variant="ghost"
+										size="icon-xs"
+										aria-label="Salin ns2"
+										onclick={() => copyText(`ns2.${defaultZoneName}`, 'Nameserver 2')}
+									>
+										<CopyIcon />
+									</Button>
+								{/if}
+							</span>
+						</div>
 					</li>
 					<li>Ubah <strong>Nameserver (DNS)</strong> domain Anda menjadi <code class="font-mono">ns1.{defaultZoneName}</code> dan <code class="font-mono">ns2.{defaultZoneName}</code>.</li>
 					<li>Tambahkan zone domain di tabel di bawah. wdev akan mengelola seluruh record (A, CNAME, MX, TXT) secara otomatis.</li>
@@ -724,485 +945,1027 @@
 		</Alert.Root>
 	{/if}
 
-	<!-- Top Metric Cards -->
-	{#if modeStore.mode === 'vps'}
-		<div class="grid gap-3 sm:grid-cols-3">
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>IP Publik VPS (A Record Target)</Card.Description>
-					<Card.Title class="truncate font-mono text-base">{edge?.vps_public_ip || '-'}</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>Primary Nameserver (NS1)</Card.Description>
-					<Card.Title class="truncate font-mono text-base">ns1.{defaultZoneName}</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>Secondary Nameserver (NS2)</Card.Description>
-					<Card.Title class="truncate font-mono text-base">ns2.{defaultZoneName}</Card.Title>
-				</Card.Header>
-			</Card.Root>
-		</div>
-	{:else if modeStore.mode === 'local'}
-		<div class="grid gap-3 sm:grid-cols-3">
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>Endpoint PowerDNS API (Lokal)</Card.Description>
-					<Card.Title class="truncate font-mono text-base">
-						{edge?.vps_netbird_ip || '127.0.0.1'}:{edge?.pdns_port || '8081'}
-					</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>IP Host / LAN (Target Record A)</Card.Description>
-					<Card.Title class="truncate font-mono text-base">{edge?.vps_public_ip || '127.0.0.1'}</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>Mode Operasional DNS</Card.Description>
-					<Card.Title class="truncate text-base">Lokal Standalone (Tanpa NetBird)</Card.Title>
-				</Card.Header>
-			</Card.Root>
-		</div>
-	{:else}
-		<div class="grid gap-3 sm:grid-cols-3">
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>IP VPS (NetBird Mesh)</Card.Description>
-					<Card.Title class="truncate font-mono text-base">{edge?.vps_netbird_ip || '-'}</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>IP Publik Edge Gateway</Card.Description>
-					<Card.Title class="truncate font-mono text-base">{edge?.vps_public_ip || '-'}</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root>
-				<Card.Header>
-					<Card.Description>IP NetBird Mesin Lokal (wt0)</Card.Description>
-					<Card.Title class="truncate font-mono text-base">{edge?.local_netbird_ip || '-'}</Card.Title>
-				</Card.Header>
-			</Card.Root>
-		</div>
-	{/if}
-
-	<!-- Authoritative DNS Zones -->
-	<section class="flex flex-col gap-3">
-		<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-			<h2 class="text-base font-semibold tracking-tight sm:text-lg">Zone Authoritative DNS</h2>
-			<Button size="sm" class="w-full sm:w-auto" onclick={() => (addZoneOpen = true)}>
-				<PlusIcon data-icon="inline-start" />
-				Tambah Zone
-			</Button>
-		</div>
-
-		<ResponsiveTableWrapper label="Tabel Zone Authoritative DNS">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>Nama Zone</Table.Head>
-						<Table.Head>Tipe</Table.Head>
-						<Table.Head>Serial</Table.Head>
-						<Table.Head>Status</Table.Head>
-						<Table.Head class="text-right">Aksi</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
-					{#if zonesError}
-						<Table.Row>
-							<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-								{zonesError}
-							</Table.Cell>
-						</Table.Row>
-					{:else if zones.length === 0}
-						<Table.Row>
-							<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-								Belum ada zone DNS.
-							</Table.Cell>
-						</Table.Row>
-					{:else}
-						{#each zones as z (z.name)}
-							{@const zPending = zonePending[z.name]}
-							<Table.Row>
-								<Table.Cell data-label="Zone" class="font-semibold">{z.name}</Table.Cell>
-								<Table.Cell data-label="Tipe">{z.kind}</Table.Cell>
-								<Table.Cell data-label="Serial" class="font-mono">{z.serial}</Table.Cell>
-								<Table.Cell data-label="Status">
-									<StatusBadge tone="success" label="Aktif" />
-								</Table.Cell>
-								<Table.Cell data-label="Aksi" class="text-right">
-									<div class="flex justify-end">
-										<DropdownMenu.Root>
-											<DropdownMenu.Trigger>
-												{#snippet child({ props })}
-													<Button variant="outline" size="xs" disabled={Boolean(zPending)} {...props}>
-														{#if zPending === 'doctor'}
-															<Spinner data-icon="inline-start" />
-															Memeriksa...
-														{:else if zPending === 'repair'}
-															<Spinner data-icon="inline-start" />
-															Memperbaiki...
-														{:else if zPending === 'delete'}
-															<Spinner data-icon="inline-start" />
-															Menghapus...
-														{:else}
-															Aksi
-															<ChevronDownIcon data-icon="inline-end" />
-														{/if}
-													</Button>
-												{/snippet}
-											</DropdownMenu.Trigger>
-											<DropdownMenu.Content align="end" class="w-48">
-												<DropdownMenu.Group>
-													<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
-														{z.name}
-													</DropdownMenu.Label>
-													<DropdownMenu.Separator />
-													<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => openRecordsModal(z.name)}>
-														<ListIcon />
-														<span>Kelola Record</span>
-													</DropdownMenu.Item>
-													<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneDoctor(z.name)}>
-														<StethoscopeIcon />
-														<span>Doctor Zone</span>
-													</DropdownMenu.Item>
-													<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneRepair(z.name)}>
-														<WrenchIcon />
-														<span>Repair Zone</span>
-													</DropdownMenu.Item>
-													<DropdownMenu.Separator />
-													<DropdownMenu.Item
-														variant="destructive"
-														disabled={Boolean(zPending)}
-														onclick={() => deleteZone(z.name)}
-													>
-														<Trash2Icon />
-														<span>Hapus Zone</span>
-													</DropdownMenu.Item>
-												</DropdownMenu.Group>
-											</DropdownMenu.Content>
-										</DropdownMenu.Root>
-									</div>
-								</Table.Cell>
-							</Table.Row>
-						{/each}
-					{/if}
-				</Table.Body>
-			</Table.Root>
-		</ResponsiveTableWrapper>
-	</section>
-
-	{#if modeStore.mode === 'edge'}
-	<!-- Local Virtual Hosts Exposure Status -->
-	<section class="flex flex-col gap-3">
-		<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-			<div>
-				<h2 class="text-base font-semibold tracking-tight sm:text-lg">Status Ekspos Virtual Host Lokal</h2>
-				<p class="text-xs text-muted-foreground">
-					Pemetaan virtual host lokal ke domain publik VPS Edge Gateway.
-				</p>
+	<!-- Unified Network & DNS Topology Strip -->
+	<Card.Root class="gap-0 py-0">
+		<div class="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2.5">
+			<div class="flex items-center gap-2">
+				<NetworkIcon class="size-4 text-primary" aria-hidden="true" />
+				<span class="text-sm font-semibold">Topologi &amp; Endpoint Layanan</span>
+				<Badge variant="outline" class="font-normal">
+					{isEdge ? 'Edge Gateway (NetBird)' : isVPS ? 'Full VPS Authoritative' : 'Lokal Standalone'}
+				</Badge>
 			</div>
-			<Button
-				variant="outline"
-				size="sm"
-				class="w-full sm:w-auto"
-				disabled={refreshingAll}
-				onclick={() => loadAll(true)}
-			>
-				{#if refreshingAll}
-					<Spinner data-icon="inline-start" />
-					Memperbarui...
-				{:else}
-					<RefreshCwIcon data-icon="inline-start" />
-					Perbarui Status
+			<div class="flex flex-wrap items-center gap-3 text-xs tabular-nums text-muted-foreground">
+				<span><strong class="font-semibold text-foreground">{zones.length}</strong> Zone DNS</span>
+				{#if isEdge}
+					<span><strong class="font-semibold text-foreground">{exposedSitesCount}/{sites.length}</strong> VHost Terekspos</span>
+					<span><strong class="font-semibold text-foreground">{exposures.length}</strong> Proxy Aktif</span>
 				{/if}
-			</Button>
+			</div>
 		</div>
 
-		<ResponsiveTableWrapper label="Tabel Status Ekspos Virtual Host Lokal">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>Virtual Host Lokal</Table.Head>
-						<Table.Head>Framework</Table.Head>
-						<Table.Head>Status Ekspos</Table.Head>
-						<Table.Head>Domain Publik di VPS</Table.Head>
-						<Table.Head>Target NetBird</Table.Head>
-						<Table.Head class="text-right">Aksi Cepat</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
-					{#if sites.length === 0}
-						<Table.Row>
-							<Table.Cell colspan={6} class="py-6 text-center text-muted-foreground">
-								Belum ada virtual host lokal. Buat virtual host di menu Web Stack terlebih dahulu.
-							</Table.Cell>
-						</Table.Row>
-					{:else}
-						{#each sites as s (s.domain)}
-							{@const targetNB = edge?.local_netbird_ip
-								? `http://${edge.local_netbird_ip}:80`
-								: 'Port 80 (wt0)'}
+		{#if initialLoading && !edge}
+			<div class="grid divide-y md:grid-cols-3 md:divide-x md:divide-y-0">
+				{#each [0, 1, 2] as idx (idx)}
+					<div class="flex flex-col gap-2 p-4">
+						<Skeleton class="h-3.5 w-28" />
+						<Skeleton class="h-5 w-40" />
+						<Skeleton class="h-3 w-48" />
+					</div>
+				{/each}
+			</div>
+		{:else if isVPS}
+			<div class="grid divide-y md:grid-cols-3 md:divide-x md:divide-y-0">
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">IP Publik VPS (Target Record A)</span>
+					<div class="flex items-center gap-1.5">
+						<span class="truncate font-mono text-base font-semibold tabular-nums">
+							{edge?.vps_public_ip || '-'}
+						</span>
+						{#if edge?.vps_public_ip}
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label="Salin IP Publik VPS"
+								onclick={() => copyText(edge?.vps_public_ip || '', 'IP Publik VPS')}
+							>
+								<CopyIcon />
+							</Button>
+						{/if}
+					</div>
+					<span class="text-xs text-muted-foreground">Alamat IP tujuan untuk domain &amp; glue record.</span>
+				</div>
+
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">Authoritative Nameserver</span>
+					<div class="flex flex-col gap-1 font-mono text-xs sm:text-sm">
+						<div class="flex items-center gap-1.5">
+							<span class="truncate font-semibold">ns1.{defaultZoneName}</span>
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label={`Salin ns1.${defaultZoneName}`}
+								onclick={() => copyText(`ns1.${defaultZoneName}`, 'NS1')}
+							>
+								<CopyIcon />
+							</Button>
+						</div>
+						<div class="flex items-center gap-1.5">
+							<span class="truncate font-semibold">ns2.{defaultZoneName}</span>
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label={`Salin ns2.${defaultZoneName}`}
+								onclick={() => copyText(`ns2.${defaultZoneName}`, 'NS2')}
+							>
+								<CopyIcon />
+							</Button>
+						</div>
+					</div>
+				</div>
+
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">Endpoint &amp; Port Engine</span>
+					<span class="font-mono text-base font-semibold tabular-nums">
+						127.0.0.1:{edge?.pdns_port || '8081'}
+					</span>
+					<span class="text-xs text-muted-foreground">
+						Port DNS publik 53 (UDP/TCP) dengan SOA-EDIT-API aktif.
+					</span>
+				</div>
+			</div>
+		{:else if isLocal}
+			<div class="grid divide-y md:grid-cols-3 md:divide-x md:divide-y-0">
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">Endpoint PowerDNS API (Lokal)</span>
+					<div class="flex items-center gap-1.5">
+						<span class="truncate font-mono text-base font-semibold tabular-nums">
+							{edge?.vps_netbird_ip || '127.0.0.1'}:{edge?.pdns_port || '8081'}
+						</span>
+						<Button
+							variant="ghost"
+							size="icon-xs"
+							aria-label="Salin endpoint PowerDNS lokal"
+							onclick={() =>
+								copyText(
+									`${edge?.vps_netbird_ip || '127.0.0.1'}:${edge?.pdns_port || '8081'}`,
+									'Endpoint PowerDNS'
+								)}
+						>
+							<CopyIcon />
+						</Button>
+					</div>
+					<span class="text-xs text-muted-foreground">Authoritative DNS port 53 lokal.</span>
+				</div>
+
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">IP Host / LAN (Target Record A)</span>
+					<div class="flex items-center gap-1.5">
+						<span class="truncate font-mono text-base font-semibold tabular-nums">
+							{edge?.vps_public_ip || '127.0.0.1'}
+						</span>
+						<Button
+							variant="ghost"
+							size="icon-xs"
+							aria-label="Salin IP Target Record A"
+							onclick={() => copyText(edge?.vps_public_ip || '127.0.0.1', 'IP Host')}
+						>
+							<CopyIcon />
+						</Button>
+					</div>
+					<span class="text-xs text-muted-foreground">Target default resolusi record A lokal.</span>
+				</div>
+
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">Mode Operasional DNS</span>
+					<span class="text-base font-semibold">Lokal Standalone</span>
+					<span class="text-xs text-muted-foreground">Berjalan mandiri tanpa NetBird maupun Edge VPS.</span>
+				</div>
+			</div>
+		{:else}
+			<div class="grid divide-y md:grid-cols-3 md:divide-x md:divide-y-0">
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">IP Publik Edge Gateway</span>
+					<div class="flex items-center gap-1.5">
+						<span class="truncate font-mono text-base font-semibold tabular-nums">
+							{edge?.vps_public_ip || '-'}
+						</span>
+						{#if edge?.vps_public_ip}
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label="Salin IP Publik Edge Gateway"
+								onclick={() => copyText(edge?.vps_public_ip || '', 'IP Publik Edge')}
+							>
+								<CopyIcon />
+							</Button>
+						{/if}
+					</div>
+					<span class="text-xs text-muted-foreground">IP tujuan untuk record DNS A &amp; trafik publik HTTPS.</span>
+				</div>
+
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">Terowongan NetBird Mesh (wt0)</span>
+					<div class="flex flex-wrap items-center gap-1.5 font-mono text-sm font-semibold tabular-nums">
+						<span>{edge?.local_netbird_ip || 'Lokal wt0'}</span>
+						<ArrowLeftRightIcon class="size-3.5 text-info" aria-hidden="true" />
+						<span>{edge?.vps_netbird_ip || '-'}</span>
+						{#if edge?.vps_netbird_ip}
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label="Salin IP NetBird VPS"
+								onclick={() => copyText(edge?.vps_netbird_ip || '', 'IP NetBird VPS')}
+							>
+								<CopyIcon />
+							</Button>
+						{/if}
+					</div>
+					<span class="font-mono text-xs tabular-nums text-muted-foreground">
+						PDNS :{edge?.pdns_port || '8081'} · Edge Agent :{edge?.agent_port || '8082'}
+					</span>
+				</div>
+
+				<div class="flex flex-col gap-1 p-4">
+					<span class="text-xs text-muted-foreground">Ringkasan Eksposur Edge</span>
+					<div class="flex items-baseline gap-2">
+						<span class="text-base font-semibold tabular-nums">
+							{exposedSitesCount}/{sites.length} VHost
+						</span>
+						<span class="text-xs text-muted-foreground tabular-nums">
+							· {exposures.length} proxy aktif
+						</span>
+					</div>
+					<span class="text-xs text-muted-foreground">
+						Otomatisasi record DNS dan sertifikat SSL Let's Encrypt di Edge VPS.
+					</span>
+				</div>
+			</div>
+		{/if}
+	</Card.Root>
+
+	{#snippet paginationControls(
+		currentPage: number,
+		totalPages: number,
+		totalItems: number,
+		onPageChange: (p: number) => void
+	)}
+		{#if totalItems > 0}
+			{@const startItem = (currentPage - 1) * PAGE_SIZE + 1}
+			{@const endItem = Math.min(currentPage * PAGE_SIZE, totalItems)}
+			<div class="flex flex-col items-center justify-between gap-3 border-t bg-muted/10 px-4 py-2.5 sm:flex-row">
+				<div class="text-xs text-muted-foreground">
+					Menampilkan <span class="font-medium text-foreground">{startItem}</span>–<span class="font-medium text-foreground">{endItem}</span> dari <span class="font-medium text-foreground">{totalItems}</span> data
+				</div>
+				{#if totalPages > 1}
+					<div class="flex items-center gap-1.5">
+						<Button
+							variant="outline"
+							size="xs"
+							disabled={currentPage <= 1}
+							onclick={() => onPageChange(1)}
+							aria-label="Halaman pertama"
+						>
+							<ChevronsLeftIcon class="size-3.5" />
+						</Button>
+						<Button
+							variant="outline"
+							size="xs"
+							disabled={currentPage <= 1}
+							onclick={() => onPageChange(currentPage - 1)}
+							aria-label="Halaman sebelumnya"
+						>
+							<ChevronLeftIcon class="size-3.5" />
+							<span class="hidden sm:inline">Sebelumnya</span>
+						</Button>
+
+						<div class="flex items-center gap-1 px-1.5 text-xs text-muted-foreground">
+							<span>Hal.</span>
+							<span class="font-semibold text-foreground">{currentPage}</span>
+							<span>/</span>
+							<span class="font-semibold text-foreground">{totalPages}</span>
+						</div>
+
+						<Button
+							variant="outline"
+							size="xs"
+							disabled={currentPage >= totalPages}
+							onclick={() => onPageChange(currentPage + 1)}
+							aria-label="Halaman berikutnya"
+						>
+							<span class="hidden sm:inline">Berikutnya</span>
+							<ChevronRightIcon class="size-3.5" />
+						</Button>
+						<Button
+							variant="outline"
+							size="xs"
+							disabled={currentPage >= totalPages}
+							onclick={() => onPageChange(totalPages)}
+							aria-label="Halaman terakhir"
+						>
+							<ChevronsRightIcon class="size-3.5" />
+						</Button>
+					</div>
+				{/if}
+			</div>
+		{/if}
+	{/snippet}
+
+	<!-- Pengelolaan DNS & Edge Gateway (Tabbed) -->
+	<Card.Root class="gap-0 py-0">
+		<Tabs.Root value={activeTab} onValueChange={handleTabChange} class="gap-0">
+			<div class="flex flex-col border-b">
+				<div class="flex flex-col gap-3 px-4 pt-3.5 pb-2.5 sm:flex-row sm:items-center sm:justify-between">
+					<div>
+						{#if activeTab === 'zones'}
+							<div class="flex items-center gap-2">
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Zone Authoritative DNS</h2>
+								<Badge variant="secondary" class="tabular-nums">{zones.length}</Badge>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Kelola domain authoritative, record DNS (A, CNAME, MX, TXT), serta diagnostik SOA/NS.
+							</p>
+						{:else if activeTab === 'expose'}
+							<div class="flex items-center gap-2">
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Status Ekspos Virtual Host</h2>
+								<Badge variant="secondary" class="tabular-nums">{exposedSitesCount}/{sites.length}</Badge>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Pantau pemetaan domain virtual host lokal dan status ekspos ke internet melalui VPS Edge.
+							</p>
+						{:else}
+							<div class="flex items-center gap-2">
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Daftar Proxy VPS Edge</h2>
+								<Badge variant="secondary" class="tabular-nums">{exposures.length}</Badge>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Kelola reverse-proxy aktif dan konfigurasi SSL yang terpasang di VPS Edge Gateway.
+							</p>
+						{/if}
+					</div>
+
+					<div class="flex items-center gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={activeTab === 'zones' ? refreshingAll : (refreshingExposures || refreshingAll)}
+							onclick={refreshActiveTab}
+						>
+							{#if (activeTab === 'zones' && refreshingAll) || (activeTab !== 'zones' && refreshingExposures)}
+								<Spinner data-icon="inline-start" />
+								Menyegarkan...
+							{:else}
+								<RefreshCwIcon data-icon="inline-start" />
+								Segarkan
+							{/if}
+						</Button>
+						{#if activeTab === 'zones'}
+							<Button size="sm" onclick={() => (addZoneOpen = true)}>
+								<PlusIcon data-icon="inline-start" />
+								Tambah Zone
+							</Button>
+						{:else}
+							<Button
+								size="sm"
+								onclick={() => openExposeModal(sites.length > 0 ? 'site' : 'port')}
+							>
+								<PlusIcon data-icon="inline-start" />
+								Tambah Ekspos
+							</Button>
+						{/if}
+					</div>
+				</div>
+
+				<div class="px-4">
+					<Tabs.List
+						variant="line"
+						aria-label="Tab Pengelolaan PowerDNS"
+						class="h-11 group-data-horizontal/tabs:h-11 w-full flex-nowrap items-stretch justify-start gap-1.5 overflow-x-auto overflow-y-hidden rounded-none bg-transparent p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-2"
+					>
+						<Tabs.Trigger
+							value="zones"
+							bind:ref={zoneTabRef}
+							class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
+						>
+							<GlobeIcon aria-hidden="true" class="size-3.5" />
+							<span>Zone Authoritative</span>
+							<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
+								{zones.length}
+							</span>
+						</Tabs.Trigger>
+
+						{#if isEdge}
+							<Tabs.Trigger
+								value="expose"
+								bind:ref={exposeTabRef}
+								class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
+							>
+								<ArrowLeftRightIcon aria-hidden="true" class="size-3.5" />
+								<span>Status Ekspos</span>
+								<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
+									{exposedSitesCount}/{sites.length}
+								</span>
+							</Tabs.Trigger>
+							<Tabs.Trigger
+								value="proxy"
+								bind:ref={proxyTabRef}
+								class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
+							>
+								<NetworkIcon aria-hidden="true" class="size-3.5" />
+								<span>Daftar Proxy</span>
+								<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
+									{exposures.length}
+								</span>
+							</Tabs.Trigger>
+						{/if}
+					</Tabs.List>
+				</div>
+			</div>
+
+			<!-- Tab 1: Zone Authoritative DNS -->
+			<Tabs.Content value="zones" class="mt-0">
+				<div>
+					<div class="flex flex-col gap-2.5 border-b bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+						<search class="w-full sm:max-w-xs">
+							<InputGroup.Root class="h-8 bg-background">
+								<InputGroup.Addon align="inline-start">
+									<SearchIcon />
+								</InputGroup.Addon>
+								<InputGroup.Input
+									type="search"
+									placeholder="Cari zone..."
+									aria-label="Cari zone authoritative DNS"
+									bind:value={zoneSearch}
+								/>
+							</InputGroup.Root>
+						</search>
+
+						<div class="flex items-center gap-2">
+							<span class="text-xs text-muted-foreground">
+								{filteredZones.length} dari {zones.length} zone
+							</span>
+						</div>
+					</div>
+
+		{#if initialLoading && zones.length === 0}
+			<div class="flex flex-col gap-2 p-4">
+				<Skeleton class="h-9 w-full" />
+				<Skeleton class="h-12 w-full" />
+				<Skeleton class="h-12 w-full" />
+			</div>
+		{:else if zonesError}
+			<div class="flex flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+				<p class="text-sm text-muted-foreground">{zonesError}</p>
+				<Button variant="outline" size="sm" onclick={() => loadZones()}>
+					<RefreshCwIcon data-icon="inline-start" />
+					Coba Lagi
+				</Button>
+			</div>
+		{:else if zones.length === 0}
+			<div class="p-4">
+				<Empty.Root class="border-0 py-8">
+					<Empty.Header>
+						<Empty.Media variant="icon">
+							<GlobeIcon />
+						</Empty.Media>
+						<Empty.Title>Belum ada zone DNS</Empty.Title>
+						<Empty.Description>
+							Tambahkan domain authoritative pertama untuk mengelola record DNS dan subdomain secara otomatis.
+						</Empty.Description>
+					</Empty.Header>
+					<Empty.Content>
+						<Button size="sm" onclick={() => (addZoneOpen = true)}>
+							<PlusIcon data-icon="inline-start" />
+							Tambah Zone Pertama
+						</Button>
+					</Empty.Content>
+				</Empty.Root>
+			</div>
+		{:else if filteredZones.length === 0}
+			<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+				<p class="text-sm text-muted-foreground">Tidak ada zone yang cocok dengan "{zoneSearch}".</p>
+				<Button variant="outline" size="xs" onclick={() => (zoneSearch = '')}>
+					Reset Pencarian
+				</Button>
+			</div>
+		{:else}
+			<div class="p-3 sm:p-0">
+				<ResponsiveTableWrapper label="Tabel Zone Authoritative DNS" class="rounded-none border-0 bg-transparent">
+					<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
+						<Table.Header>
 							<Table.Row>
-								<Table.Cell data-label="VHost">
-									<div class="font-semibold">{s.domain}</div>
-									<div class="break-all font-mono text-xs text-muted-foreground sm:max-w-44 sm:truncate">
-										{s.root_path || '-'}
-									</div>
-								</Table.Cell>
-								<Table.Cell data-label="Framework">
-									<Badge variant="secondary" class="uppercase">{s.framework || 'PHP'}</Badge>
-									<span class="ml-1 text-xs text-muted-foreground">
-										{s.framework === 'static'
-											? 'Static HTML'
-											: s.framework === 'proxy'
-												? `:${s.proxy_port}`
-												: `PHP ${s.php_version || '8.4'}`}
-									</span>
-								</Table.Cell>
-								<Table.Cell data-label="Status">
-									{#if s.exposed_to}
-										<StatusBadge tone="success" label="Terhubung ke Internet" />
-									{:else}
-										<StatusBadge tone="neutral" label="Hanya Lokal" />
-									{/if}
-								</Table.Cell>
-								<Table.Cell data-label="Domain Publik">
-									{#if s.exposed_to}
-										<a
-											href={`https://${s.exposed_to}`}
-											target="_blank"
-											rel="noopener noreferrer"
-											class="inline-flex items-center gap-1 break-all font-medium text-primary hover:underline"
+								<Table.Head scope="col">Nama Zone</Table.Head>
+								<Table.Head scope="col">Tipe</Table.Head>
+								<Table.Head scope="col">Serial</Table.Head>
+								<Table.Head scope="col">Status</Table.Head>
+								<Table.Head scope="col" class="text-right">Aksi</Table.Head>
+							</Table.Row>
+						</Table.Header>
+						<Table.Body>
+							{#each paginatedZones as z (z.name)}
+								{@const zPending = zonePending[z.name]}
+								<Table.Row>
+									<Table.Cell data-label="Zone">
+										<button
+											type="button"
+											class="text-left font-semibold text-foreground hover:text-primary hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring"
+											onclick={() => openRecordsModal(z.name)}
 										>
-											https://{s.exposed_to}
-											<ExternalLinkIcon class="size-3.5 shrink-0" />
-										</a>
-									{:else}
-										<span class="text-xs italic text-muted-foreground">Belum diekspos</span>
-									{/if}
-								</Table.Cell>
-								<Table.Cell data-label="Target NetBird" class="font-mono text-xs">{targetNB}</Table.Cell>
-								<Table.Cell data-label="Aksi" class="text-right">
-									<div class="flex justify-end">
-										<DropdownMenu.Root>
-											<DropdownMenu.Trigger>
-												{#snippet child({ props })}
-													<Button
-														variant="outline"
-														size="xs"
-														disabled={Boolean(s.exposed_to && unexposingPending[s.exposed_to])}
-														{...props}
-													>
-														{#if s.exposed_to && unexposingPending[s.exposed_to]}
-															<Spinner data-icon="inline-start" />
-															Memutus...
-														{:else}
-															Aksi
-															<ChevronDownIcon data-icon="inline-end" />
-														{/if}
-													</Button>
-												{/snippet}
-											</DropdownMenu.Trigger>
-											<DropdownMenu.Content align="end" class="w-48">
-												<DropdownMenu.Group>
-													<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
-														{s.domain}
-													</DropdownMenu.Label>
-													<DropdownMenu.Separator />
-													{#if s.exposed_to}
-														<DropdownMenu.Item>
-															{#snippet child({ props })}
-																<a href={`https://${s.exposed_to}`} target="_blank" rel="noopener noreferrer" {...props}>
-																	<ExternalLinkIcon />
-																	<span>Buka Domain</span>
-																</a>
-															{/snippet}
+											{z.name}
+										</button>
+									</Table.Cell>
+									<Table.Cell data-label="Tipe">
+										<Badge variant="secondary">{z.kind}</Badge>
+									</Table.Cell>
+									<Table.Cell data-label="Serial" class="font-mono text-xs tabular-nums text-muted-foreground">
+										{z.serial}
+									</Table.Cell>
+									<Table.Cell data-label="Status">
+										<StatusBadge tone="success" label="Aktif" />
+									</Table.Cell>
+									<Table.Cell data-label="Aksi" class="text-right">
+										<div class="flex items-center justify-end gap-1.5">
+											<Button
+												variant="outline"
+												size="xs"
+												disabled={Boolean(zPending)}
+												onclick={() => openRecordsModal(z.name)}
+											>
+												<ListIcon data-icon="inline-start" />
+												Record<span class="sr-only"> {z.name}</span>
+											</Button>
+											<DropdownMenu.Root>
+												<DropdownMenu.Trigger>
+													{#snippet child({ props })}
+														<Button variant="outline" size="xs" disabled={Boolean(zPending)} {...props}>
+															{#if zPending === 'doctor'}
+																<Spinner data-icon="inline-start" />
+																Memeriksa...
+															{:else if zPending === 'repair'}
+																<Spinner data-icon="inline-start" />
+																Memperbaiki...
+															{:else if zPending === 'delete'}
+																<Spinner data-icon="inline-start" />
+																Menghapus...
+															{:else}
+																Aksi<span class="sr-only"> untuk {z.name}</span>
+																<ChevronDownIcon data-icon="inline-end" />
+															{/if}
+														</Button>
+													{/snippet}
+												</DropdownMenu.Trigger>
+												<DropdownMenu.Content align="end" class="w-48">
+													<DropdownMenu.Group>
+														<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+															{z.name}
+														</DropdownMenu.Label>
+														<DropdownMenu.Separator />
+														<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => openRecordsModal(z.name)}>
+															<ListIcon />
+															<span>Kelola Record</span>
+														</DropdownMenu.Item>
+														<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneDoctor(z.name)}>
+															<StethoscopeIcon />
+															<span>Doctor Zone</span>
+														</DropdownMenu.Item>
+														<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneRepair(z.name)}>
+															<WrenchIcon />
+															<span>Repair Zone</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Separator />
 														<DropdownMenu.Item
 															variant="destructive"
-															disabled={Boolean(unexposingPending[s.exposed_to])}
-															onclick={() => unexposeDomain(s.exposed_to)}
+															disabled={Boolean(zPending)}
+															onclick={() => deleteZone(z.name)}
 														>
 															<Trash2Icon />
-															<span>Putus Ekspos</span>
+															<span>Hapus Zone</span>
 														</DropdownMenu.Item>
-													{:else}
-														<DropdownMenu.Item onclick={() => openExposeModal('site', s.domain)}>
-															<CloudUploadIcon />
-															<span>Ekspos ke VPS</span>
-														</DropdownMenu.Item>
-													{/if}
-												</DropdownMenu.Group>
-											</DropdownMenu.Content>
-										</DropdownMenu.Root>
-									</div>
-								</Table.Cell>
-							</Table.Row>
-						{/each}
-					{/if}
-				</Table.Body>
-			</Table.Root>
-		</ResponsiveTableWrapper>
-	</section>
-
-	<!-- Active VPS Proxy Domains -->
-	<section class="flex flex-col gap-3">
-		<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-			<div>
-				<h2 class="text-base font-semibold tracking-tight sm:text-lg">Daftar Proxy Domain yang Diekspos di VPS</h2>
-				<p class="text-xs text-muted-foreground">
-					Seluruh reverse-proxy aktif di VPS Edge Gateway.
-				</p>
+													</DropdownMenu.Group>
+												</DropdownMenu.Content>
+											</DropdownMenu.Root>
+										</div>
+									</Table.Cell>
+								</Table.Row>
+							{/each}
+						</Table.Body>
+					</Table.Root>
+				</ResponsiveTableWrapper>
 			</div>
-			<div class="grid grid-cols-2 gap-2 sm:flex sm:items-center">
-				<Button
-					variant="outline"
-					size="sm"
-					disabled={refreshingExposures}
-					onclick={() => loadExposures(true)}
-				>
-					{#if refreshingExposures}
-						<Spinner data-icon="inline-start" />
-						Menyegarkan...
-					{:else}
-						<RefreshCwIcon data-icon="inline-start" />
-						Segarkan
-					{/if}
-				</Button>
-				<Button size="sm" onclick={() => openExposeModal('site')}>
-					<PlusIcon data-icon="inline-start" />
-					Tambah Ekspos
-				</Button>
-			</div>
-		</div>
+			{@render paginationControls(zonePage, totalZonePages, filteredZones.length, (p) => (zonePage = p))}
+		{/if}
+				</div>
+			</Tabs.Content>
 
-		<ResponsiveTableWrapper label="Tabel Proxy Domain VPS">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>Domain Publik VPS</Table.Head>
-						<Table.Head>Tipe &amp; Rute Target</Table.Head>
-						<Table.Head>Status Proxy</Table.Head>
-						<Table.Head>File Konfigurasi</Table.Head>
-						<Table.Head class="text-right">Aksi</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
-					{#if exposuresError}
-						<Table.Row>
-							<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-								{exposuresError}
-							</Table.Cell>
-						</Table.Row>
-					{:else if exposures.length === 0}
-						<Table.Row>
-							<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-								Belum ada proxy atau aplikasi yang diekspos di VPS Edge.
-							</Table.Cell>
-						</Table.Row>
-					{:else}
-						{#each exposures as exp (exp.domain)}
-							<Table.Row>
-								<Table.Cell data-label="Domain">
-									<a
-										href={`https://${exp.domain}`}
-										target="_blank"
-										rel="noopener noreferrer"
-										class="inline-flex items-center gap-1 break-all font-semibold text-primary hover:underline"
-									>
-										{exp.domain}
-										<ExternalLinkIcon class="size-3.5 shrink-0" />
-									</a>
-								</Table.Cell>
-								<Table.Cell data-label="Target">
-									{#if exp.local_site}
-										<Badge variant="secondary" class="mr-1.5">VHost</Badge>
-										<span class="font-medium">{exp.local_site}</span>
-									{:else}
-										<Badge variant="outline" class="mr-1.5">Service</Badge>
-										<span class="font-mono text-xs">{exp.target || 'Proxy VPS'}</span>
-									{/if}
-								</Table.Cell>
-								<Table.Cell data-label="Status">
-									<StatusBadge
-										tone={exp.enabled ? 'success' : 'neutral'}
-										label={exp.enabled ? 'Aktif (HTTPS)' : 'Nonaktif'}
+			{#if isEdge}
+				<!-- Tab 2: Status Ekspos Virtual Host Lokal -->
+				<Tabs.Content value="expose" class="mt-0">
+					<div>
+						<div class="flex flex-col gap-2.5 border-b bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+							<search class="w-full sm:max-w-xs">
+								<InputGroup.Root class="h-8 bg-background">
+									<InputGroup.Addon align="inline-start">
+										<SearchIcon />
+									</InputGroup.Addon>
+									<InputGroup.Input
+										type="search"
+										placeholder="Cari vhost lokal atau domain publik..."
+										aria-label="Cari status ekspos virtual host"
+										bind:value={exposeSearch}
 									/>
-								</Table.Cell>
-								<Table.Cell data-label="Konfigurasi" class="sm:max-w-48">
-									<code class="block break-all text-xs text-muted-foreground sm:truncate">{exp.config_file || '-'}</code>
-								</Table.Cell>
-								<Table.Cell data-label="Aksi" class="text-right">
-									<div class="flex justify-end">
-										<DropdownMenu.Root>
-											<DropdownMenu.Trigger>
-												{#snippet child({ props })}
-													<Button
-														variant="outline"
-														size="xs"
-														disabled={Boolean(unexposingPending[exp.domain])}
-														{...props}
-													>
-														{#if unexposingPending[exp.domain]}
-															<Spinner data-icon="inline-start" />
-															Menghapus...
+								</InputGroup.Root>
+							</search>
+
+							<div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter status ekspos">
+								<Button
+									variant={exposeFilter === 'all' ? 'secondary' : 'ghost'}
+									size="xs"
+									aria-pressed={exposeFilter === 'all'}
+									onclick={() => (exposeFilter = 'all')}
+								>
+									Semua ({sites.length})
+								</Button>
+								<Button
+									variant={exposeFilter === 'exposed' ? 'secondary' : 'ghost'}
+									size="xs"
+									aria-pressed={exposeFilter === 'exposed'}
+									onclick={() => (exposeFilter = 'exposed')}
+								>
+									Terekspos ({exposedSitesCount})
+								</Button>
+								<Button
+									variant={exposeFilter === 'local' ? 'secondary' : 'ghost'}
+									size="xs"
+									aria-pressed={exposeFilter === 'local'}
+									onclick={() => (exposeFilter = 'local')}
+								>
+									Hanya Lokal ({localOnlySitesCount})
+								</Button>
+							</div>
+						</div>
+
+						{#if initialLoading && sites.length === 0}
+							<div class="flex flex-col gap-2 p-4">
+								<Skeleton class="h-9 w-full" />
+								<Skeleton class="h-12 w-full" />
+								<Skeleton class="h-12 w-full" />
+							</div>
+						{:else if sites.length === 0}
+							<div class="p-4">
+								<Empty.Root class="border-0 py-8">
+									<Empty.Header>
+										<Empty.Media variant="icon">
+											<GlobeIcon />
+										</Empty.Media>
+										<Empty.Title>Belum ada virtual host lokal</Empty.Title>
+										<Empty.Description>
+											Buat virtual host di menu Web Stack terlebih dahulu, atau langsung ekspos port aplikasi lokal ke VPS Edge.
+										</Empty.Description>
+									</Empty.Header>
+									<Empty.Content class="flex flex-wrap justify-center gap-2">
+										<Button variant="outline" size="sm" href="/webstack">
+											Buka Web Stack
+										</Button>
+										<Button size="sm" onclick={() => openExposeModal('port')}>
+											<CloudUploadIcon data-icon="inline-start" />
+											Ekspos Port Aplikasi
+										</Button>
+									</Empty.Content>
+								</Empty.Root>
+							</div>
+						{:else if filteredSites.length === 0}
+							<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+								<p class="text-sm text-muted-foreground">
+									Tidak ada virtual host yang sesuai dengan filter atau pencarian saat ini.
+								</p>
+								<Button
+									variant="outline"
+									size="xs"
+									onclick={() => {
+										exposeSearch = '';
+										exposeFilter = 'all';
+									}}
+								>
+									Reset Filter
+								</Button>
+							</div>
+						{:else}
+							<div class="p-3 sm:p-0">
+								<ResponsiveTableWrapper
+									label="Tabel Status Ekspos Virtual Host Lokal"
+									class="rounded-none border-0 bg-transparent"
+								>
+									<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
+										<Table.Header>
+											<Table.Row>
+												<Table.Head scope="col">Virtual Host Lokal</Table.Head>
+												<Table.Head scope="col">Framework</Table.Head>
+												<Table.Head scope="col">Status Ekspos</Table.Head>
+												<Table.Head scope="col">Domain Publik di VPS</Table.Head>
+												<Table.Head scope="col">Target NetBird</Table.Head>
+												<Table.Head scope="col" class="text-right">Aksi Cepat</Table.Head>
+											</Table.Row>
+										</Table.Header>
+										<Table.Body>
+											{#each paginatedSites as s (s.domain)}
+												{@const targetNB = edge?.local_netbird_ip
+													? `http://${edge.local_netbird_ip}:80`
+													: 'Port 80 (wt0)'}
+												<Table.Row>
+													<Table.Cell data-label="VHost">
+														<div class="font-semibold">{s.domain}</div>
+														<div class="break-all font-mono text-xs text-muted-foreground sm:max-w-44 sm:truncate">
+															{s.root_path || '-'}
+														</div>
+													</Table.Cell>
+													<Table.Cell data-label="Framework">
+														<Badge variant="secondary" class="uppercase">{s.framework || 'PHP'}</Badge>
+														<span class="ml-1 text-xs text-muted-foreground tabular-nums">
+															{s.framework === 'static'
+																? 'Static HTML'
+																: s.framework === 'proxy'
+																	? `:${s.proxy_port}`
+																	: `PHP ${s.php_version || '8.4'}`}
+														</span>
+													</Table.Cell>
+													<Table.Cell data-label="Status">
+														{#if s.exposed_to}
+															<StatusBadge tone="success" label="Terekspos" />
 														{:else}
-															Aksi
-															<ChevronDownIcon data-icon="inline-end" />
+															<StatusBadge tone="neutral" label="Hanya Lokal" />
 														{/if}
-													</Button>
-												{/snippet}
-											</DropdownMenu.Trigger>
-											<DropdownMenu.Content align="end" class="w-48">
-												<DropdownMenu.Group>
-													<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
-														{exp.domain}
-													</DropdownMenu.Label>
-													<DropdownMenu.Separator />
-													<DropdownMenu.Item>
-														{#snippet child({ props })}
-															<a href={`https://${exp.domain}`} target="_blank" rel="noopener noreferrer" {...props}>
-																<ExternalLinkIcon />
-																<span>Buka Domain</span>
+													</Table.Cell>
+													<Table.Cell data-label="Domain Publik">
+														{#if s.exposed_to}
+															<div class="flex items-center gap-1">
+																<a
+																	href={`https://${s.exposed_to}`}
+																	target="_blank"
+																	rel="noopener noreferrer"
+																	class="inline-flex items-center gap-1 break-all font-medium text-primary hover:underline"
+																>
+																	<span>https://{s.exposed_to}</span>
+																	<ExternalLinkIcon class="size-3.5 shrink-0" />
+																</a>
+																<Button
+																	variant="ghost"
+																	size="icon-xs"
+																	aria-label={`Salin URL https://${s.exposed_to}`}
+																	onclick={() => copyText(`https://${s.exposed_to}`, 'URL Publik')}
+																>
+																	<CopyIcon />
+																</Button>
+															</div>
+														{:else}
+															<span class="text-xs text-muted-foreground">Belum diekspos</span>
+														{/if}
+													</Table.Cell>
+													<Table.Cell data-label="Target NetBird" class="font-mono text-xs tabular-nums">
+														{targetNB}
+													</Table.Cell>
+													<Table.Cell data-label="Aksi" class="text-right">
+														<div class="flex items-center justify-end gap-1.5">
+															{#if !s.exposed_to}
+																<Button
+																	variant="outline"
+																	size="xs"
+																	onclick={() => openExposeModal('site', s.domain)}
+																>
+																	<CloudUploadIcon data-icon="inline-start" />
+																	Ekspos<span class="sr-only"> {s.domain}</span>
+																</Button>
+															{:else}
+																<DropdownMenu.Root>
+																	<DropdownMenu.Trigger>
+																		{#snippet child({ props })}
+																			<Button
+																				variant="outline"
+																				size="xs"
+																				disabled={Boolean(s.exposed_to && unexposingPending[s.exposed_to])}
+																				{...props}
+																			>
+																				{#if s.exposed_to && unexposingPending[s.exposed_to]}
+																					<Spinner data-icon="inline-start" />
+																					Memutus...
+																				{:else}
+																					Aksi<span class="sr-only"> untuk {s.domain}</span>
+																					<ChevronDownIcon data-icon="inline-end" />
+																				{/if}
+																			</Button>
+																		{/snippet}
+																	</DropdownMenu.Trigger>
+																	<DropdownMenu.Content align="end" class="w-48">
+																		<DropdownMenu.Group>
+																			<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+																				{s.domain}
+																			</DropdownMenu.Label>
+																			<DropdownMenu.Separator />
+																			<DropdownMenu.Item>
+																				{#snippet child({ props })}
+																					<a href={`https://${s.exposed_to}`} target="_blank" rel="noopener noreferrer" {...props}>
+																						<ExternalLinkIcon />
+																						<span>Buka Domain</span>
+																					</a>
+																				{/snippet}
+																			</DropdownMenu.Item>
+																			<DropdownMenu.Item onclick={() => openExposeModal('site', s.domain)}>
+																				<CloudUploadIcon />
+																				<span>Perbarui Ekspos</span>
+																			</DropdownMenu.Item>
+																			<DropdownMenu.Separator />
+																			<DropdownMenu.Item
+																				variant="destructive"
+																				disabled={Boolean(unexposingPending[s.exposed_to])}
+																				onclick={() => unexposeDomain(s.exposed_to)}
+																			>
+																				<UnplugIcon />
+																				<span>Putus Ekspos</span>
+																			</DropdownMenu.Item>
+																		</DropdownMenu.Group>
+																	</DropdownMenu.Content>
+																</DropdownMenu.Root>
+															{/if}
+														</div>
+													</Table.Cell>
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</ResponsiveTableWrapper>
+							</div>
+							{@render paginationControls(exposePage, totalExposePages, filteredSites.length, (p) => (exposePage = p))}
+						{/if}
+					</div>
+				</Tabs.Content>
+
+				<!-- Tab 2: Daftar Proxy Domain VPS -->
+				<Tabs.Content value="proxy" class="mt-0">
+					<div>
+						<div class="flex flex-col gap-2.5 border-b bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+							<search class="w-full sm:max-w-xs">
+								<InputGroup.Root class="h-8 bg-background">
+									<InputGroup.Addon align="inline-start">
+										<SearchIcon />
+									</InputGroup.Addon>
+									<InputGroup.Input
+										type="search"
+										placeholder="Cari domain proxy, target, atau file..."
+										aria-label="Cari daftar proxy VPS"
+										bind:value={proxySearch}
+									/>
+								</InputGroup.Root>
+							</search>
+
+							<div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter tipe proxy">
+								<Button
+									variant={proxyFilter === 'all' ? 'secondary' : 'ghost'}
+									size="xs"
+									aria-pressed={proxyFilter === 'all'}
+									onclick={() => (proxyFilter = 'all')}
+								>
+									Semua ({exposures.length})
+								</Button>
+								<Button
+									variant={proxyFilter === 'vhost' ? 'secondary' : 'ghost'}
+									size="xs"
+									aria-pressed={proxyFilter === 'vhost'}
+									onclick={() => (proxyFilter = 'vhost')}
+								>
+									VHost ({vhostExposuresCount})
+								</Button>
+								<Button
+									variant={proxyFilter === 'service' ? 'secondary' : 'ghost'}
+									size="xs"
+									aria-pressed={proxyFilter === 'service'}
+									onclick={() => (proxyFilter = 'service')}
+								>
+									Service ({serviceExposuresCount})
+								</Button>
+							</div>
+						</div>
+
+						{#if initialLoading && exposures.length === 0}
+							<div class="flex flex-col gap-2 p-4">
+								<Skeleton class="h-9 w-full" />
+								<Skeleton class="h-12 w-full" />
+								<Skeleton class="h-12 w-full" />
+							</div>
+						{:else if exposuresError}
+							<div class="flex flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+								<p class="text-sm text-muted-foreground">{exposuresError}</p>
+								<Button variant="outline" size="sm" onclick={() => loadExposures(true)}>
+									<RefreshCwIcon data-icon="inline-start" />
+									Coba Hubungkan Ulang
+								</Button>
+							</div>
+						{:else if exposures.length === 0}
+							<div class="p-4">
+								<Empty.Root class="border-0 py-8">
+									<Empty.Header>
+										<Empty.Media variant="icon">
+											<NetworkIcon />
+										</Empty.Media>
+										<Empty.Title>Belum ada proxy aktif di VPS Edge</Empty.Title>
+										<Empty.Description>
+											Ekspos virtual host lokal atau port service ke domain publik agar reverse-proxy dan SSL Let's Encrypt otomatis disiapkan di VPS.
+										</Empty.Description>
+									</Empty.Header>
+									<Empty.Content>
+										<Button size="sm" onclick={() => openExposeModal(sites.length > 0 ? 'site' : 'port')}>
+											<PlusIcon data-icon="inline-start" />
+											Tambah Ekspos Pertama
+										</Button>
+									</Empty.Content>
+								</Empty.Root>
+							</div>
+						{:else if filteredExposures.length === 0}
+							<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+								<p class="text-sm text-muted-foreground">
+									Tidak ada proxy yang sesuai dengan filter atau pencarian saat ini.
+								</p>
+								<Button
+									variant="outline"
+									size="xs"
+									onclick={() => {
+										proxySearch = '';
+										proxyFilter = 'all';
+									}}
+								>
+									Reset Filter
+								</Button>
+							</div>
+						{:else}
+							<div class="p-3 sm:p-0">
+								<ResponsiveTableWrapper
+									label="Tabel Proxy Domain VPS"
+									class="rounded-none border-0 bg-transparent"
+								>
+									<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
+										<Table.Header>
+											<Table.Row>
+												<Table.Head scope="col">Domain Publik VPS</Table.Head>
+												<Table.Head scope="col">Tipe &amp; Rute Target</Table.Head>
+												<Table.Head scope="col">Status Proxy</Table.Head>
+												<Table.Head scope="col">File Konfigurasi</Table.Head>
+												<Table.Head scope="col" class="text-right">Aksi</Table.Head>
+											</Table.Row>
+										</Table.Header>
+										<Table.Body>
+											{#each paginatedExposures as exp (exp.domain)}
+												<Table.Row>
+													<Table.Cell data-label="Domain">
+														<div class="flex items-center gap-1">
+															<a
+																href={`https://${exp.domain}`}
+																target="_blank"
+																rel="noopener noreferrer"
+																class="inline-flex items-center gap-1 break-all font-semibold text-primary hover:underline"
+															>
+																<span>{exp.domain}</span>
+																<ExternalLinkIcon class="size-3.5 shrink-0" />
 															</a>
-														{/snippet}
-													</DropdownMenu.Item>
-													<DropdownMenu.Separator />
-													<DropdownMenu.Item
-														variant="destructive"
-														disabled={Boolean(unexposingPending[exp.domain])}
-														onclick={() => unexposeDomain(exp.domain)}
-													>
-														<Trash2Icon />
-														<span>Hapus Ekspos</span>
-													</DropdownMenu.Item>
-												</DropdownMenu.Group>
-											</DropdownMenu.Content>
-										</DropdownMenu.Root>
-									</div>
-								</Table.Cell>
-							</Table.Row>
-						{/each}
-					{/if}
-				</Table.Body>
-			</Table.Root>
-		</ResponsiveTableWrapper>
-	</section>
-	{/if}
+															<Button
+																variant="ghost"
+																size="icon-xs"
+																aria-label={`Salin URL https://${exp.domain}`}
+																onclick={() => copyText(`https://${exp.domain}`, 'URL Proxy')}
+															>
+																<CopyIcon />
+															</Button>
+														</div>
+													</Table.Cell>
+													<Table.Cell data-label="Target">
+														{#if exp.local_site}
+															<Badge variant="secondary" class="mr-1.5">VHost</Badge>
+															<span class="font-medium">{exp.local_site}</span>
+														{:else}
+															<Badge variant="outline" class="mr-1.5">Service</Badge>
+															<span class="font-mono text-xs">{exp.target || 'Proxy VPS'}</span>
+														{/if}
+													</Table.Cell>
+													<Table.Cell data-label="Status">
+														<StatusBadge
+															tone={exp.enabled ? 'success' : 'neutral'}
+															label={exp.enabled ? 'Aktif (HTTPS)' : 'Nonaktif'}
+														/>
+													</Table.Cell>
+													<Table.Cell data-label="Konfigurasi" class="sm:max-w-52">
+														<code class="block break-all text-xs text-muted-foreground sm:truncate" title={exp.config_file || '-'}>
+															{exp.config_file || '-'}
+														</code>
+													</Table.Cell>
+													<Table.Cell data-label="Aksi" class="text-right">
+														<div class="flex justify-end">
+															<DropdownMenu.Root>
+																<DropdownMenu.Trigger>
+																	{#snippet child({ props })}
+																		<Button
+																			variant="outline"
+																			size="xs"
+																			disabled={Boolean(unexposingPending[exp.domain])}
+																			{...props}
+																		>
+																			{#if unexposingPending[exp.domain]}
+																				<Spinner data-icon="inline-start" />
+																				Menghapus...
+																			{:else}
+																				Aksi<span class="sr-only"> untuk {exp.domain}</span>
+																				<ChevronDownIcon data-icon="inline-end" />
+																			{/if}
+																		</Button>
+																	{/snippet}
+																</DropdownMenu.Trigger>
+																<DropdownMenu.Content align="end" class="w-48">
+																	<DropdownMenu.Group>
+																		<DropdownMenu.Label class="truncate text-xs text-muted-foreground">
+																			{exp.domain}
+																		</DropdownMenu.Label>
+																		<DropdownMenu.Separator />
+																		<DropdownMenu.Item>
+																			{#snippet child({ props })}
+																				<a href={`https://${exp.domain}`} target="_blank" rel="noopener noreferrer" {...props}>
+																					<ExternalLinkIcon />
+																					<span>Buka Domain</span>
+																				</a>
+																			{/snippet}
+																		</DropdownMenu.Item>
+																		<DropdownMenu.Item onclick={() => copyText(`https://${exp.domain}`, 'URL Proxy')}>
+																			<CopyIcon />
+																			<span>Salin URL Publik</span>
+																		</DropdownMenu.Item>
+																		<DropdownMenu.Separator />
+																		<DropdownMenu.Item
+																			variant="destructive"
+																			disabled={Boolean(unexposingPending[exp.domain])}
+																			onclick={() => unexposeDomain(exp.domain)}
+																		>
+																			<Trash2Icon />
+																			<span>Hapus Ekspos</span>
+																		</DropdownMenu.Item>
+																	</DropdownMenu.Group>
+																</DropdownMenu.Content>
+															</DropdownMenu.Root>
+														</div>
+													</Table.Cell>
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</ResponsiveTableWrapper>
+							</div>
+							{@render paginationControls(proxyPage, totalProxyPages, filteredExposures.length, (p) => (proxyPage = p))}
+						{/if}
+					</div>
+				</Tabs.Content>
+			{/if}
+		</Tabs.Root>
+	</Card.Root>
 </div>
 
 <!-- Add Zone Dialog -->
 <Dialog.Root bind:open={addZoneOpen}>
-	<Dialog.Content class="sm:max-w-md">
-		<Dialog.Header>
+	<Dialog.Content class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
+		<Dialog.Header class="pr-8">
 			<Dialog.Title>Tambah Authoritative DNS Zone</Dialog.Title>
 			<Dialog.Description>
 				Masukkan nama domain FQDN tanpa protokol (contoh: domainanda.com). Record DNS (@, www, ns1, ns2) akan dibuat otomatis.
@@ -1247,7 +2010,7 @@
 <!-- Zone Doctor / Repair Report Dialog -->
 <Dialog.Root bind:open={reportOpen}>
 	<Dialog.Content class="sm:max-w-lg">
-		<Dialog.Header>
+		<Dialog.Header class="pr-8">
 			<Dialog.Title>{reportTitle}</Dialog.Title>
 			{#if reportData?.nameservers && reportData.nameservers.length > 0}
 				<Dialog.Description>
@@ -1256,12 +2019,17 @@
 			{/if}
 		</Dialog.Header>
 		{#if reportLoading}
-			<div class="flex flex-col gap-3 py-1" role="status" aria-live="polite">
+			<div class="flex flex-col gap-3 py-1" aria-busy="true">
 				<div class="flex items-center gap-2 text-xs text-muted-foreground">
 					<Spinner />
 					<span>{reportLoadingMessage}</span>
 				</div>
-				<div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+				<div
+					role="progressbar"
+					aria-label="Memeriksa kesehatan zone DNS"
+					aria-valuetext={reportLoadingMessage}
+					class="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+				>
 					<div class="h-full w-2/3 animate-pulse rounded-full bg-primary"></div>
 				</div>
 				<div class="flex flex-col gap-2">
@@ -1281,7 +2049,7 @@
 				<Alert.Description>{reportError}</Alert.Description>
 			</Alert.Root>
 		{:else if reportData}
-			<div class="flex max-h-[55dvh] flex-col gap-2 overflow-y-auto">
+			<div class="flex max-h-[55dvh] flex-col gap-2 overflow-y-auto overscroll-contain">
 				{#each reportData.checks || [] as chk, idx (idx)}
 					<div class="flex items-start justify-between gap-3 rounded-md border p-2.5 text-xs">
 						<div class="flex flex-col gap-0.5">
@@ -1305,12 +2073,12 @@
 <!-- Manage DNS Records Dialog -->
 <Dialog.Root bind:open={recordsOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-4xl">
-		<Dialog.Header>
+		<Dialog.Header class="pr-8">
 			<Dialog.Title>Record DNS — {currentZone}</Dialog.Title>
 			<Dialog.Description>Tambah atau hapus record DNS authoritative pada zone ini.</Dialog.Description>
 		</Dialog.Header>
 
-		<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+		<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
 			<form onsubmit={submitAddRecord} class="rounded-lg border p-3.5">
 				<Field.FieldGroup class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(140px,1fr)_100px_minmax(220px,1.8fr)_85px_auto]">
 					<Field.Field>
@@ -1355,11 +2123,11 @@
 				<Table.Root class="sm:table-fixed">
 					<Table.Header>
 						<Table.Row>
-							<Table.Head class="sm:w-48 lg:w-52">Nama Record</Table.Head>
-							<Table.Head class="sm:w-20">Tipe</Table.Head>
-							<Table.Head class="sm:w-16">TTL</Table.Head>
-							<Table.Head>Konten</Table.Head>
-							<Table.Head class="text-right sm:w-32">Aksi</Table.Head>
+							<Table.Head scope="col" class="sm:w-48 lg:w-52">Nama Record</Table.Head>
+							<Table.Head scope="col" class="sm:w-20">Tipe</Table.Head>
+							<Table.Head scope="col" class="sm:w-16">TTL</Table.Head>
+							<Table.Head scope="col">Konten</Table.Head>
+							<Table.Head scope="col" class="text-right sm:w-32">Aksi</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
@@ -1423,7 +2191,7 @@
 																		<Spinner data-icon="inline-start" />
 																		Menghapus...
 																	{:else}
-																		Aksi
+																		Aksi<span class="sr-only"> {rr.type} {rr.name}</span>
 																		<ChevronDownIcon data-icon="inline-end" />
 																	{/if}
 																</Button>
@@ -1463,14 +2231,14 @@
 <!-- Expose to VPS Modal -->
 <Dialog.Root bind:open={exposeOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-lg">
-		<Dialog.Header>
+		<Dialog.Header class="pr-8">
 			<Dialog.Title>Ekspos ke VPS Edge Gateway</Dialog.Title>
 			<Dialog.Description>
 				Ekspos vhost lokal atau port aplikasi lokal ke internet melalui VPS Edge Gateway dengan otomatisasi DNS &amp; SSL Let's Encrypt.
 			</Dialog.Description>
 		</Dialog.Header>
 
-		<form id="pdns-expose-form" onsubmit={submitExpose} class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+		<form id="pdns-expose-form" onsubmit={submitExpose} class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
 			<Field.FieldGroup>
 				<Field.Field>
 					<Field.FieldTitle id="pdns-expose-mode-label">Mode Ekspos</Field.FieldTitle>
@@ -1605,14 +2373,14 @@
 <!-- Deploy VPS Modal -->
 <Dialog.Root bind:open={deployOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-lg">
-		<Dialog.Header>
+		<Dialog.Header class="pr-8">
 			<Dialog.Title>Deploy &amp; Install VPS Edge Gateway</Dialog.Title>
 			<Dialog.Description>
 				Instalasi otomatis PowerDNS Authoritative, SQLite3, Nginx Reverse Proxy, dan Edge Agent ke VPS via SSH.
 			</Dialog.Description>
 		</Dialog.Header>
 
-		<form id="pdns-deploy-form" onsubmit={submitDeployVPS} class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+		<form id="pdns-deploy-form" onsubmit={submitDeployVPS} class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
 			<Field.FieldGroup>
 				<Field.Field>
 					<Field.FieldLabel for="vps-deploy-host">Host / IP VPS (NetBird atau Publik)</Field.FieldLabel>
@@ -1695,8 +2463,8 @@
 
 <!-- Connect Manual VPS Modal -->
 <Dialog.Root bind:open={connectOpen}>
-	<Dialog.Content class="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
-		<Dialog.Header>
+	<Dialog.Content class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-lg">
+		<Dialog.Header class="pr-8">
 			<Dialog.Title>Hubungkan Manual ke VPS Edge</Dialog.Title>
 			<Dialog.Description>
 				Masukkan kredensial dari <code>/etc/wdev-edge/edge.conf</code> di VPS jika PowerDNS &amp; Edge Agent sudah terpasang.

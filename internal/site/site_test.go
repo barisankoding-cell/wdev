@@ -741,3 +741,60 @@ func TestProxyVHostTemplateAndUpgradePreservesXForwardedProto(t *testing.T) {
 		t.Fatalf("expected idempotent 0 updates on second call, got count=%d err=%v", count2, err)
 	}
 }
+
+func TestRepairEmptyServerNamesInVHosts(t *testing.T) {
+	tmpDir := t.TempDir()
+	avail := filepath.Join(tmpDir, "sites-available")
+	enable := filepath.Join(tmpDir, "sites-enabled")
+	_ = os.MkdirAll(avail, 0755)
+	_ = os.MkdirAll(enable, 0755)
+
+	cfg := &config.Config{
+		NginxSitesAvail:  avail,
+		NginxSitesEnable: enable,
+		WebRootBase:      filepath.Join(tmpDir, "www"),
+	}
+	mgr := New(cfg, nil)
+	mgr.SetSkipNginxExec(true)
+
+	// Simulasikan file panel.erposoft.my.id yang rusak dengan "server_name ;"
+	brokenFile := filepath.Join(avail, "panel.erposoft.my.id")
+	brokenContent := `server {
+    listen 80;
+    listen [::]:80;
+    server_name ;
+    location / {
+        proxy_pass http://127.0.0.1:3200;
+    }
+}
+`
+	if err := os.WriteFile(brokenFile, []byte(brokenContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := mgr.RepairEmptyServerNamesInVHosts()
+	if err != nil {
+		t.Fatalf("RepairEmptyServerNamesInVHosts failed: %v", err)
+	}
+	if repaired != 1 {
+		t.Fatalf("expected 1 repaired file, got %d", repaired)
+	}
+
+	content, err := os.ReadFile(brokenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	str := string(content)
+	if strings.Contains(str, "server_name ;") {
+		t.Fatalf("expected empty server_name to be replaced, got:\n%s", str)
+	}
+	if !strings.Contains(str, "server_name panel.erposoft.my.id;") {
+		t.Fatalf("expected server_name panel.erposoft.my.id;, got:\n%s", str)
+	}
+
+	// Idempotent check
+	repaired2, err := mgr.RepairEmptyServerNamesInVHosts()
+	if err != nil || repaired2 != 0 {
+		t.Fatalf("expected 0 repairs on second run, got %d (err: %v)", repaired2, err)
+	}
+}

@@ -615,3 +615,75 @@ func TestDeleteDomainDNSRecordsRemovesAllRelatedRRsetsOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveLocalVhostAliasNeverCreatesEmptyServerName(t *testing.T) {
+	tmp := t.TempDir()
+	avail := filepath.Join(tmp, "sites-available")
+	_ = os.MkdirAll(avail, 0755)
+
+	// 1. Standalone vhost untuk panel.erposoft.my.id (domain utama = panel.erposoft.my.id)
+	panelPath := filepath.Join(avail, "panel.erposoft.my.id")
+	panelContent := `server {
+    listen 80;
+    server_name panel.erposoft.my.id;
+    location / { proxy_pass http://127.0.0.1:3200; }
+}
+`
+	if err := os.WriteFile(panelPath, []byte(panelContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Vhost lokal yang memiliki alias domain publik: appsone.test punya alias panel.erposoft.my.id
+	appsPath := filepath.Join(avail, "appsone.test")
+	appsContent := `server {
+    listen 80;
+    server_name appsone.test panel.erposoft.my.id;
+    location / { return 200 "ok"; }
+}
+`
+	if err := os.WriteFile(appsPath, []byte(appsContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Vhost rusak dengan "server_name ;" kosong
+	brokenPath := filepath.Join(avail, "broken.test")
+	brokenContent := `server {
+    listen 80;
+    server_name ;
+    location / { return 200 "broken"; }
+}
+`
+	if err := os.WriteFile(brokenPath, []byte(brokenContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(&config.Config{NginxSitesAvail: avail}, nil)
+	mgr.removeLocalVhostAlias("panel.erposoft.my.id")
+
+	// Pastikan domain utama panel.erposoft.my.id TIDAK dihapus dan tidak menjadi "server_name ;"
+	pBytes, _ := os.ReadFile(panelPath)
+	pStr := string(pBytes)
+	if !strings.Contains(pStr, "server_name panel.erposoft.my.id;") {
+		t.Fatalf("expected panel primary domain to be preserved, got:\n%s", pStr)
+	}
+	if strings.Contains(pStr, "server_name ;") {
+		t.Fatalf("primary domain was stripped to invalid empty server_name:\n%s", pStr)
+	}
+
+	// Pastikan alias pada appsone.test terhapus namun nama utamanya tetap appsone.test
+	aBytes, _ := os.ReadFile(appsPath)
+	aStr := string(aBytes)
+	if !strings.Contains(aStr, "server_name appsone.test;") {
+		t.Fatalf("expected appsone.test alias removed, got:\n%s", aStr)
+	}
+
+	// Pastikan broken.test pulih dan tidak lagi "server_name ;"
+	bBytes, _ := os.ReadFile(brokenPath)
+	bStr := string(bBytes)
+	if strings.Contains(bStr, "server_name ;") {
+		t.Fatalf("expected broken.test empty server_name to be healed, got:\n%s", bStr)
+	}
+	if !strings.Contains(bStr, "server_name broken.test;") {
+		t.Fatalf("expected broken.test to have server_name broken.test;, got:\n%s", bStr)
+	}
+}

@@ -694,7 +694,9 @@ func detectLocalNetbirdIP() string {
 	}
 
 	// 3. Fallback: netbird status command
-	if out, err := exec.Command("netbird", "status").Output(); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "netbird", "status").Output(); err == nil {
 		scanner := bufio.NewScanner(strings.NewReader(string(out)))
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -1658,6 +1660,22 @@ func configureLocalVhost(confPath, pubDom string) error {
 	}
 	text := string(data)
 
+	base := strings.ToLower(strings.TrimSuffix(filepath.Base(confPath), ".conf"))
+	base = strings.TrimPrefix(base, "wdev_")
+
+	// Pulihkan direktif server_name kosong jika ada
+	reEmptyServerName := regexp.MustCompile(`(?m)^\s*server_name\s*;\s*$`)
+	if reEmptyServerName.MatchString(text) {
+		fallbackDomain := pubDom
+		if site.ValidateDomain(base) == nil {
+			fallbackDomain = base
+			if !strings.EqualFold(base, pubDom) {
+				fallbackDomain = base + " " + pubDom
+			}
+		}
+		text = reEmptyServerName.ReplaceAllString(text, "    server_name "+fallbackDomain+";")
+	}
+
 	// Check if pubDom already present as an exact whitespace-delimited token in server_name
 	reServerName := regexp.MustCompile(`(?m)server_name\s+([^;]+);`)
 	matches := reServerName.FindAllStringSubmatch(text, -1)
@@ -1784,7 +1802,7 @@ func (m *Manager) Unexpose(domain string, keepDNS bool) error {
 	}
 
 	// 3. Remove alias from local Nginx vhosts
-	removeLocalVhostAlias(domain)
+	m.removeLocalVhostAlias(domain)
 	_ = reloadNginx()
 
 	// 4. Clear store exposed_to
@@ -1793,18 +1811,37 @@ func (m *Manager) Unexpose(domain string, keepDNS bool) error {
 	return nil
 }
 
-func removeLocalVhostAlias(pubDom string) {
-	matches, err := filepath.Glob("/etc/nginx/sites-available/*")
+func (m *Manager) removeLocalVhostAlias(pubDom string) {
+	pubDom = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(pubDom), "."))
+	if pubDom == "" {
+		return
+	}
+
+	sitesAvailDir := "/etc/nginx/sites-available"
+	if m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.NginxSitesAvail) != "" {
+		sitesAvailDir = strings.TrimSpace(m.cfg.NginxSitesAvail)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(sitesAvailDir, "*"))
 	if err != nil {
 		return
 	}
 
 	reServerName := regexp.MustCompile(`(?m)server_name\s+([^;]+);`)
+	reEmptyServerName := regexp.MustCompile(`(?m)^\s*server_name\s*;\s*$`)
 
 	for _, file := range matches {
-		if strings.HasSuffix(file, ".bak") || strings.HasSuffix(file, "~") {
+		if strings.HasSuffix(file, ".bak") || strings.HasSuffix(file, "~") || strings.HasSuffix(file, ".custom.conf") {
 			continue
 		}
+		base := strings.ToLower(strings.TrimSuffix(filepath.Base(file), ".conf"))
+		base = strings.TrimPrefix(base, "wdev_")
+
+		// Jika file vhost ini adalah milik domain pubDom itu sendiri, bukan alias pada situs lain.
+		if strings.EqualFold(base, pubDom) {
+			continue
+		}
+
 		data, err := os.ReadFile(file)
 		if err != nil {
 			continue
@@ -1829,15 +1866,32 @@ func removeLocalVhostAlias(pubDom string) {
 				}
 			}
 			if hasRemoved {
+				if len(kept) == 0 {
+					// JANGAN PERNAH membuat direktif kosong "server_name ;"
+					if site.ValidateDomain(base) == nil {
+						return "server_name " + base + ";"
+					}
+					return match
+				}
 				return "server_name " + strings.Join(kept, " ") + ";"
 			}
 			return match
 		})
 
+		// Self-healing: perbaiki jika berkas vhost memiliki direktif server_name ; yang kosong
+		if reEmptyServerName.MatchString(newText) && site.ValidateDomain(base) == nil {
+			newText = reEmptyServerName.ReplaceAllString(newText, "    server_name "+base+";")
+			modified = true
+		}
+
 		if modified {
 			_ = writeFileWithSudo(file, []byte(newText))
 		}
 	}
+}
+
+func removeLocalVhostAlias(pubDom string) {
+	(&Manager{}).removeLocalVhostAlias(pubDom)
 }
 
 func writeSecretFileWithSudo(path string, content []byte) error {

@@ -380,6 +380,7 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 	if !m.skipNginxExec {
 		_ = m.ensureDir("/var/log/nginx", 0755)
 		m.ensureNginxSitesEnabledIncluded()
+		_, _ = m.RepairEmptyServerNamesInVHosts()
 
 		nginxBin := findNginxBinary()
 		if nginxBin == "" {
@@ -854,9 +855,68 @@ func (m *Manager) SyncAll() error {
 	return m.reloadOrStartNginx()
 }
 
+// RepairEmptyServerNamesInVHosts memeriksa seluruh berkas konfigurasi Nginx di
+// sites-available dan memperbaiki direktif "server_name ;" yang kosong/tanpa argumen
+// agar pengujian Nginx (nginx -t) dan pembuatan virtual host baru tidak gagal.
+func (m *Manager) RepairEmptyServerNamesInVHosts() (int, error) {
+	sitesAvail := m.sitesAvailDir()
+	entries, err := os.ReadDir(sitesAvail)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	reEmptyDirective := regexp.MustCompile(`(?m)^\s*server_name\s*;\s*$`)
+	reZeroArgDirective := regexp.MustCompile(`(?m)(server_name)\s*;`)
+
+	repairedCount := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".bak") ||
+			strings.HasSuffix(name, ".disabled") || strings.HasSuffix(name, "~") ||
+			strings.HasSuffix(name, ".custom.conf") {
+			continue
+		}
+		confPath := filepath.Join(sitesAvail, name)
+		origBytes, readErr := m.readFile(confPath)
+		if readErr != nil {
+			continue
+		}
+		text := string(origBytes)
+
+		base := strings.ToLower(strings.TrimSuffix(name, ".conf"))
+		base = strings.TrimPrefix(base, "wdev_")
+
+		modified := false
+		if reEmptyDirective.MatchString(text) || reZeroArgDirective.MatchString(text) {
+			domainName := base
+			if ValidateDomain(base) != nil {
+				if rec, ok := m.GetSite(base); ok && rec.Domain != "" {
+					domainName = rec.Domain
+				} else {
+					domainName = "_"
+				}
+			}
+			text = reEmptyDirective.ReplaceAllString(text, "    server_name "+domainName+";")
+			text = reZeroArgDirective.ReplaceAllString(text, "${1} "+domainName+";")
+			modified = true
+		}
+
+		if modified {
+			if writeErr := m.writeFile(confPath, []byte(text), 0644); writeErr == nil {
+				repairedCount++
+			}
+		}
+	}
+	return repairedCount, nil
+}
+
 // EnsureProxyHTTPSForPHPVhosts memastikan seluruh vhost PHP aktif di sites-available
 // meneruskan status HTTPS dari header X-Forwarded-Proto reverse proxy ke PHP-FPM.
 func (m *Manager) EnsureProxyHTTPSForPHPVhosts() (int, error) {
+	_, _ = m.RepairEmptyServerNamesInVHosts()
 	sitesAvail := m.sitesAvailDir()
 	entries, err := os.ReadDir(sitesAvail)
 	if err != nil {
