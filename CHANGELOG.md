@@ -1,5 +1,24 @@
 # Changelog
 
+## [v2.5.0] - 2026-11-22
+
+### 🚀 Fitur Baru
+- feat: perbarui identitas visual dan ringkasan sistem (03137ed)
+- feat: tampilkan informasi disk eksternal dan mount tambahan (0ee1fef)
+- feat: tingkatkan dashboard monitoring dan alur login (9acd932)
+- feat: Tambahkan konfigurasi Orca Commit AI (be16cd2)
+- feat: perbaiki domain panel Edge/DNS, modal vhost baru, dan auto-reload pasca-update (1127ae1)
+- feat: tampilkan dan akses drive tambahan di `/mnt` (8e6c808)
+- feat: optimalkan antarmuka file dan webstack untuk perangkat sentuh (db503d7)
+
+### 🐛 Perbaikan Bug
+- fix: teruskan HTTPS dan real IP reverse proxy Edge ke PHP serta amankan upgrade Nginx (348735f)
+- fix: Rapikan tata letak tampilan mobile File Manager (6742368)
+- fix: perkuat keamanan panel, agent, dan pembaruan edge (5861049)
+
+### 🔧 Pemeliharaan & Tooling
+- chore(web): perbarui aset hasil build frontend (d8cdc41)
+
 ## [v2.4.0] - 2026-11-21
 
 ### 🚀 Fitur Baru
