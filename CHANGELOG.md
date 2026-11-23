@@ -1,5 +1,11 @@
 # Changelog
 
+## [v2.7.1] - 2026-11-23
+
+### 🐛 Perbaikan Bug
+- fix(orca): paksa keluar Desktop saat menerapkan konfigurasi Commit AI (343b425)
+- fix(frontend): benahi fokus menu saat modal terbuka dan metadata halaman (dbe3154)
+
 ## [v2.7.0] - 2026-11-22
 
 ### 🚀 Fitur Baru
