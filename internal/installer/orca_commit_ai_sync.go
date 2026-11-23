@@ -568,7 +568,7 @@ func ReconcileOrcaCommitAI(ctx context.Context, cb LogCallback, force bool) (*Or
 	if cb != nil {
 		cb("==> Memeriksa sinkronisasi Orca Commit AI...")
 	}
-	if _, err := SaveOrcaCommitAIConfig(ctx, cb, st.Desired.toSaveInput()); err != nil {
+	if _, err := saveOrcaCommitAIConfig(ctx, cb, st.Desired.toSaveInput(), force); err != nil {
 		st.LastError = err.Error()
 		st.Failures++
 		if saveErr := saveOrcaCommitAISyncState(user, home, st); saveErr != nil && cb != nil {
@@ -590,11 +590,13 @@ func ReconcileOrcaCommitAI(ctx context.Context, cb LogCallback, force bool) (*Or
 		cb(fmt.Sprintf("[WARN] Gagal menyimpan waktu sinkron terakhir: %v", saveErr))
 	}
 
-	// Orca dimulai ulang setelah save. Beri jeda singkat lalu pastikan payload
+	// Jika Orca dimulai ulang setelah save, beri jeda singkat lalu pastikan payload
 	// tidak ditimpa saat aplikasi memuat ulang pengaturannya.
-	select {
-	case <-time.After(orcaCommitAIPostApplyVerifyWait):
-	case <-ctx.Done():
+	if (home != "" && orcaUserSvcActiveFn(ctx, user, home)) || orcaSysSvcActiveFn(ctx) || orcaAnyProcessActiveFn(ctx, user) {
+		select {
+		case <-time.After(orcaCommitAIPostApplyVerifyWait):
+		case <-ctx.Done():
+		}
 	}
 
 	verify, verifyErr := GetOrcaCommitAISyncStatus(ctx)

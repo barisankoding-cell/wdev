@@ -485,4 +485,10 @@ func TestOrcaProcessDetectionSeparatesHeadlessAndDesktop(t *testing.T) {
 	if !hasAnyOrcaProcess(desktopOut) {
 		t.Fatalf("expected hasAnyOrcaProcess to detect Orca Desktop GUI")
 	}
+
+	mixedOut := headlessOut + "\n210001 /home/dietpi/.local/lib/orca-ide/orca-ide --enable-crashpad\n210002 /home/dietpi/.local/lib/orca-ide/orca-ide --type=renderer\n210001 /home/dietpi/.local/lib/orca-ide/orca-ide --enable-crashpad\n"
+	pids := extractOrcaDesktopPIDs(mixedOut)
+	if len(pids) != 2 || pids[0] != 210001 || pids[1] != 210002 {
+		t.Fatalf("unexpected desktop PIDs extracted: %v", pids)
+	}
 }

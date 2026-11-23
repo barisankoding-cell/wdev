@@ -509,18 +509,20 @@
 	{:else}
 		<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
 			<ResponsiveTableWrapper label="Daftar Virtual Host" class="rounded-none border-0 bg-transparent">
-				<Table.Root>
+				<Table.Root class="sm:[&_th]:px-3 sm:[&_td]:px-3 sm:[&_td]:py-3">
 					<Table.Header>
 						<Table.Row>
-							<Table.Head>{isLocal ? 'Domain Lokal' : 'Domain'}</Table.Head>
-							<Table.Head>Framework</Table.Head>
-							<Table.Head>Target Runtime</Table.Head>
-							<Table.Head>Document Root</Table.Head>
-							<Table.Head>SSL</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">
+								{isLocal ? 'Domain Lokal' : 'Domain'}
+							</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Framework</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Target Runtime</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Document Root</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">SSL</Table.Head>
 							{#if isEdge}
-								<Table.Head>Tunnel VPS Edge</Table.Head>
+								<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Tunnel VPS Edge</Table.Head>
 							{/if}
-							<Table.Head class="text-right">Aksi</Table.Head>
+							<Table.Head scope="col" class="text-right text-xs font-semibold text-muted-foreground">Aksi</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
@@ -559,18 +561,18 @@
 										? 'Static HTML'
 										: `PHP ${site.php_version || '8.4'}`}
 							</Table.Cell>
-							<Table.Cell data-label="Root" class="sm:max-w-52">
+							<Table.Cell data-label="Root">
 								{#if site.root_path && site.framework !== 'proxy'}
 									<a
 										href={`/files?path=${encodeURIComponent(site.root_path)}`}
 										title={`Buka ${site.root_path} di File Manager`}
-										class="inline-flex max-w-full items-center gap-1.5 font-mono text-xs text-primary hover:underline"
+										class="inline-flex max-w-full sm:max-w-72 items-center gap-1.5 font-mono text-xs text-primary hover:underline"
 									>
 										<FolderOpenIcon class="size-3.5 shrink-0" />
 										<span class="break-all sm:truncate">{site.root_path}</span>
 									</a>
 								{:else}
-									<code class="block break-all sm:truncate text-xs text-muted-foreground" title={site.root_path || '-'}>
+									<code class="block max-w-full sm:max-w-72 break-all sm:truncate text-xs text-muted-foreground" title={site.root_path || '-'}>
 										{site.root_path || '-'}
 									</code>
 								{/if}

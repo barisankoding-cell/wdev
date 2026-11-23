@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -47,8 +48,9 @@ var (
 	orcaSysSvcActiveFn      = isSystemOrcaServiceActive
 	orcaProcessActiveFn     = isOrcaIDEProcessRunning
 	orcaAnyProcessActiveFn  = isAnyOrcaProcessRunning
-	stopOrcaForCommitAIFn   = stopOrcaService
-	startOrcaForCommitAIFn  = startOrcaService
+	stopOrcaForCommitAIFn             = stopOrcaService
+	startOrcaForCommitAIFn            = startOrcaService
+	forceQuitOrcaDesktopForCommitAIFn = forceQuitOrcaDesktopProcesses
 )
 
 type orcaAgentSpec struct {
@@ -693,6 +695,84 @@ func GetOrcaCommitAISummary(ctx context.Context) *OrcaCommitAISummary {
 	}
 }
 
+func parsePgrepPID(line string) int {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return 0
+	}
+	sp := strings.IndexAny(trimmed, " \t")
+	if sp <= 0 {
+		return 0
+	}
+	pid, err := strconv.Atoi(trimmed[:sp])
+	if err != nil || pid <= 1 {
+		return 0
+	}
+	return pid
+}
+
+func extractOrcaDesktopPIDs(pgrepOutput string) []int {
+	selfPID := os.Getpid()
+	seen := map[int]bool{}
+	var pids []int
+	for _, line := range strings.Split(pgrepOutput, "\n") {
+		if !isOrcaDesktopCmdline(line) {
+			continue
+		}
+		pid := parsePgrepPID(line)
+		if pid <= 1 || pid == selfPID || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+func signalOrcaPIDs(pids []int, sig syscall.Signal) {
+	for _, pid := range pids {
+		_ = syscall.Kill(pid, sig)
+	}
+}
+
+func waitForOrcaDesktopExit(ctx context.Context, user string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !orcaProcessActiveFn(ctx, user) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return !orcaProcessActiveFn(ctx, user)
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	return !orcaProcessActiveFn(ctx, user)
+}
+
+func forceQuitOrcaDesktopProcesses(ctx context.Context, cb LogCallback, user string) {
+	pids := extractOrcaDesktopPIDs(listOrcaProcesses(ctx, user))
+	if len(pids) == 0 {
+		return
+	}
+	if cb != nil {
+		cb("==> Menghentikan Orca ADE Desktop GUI agar konfigurasi Commit AI tersimpan permanen...")
+	}
+	signalOrcaPIDs(pids, syscall.SIGTERM)
+	if waitForOrcaDesktopExit(ctx, user, 3*time.Second) {
+		return
+	}
+	remaining := extractOrcaDesktopPIDs(listOrcaProcesses(ctx, user))
+	if len(remaining) == 0 {
+		remaining = pids
+	}
+	if cb != nil {
+		cb("==> Orca ADE Desktop masih tertahan; memaksa keluar (SIGKILL)...")
+	}
+	signalOrcaPIDs(remaining, syscall.SIGKILL)
+	_ = waitForOrcaDesktopExit(ctx, user, 3*time.Second)
+}
+
 func waitForOrcaProcessExit(ctx context.Context, user string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -834,6 +914,10 @@ func updateDomainJSONDocument(ctx context.Context, conn *sql.Conn, domain, paylo
 
 // SaveOrcaCommitAIConfig menyimpan pengaturan AI Commit Message Generator ke profile-state.db Orca ADE.
 func SaveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput) (*OrcaCommitAIConfig, error) {
+	return saveOrcaCommitAIConfig(ctx, cb, input, false)
+}
+
+func saveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput, forceQuitDesktop bool) (*OrcaCommitAIConfig, error) {
 	agentID := strings.TrimSpace(input.AgentID)
 	spec, ok := lookupOrcaAgentSpec(agentID)
 	if !ok {
@@ -857,7 +941,12 @@ func SaveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommi
 	wasSysSvc := orcaSysSvcActiveFn(ctx)
 	wasSvcActive := wasUserSvc || wasSysSvc
 	if !wasSvcActive && orcaProcessActiveFn(ctx, user) {
-		return nil, fmt.Errorf("%w: aplikasi Orca ADE Desktop sedang berjalan; tutup Orca terlebih dahulu sebelum menyimpan agar konfigurasi tidak tertimpa", ErrOrcaCommitAIConflict)
+		if forceQuitDesktop {
+			forceQuitOrcaDesktopForCommitAIFn(ctx, cb, user)
+		}
+		if orcaProcessActiveFn(ctx, user) {
+			return nil, fmt.Errorf("%w: aplikasi Orca ADE Desktop sedang berjalan; tutup Orca terlebih dahulu sebelum menyimpan agar konfigurasi tidak tertimpa", ErrOrcaCommitAIConflict)
+		}
 	}
 
 	if wasSvcActive {

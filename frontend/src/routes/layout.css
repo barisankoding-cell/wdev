@@ -200,15 +200,30 @@
 }
 
 .responsive-table-region table {
-	border-collapse: separate;
-	border-spacing: 0;
+	border-collapse: collapse;
 }
 
 .responsive-table-region thead {
 	position: sticky;
 	inset-block-start: 0;
 	z-index: 1;
-	background: var(--card);
+	background: color-mix(in oklab, var(--muted) 35%, var(--card));
+}
+
+.responsive-table-region thead tr:hover {
+	background-color: transparent;
+}
+
+@container (width >= 600px) {
+	.responsive-table-region th:first-child,
+	.responsive-table-region td:first-child {
+		padding-inline-start: 1rem;
+	}
+
+	.responsive-table-region th:last-child,
+	.responsive-table-region td:last-child {
+		padding-inline-end: 1rem;
+	}
 }
 
 @container (width < 600px) {

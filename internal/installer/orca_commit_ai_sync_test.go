@@ -19,6 +19,7 @@ func withOrcaCommitAISyncHooks(t *testing.T, home string, svcActive, procActive 
 	origAnyProc := orcaAnyProcessActiveFn
 	origStop := stopOrcaForCommitAIFn
 	origStart := startOrcaForCommitAIFn
+	origForceQuit := forceQuitOrcaDesktopForCommitAIFn
 	t.Cleanup(func() {
 		resolveOrcaCommitUserFn = origResolve
 		orcaUserSvcActiveFn = origUserSvc
@@ -27,6 +28,7 @@ func withOrcaCommitAISyncHooks(t *testing.T, home string, svcActive, procActive 
 		orcaAnyProcessActiveFn = origAnyProc
 		stopOrcaForCommitAIFn = origStop
 		startOrcaForCommitAIFn = origStart
+		forceQuitOrcaDesktopForCommitAIFn = origForceQuit
 		orcaCommitAIPostApplyVerifyWait = 2500 * time.Millisecond
 	})
 
@@ -39,6 +41,9 @@ func withOrcaCommitAISyncHooks(t *testing.T, home string, svcActive, procActive 
 	startOrcaForCommitAIFn = func(context.Context, LogCallback, string, string, bool) error {
 		*startCount++
 		return nil
+	}
+	forceQuitOrcaDesktopForCommitAIFn = func(context.Context, LogCallback, string) {
+		*procActive = false
 	}
 	orcaCommitAIPostApplyVerifyWait = time.Millisecond
 }
@@ -320,4 +325,78 @@ func TestOrcaCommitAISyncPopulatesRuntimeHostKeys(t *testing.T) {
 			t.Fatalf("expected discoveredModelsByAgentByHost populated for runtime:web-123")
 		}
 	})
+}
+
+func TestOrcaCommitAISaveForceQuitsOpenOrcaDesktop(t *testing.T) {
+	home := t.TempDir()
+	dbPath := setupTestOrcaProfileDB(t, home, "local-default", 10, testOrcaCommitAISettings(), nil, nil)
+	svcActive, procActive := false, true
+	stopCount, startCount := 0, 0
+	withOrcaCommitAISyncHooks(t, home, &svcActive, &procActive, &stopCount, &startCount)
+
+	forceQuitCalls := 0
+	forceQuitOrcaDesktopForCommitAIFn = func(context.Context, LogCallback, string) {
+		forceQuitCalls++
+		procActive = false
+	}
+
+	ctx := context.Background()
+	status, err := SetOrcaCommitAIDesiredState(ctx, nil, OrcaCommitAISaveInput{
+		Enabled:               true,
+		AgentID:               "claude",
+		ModelID:               "default",
+		CustomPrompt:          "Simpan sambil paksa keluar Orca Desktop",
+		UpdateDefaultTUIAgent: true,
+		ClearRepoOverrides:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forceQuitCalls != 1 {
+		t.Fatalf("expected forceQuitCalls=1, got %d", forceQuitCalls)
+	}
+	if procActive {
+		t.Fatalf("expected Orca Desktop process to be closed")
+	}
+	if !status.InSync || status.State != orcaCommitAISyncStateSynced || status.OrcaDesktopOpen {
+		t.Fatalf("expected synced and OrcaDesktopOpen=false, got %+v", status)
+	}
+	if stopCount != 0 || startCount != 0 {
+		t.Fatalf("desktop mode should not invoke systemd stop/start, got stop=%d start=%d", stopCount, startCount)
+	}
+
+	mutateTestOrcaSettings(t, dbPath, func(settings map[string]any) {
+		sc := settings["sourceControlAi"].(map[string]any)
+		if sc["agentId"] != "claude" {
+			t.Fatalf("expected agentId claude saved, got %v", sc["agentId"])
+		}
+	})
+}
+
+func TestOrcaCommitAISaveRemainsBlockedIfForceQuitFails(t *testing.T) {
+	home := t.TempDir()
+	setupTestOrcaProfileDB(t, home, "local-default", 10, testOrcaCommitAISettings(), nil, nil)
+	svcActive, procActive := false, true
+	stopCount, startCount := 0, 0
+	withOrcaCommitAISyncHooks(t, home, &svcActive, &procActive, &stopCount, &startCount)
+
+	forceQuitCalls := 0
+	forceQuitOrcaDesktopForCommitAIFn = func(context.Context, LogCallback, string) {
+		forceQuitCalls++
+		// Simulasikan proses tetap aktif walau sudah dipaksa keluar.
+	}
+
+	ctx := context.Background()
+	status, err := SetOrcaCommitAIDesiredState(ctx, nil, OrcaCommitAISaveInput{
+		Enabled: true, AgentID: "claude", ModelID: "default", CustomPrompt: "Gagal keluar", ClearRepoOverrides: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forceQuitCalls != 1 {
+		t.Fatalf("expected forceQuitCalls=1, got %d", forceQuitCalls)
+	}
+	if status.InSync || status.State != orcaCommitAISyncStateBlocked {
+		t.Fatalf("expected blocked state when desktop remains open, got %+v", status)
+	}
 }

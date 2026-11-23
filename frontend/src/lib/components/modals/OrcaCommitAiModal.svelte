@@ -405,7 +405,7 @@
 						{/if}
 						{#if syncStatus.orca_desktop_open}
 							<p class="text-warning text-xs">
-								Orca Desktop sedang terbuka. Tutup agar wdev bisa menulis konfigurasi tanpa ditimpa.
+								Orca Desktop sedang terbuka. Saat menyimpan atau menerapkan ulang, Orca Desktop akan dipaksa keluar agar konfigurasi tidak tertimpa.
 							</p>
 						{/if}
 						{#if syncStatus.cloud_linked}
@@ -438,7 +438,7 @@
 									Catatan Web Client: Orca Web Client tidak memuat <code class="font-mono">sourceControlAi</code> dari server dan menyimpan salinannya di browser (<code class="font-mono">orca.web.settings.v1</code>). Jika memakai Web Client, pastikan agent/model/prompt yang sama juga dipilih di Settings Web Client agar tidak menimpa pengaturan server dengan nilai kosong.
 								</span>
 							{:else}
-								Orca sedang berjalan. Pastikan aplikasi Orca Desktop tidak sedang menimpa database profil saat menyimpan.
+								Saat menyimpan, aplikasi Orca Desktop yang sedang terbuka akan dipaksa keluar agar konfigurasi tersimpan permanen ke database profil.
 							{/if}
 						</Alert.Description>
 					</Alert.Root>
