@@ -1547,6 +1547,40 @@ func (inst *Installer) InstallCloudflared(ctx context.Context, cb LogCallback) e
 
 	inst.removeDistroPackagesIfInstalled(ctx, cb, "cloudflared")
 
+	for _, dir := range []string{
+		"/etc/wdev/cloudflare",
+		"/etc/wdev/cloudflare/accounts",
+		"/etc/wdev/cloudflare/tokens",
+		"/etc/wdev/cloudflare/routes",
+		"/etc/wdev/cloudflare/profiles",
+		"/etc/wdev/exposures",
+	} {
+		_ = inst.runCmd(ctx, cb, "mkdir", "-p", dir)
+	}
+	_ = inst.runCmd(ctx, cb, "chmod", "700", "/etc/wdev/cloudflare/accounts", "/etc/wdev/cloudflare/tokens", "/etc/wdev/cloudflare/profiles")
+
+	unitContent := `[Unit]
+Description=Cloudflare Tunnel (wdev profile: %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/wdev/cloudflare/profiles/%i.env
+ExecStart=/usr/local/bin/cloudflared $CLOUDFLARED_ARGS
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+`
+	if err := inst.writeSystemFile(ctx, cb, "/etc/systemd/system/cloudflared@.service", []byte(unitContent), "644"); err != nil {
+		cb(fmt.Sprintf("  ⚠ Gagal memasang cloudflared@.service: %v", err))
+	} else {
+		_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
+		cb("✓ Template systemd cloudflared@.service siap digunakan untuk multi-profil")
+	}
+
 	cb("✓ cloudflared berhasil dipasang di /usr/local/bin/cloudflared")
 	return nil
 }

@@ -1,20 +1,38 @@
 package cloudflare
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 	"wdev/internal/config"
 	"wdev/internal/store"
+
 	"gopkg.in/yaml.v3"
 )
 
 var (
 	cfHostRe    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 	cfProfileRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+	cfLoginURLRe = regexp.MustCompile(`https://dash\.cloudflare\.com/[^\s"'<>]+`)
+
+	// ErrSudoRequired menandakan operasi sistem membutuhkan password sudo saat wdev tidak berjalan sebagai root.
+	ErrSudoRequired = errors.New("diperlukan hak akses administrator (sudo)")
+)
+
+const (
+	defaultSystemdTemplatePath = "/etc/systemd/system/cloudflared@.service"
+	defaultLegacyConfigPath    = "/etc/cloudflared/config.yml"
 )
 
 func validateCFHost(host, label string) error {
@@ -24,225 +42,837 @@ func validateCFHost(host, label string) error {
 	return nil
 }
 
+func normalizeCFProfile(profile string) string {
+	return strings.ToLower(strings.TrimSpace(profile))
+}
+
 func validateCFProfile(profile string) error {
 	if !cfProfileRe.MatchString(profile) {
-		return fmt.Errorf("nama profil Cloudflare tidak valid: %q", profile)
+		return fmt.Errorf("nama profil Cloudflare tidak valid (gunakan huruf, angka, '-' atau '_'): %q", profile)
 	}
 	return nil
 }
 
+// Manager mengelola instalasi, profil multi-akun, systemd template, dan routing Cloudflare Tunnel.
 type Manager struct {
-	cfg   *config.Config
-	store *store.Store
+	cfg                 *config.Config
+	store               *store.Store
+	sudoPassFn          func() string
+	systemdTemplatePath string
+	legacyConfigPath    string
+
+	// Hook untuk unit testing
+	lookPathFn       func(string) (string, error)
+	runCmdFn         func(ctx context.Context, env []string, name string, args ...string) ([]byte, error)
+	isServiceActiveFn  func(unit string) bool
+	isServiceEnabledFn func(unit string) bool
+	anyTunnelProcFn    func() bool
+	runPrivilegedFn    func(bin string, args ...string) (string, error)
+	startLoginCmdFn    func(ctx context.Context, homeDir, binPath string) (io.ReadCloser, func() error, error)
+
+	loginMu sync.Mutex
+	loginSessions map[string]*LoginSession
 }
 
-type TunnelStatus struct {
-	Installed bool       `json:"installed"`
-	Binary    string     `json:"binary"`
-	Active    bool       `json:"active"`
-	Profiles  []string   `json:"profiles"`
-	Exposures []Exposure `json:"exposures"`
+// OriginRequestConfig memetakan opsi originRequest untuk setiap ingress rule cloudflared.
+type OriginRequestConfig struct {
+	HTTPHostHeader string `yaml:"httpHostHeader,omitempty"`
+	NoTLSVerify    bool   `yaml:"noTLSVerify,omitempty"`
 }
 
+// CloudflaredConfig merepresentasikan file YAML konfigurasi daemon cloudflared per profil.
+type CloudflaredConfig struct {
+	TunnelID    string        `yaml:"tunnel,omitempty"`
+	Credentials string        `yaml:"credentials-file,omitempty"`
+	Metrics     string        `yaml:"metrics,omitempty"`
+	Ingress     []IngressRule `yaml:"ingress"`
+}
+
+// IngressRule merepresentasikan satu entri ingress rule di file YAML cloudflared.
+type IngressRule struct {
+	Hostname      string               `yaml:"hostname,omitempty"`
+	Service       string               `yaml:"service"`
+	OriginRequest *OriginRequestConfig `yaml:"originRequest,omitempty"`
+}
+
+// ProfileInfo merangkum metadata dan status layanan satu profil Cloudflare Tunnel.
+type ProfileInfo struct {
+	Name           string `json:"name"`
+	AuthMode       string `json:"auth_mode"` // "token" | "cert"
+	TunnelName     string `json:"tunnel_name,omitempty"`
+	TunnelID       string `json:"tunnel_id,omitempty"`
+	AccountTag     string `json:"account_tag,omitempty"`
+	HasCert        bool   `json:"has_cert"`
+	HasCredentials bool   `json:"has_credentials"`
+	HasToken       bool   `json:"has_token"`
+	Active         bool   `json:"active"`
+	Enabled        bool   `json:"enabled"`
+	ServiceUnit    string `json:"service_unit"`
+	ConfigPath     string `json:"config_path,omitempty"`
+	RouteCount     int    `json:"route_count"`
+	CreatedAt      string `json:"created_at,omitempty"`
+}
+
+// Exposure merangkum satu pemetaan domain lokal ke domain publik Cloudflare.
 type Exposure struct {
+	LocalDomain    string `json:"local_domain"`
+	PublicHost     string `json:"public_host"`
+	Profile        string `json:"profile"`
+	ServiceURL     string `json:"service_url,omitempty"`
+	HTTPHostHeader string `json:"http_host_header,omitempty"`
+	NoTLSVerify    bool   `json:"no_tls_verify,omitempty"`
+}
+
+// TunnelStatus adalah respons lengkap status Cloudflare Tunnel di Web UI & CLI.
+type TunnelStatus struct {
+	Installed          bool          `json:"installed"`
+	Binary             string        `json:"binary"`
+	Active             bool          `json:"active"`
+	ServiceUnitReady   bool          `json:"service_unit_ready"`
+	Profiles           []string      `json:"profiles"`
+	ProfileDetails     []ProfileInfo `json:"profile_details"`
+	Exposures          []Exposure    `json:"exposures"`
+	DetectedLocalCerts []string      `json:"detected_local_certs,omitempty"`
+}
+
+// ExposeOptions mengonfigurasi pembuatan rule ingress Cloudflare untuk vhost atau layanan lokal.
+type ExposeOptions struct {
 	LocalDomain string `json:"local_domain"`
 	PublicHost  string `json:"public_host"`
 	Profile     string `json:"profile"`
+	ServiceURL  string `json:"service_url,omitempty"`
+	NoTLSVerify *bool  `json:"no_tls_verify,omitempty"`
 }
 
-type CloudflaredConfig struct {
-	TunnelID      string        `yaml:"tunnel,omitempty"`
-	Credentials   string        `yaml:"credentials-file,omitempty"`
-	Ingress       []IngressRule `yaml:"ingress"`
+// ExposeResult merangkum hasil pembuatan exposure Cloudflare.
+type ExposeResult struct {
+	Status     string `json:"status"`
+	Profile    string `json:"profile"`
+	PublicHost string `json:"public_host"`
+	ServiceURL string `json:"service_url"`
+	DNSWarning string `json:"dns_warning,omitempty"`
 }
 
-type IngressRule struct {
-	Hostname string `yaml:"hostname,omitempty"`
-	Service  string `yaml:"service"`
-}
-
+// New menginisialisasi cloudflare.Manager dengan konfigurasi dan SQLite store.
 func New(cfg *config.Config, s *store.Store) *Manager {
-	return &Manager{cfg: cfg, store: s}
+	m := &Manager{
+		cfg:                 cfg,
+		store:               s,
+		systemdTemplatePath: defaultSystemdTemplatePath,
+		legacyConfigPath:    defaultLegacyConfigPath,
+		loginSessions:       make(map[string]*LoginSession),
+	}
+	m.lookPathFn = exec.LookPath
+	m.runCmdFn = func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, name, args...)
+		if len(env) > 0 {
+			cmd.Env = append(os.Environ(), env...)
+		}
+		return cmd.CombinedOutput()
+	}
+	m.isServiceActiveFn = func(unit string) bool {
+		return exec.Command("systemctl", "is-active", "--quiet", unit).Run() == nil
+	}
+	m.isServiceEnabledFn = func(unit string) bool {
+		return exec.Command("systemctl", "is-enabled", "--quiet", unit).Run() == nil
+	}
+	m.anyTunnelProcFn = func() bool {
+		return exec.Command("pgrep", "cloudflared").Run() == nil
+	}
+	m.startLoginCmdFn = defaultStartLoginCmd
+	return m
 }
 
-func (m *Manager) GetStatus() TunnelStatus {
-	bin, err := exec.LookPath("cloudflared")
-	installed := (err == nil)
+// SetSudoPasswordFn menyetel penyedia password sudo saat wdev berjalan sebagai non-root.
+func (m *Manager) SetSudoPasswordFn(fn func() string) {
+	m.sudoPassFn = fn
+}
 
-	active := false
-	if installed {
-		active = (exec.Command("systemctl", "is-active", "--quiet", "cloudflared").Run() == nil)
-		if !active {
-			active = (exec.Command("pgrep", "cloudflared").Run() == nil)
+func (m *Manager) baseDir() string {
+	return filepath.Join(m.cfg.WdevEtc, "cloudflare")
+}
+
+func (m *Manager) accountsDir() string {
+	return filepath.Join(m.baseDir(), "accounts")
+}
+
+func (m *Manager) tokensDir() string {
+	return filepath.Join(m.baseDir(), "tokens")
+}
+
+func (m *Manager) routesDir() string {
+	return filepath.Join(m.baseDir(), "routes")
+}
+
+func (m *Manager) profilesEnvDir() string {
+	return filepath.Join(m.baseDir(), "profiles")
+}
+
+func (m *Manager) exposuresDir() string {
+	return filepath.Join(m.cfg.WdevEtc, "exposures")
+}
+
+func (m *Manager) certFilePath(profile string) string {
+	return filepath.Join(m.accountsDir(), profile+".cert")
+}
+
+func (m *Manager) credFilePath(profile string) string {
+	return filepath.Join(m.accountsDir(), profile+".json")
+}
+
+func (m *Manager) tokenFilePath(profile string) string {
+	return filepath.Join(m.tokensDir(), profile+".token")
+}
+
+func (m *Manager) routeConfigPath(profile string) string {
+	return filepath.Join(m.routesDir(), profile+".yml")
+}
+
+func (m *Manager) profileEnvPath(profile string) string {
+	return filepath.Join(m.profilesEnvDir(), profile+".env")
+}
+
+func profileServiceUnit(profile string) string {
+	return fmt.Sprintf("cloudflared@%s.service", profile)
+}
+
+func (m *Manager) ensureDirs() error {
+	for _, dir := range []string{
+		m.baseDir(),
+		m.accountsDir(),
+		m.tokensDir(),
+		m.routesDir(),
+		m.profilesEnvDir(),
+		m.exposuresDir(),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			if os.Geteuid() != 0 {
+				if _, runErr := m.runPrivileged("mkdir", "-p", dir); runErr != nil {
+					return runErr
+				}
+				continue
+			}
+			return err
+		}
+	}
+	_ = os.Chmod(m.accountsDir(), 0700)
+	_ = os.Chmod(m.tokensDir(), 0700)
+	_ = os.Chmod(m.profilesEnvDir(), 0700)
+	return nil
+}
+
+// GetStatus mengembalikan status menyeluruh biner, profil multi-akun, dan eksposur aktif.
+func (m *Manager) GetStatus() TunnelStatus {
+	bin, err := m.lookPathFn("cloudflared")
+	installed := err == nil && bin != ""
+
+	unitReady := fileExists(m.systemdTemplatePath)
+	profilesMap := m.collectProfileMap()
+	exposures := m.collectExposures()
+
+	routeCounts := make(map[string]int)
+	for _, exp := range exposures {
+		routeCounts[exp.Profile]++
+	}
+
+	profileNames := make([]string, 0, len(profilesMap))
+	for name := range profilesMap {
+		profileNames = append(profileNames, name)
+	}
+	sort.Strings(profileNames)
+
+	profileDetails := make([]ProfileInfo, 0, len(profileNames))
+	anyActive := false
+	for _, name := range profileNames {
+		p := profilesMap[name]
+		p.RouteCount = routeCounts[name]
+		p.ServiceUnit = profileServiceUnit(name)
+		p.Active = m.isServiceActiveFn(p.ServiceUnit)
+		p.Enabled = m.isServiceEnabledFn(p.ServiceUnit)
+		if p.Active {
+			anyActive = true
+		}
+		profileDetails = append(profileDetails, p)
+	}
+
+	if installed && !anyActive {
+		anyActive = m.isServiceActiveFn("cloudflared") || m.anyTunnelProcFn()
+	}
+
+	if exposures == nil {
+		exposures = []Exposure{}
+	}
+
+	return TunnelStatus{
+		Installed:          installed,
+		Binary:             bin,
+		Active:             anyActive,
+		ServiceUnitReady:   unitReady,
+		Profiles:           profileNames,
+		ProfileDetails:     profileDetails,
+		Exposures:          exposures,
+		DetectedLocalCerts: m.detectSystemCertFiles(),
+	}
+}
+
+func (m *Manager) collectProfileMap() map[string]ProfileInfo {
+	out := make(map[string]ProfileInfo)
+
+	if m.store != nil {
+		if dbProfiles, err := m.store.ListCFProfiles(); err == nil {
+			for _, rec := range dbProfiles {
+				name := normalizeCFProfile(rec.Name)
+				if name == "" {
+					continue
+				}
+				authMode := rec.AuthMode
+				if authMode == "" {
+					authMode = "cert"
+				}
+				info := ProfileInfo{
+					Name:       name,
+					AuthMode:   authMode,
+					TunnelName: rec.TunnelName,
+					TunnelID:   rec.TunnelID,
+					AccountTag: rec.AccountTag,
+					ConfigPath: rec.ConfigPath,
+					CreatedAt:  rec.CreatedAt.UTC().Format(time.RFC3339),
+				}
+				info.HasCert = fileExists(m.certFilePath(name))
+				info.HasCredentials = fileExists(m.credFilePath(name)) || (rec.CredentialsPath != "" && fileExists(rec.CredentialsPath))
+				info.HasToken = fileExists(m.tokenFilePath(name))
+				if info.HasToken && authMode == "cert" && !info.HasCert && !info.HasCredentials {
+					info.AuthMode = "token"
+				}
+				out[name] = info
+			}
 		}
 	}
 
-	var profiles []string
-	accountsDir := filepath.Join(m.cfg.WdevEtc, "cloudflare", "accounts")
-	if entries, err := os.ReadDir(accountsDir); err == nil {
+	// Gabungkan profil legacy dari disk jika belum tercatat di DB
+	if entries, err := os.ReadDir(m.accountsDir()); err == nil {
 		for _, e := range entries {
-			if e.IsDir() || strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".cert") {
-				name := strings.TrimSuffix(e.Name(), ".json")
-				name = strings.TrimSuffix(name, ".cert")
-				found := false
-				for _, p := range profiles {
-					if p == name {
-						found = true
-						break
+			if e.IsDir() || (!strings.HasSuffix(e.Name(), ".json") && !strings.HasSuffix(e.Name(), ".cert")) {
+				continue
+			}
+			name := strings.TrimSuffix(strings.TrimSuffix(e.Name(), ".json"), ".cert")
+			name = normalizeCFProfile(name)
+			if name == "" {
+				continue
+			}
+			info, exists := out[name]
+			if !exists {
+				info = ProfileInfo{Name: name, AuthMode: "cert"}
+			}
+			if strings.HasSuffix(e.Name(), ".cert") {
+				info.HasCert = true
+			}
+			if strings.HasSuffix(e.Name(), ".json") {
+				info.HasCredentials = true
+				if tid, tag, err := parseCredentialsJSONFile(filepath.Join(m.accountsDir(), e.Name())); err == nil {
+					if info.TunnelID == "" {
+						info.TunnelID = tid
+					}
+					if info.AccountTag == "" {
+						info.AccountTag = tag
 					}
 				}
-				if !found && name != "" {
-					profiles = append(profiles, name)
+			}
+			if fileExists(m.routeConfigPath(name)) && info.ConfigPath == "" {
+				info.ConfigPath = m.routeConfigPath(name)
+			}
+			out[name] = info
+		}
+	}
+
+	if entries, err := os.ReadDir(m.tokensDir()); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".token") {
+				continue
+			}
+			name := normalizeCFProfile(strings.TrimSuffix(e.Name(), ".token"))
+			if name == "" {
+				continue
+			}
+			info, exists := out[name]
+			if !exists {
+				info = ProfileInfo{Name: name, AuthMode: "token"}
+			}
+			info.HasToken = true
+			if raw, rErr := os.ReadFile(filepath.Join(m.tokensDir(), e.Name())); rErr == nil {
+				if parsed, pErr := ParseTunnelToken(string(raw)); pErr == nil {
+					if info.TunnelID == "" {
+						info.TunnelID = parsed.TunnelID
+					}
+					if info.AccountTag == "" {
+						info.AccountTag = parsed.AccountTag
+					}
+				}
+			}
+			out[name] = info
+		}
+	}
+
+	return out
+}
+
+func (m *Manager) collectExposures() []Exposure {
+	byLocal := make(map[string]Exposure)
+
+	if m.store != nil {
+		if routes, err := m.store.ListCFRoutes(""); err == nil {
+			for _, r := range routes {
+				key := strings.ToLower(strings.TrimSpace(r.LocalDomain))
+				if key == "" {
+					key = strings.ToLower(strings.TrimSpace(r.Hostname))
+				}
+				if key == "" {
+					continue
+				}
+				prof := normalizeCFProfile(r.ProfileName)
+				if prof == "" {
+					prof = "default"
+				}
+				byLocal[key] = Exposure{
+					LocalDomain:    r.LocalDomain,
+					PublicHost:     r.Hostname,
+					Profile:        prof,
+					ServiceURL:     r.ServiceURL,
+					HTTPHostHeader: r.HTTPHostHeader,
+					NoTLSVerify:    r.NoTLSVerify,
 				}
 			}
 		}
 	}
 
-	var exposures []Exposure
-	exposuresDir := filepath.Join(m.cfg.WdevEtc, "exposures")
-	if entries, err := os.ReadDir(exposuresDir); err == nil {
+	// Gabungkan penanda legacy di /etc/wdev/exposures jika belum masuk cf_routes DB
+	if entries, err := os.ReadDir(m.exposuresDir()); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
 			}
-			localDomain := e.Name()
-			content, err := os.ReadFile(filepath.Join(exposuresDir, localDomain))
-			if err == nil {
-				publicHost := strings.TrimSpace(string(content))
-				exposures = append(exposures, Exposure{
+			localDomain := strings.ToLower(strings.TrimSpace(e.Name()))
+			content, err := os.ReadFile(filepath.Join(m.exposuresDir(), e.Name()))
+			if err != nil {
+				continue
+			}
+			publicHost := strings.TrimSpace(string(content))
+			if publicHost == "" {
+				continue
+			}
+			if _, ok := byLocal[localDomain]; !ok {
+				byLocal[localDomain] = Exposure{
 					LocalDomain: localDomain,
 					PublicHost:  publicHost,
 					Profile:     "default",
-				})
+				}
 			}
 		}
 	}
 
-	return TunnelStatus{
-		Installed: installed,
-		Binary:    bin,
-		Active:    active,
-		Profiles:  profiles,
-		Exposures: exposures,
+	out := make([]Exposure, 0, len(byLocal))
+	for _, exp := range byLocal {
+		out = append(out, exp)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Profile != out[j].Profile {
+			return out[i].Profile < out[j].Profile
+		}
+		return out[i].LocalDomain < out[j].LocalDomain
+	})
+	return out
 }
 
-// Expose adds an ingress rule natively into Cloudflare configuration
+// Expose menambahkan aturan ingress Cloudflare untuk domain lokal ke domain publik pada profil tertentu.
 func (m *Manager) Expose(localDomain, publicHost, profile string) error {
-	localDomain = strings.ToLower(strings.TrimSpace(localDomain))
-	publicHost = strings.ToLower(strings.TrimSpace(publicHost))
-	profile = strings.TrimSpace(profile)
+	_, err := m.ExposeWithOptions(ExposeOptions{
+		LocalDomain: localDomain,
+		PublicHost:  publicHost,
+		Profile:     profile,
+	})
+	return err
+}
+
+// ExposeWithOptions menambahkan atau memperbarui rute ingress Cloudflare Tunnel secara menyeluruh per profil.
+func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
+	localDomain := strings.ToLower(strings.TrimSpace(opts.LocalDomain))
+	publicHost := strings.ToLower(strings.TrimSpace(opts.PublicHost))
+	profile := normalizeCFProfile(opts.Profile)
 	if profile == "" {
 		profile = "default"
 	}
+
 	if err := validateCFHost(localDomain, "local_domain"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateCFHost(publicHost, "public_host"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateCFProfile(profile); err != nil {
-		return err
+		return nil, err
 	}
 
-	// 1. Write exposure file in /etc/wdev/exposures
-	exposuresDir := filepath.Join(m.cfg.WdevEtc, "exposures")
-	_ = os.MkdirAll(exposuresDir, 0755)
-	if err := os.WriteFile(filepath.Join(exposuresDir, localDomain), []byte(publicHost+"\n"), 0644); err != nil {
-		return err
+	profilesMap := m.collectProfileMap()
+	profInfo, profExists := profilesMap[profile]
+	if profExists && profInfo.AuthMode == "token" {
+		return nil, fmt.Errorf("profil %q menggunakan mode Token (Remotely-Managed); kelola Public Hostname di Cloudflare Zero Trust Dashboard atau gunakan profil mode cert/config agar rute dikelola otomatis oleh wdev", profile)
 	}
 
-	// 2. Update config.yml for cloudflared
-	configFile := "/etc/cloudflared/config.yml"
-	routesDir := filepath.Join(m.cfg.WdevEtc, "cloudflare", "routes")
-	_ = os.MkdirAll(routesDir, 0755)
-	profileConfigFile := filepath.Join(routesDir, profile+".yml")
+	legacyExists := fileExists(m.legacyConfigPath)
+	if !profExists && !legacyExists {
+		return nil, fmt.Errorf("profil Cloudflare %q belum terdaftar. Daftarkan profil akun terlebih dahulu di menu Cloudflare Tunnel atau via 'wdev cf profile ...'", profile)
+	}
 
-	targetConfig := configFile
-	if _, err := os.Stat(profileConfigFile); err == nil {
-		targetConfig = profileConfigFile
+	if err := m.ensureDirs(); err != nil {
+		return nil, fmt.Errorf("gagal menyiapkan direktori cloudflare: %w", err)
+	}
+
+	// Tentukan service URL dan OriginRequest agar Nginx vhost & SSL lokal kompatibel
+	serviceURL := strings.TrimSpace(opts.ServiceURL)
+	var noTLSVerify bool
+	httpHostHeader := localDomain
+	if serviceURL == "" {
+		serviceURL = "http://127.0.0.1:80"
+		if fileExists(fmt.Sprintf("/etc/ssl/local-certs/%s.pem", localDomain)) {
+			serviceURL = "https://127.0.0.1:443"
+			noTLSVerify = true
+		}
+	} else {
+		parsed, err := url.Parse(serviceURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return nil, fmt.Errorf("service_url tidak valid (harus http:// atau https://): %q", serviceURL)
+		}
+		if opts.NoTLSVerify != nil {
+			noTLSVerify = *opts.NoTLSVerify
+		} else if parsed.Scheme == "https" && (strings.HasPrefix(parsed.Host, "127.0.0.1") || strings.HasPrefix(parsed.Host, "localhost")) {
+			noTLSVerify = true
+		}
+	}
+	if opts.NoTLSVerify != nil {
+		noTLSVerify = *opts.NoTLSVerify
+	}
+
+	targetConfig := m.legacyConfigPath
+	if profExists {
+		targetConfig = m.routeConfigPath(profile)
 	}
 
 	var cfg CloudflaredConfig
 	if data, err := os.ReadFile(targetConfig); err == nil {
 		_ = yaml.Unmarshal(data, &cfg)
 	}
+	if profExists {
+		if cfg.TunnelID == "" && profInfo.TunnelID != "" {
+			cfg.TunnelID = profInfo.TunnelID
+		}
+		if cfg.TunnelID == "" && profInfo.TunnelName != "" {
+			cfg.TunnelID = profInfo.TunnelName
+		}
+		if cfg.Credentials == "" && fileExists(m.credFilePath(profile)) {
+			cfg.Credentials = m.credFilePath(profile)
+		}
+		if cfg.Metrics == "" {
+			cfg.Metrics = "127.0.0.1:0"
+		}
+	}
 
-	// Add or update rule
-	found := false
-	serviceTarget := fmt.Sprintf("http://127.0.0.1:80")
-	// If local ssl cert exists, route to https
-	if _, err := os.Stat(fmt.Sprintf("/etc/ssl/local-certs/%s.pem", localDomain)); err == nil {
-		serviceTarget = fmt.Sprintf("https://127.0.0.1:443")
+	originReq := &OriginRequestConfig{
+		HTTPHostHeader: httpHostHeader,
+		NoTLSVerify:    noTLSVerify,
+	}
+	newRule := IngressRule{
+		Hostname:      publicHost,
+		Service:       serviceURL,
+		OriginRequest: originReq,
 	}
 
 	var newRules []IngressRule
+	found := false
 	for _, rule := range cfg.Ingress {
-		if rule.Hostname == publicHost {
-			newRules = append(newRules, IngressRule{Hostname: publicHost, Service: serviceTarget})
+		if strings.EqualFold(rule.Hostname, publicHost) {
+			newRules = append(newRules, newRule)
 			found = true
-		} else if rule.Service != "http_status:404" {
+		} else if rule.Service != "http_status:404" && strings.TrimSpace(rule.Service) != "" {
 			newRules = append(newRules, rule)
 		}
 	}
 	if !found {
-		newRules = append(newRules, IngressRule{Hostname: publicHost, Service: serviceTarget})
+		newRules = append(newRules, newRule)
 	}
-	// Fallback catch-all must be last
 	newRules = append(newRules, IngressRule{Service: "http_status:404"})
 	cfg.Ingress = newRules
 
-	if outData, err := yaml.Marshal(&cfg); err == nil {
-		_ = os.MkdirAll(filepath.Dir(targetConfig), 0755)
-		_ = os.WriteFile(targetConfig, outData, 0644)
+	outData, err := yaml.Marshal(&cfg)
+	if err != nil {
+		return nil, fmt.Errorf("gagal menyusun YAML konfigurasi tunnel: %w", err)
+	}
+	if err := m.writeConfigFile(targetConfig, outData, 0644); err != nil {
+		return nil, fmt.Errorf("gagal menulis konfigurasi tunnel (%s): %w", targetConfig, err)
 	}
 
-	// 3. Register DNS route if cloudflared is installed
-	if bin, err := exec.LookPath("cloudflared"); err == nil {
-		_ = exec.Command(bin, "tunnel", "route", "dns", profile, publicHost).Run()
+	// Tulis penanda legacy /etc/wdev/exposures agar SyncFromDisk & site.DeleteSite tetap sinkron
+	_ = os.WriteFile(filepath.Join(m.exposuresDir(), localDomain), []byte(publicHost+"\n"), 0644)
+
+	if m.store != nil {
+		_ = m.store.SaveCFRoute(store.CFRoute{
+			ProfileName:    profile,
+			LocalDomain:    localDomain,
+			Hostname:       publicHost,
+			ServiceURL:     serviceURL,
+			HTTPHostHeader: httpHostHeader,
+			NoTLSVerify:    noTLSVerify,
+		})
 	}
 
-	// 4. Reload cloudflared service
-	_ = exec.Command("systemctl", "reload", "cloudflared").Run()
-	_ = exec.Command("systemctl", "reload", fmt.Sprintf("cloudflared@%s", profile)).Run()
+	dnsWarning := ""
+	if bin, err := m.lookPathFn("cloudflared"); err == nil && bin != "" {
+		certPath := m.certFilePath(profile)
+		tunnelTarget := profInfo.TunnelID
+		if tunnelTarget == "" {
+			tunnelTarget = profInfo.TunnelName
+		}
+		if tunnelTarget == "" {
+			tunnelTarget = profile
+		}
 
-	return nil
+		args := []string{"tunnel"}
+		if fileExists(certPath) {
+			args = append(args, "--origincert", certPath)
+		}
+		args = append(args, "route", "dns", "--overwrite-dns", tunnelTarget, publicHost)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		out, dnsErr := m.runCmdFn(ctx, nil, bin, args...)
+		cancel()
+		if dnsErr != nil {
+			msg := strings.TrimSpace(string(out))
+			if msg == "" {
+				msg = dnsErr.Error()
+			}
+			dnsWarning = fmt.Sprintf("Rute lokal disimpan, namun sinkronisasi DNS CNAME Cloudflare gagal: %s", msg)
+		}
+	}
+
+	// Pastikan env & systemd template terpasang dan restart layanan profil jika ada
+	if profExists {
+		_ = m.writeProfileRunnerFiles(profInfo)
+		unit := profileServiceUnit(profile)
+		if fileExists(m.systemdTemplatePath) {
+			if m.isServiceActiveFn(unit) {
+				_, _ = m.runPrivileged("systemctl", "restart", unit)
+			} else if profInfo.HasCredentials {
+				_, _ = m.runPrivileged("systemctl", "enable", "--now", unit)
+			}
+		}
+	} else if m.isServiceActiveFn("cloudflared") {
+		_, _ = m.runPrivileged("systemctl", "restart", "cloudflared")
+	}
+
+	return &ExposeResult{
+		Status:     "exposed",
+		Profile:    profile,
+		PublicHost: publicHost,
+		ServiceURL: serviceURL,
+		DNSWarning: dnsWarning,
+	}, nil
 }
 
-// Unexpose removes an ingress rule natively
+// Unexpose menghapus aturan ingress Cloudflare berdasarkan domain lokal (dan memperbarui config profil/DB).
 func (m *Manager) Unexpose(localDomain string) error {
+	return m.UnexposeWithProfile(localDomain, "")
+}
+
+// UnexposeWithProfile menghapus exposure berdasarkan domain lokal dan profil opsional.
+func (m *Manager) UnexposeWithProfile(localDomain, profile string) error {
 	localDomain = strings.ToLower(strings.TrimSpace(localDomain))
 	if err := validateCFHost(localDomain, "local_domain"); err != nil {
 		return err
 	}
-	exposuresDir := filepath.Join(m.cfg.WdevEtc, "exposures")
-	expFile := filepath.Join(exposuresDir, localDomain)
+	cleanProfile := normalizeCFProfile(profile)
 
 	publicHost := ""
-	if data, err := os.ReadFile(expFile); err == nil {
-		publicHost = strings.TrimSpace(string(data))
+	routeProfile := cleanProfile
+	if m.store != nil {
+		if r, found, err := m.store.GetCFRouteByLocalDomain(localDomain); err == nil && found {
+			publicHost = strings.ToLower(strings.TrimSpace(r.Hostname))
+			if routeProfile == "" {
+				routeProfile = normalizeCFProfile(r.ProfileName)
+			}
+		}
+		_ = m.store.DeleteCFRouteByLocalDomain(localDomain)
+	}
+
+	expFile := filepath.Join(m.exposuresDir(), localDomain)
+	if publicHost == "" {
+		if data, err := os.ReadFile(expFile); err == nil {
+			publicHost = strings.ToLower(strings.TrimSpace(string(data)))
+		}
 	}
 	_ = os.Remove(expFile)
 
-	// Remove from YAML config
-	for _, configFile := range []string{"/etc/cloudflared/config.yml"} {
-		if data, err := os.ReadFile(configFile); err == nil {
-			var cfg CloudflaredConfig
-			if err := yaml.Unmarshal(data, &cfg); err == nil {
-				var newRules []IngressRule
-				for _, r := range cfg.Ingress {
-					if r.Hostname != publicHost {
-						newRules = append(newRules, r)
-					}
-				}
-				cfg.Ingress = newRules
-				if outData, err := yaml.Marshal(&cfg); err == nil {
-					_ = os.WriteFile(configFile, outData, 0644)
+	// Kumpulkan seluruh file konfigurasi YAML yang perlu dibersihkan
+	var yamlTargets []string
+	if routeProfile != "" {
+		yamlTargets = append(yamlTargets, m.routeConfigPath(routeProfile))
+	} else {
+		if entries, err := os.ReadDir(m.routesDir()); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".yml") {
+					yamlTargets = append(yamlTargets, filepath.Join(m.routesDir(), e.Name()))
 				}
 			}
 		}
 	}
+	if fileExists(m.legacyConfigPath) {
+		yamlTargets = append(yamlTargets, m.legacyConfigPath)
+	}
 
-	_ = exec.Command("systemctl", "reload", "cloudflared").Run()
+	var changedProfiles []string
+	for _, configFile := range yamlTargets {
+		data, err := os.ReadFile(configFile)
+		if err != nil {
+			continue
+		}
+		var cfg CloudflaredConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+		var newRules []IngressRule
+		removed := false
+		for _, r := range cfg.Ingress {
+			matchHost := publicHost != "" && strings.EqualFold(r.Hostname, publicHost)
+			matchHeader := r.OriginRequest != nil && strings.EqualFold(r.OriginRequest.HTTPHostHeader, localDomain)
+			if matchHost || matchHeader {
+				removed = true
+				continue
+			}
+			if r.Service == "http_status:404" {
+				continue
+			}
+			if strings.TrimSpace(r.Service) != "" {
+				newRules = append(newRules, r)
+			}
+		}
+		if !removed {
+			continue
+		}
+		newRules = append(newRules, IngressRule{Service: "http_status:404"})
+		cfg.Ingress = newRules
+		if outData, err := yaml.Marshal(&cfg); err == nil {
+			_ = m.writeConfigFile(configFile, outData, 0644)
+		}
+		if strings.HasPrefix(configFile, m.routesDir()) && strings.HasSuffix(configFile, ".yml") {
+			pName := strings.TrimSuffix(filepath.Base(configFile), ".yml")
+			changedProfiles = append(changedProfiles, pName)
+		}
+	}
+
+	for _, prof := range changedProfiles {
+		unit := profileServiceUnit(prof)
+		if m.isServiceActiveFn(unit) {
+			_, _ = m.runPrivileged("systemctl", "restart", unit)
+		}
+	}
+	if m.isServiceActiveFn("cloudflared") {
+		_, _ = m.runPrivileged("systemctl", "restart", "cloudflared")
+	}
+
 	return nil
+}
+
+func (m *Manager) writeConfigFile(dst string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err == nil {
+		if err := os.WriteFile(dst, data, mode); err == nil {
+			return nil
+		}
+	}
+	if os.Geteuid() == 0 {
+		return fmt.Errorf("gagal menulis %s sebagai root", dst)
+	}
+	return m.writePrivilegedFile(dst, data, mode)
+}
+
+func (m *Manager) writePrivilegedFile(dst string, data []byte, mode os.FileMode) error {
+	tmpFile, err := os.CreateTemp("", "wdev-cf-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	_ = tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	modeStr := fmt.Sprintf("%o", mode)
+	if _, err := m.runPrivileged("mkdir", "-p", filepath.Dir(dst)); err != nil {
+		return err
+	}
+	if _, err := m.runPrivileged("install", "-m", modeStr, tmpPath, dst); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) runPrivileged(bin string, args ...string) (string, error) {
+	if m.runPrivilegedFn != nil {
+		return m.runPrivilegedFn(bin, args...)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if os.Geteuid() == 0 {
+		out, err := m.runCmdFn(ctx, nil, bin, args...)
+		return strings.TrimSpace(string(out)), err
+	}
+
+	sudoArgs := append([]string{"-n", bin}, args...)
+	cmd := exec.CommandContext(ctx, "sudo", sudoArgs...)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		return strings.TrimSpace(string(out)), nil
+	} else if m.sudoPassFn != nil {
+		if pass := m.sudoPassFn(); pass != "" {
+			sArgs := append([]string{"-S", "-p", "", bin}, args...)
+			pCmd := exec.CommandContext(ctx, "sudo", sArgs...)
+			pCmd.Stdin = strings.NewReader(pass + "\n")
+			pOut, pErr := pCmd.CombinedOutput()
+			return strings.TrimSpace(string(pOut)), pErr
+		}
+		return strings.TrimSpace(string(out)), fmt.Errorf("%w: %s", ErrSudoRequired, strings.TrimSpace(string(out)))
+	} else {
+		return strings.TrimSpace(string(out)), fmt.Errorf("%w: %s", ErrSudoRequired, strings.TrimSpace(string(out)))
+	}
+}
+
+func fileExists(p string) bool {
+	if strings.TrimSpace(p) == "" {
+		return false
+	}
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
+func parseCredentialsJSONFile(path string) (tunnelID, accountTag string, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	return parseCredentialsJSONBytes(data)
+}
+
+func parseCredentialsJSONBytes(data []byte) (tunnelID, accountTag string, err error) {
+	var parsed struct {
+		AccountTag   string `json:"AccountTag"`
+		TunnelSecret string `json:"TunnelSecret"`
+		TunnelID     string `json:"TunnelID"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", "", fmt.Errorf("format credentials JSON tunnel tidak valid: %w", err)
+	}
+	if strings.TrimSpace(parsed.TunnelID) == "" || strings.TrimSpace(parsed.TunnelSecret) == "" {
+		return "", "", errors.New("credentials JSON harus memiliki field TunnelID dan TunnelSecret")
+	}
+	return strings.TrimSpace(parsed.TunnelID), strings.TrimSpace(parsed.AccountTag), nil
 }

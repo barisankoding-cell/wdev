@@ -302,14 +302,57 @@ export interface Exposure {
 	local_domain: string;
 	public_host: string;
 	profile: string;
+	service_url?: string;
+	http_host_header?: string;
+	no_tls_verify?: boolean;
+}
+
+export interface CFProfileInfo {
+	name: string;
+	auth_mode: 'token' | 'cert' | string;
+	tunnel_name?: string;
+	tunnel_id?: string;
+	account_tag?: string;
+	has_cert: boolean;
+	has_credentials: boolean;
+	has_token: boolean;
+	active: boolean;
+	enabled: boolean;
+	service_unit: string;
+	config_path?: string;
+	route_count: number;
+	created_at?: string;
 }
 
 export interface TunnelStatus {
 	installed: boolean;
 	binary: string;
 	active: boolean;
+	service_unit_ready?: boolean;
 	profiles: string[];
+	profile_details?: CFProfileInfo[];
 	exposures: Exposure[];
+	detected_local_certs?: string[];
+}
+
+export interface CFExposeResult {
+	status: string;
+	profile: string;
+	public_host: string;
+	service_url: string;
+	dns_warning?: string;
+}
+
+export interface CFLoginSession {
+	session_id: string;
+	profile: string;
+	tunnel_name?: string;
+	status: 'starting' | 'waiting_browser' | 'completed' | 'failed' | 'cancelled' | string;
+	auth_url?: string;
+	message?: string;
+	error?: string;
+	result?: CFProfileInfo;
+	expires_at: string;
 }
 
 export type ServerMode = 'local' | 'edge' | 'vps';

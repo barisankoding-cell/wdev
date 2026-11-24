@@ -36,18 +36,25 @@ type SiteRecord struct {
 }
 
 type CFProfile struct {
-	Name       string    `json:"name"`
-	TunnelName string    `json:"tunnel_name"`
-	TunnelID   string    `json:"tunnel_id"`
-	CreatedAt  time.Time `json:"created_at"`
+	Name            string    `json:"name"`
+	AuthMode        string    `json:"auth_mode"` // "token" | "cert"
+	TunnelName      string    `json:"tunnel_name"`
+	TunnelID        string    `json:"tunnel_id"`
+	AccountTag      string    `json:"account_tag,omitempty"`
+	CredentialsPath string    `json:"credentials_path,omitempty"`
+	ConfigPath      string    `json:"config_path,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type CFRoute struct {
-	ID          int64     `json:"id"`
-	ProfileName string    `json:"profile_name"`
-	Hostname    string    `json:"hostname"`
-	ServiceURL  string    `json:"service_url"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID             int64     `json:"id"`
+	ProfileName    string    `json:"profile_name"`
+	LocalDomain    string    `json:"local_domain"`
+	Hostname       string    `json:"hostname"`
+	ServiceURL     string    `json:"service_url"`
+	HTTPHostHeader string    `json:"http_host_header,omitempty"`
+	NoTLSVerify    bool      `json:"no_tls_verify,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type DNSRecord struct {
@@ -199,6 +206,19 @@ func (s *Store) migrate() error {
 	}
 	if err := s.ensureColumn("sites", "ssl_provider", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	for _, col := range [][3]string{
+		{"cf_profiles", "auth_mode", "TEXT NOT NULL DEFAULT 'cert'"},
+		{"cf_profiles", "account_tag", "TEXT NOT NULL DEFAULT ''"},
+		{"cf_profiles", "credentials_path", "TEXT NOT NULL DEFAULT ''"},
+		{"cf_profiles", "config_path", "TEXT NOT NULL DEFAULT ''"},
+		{"cf_routes", "local_domain", "TEXT NOT NULL DEFAULT ''"},
+		{"cf_routes", "http_host_header", "TEXT NOT NULL DEFAULT ''"},
+		{"cf_routes", "no_tls_verify", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := s.ensureColumn(col[0], col[1], col[2]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
@@ -80,11 +81,24 @@ RUNTIME SWITCHER:
   wdev switch pg <ver>      Ganti versi cluster PostgreSQL aktif
   wdev switch java <ver>    Ganti versi OpenJDK aktif (contoh: wdev switch java 21)
 
-CLOUDFLARE TUNNEL:
-  wdev cf status            Status tunnel, akun, dan exposures aktif
-  wdev cf expose <local> <public> [--profile <nama>]
+CLOUDFLARE TUNNEL (MULTI-PROFILE):
+  wdev cf status            Status tunnel, profil multi-akun, dan exposures aktif
+  wdev cf login [profil] [--tunnel-name <nama>]
+                            Login interaktif Cloudflare (isolated per profil) & buat tunnel
+  wdev cf profile list      Daftar seluruh profil Cloudflare terdaftar
+  wdev cf profile add-token <profil> <token> [--tunnel-name <nama>] [--no-start]
+                            Daftarkan profil Cloudflare Tunnel dengan Tunnel Token Zero Trust
+  wdev cf profile add-cert <profil> <cert.pem> [--cred <cred.json>] [--tunnel-name <nama>] [--no-start]
+                            Daftarkan profil berbasis cert.pem (& auto-create tunnel)
+  wdev cf profile rm <profil>
+                            Hapus profil Cloudflare Tunnel & unit layanannya
+  wdev cf start|stop|restart <profil>
+                            Kontrol layanan systemd cloudflared@<profil>
+  wdev cf logs <profil>     Lihat log layanan cloudflared@<profil>
+  wdev cf expose <local> <public> [--profile <nama>] [--service <url>] [--no-tls-verify]
                             Ekspos vhost lokal ke domain publik Cloudflare
-  wdev cf unexpose <local>  Hapus eksposur domain
+  wdev cf unexpose <local> [--profile <nama>]
+                            Hapus eksposur domain
 
 POWERDNS & VPS EDGE:
   wdev pdns status                         Status koneksi VPS Netbird & PowerDNS API
@@ -163,6 +177,7 @@ func main() {
 	siteMgr := site.NewWithSudo(cfg, db, inst.GetSudoPassword)
 	swMgr := switcher.NewWithInstaller(inst)
 	cfMgr := cloudflare.New(cfg, db)
+	cfMgr.SetSudoPasswordFn(inst.GetSudoPassword)
 	pdnsMgr := pdns.New(cfg, db)
 	pdnsMgr.SetSiteManager(siteMgr)
 	mailMgr := mail.New(cfg, db, pdnsMgr)
@@ -682,7 +697,7 @@ func main() {
 		fmt.Printf("✓ Berhasil mengganti %s ke versi %s\n", target, ver)
 
 	case "cf":
-		if len(args) < 2 || args[1] == "status" {
+		printCFStatus := func() {
 			st := cfMgr.GetStatus()
 			fmt.Printf("Cloudflare Tunnel: ")
 			if st.Active {
@@ -690,42 +705,285 @@ func main() {
 			} else {
 				fmt.Println("NONAKTIF")
 			}
-			fmt.Printf("Profil: %s\n", strings.Join(st.Profiles, ", "))
-			fmt.Println("Exposures:")
-			for _, exp := range st.Exposures {
-				fmt.Printf("  - %s -> https://%s (%s)\n", exp.LocalDomain, exp.PublicHost, exp.Profile)
+			fmt.Printf("Binary           : %s\n", st.Binary)
+			fmt.Printf("Systemd Template : %v\n", st.ServiceUnitReady)
+			fmt.Printf("Profil Multi-Akun (%d):\n", len(st.ProfileDetails))
+			if len(st.ProfileDetails) == 0 {
+				fmt.Println("  (Belum ada profil terdaftar — gunakan 'wdev cf login <profil>' atau 'wdev cf profile add-token <profil> <token>')")
 			}
+			for _, p := range st.ProfileDetails {
+				svcState := "NONAKTIF"
+				if p.Active {
+					svcState = "AKTIF"
+				}
+				fmt.Printf("  - %-14s [%-5s] status=%-8s tunnel=%s routes=%d (%s)\n",
+					p.Name, p.AuthMode, svcState, p.TunnelID, p.RouteCount, p.ServiceUnit)
+			}
+			fmt.Printf("Exposures (%d):\n", len(st.Exposures))
+			for _, exp := range st.Exposures {
+				target := exp.ServiceURL
+				if target == "" {
+					target = "auto"
+				}
+				fmt.Printf("  - %s -> https://%s (profil: %s, target: %s)\n", exp.LocalDomain, exp.PublicHost, exp.Profile, target)
+			}
+		}
+
+		if len(args) < 2 || args[1] == "status" {
+			printCFStatus()
 			return
 		}
+
 		switch args[1] {
-		case "expose":
-			if len(args) < 4 {
-				fmt.Println("Penggunaan: wdev cf expose <local_domain> <public_host> [--profile <nama>]")
-				os.Exit(1)
-			}
-			profile := ""
-			for i := 4; i < len(args); i++ {
-				if args[i] == "--profile" && i+1 < len(args) {
-					profile = args[i+1]
-					break
+		case "login":
+			profile := "default"
+			tunnelName := ""
+			for i := 2; i < len(args); i++ {
+				if (args[i] == "--tunnel-name" || args[i] == "-t") && i+1 < len(args) {
+					tunnelName = args[i+1]
+					i++
+				} else if !strings.HasPrefix(args[i], "-") && profile == "default" {
+					profile = args[i]
 				}
 			}
-			if err := cfMgr.Expose(args[2], args[3], profile); err != nil {
+			fmt.Printf("Memulai login Cloudflare terisolasi untuk profil '%s'...\n", profile)
+			sess, err := cfMgr.StartBrowserLogin(profile, tunnelName)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("✓ %s berhasil diekspos ke https://%s\n", args[2], args[3])
+			if sess.AuthURL != "" {
+				fmt.Printf("\nBuka URL otorisasi berikut di browser lalu pilih domain Cloudflare Anda:\n  %s\n\nMenunggu otorisasi browser...\n", sess.AuthURL)
+			}
+			for {
+				cur, gErr := cfMgr.GetLoginSession(sess.ID)
+				if gErr != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", gErr)
+					os.Exit(1)
+				}
+				if cur.Status == "completed" {
+					fmt.Printf("✓ %s\n", cur.Message)
+					if cur.Result != nil {
+						fmt.Printf("  Tunnel ID : %s\n  Unit      : %s\n", cur.Result.TunnelID, cur.Result.ServiceUnit)
+					}
+					return
+				}
+				if cur.Status == "failed" || cur.Status == "cancelled" {
+					fmt.Fprintf(os.Stderr, "✗ %s: %s\n", cur.Message, cur.Error)
+					os.Exit(1)
+				}
+				time.Sleep(1500 * time.Millisecond)
+			}
+
+		case "profile", "profiles":
+			if len(args) < 3 || args[2] == "list" {
+				printCFStatus()
+				return
+			}
+			switch args[2] {
+			case "login":
+				profile := "default"
+				tunnelName := ""
+				for i := 3; i < len(args); i++ {
+					if args[i] == "--tunnel-name" && i+1 < len(args) {
+						tunnelName = args[i+1]
+						i++
+					} else if !strings.HasPrefix(args[i], "-") {
+						profile = args[i]
+					}
+				}
+				sess, err := cfMgr.StartBrowserLogin(profile, tunnelName)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				if sess.AuthURL != "" {
+					fmt.Printf("\nBuka URL otorisasi berikut di browser:\n  %s\n\nMenunggu...\n", sess.AuthURL)
+				}
+				for {
+					cur, _ := cfMgr.GetLoginSession(sess.ID)
+					if cur == nil || cur.Status == "completed" {
+						fmt.Printf("✓ Profil '%s' siap digunakan.\n", profile)
+						return
+					}
+					if cur.Status == "failed" || cur.Status == "cancelled" {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", cur.Error)
+						os.Exit(1)
+					}
+					time.Sleep(1500 * time.Millisecond)
+				}
+			case "add-token":
+				if len(args) < 5 {
+					fmt.Println("Penggunaan: wdev cf profile add-token <profil> <token> [--tunnel-name <nama>] [--no-start]")
+					os.Exit(1)
+				}
+				autoStart := true
+				tunnelName := ""
+				for i := 5; i < len(args); i++ {
+					switch args[i] {
+					case "--tunnel-name":
+						if i+1 < len(args) {
+							tunnelName = args[i+1]
+							i++
+						}
+					case "--no-start":
+						autoStart = false
+					}
+				}
+				info, err := cfMgr.RegisterTokenProfile(cloudflare.TokenProfileOptions{
+					Name:       args[3],
+					Token:      args[4],
+					TunnelName: tunnelName,
+					AutoStart:  &autoStart,
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Printf("✓ Profil Token '%s' terdaftar (Tunnel ID: %s, Unit: %s)\n", info.Name, info.TunnelID, info.ServiceUnit)
+
+			case "add-cert":
+				if len(args) < 5 {
+					fmt.Println("Penggunaan: wdev cf profile add-cert <profil> <cert.pem_path> [--cred <cred.json_path>] [--tunnel-name <nama>] [--no-start]")
+					os.Exit(1)
+				}
+				certData, err := os.ReadFile(args[4])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error membaca %s: %v\n", args[4], err)
+					os.Exit(1)
+				}
+				credJSON := ""
+				tunnelName := ""
+				autoStart := true
+				for i := 5; i < len(args); i++ {
+					switch args[i] {
+					case "--cred":
+						if i+1 < len(args) {
+							b, rErr := os.ReadFile(args[i+1])
+							if rErr != nil {
+								fmt.Fprintf(os.Stderr, "Error membaca %s: %v\n", args[i+1], rErr)
+								os.Exit(1)
+							}
+							credJSON = string(b)
+							i++
+						}
+					case "--tunnel-name":
+						if i+1 < len(args) {
+							tunnelName = args[i+1]
+							i++
+						}
+					case "--no-start":
+						autoStart = false
+					}
+				}
+				info, err := cfMgr.RegisterCertProfile(cloudflare.CertProfileOptions{
+					Name:            args[3],
+					CertPEM:         string(certData),
+					CredentialsJSON: credJSON,
+					TunnelName:      tunnelName,
+					AutoStart:       &autoStart,
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Printf("✓ Profil Cert '%s' terdaftar (Tunnel ID: %s, Unit: %s)\n", info.Name, info.TunnelID, info.ServiceUnit)
+
+			case "rm", "delete", "del":
+				if len(args) < 4 {
+					fmt.Println("Penggunaan: wdev cf profile rm <profil>")
+					os.Exit(1)
+				}
+				if err := cfMgr.DeleteProfile(args[3]); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Printf("✓ Profil Cloudflare '%s' berhasil dihapus.\n", args[3])
+			default:
+				fmt.Fprintf(os.Stderr, "Sub-perintah 'wdev cf profile %s' tidak dikenal.\n", args[2])
+				os.Exit(1)
+			}
+
+		case "start", "stop", "restart", "enable", "disable":
+			if len(args) < 3 {
+				fmt.Printf("Penggunaan: wdev cf %s <profil>\n", args[1])
+				os.Exit(1)
+			}
+			if err := cfMgr.ControlProfile(args[2], args[1]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ cloudflared@%s berhasil di-%s.\n", args[2], args[1])
+
+		case "logs":
+			if len(args) < 3 {
+				fmt.Println("Penggunaan: wdev cf logs <profil>")
+				os.Exit(1)
+			}
+			logs, err := cfMgr.GetProfileLogs(args[2], 60)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println(logs)
+
+		case "expose":
+			if len(args) < 4 {
+				fmt.Println("Penggunaan: wdev cf expose <local_domain> <public_host> [--profile <nama>] [--service <url>] [--no-tls-verify]")
+				os.Exit(1)
+			}
+			opts := cloudflare.ExposeOptions{
+				LocalDomain: args[2],
+				PublicHost:  args[3],
+			}
+			for i := 4; i < len(args); i++ {
+				switch args[i] {
+				case "--profile", "-p":
+					if i+1 < len(args) {
+						opts.Profile = args[i+1]
+						i++
+					}
+				case "--service", "-s":
+					if i+1 < len(args) {
+						opts.ServiceURL = args[i+1]
+						i++
+					}
+				case "--no-tls-verify":
+					v := true
+					opts.NoTLSVerify = &v
+				}
+			}
+			res, err := cfMgr.ExposeWithOptions(opts)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ %s berhasil diekspos ke https://%s (profil: %s -> %s)\n", args[2], res.PublicHost, res.Profile, res.ServiceURL)
+			if res.DNSWarning != "" {
+				fmt.Printf("! Peringatan DNS: %s\n", res.DNSWarning)
+			}
 
 		case "unexpose":
 			if len(args) < 3 {
-				fmt.Println("Penggunaan: wdev cf unexpose <local_domain>")
+				fmt.Println("Penggunaan: wdev cf unexpose <local_domain> [--profile <nama>]")
 				os.Exit(1)
 			}
-			if err := cfMgr.Unexpose(args[2]); err != nil {
+			prof := ""
+			for i := 3; i < len(args); i++ {
+				if args[i] == "--profile" && i+1 < len(args) {
+					prof = args[i+1]
+					i++
+				}
+			}
+			if err := cfMgr.UnexposeWithProfile(args[2], prof); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Printf("✓ Exposure untuk %s dihapus.\n", args[2])
+
+		default:
+			fmt.Fprintf(os.Stderr, "Sub-perintah 'wdev cf %s' tidak dikenal.\n", args[1])
+			os.Exit(1)
 		}
 
 	case "pdns":

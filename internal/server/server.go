@@ -79,6 +79,9 @@ func New(
 	if mailMgr != nil && inst != nil {
 		mailMgr.SetInstaller(inst.InstallMailStackWithDomain)
 	}
+	if cfMgr != nil && inst != nil {
+		cfMgr.SetSudoPasswordFn(inst.GetSudoPassword)
+	}
 	srv := &Server{
 		cfg:         cfg,
 		store:       s,
@@ -112,6 +115,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/cloudflare/status", s.handleCFStatus)
 	s.mux.HandleFunc("/api/cloudflare/expose", s.handleCFExpose)
 	s.mux.HandleFunc("/api/cloudflare/unexpose", s.handleCFUnexpose)
+	s.mux.HandleFunc("/api/cloudflare/profiles/token", s.handleCFRegisterToken)
+	s.mux.HandleFunc("/api/cloudflare/profiles/cert", s.handleCFRegisterCert)
+	s.mux.HandleFunc("/api/cloudflare/profiles/login/start", s.handleCFLoginStart)
+	s.mux.HandleFunc("/api/cloudflare/profiles/login/status", s.handleCFLoginStatus)
+	s.mux.HandleFunc("/api/cloudflare/profiles/login/cancel", s.handleCFLoginCancel)
+	s.mux.HandleFunc("/api/cloudflare/profiles/control", s.handleCFProfileControl)
+	s.mux.HandleFunc("/api/cloudflare/profiles/logs", s.handleCFProfileLogs)
+	s.mux.HandleFunc("/api/cloudflare/profiles/delete", s.handleCFProfileDelete)
 	s.mux.HandleFunc("/api/pdns/status", s.handlePDNSStatus)
 	s.mux.HandleFunc("/api/pdns/zones", s.handlePDNSZones)
 	s.mux.HandleFunc("/api/pdns/zone/doctor", s.handlePDNSZoneDoctor)
@@ -1672,6 +1683,9 @@ func (s *Server) handleCFStatus(w http.ResponseWriter, r *http.Request) {
 	if st.Profiles == nil {
 		st.Profiles = []string{}
 	}
+	if st.ProfileDetails == nil {
+		st.ProfileDetails = []cloudflare.ProfileInfo{}
+	}
 	if st.Exposures == nil {
 		st.Exposures = []cloudflare.Exposure{}
 	}
@@ -1683,20 +1697,17 @@ func (s *Server) handleCFExpose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 		return
 	}
-	var payload struct {
-		LocalDomain string `json:"local_domain"`
-		PublicHost  string `json:"public_host"`
-		Profile     string `json:"profile"`
-	}
+	var payload cloudflare.ExposeOptions
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
-	if err := s.cfMgr.Expose(payload.LocalDomain, payload.PublicHost, payload.Profile); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	res, err := s.cfMgr.ExposeWithOptions(payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "exposed"})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
@@ -1706,16 +1717,165 @@ func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
 	}
 	var payload struct {
 		LocalDomain string `json:"local_domain"`
+		Profile     string `json:"profile"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
-	if err := s.cfMgr.Unexpose(payload.LocalDomain); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.cfMgr.UnexposeWithProfile(payload.LocalDomain, payload.Profile); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unexposed"})
+}
+
+func (s *Server) handleCFRegisterToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload cloudflare.TokenProfileOptions
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+	info, err := s.cfMgr.RegisterTokenProfile(payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "registered", "profile": info})
+}
+
+func (s *Server) handleCFRegisterCert(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload cloudflare.CertProfileOptions
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+	info, err := s.cfMgr.RegisterCertProfile(payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "registered", "profile": info})
+}
+
+func (s *Server) handleCFLoginStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		Name       string `json:"name"`
+		TunnelName string `json:"tunnel_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+	sess, err := s.cfMgr.StartBrowserLogin(payload.Name, payload.TunnelName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleCFLoginStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	sessID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if sessID == "" {
+		writeError(w, http.StatusBadRequest, "Parameter id sesi wajib diisi")
+		return
+	}
+	sess, err := s.cfMgr.GetLoginSession(sessID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleCFLoginCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+	if err := s.cfMgr.CancelLoginSession(payload.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+func (s *Server) handleCFProfileControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		Name   string `json:"name"`
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+	if err := s.cfMgr.ControlProfile(payload.Name, payload.Action); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleCFProfileLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	lines, _ := strconv.Atoi(r.URL.Query().Get("lines"))
+	logs, err := s.cfMgr.GetProfileLogs(name, lines)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"profile": name, "logs": logs})
+}
+
+func (s *Server) handleCFProfileDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+	if err := s.cfMgr.DeleteProfile(payload.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
@@ -2709,7 +2869,19 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 			} else {
 				cb("  [WARN] Layanan cloudflared : NONAKTIF")
 			}
-			cb(fmt.Sprintf("  Profil Akun : %s", strings.Join(st.Profiles, ", ")))
+			if st.ServiceUnitReady {
+				cb("  [OK] Systemd Template     : /etc/systemd/system/cloudflared@.service")
+			} else {
+				cb("  [WARN] Systemd Template     : belum terpasang (jalankan install cloudflare / daftar profil)")
+			}
+			cb(fmt.Sprintf("  Profil Akun (%d) :", len(st.ProfileDetails)))
+			for _, p := range st.ProfileDetails {
+				state := "NONAKTIF"
+				if p.Active {
+					state = "AKTIF"
+				}
+				cb(fmt.Sprintf("    - %-14s mode=%-5s status=%s tunnel=%s routes=%d", p.Name, p.AuthMode, state, p.TunnelID, p.RouteCount))
+			}
 			cb(fmt.Sprintf("  Jumlah Eksposur Aktif : %d", len(st.Exposures)))
 			client := http.Client{Timeout: 5 * time.Second}
 			if resp, err := client.Get("https://1.1.1.1"); err == nil {

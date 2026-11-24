@@ -555,16 +555,18 @@ func (t *TUI) menuWorkspaceShell() {
 func (t *TUI) menuCloudflare() {
 	for {
 		t.Clear()
-		fmt.Printf("%s%s=== [6] CLOUDFLARE TUNNEL & DNS MANAGER ===%s\n\n", Bold, Blue, Reset)
-		fmt.Printf("  %s[1]%s 📊 Status Tunnel & Daftar Eksposur\n", Bold, Reset)
-		fmt.Printf("  %s[2]%s 🌐 Ekspos Vhost Lokal ke Domain Cloudflare (Expose)\n", Bold, Reset)
-		fmt.Printf("  %s[3]%s ❌ Hapus Eksposur Domain (Unexpose)\n", Bold, Reset)
-		fmt.Printf("  %s[4]%s ⚙️  Kontrol Layanan cloudflared (Start / Stop / Restart)\n", Bold, Reset)
-		fmt.Printf("  %s[5]%s 🩺 Diagnostik Koneksi Cloudflare\n", Bold, Reset)
-		fmt.Printf("  %s[6]%s 📥 Install / Perbarui cloudflared\n", Bold, Reset)
+		fmt.Printf("%s%s=== [6] CLOUDFLARE TUNNEL & MULTI-PROFILE MANAGER ===%s\n\n", Bold, Blue, Reset)
+		fmt.Printf("  %s[1]%s 📊 Status Tunnel, Profil Multi-Akun & Eksposur\n", Bold, Reset)
+		fmt.Printf("  %s[2]%s 🔑 Daftarkan Profil Baru (Tunnel Token / Login Browser)\n", Bold, Reset)
+		fmt.Printf("  %s[3]%s 🌐 Ekspos Vhost Lokal ke Domain Cloudflare (Expose)\n", Bold, Reset)
+		fmt.Printf("  %s[4]%s ❌ Hapus Eksposur Domain (Unexpose)\n", Bold, Reset)
+		fmt.Printf("  %s[5]%s ⚙️  Kontrol Layanan Profil (Start / Stop / Restart)\n", Bold, Reset)
+		fmt.Printf("  %s[6]%s 🗑️  Hapus Profil Cloudflare\n", Bold, Reset)
+		fmt.Printf("  %s[7]%s 🩺 Diagnostik Koneksi Cloudflare\n", Bold, Reset)
+		fmt.Printf("  %s[8]%s 📥 Install / Perbarui cloudflared\n", Bold, Reset)
 		fmt.Printf("  %s[0]%s Kembali ke Menu Utama\n\n", Bold, Reset)
 
-		c := t.prompt("Pilih opsi [0-6]: ")
+		c := t.prompt("Pilih opsi [0-8]: ")
 		switch c {
 		case "1":
 			t.Clear()
@@ -573,27 +575,83 @@ func (t *TUI) menuCloudflare() {
 			if !st.Active {
 				activeBadge = fmt.Sprintf("%sNONAKTIF%s", Red, Reset)
 			}
-			fmt.Printf("Cloudflare Tunnel Service: %s\n", activeBadge)
-			fmt.Printf("Profil Akun: %s\n\n", strings.Join(st.Profiles, ", "))
-			fmt.Printf("%-24s %-32s %s\n", "LOCAL DOMAIN", "PUBLIC HOST", "PROFILE")
-			fmt.Println(strings.Repeat("-", 70))
+			fmt.Printf("Cloudflare Tunnel Overall : %s\n", activeBadge)
+			fmt.Printf("Systemd Multi-Profile     : %v\n\n", st.ServiceUnitReady)
+			fmt.Printf("Profil Terdaftar (%d):\n", len(st.ProfileDetails))
+			for _, p := range st.ProfileDetails {
+				ps := "NONAKTIF"
+				if p.Active {
+					ps = "AKTIF"
+				}
+				fmt.Printf("  - %-12s mode=%-5s status=%-8s tunnel=%s routes=%d\n", p.Name, p.AuthMode, ps, p.TunnelID, p.RouteCount)
+			}
+			fmt.Printf("\n%-24s %-30s %-12s %s\n", "LOCAL DOMAIN", "PUBLIC HOST", "PROFILE", "SERVICE")
+			fmt.Println(strings.Repeat("-", 80))
 			for _, exp := range st.Exposures {
-				fmt.Printf("%-24s %-32s %s\n", exp.LocalDomain, exp.PublicHost, exp.Profile)
+				fmt.Printf("%-24s %-30s %-12s %s\n", exp.LocalDomain, exp.PublicHost, exp.Profile, exp.ServiceURL)
 			}
 			t.waitEnter()
 		case "2":
-			local := t.prompt("Domain lokal (contoh: myapp.test): ")
-			pub := t.prompt("Domain publik Cloudflare (contoh: app.domainanda.com): ")
-			prof := t.prompt("Nama profil [opsional, default utama]: ")
-			if local != "" && pub != "" {
-				if err := t.cfMgr.Expose(local, pub, prof); err != nil {
-					fmt.Printf("Gagal mengekspos domain: %v\n", err)
-				} else {
-					fmt.Printf("✓ %s berhasil diekspos ke https://%s\n", local, pub)
+			modeChoice := t.prompt("Metode registrasi [1=Tunnel Token Zero Trust, 2=Login Browser OAuth]: ")
+			prof := t.prompt("Nama profil [default]: ")
+			if prof == "" {
+				prof = "default"
+			}
+			if modeChoice == "1" {
+				tok := t.prompt("Paste Tunnel Token (atau perintah cloudflared service install ...): ")
+				if tok != "" {
+					info, err := t.cfMgr.RegisterTokenProfile(cloudflare.TokenProfileOptions{Name: prof, Token: tok})
+					if err != nil {
+						fmt.Printf("Gagal mendaftarkan profil: %v\n", err)
+					} else {
+						fmt.Printf("✓ Profil Token '%s' aktif (Tunnel ID: %s)\n", info.Name, info.TunnelID)
+					}
+					t.waitEnter()
+				}
+			} else if modeChoice == "2" {
+				tun := t.prompt("Nama tunnel Cloudflare [opsional]: ")
+				sess, err := t.cfMgr.StartBrowserLogin(prof, tun)
+				if err != nil {
+					fmt.Printf("Gagal memulai login: %v\n", err)
+					t.waitEnter()
+					continue
+				}
+				if sess.AuthURL != "" {
+					fmt.Printf("\nBuka URL berikut di browser lalu otorisasi akun:\n  %s\n\nMenunggu otorisasi...\n", sess.AuthURL)
+				}
+				for {
+					cur, _ := t.cfMgr.GetLoginSession(sess.ID)
+					if cur == nil || cur.Status == "completed" {
+						fmt.Printf("✓ Profil '%s' berhasil dibuat & diaktifkan.\n", prof)
+						break
+					}
+					if cur.Status == "failed" || cur.Status == "cancelled" {
+						fmt.Printf("✗ Gagal: %s\n", cur.Error)
+						break
+					}
+					time.Sleep(1500 * time.Millisecond)
 				}
 				t.waitEnter()
 			}
 		case "3":
+			local := t.prompt("Domain lokal (contoh: myapp.test): ")
+			pub := t.prompt("Domain publik Cloudflare (contoh: app.domainanda.com): ")
+			prof := t.prompt("Nama profil [default]: ")
+			if local != "" && pub != "" {
+				res, err := t.cfMgr.ExposeWithOptions(cloudflare.ExposeOptions{
+					LocalDomain: local, PublicHost: pub, Profile: prof,
+				})
+				if err != nil {
+					fmt.Printf("Gagal mengekspos domain: %v\n", err)
+				} else {
+					fmt.Printf("✓ %s berhasil diekspos ke https://%s (profil: %s)\n", local, res.PublicHost, res.Profile)
+					if res.DNSWarning != "" {
+						fmt.Printf("! %s\n", res.DNSWarning)
+					}
+				}
+				t.waitEnter()
+			}
+		case "4":
 			local := t.prompt("Domain lokal yang ingin dihapus dari eksposur: ")
 			if local != "" {
 				if err := t.cfMgr.Unexpose(local); err != nil {
@@ -603,17 +661,31 @@ func (t *TUI) menuCloudflare() {
 				}
 				t.waitEnter()
 			}
-		case "4":
-			act := t.prompt("Tindakan [start/stop/restart/reload]: ")
+		case "5":
+			prof := t.prompt("Nama profil [default]: ")
+			if prof == "" {
+				prof = "default"
+			}
+			act := t.prompt("Tindakan [start/stop/restart]: ")
 			if act != "" {
-				if err := monitor.ControlService("cloudflared", act); err != nil {
+				if err := t.cfMgr.ControlProfile(prof, act); err != nil {
 					fmt.Printf("Error: %v\n", err)
 				} else {
-					fmt.Printf("✓ cloudflared berhasil di-%s\n", act)
+					fmt.Printf("✓ cloudflared@%s berhasil di-%s\n", prof, act)
 				}
 				t.waitEnter()
 			}
-		case "5":
+		case "6":
+			prof := t.prompt("Nama profil yang ingin dihapus: ")
+			if prof != "" {
+				if err := t.cfMgr.DeleteProfile(prof); err != nil {
+					fmt.Printf("Gagal menghapus profil: %v\n", err)
+				} else {
+					fmt.Printf("✓ Profil '%s' dihapus.\n", prof)
+				}
+				t.waitEnter()
+			}
+		case "7":
 			fmt.Println("Memeriksa konektivitas Cloudflare...")
 			client := http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Get("https://1.1.1.1")
@@ -624,7 +696,7 @@ func (t *TUI) menuCloudflare() {
 				fmt.Println("[OK] Konektivitas Cloudflare Edge 1.1.1.1 prima.")
 			}
 			t.waitEnter()
-		case "6":
+		case "8":
 			t.runTask("Install Cloudflared", t.inst.InstallCloudflared)
 		case "0", "q", "Q":
 			return

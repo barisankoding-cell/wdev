@@ -3,6 +3,9 @@ import type {
 	AuthMeResponse,
 	BindPanelDomainPayload,
 	BindPanelDomainResponse,
+	CFExposeResult,
+	CFLoginSession,
+	CFProfileInfo,
 	ChangeCredentialsPayload,
 	CreateSitePayload,
 	DomainAccounts,
@@ -334,15 +337,76 @@ export const api = {
 
 	// Cloudflare
 	getCFStatus: () => apiFetch<TunnelStatus>('/api/cloudflare/status'),
-	exposeCF: (local_domain: string, public_host: string, profile = '') =>
-		apiFetch<{ status: string }>('/api/cloudflare/expose', {
+	exposeCF: (
+		local_domain: string,
+		public_host: string,
+		profile = '',
+		service_url = '',
+		no_tls_verify?: boolean
+	) =>
+		apiFetch<CFExposeResult>('/api/cloudflare/expose', {
 			method: 'POST',
-			body: JSON.stringify({ local_domain, public_host, profile })
+			body: JSON.stringify({
+				local_domain,
+				public_host,
+				profile,
+				...(service_url ? { service_url } : {}),
+				...(no_tls_verify !== undefined ? { no_tls_verify } : {})
+			})
 		}),
-	unexposeCF: (local_domain: string) =>
+	unexposeCF: (local_domain: string, profile = '') =>
 		apiFetch<{ status: string }>('/api/cloudflare/unexpose', {
 			method: 'POST',
-			body: JSON.stringify({ local_domain })
+			body: JSON.stringify({ local_domain, ...(profile ? { profile } : {}) })
+		}),
+	registerCFTokenProfile: (payload: {
+		name: string;
+		token: string;
+		tunnel_name?: string;
+		auto_start?: boolean;
+	}) =>
+		apiFetch<{ status: string; profile: CFProfileInfo }>('/api/cloudflare/profiles/token', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+	registerCFCertProfile: (payload: {
+		name: string;
+		cert_pem?: string;
+		local_cert_path?: string;
+		credentials_json?: string;
+		tunnel_name?: string;
+		tunnel_id?: string;
+		auto_start?: boolean;
+	}) =>
+		apiFetch<{ status: string; profile: CFProfileInfo }>('/api/cloudflare/profiles/cert', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+	startCFLogin: (name: string, tunnel_name = '') =>
+		apiFetch<CFLoginSession>('/api/cloudflare/profiles/login/start', {
+			method: 'POST',
+			body: JSON.stringify({ name, ...(tunnel_name ? { tunnel_name } : {}) })
+		}),
+	getCFLoginStatus: (id: string) =>
+		apiFetch<CFLoginSession>(`/api/cloudflare/profiles/login/status?id=${encodeURIComponent(id)}`),
+	cancelCFLogin: (id: string) =>
+		apiFetch<{ status: string }>('/api/cloudflare/profiles/login/cancel', {
+			method: 'POST',
+			body: JSON.stringify({ id })
+		}),
+	controlCFProfile: (name: string, action: 'start' | 'stop' | 'restart' | 'enable' | 'disable') =>
+		apiFetch<{ status: string }>('/api/cloudflare/profiles/control', {
+			method: 'POST',
+			body: JSON.stringify({ name, action })
+		}),
+	getCFProfileLogs: (name: string, lines = 50) =>
+		apiFetch<{ profile: string; logs: string }>(
+			`/api/cloudflare/profiles/logs?name=${encodeURIComponent(name)}&lines=${lines}`
+		),
+	deleteCFProfile: (name: string) =>
+		apiFetch<{ status: string }>('/api/cloudflare/profiles/delete', {
+			method: 'POST',
+			body: JSON.stringify({ name })
 		}),
 
 	// PowerDNS & Edge
