@@ -506,15 +506,16 @@ func (t *TUI) menuWorkspaceShell() {
 		c := t.prompt("Pilih opsi [0-6]: ")
 		switch c {
 		case "1":
-			st := monitor.GetServiceStatus("orca")
+			orcaUser, orcaHome := installer.ResolveOrcaUser()
+			active := installer.IsOrcaServiceActive(context.Background(), orcaUser, orcaHome)
 			statusStr := fmt.Sprintf("%sNONAKTIF%s", Red, Reset)
-			if st.Active {
+			if active {
 				statusStr = fmt.Sprintf("%sAKTIF%s", Green, Reset)
 			}
 			fmt.Printf("\nStatus Layanan Orca: %s\n", statusStr)
 			act := t.prompt("Pilih tindakan [start / stop / restart / kembali]: ")
 			if act == "start" || act == "stop" || act == "restart" {
-				if err := monitor.ControlService("orca", act); err != nil {
+				if err := installer.ControlOrcaService(context.Background(), act); err != nil {
 					fmt.Printf("Error: %v\n", err)
 				} else {
 					fmt.Printf("✓ Layanan orca berhasil di-%s\n", act)

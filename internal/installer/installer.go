@@ -1231,9 +1231,13 @@ func (inst *Installer) UninstallOrca(ctx context.Context, cb LogCallback, purge 
 	targetUser, userHome := ResolveOrcaUser()
 
 	cb("==> Menghentikan layanan Orca ADE...")
-	_ = inst.runCmd(ctx, cb, "systemctl", "disable", "--now", "orca.service")
+	if orcaSystemUnitExists() {
+		_ = inst.runCmd(ctx, cb, "systemctl", "disable", "--now", "orca.service")
+	}
 	if userHome != "" {
-		_ = runAsUser(ctx, cb, targetUser, userHome, "systemctl", "--user", "disable", "--now", "orca.service")
+		if orcaUserUnitExists(userHome) {
+			_ = runAsUser(ctx, cb, targetUser, userHome, "systemctl", "--user", "disable", "--now", "orca.service")
+		}
 		_ = runAsUser(ctx, cb, targetUser, userHome, "systemctl", "--user", "disable", "--now", "orca-update.timer")
 		_ = os.Remove(filepath.Join(userHome, ".config", "systemd", "user", "orca.service"))
 		_ = os.Remove(filepath.Join(userHome, ".config", "systemd", "user", "orca-update.service"))
@@ -1244,7 +1248,16 @@ func (inst *Installer) UninstallOrca(ctx context.Context, cb LogCallback, purge 
 	_ = inst.runCmd(ctx, cb, "systemctl", "daemon-reload")
 
 	cb("==> Menghapus instalasi biner Orca ADE...")
-	_ = inst.runCmd(ctx, cb, "rm", "-rf", "/usr/local/lib/orca-server", "/usr/local/lib/orca-ide", "/usr/local/bin/orca", "/usr/local/bin/orca-ide")
+	_ = inst.runCmd(ctx, cb, "rm", "-rf",
+		"/usr/local/lib/orca-server",
+		"/usr/local/lib/orca-ide",
+		"/usr/local/bin/orca",
+		"/usr/local/bin/orca-ide",
+		"/usr/local/bin/orca-desktop",
+		"/usr/local/bin/orca-pair",
+		"/usr/local/bin/orca-switch",
+		"/usr/local/bin/orca-update",
+	)
 	if userHome != "" {
 		_ = os.RemoveAll(orcaInstallDir(userHome))
 		_ = os.RemoveAll(orcaInstallDir(userHome) + ".old")
@@ -1279,6 +1292,7 @@ func (inst *Installer) UninstallOrca(ctx context.Context, cb LogCallback, purge 
 		}
 	}
 
+	ResetOrcaVersionCache()
 	cb("✓ Orca ADE berhasil di-uninstall.")
 	return nil
 }

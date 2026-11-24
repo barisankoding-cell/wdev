@@ -314,18 +314,22 @@ func (inst *Installer) GetComponentStatuses(ctx context.Context) map[string]Setu
 		installed := false
 		for _, p := range []string{
 			"/usr/local/lib/orca-ide/orca.AppImage",
-			"/usr/local/lib/orca-server",
-			"/usr/local/bin/orca",
+			"/opt/Orca/resources/bin/orca-ide",
+			"/opt/Orca/orca-ide",
+			"/opt/orca-ide/resources/bin/orca-ide",
 		} {
 			if statExistsFn(p) {
 				installed = true
 				break
 			}
 		}
+		if !installed && findOrcaServerBinary() != "" {
+			installed = true
+		}
 		if !installed && userHome != "" {
 			for _, p := range []string{
-				filepath.Join(userHome, ".local", "bin", "orca"),
-				filepath.Join(userHome, ".local", "lib", "orca-ide"),
+				filepath.Join(userHome, ".local", "lib", "orca-ide", "resources", "bin", "orca-ide"),
+				filepath.Join(userHome, ".local", "lib", "orca-ide", "orca-ide"),
 			} {
 				if statExistsFn(p) {
 					installed = true
@@ -333,8 +337,10 @@ func (inst *Installer) GetComponentStatuses(ctx context.Context) map[string]Setu
 				}
 			}
 		}
-		if !installed && findToolFn("orca") != "" {
-			installed = true
+		if !installed {
+			if bin := findToolFn("orca-ide", "orca"); bin != "" && !isWdevBinaryLink(bin) {
+				installed = true
+			}
 		}
 
 		if !installed {

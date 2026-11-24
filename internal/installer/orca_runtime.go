@@ -140,7 +140,7 @@ func PrintOrcaStatus(ctx context.Context, home string) {
 	fmt.Println(" STATUS OPERASI ORCA ADE")
 	fmt.Println("==================================================")
 	fmt.Printf("Mode Terkonfigurasi : %s\n", label)
-	fmt.Printf("Versi Terpasang     : %s\n", orcaVersionOrUnknown(orcaBinaryVersion(ctx, home, orcaInstallDir(home))))
+	fmt.Printf("Versi Terpasang     : %s\n", orcaVersionOrUnknown(orcaBinaryVersion(ctx, user, home, orcaInstallDir(home))))
 	if orcaServiceActive(ctx, user, home) {
 		fmt.Println("Status Headless Svc : RUNNING (systemd user orca.service)")
 	} else {

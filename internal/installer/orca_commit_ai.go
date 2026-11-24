@@ -266,28 +266,7 @@ func ResolveOrcaProfileDBPath(home string) (profileID string, dbPath string) {
 }
 
 func isOrcaInstalledForHome(home string) bool {
-	if home != "" {
-		for _, p := range []string{
-			filepath.Join(home, ".local", "lib", "orca-ide"),
-			filepath.Join(home, ".local", "bin", "orca"),
-			filepath.Join(home, ".config", "orca"),
-		} {
-			if _, err := os.Stat(p); err == nil {
-				return true
-			}
-		}
-	}
-	for _, p := range []string{
-		"/usr/local/lib/orca-ide/orca.AppImage",
-		"/usr/local/lib/orca-server",
-		"/usr/local/bin/orca",
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return true
-		}
-	}
-	_, err := exec.LookPath("orca")
-	return err == nil
+	return IsOrcaInstalled(home)
 }
 
 func listOrcaProcesses(ctx context.Context, user string) string {

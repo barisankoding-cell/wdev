@@ -681,6 +681,15 @@ func (s *Server) handleServiceControl(w http.ResponseWriter, r *http.Request) {
 	}
 	name, action := parts[0], parts[1]
 
+	if name == "orca" {
+		if err := installer.ControlOrcaService(r.Context(), action); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
 	if err := monitor.ControlService(name, action); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -3238,21 +3247,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	orcaConfigDir := filepath.Join(userHome, ".config", "orca")
 
 	// 1. Orca info (mendukung .deb ekstrak, AppImage, RPM, maupun Headless Server)
-	if _, err := os.Stat("/usr/local/lib/orca-ide/orca.AppImage"); err == nil {
-		data.Orca.Installed = true
-	} else if _, err := os.Stat("/usr/local/lib/orca-server"); err == nil {
-		data.Orca.Installed = true
-	} else if _, err := os.Stat("/usr/local/bin/orca"); err == nil {
-		data.Orca.Installed = true
-	} else if _, err := exec.LookPath("orca"); err == nil {
-		data.Orca.Installed = true
-	} else if _, err := os.Stat(filepath.Join(userHome, ".local", "bin", "orca")); err == nil {
-		data.Orca.Installed = true
-	} else if _, err := os.Stat(filepath.Join(userHome, ".local", "lib", "orca-ide")); err == nil {
-		data.Orca.Installed = true
-	} else if _, err := os.Stat(orcaConfigDir); err == nil {
-		data.Orca.Installed = true
-	}
+	data.Orca.Installed = installer.IsOrcaInstalled(userHome)
 
 	if installer.IsOrcaServiceActive(r.Context(), targetUser, userHome) {
 		data.Orca.Active = true

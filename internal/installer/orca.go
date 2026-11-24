@@ -10,8 +10,10 @@ import (
 	osuser "os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -19,6 +21,15 @@ var orcaInstalledVerCache struct {
 	mu      sync.Mutex
 	key     string
 	version string
+}
+
+// ResetOrcaVersionCache mengosongkan cache versi Orca lokal (mis. setelah uninstall).
+func ResetOrcaVersionCache() {
+	orcaInstalledVerCache.mu.Lock()
+	orcaInstalledVerCache.key = ""
+	orcaInstalledVerCache.version = ""
+	orcaInstalledVerCache.mu.Unlock()
+	SetOrcaVersionCache("")
 }
 
 func parseOrcaVersionString(raw string) string {
@@ -165,22 +176,65 @@ func fileExistsLocal(p string) bool {
 }
 
 func findOrcaServerBinary() string {
-	installDir := "/usr/local/lib/orca-server"
+	return findOrcaServerBinaryIn("/usr/local/lib/orca-server")
+}
+
+func findOrcaServerBinaryIn(installDir string) string {
 	if _, err := os.Stat(installDir); err != nil {
 		return ""
 	}
-	var found string
+	var fallback string
+	var preferred string
 	_ = filepath.WalkDir(installDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return nil
 		}
-		if d.Name() == "orca" {
-			found = path
+		name := d.Name()
+		if name != "orca-ide" && name != "orca" {
+			return nil
+		}
+		if filepath.Base(filepath.Dir(path)) == "bin" {
+			preferred = path
 			return filepath.SkipAll
+		}
+		if fallback == "" {
+			fallback = path
 		}
 		return nil
 	})
-	return found
+	if preferred != "" {
+		return preferred
+	}
+	return fallback
+}
+
+// IsOrcaInstalled memastikan biner Orca ADE benar-benar terpasang (bukan sekadar
+// direktori konfigurasi ~/.config/orca atau symlink launcher wdev yang tersisa).
+func IsOrcaInstalled(home string) bool {
+	if home != "" {
+		if orcaRealCLI(home) != "" || orcaAppBinary(home) != "" {
+			return true
+		}
+	}
+	if fileExistsLocal("/usr/local/lib/orca-ide/orca.AppImage") {
+		return true
+	}
+	if findOrcaServerBinary() != "" {
+		return true
+	}
+	for _, p := range []string{
+		"/opt/Orca/resources/bin/orca-ide",
+		"/opt/Orca/orca-ide",
+		"/opt/orca-ide/resources/bin/orca-ide",
+		"/usr/local/bin/orca",
+		"/usr/local/bin/orca-ide",
+		"/usr/bin/orca-ide",
+	} {
+		if fileExistsLocal(p) && !isWdevBinaryLink(p) {
+			return true
+		}
+	}
+	return false
 }
 
 const orcaGitHubRepo = "stablyai/orca"
@@ -208,13 +262,14 @@ func readOrcaMode(home string) string {
 
 func writeOrcaMode(home, user, mode string) error {
 	path := orcaModeFile(home)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	cfgDir := filepath.Dir(path)
+	if err := ensureUserDir(user, home, cfgDir); err != nil {
 		return err
 	}
 	if err := os.WriteFile(path, []byte(mode+"\n"), 0o644); err != nil {
 		return err
 	}
-	chownPath(user, path)
+	chownPath(user, cfgDir)
 	return nil
 }
 
@@ -224,6 +279,41 @@ func chownPath(user string, paths ...string) {
 	}
 	args := append([]string{"-R", user + ":"}, paths...)
 	_ = exec.Command("chown", args...).Run()
+}
+
+// ensureUserDir membuat direktori di bawah home user target dan memastikan
+// direktori baru (maupun induk di dalam home yang terlanjur milik root) menjadi milik user.
+func ensureUserDir(user, home, dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 || user == "" || user == "root" || home == "" {
+		return nil
+	}
+	u, err := osuser.Lookup(user)
+	if err != nil {
+		return nil
+	}
+	uid, uErr := strconv.Atoi(u.Uid)
+	gid, gErr := strconv.Atoi(u.Gid)
+	if uErr != nil || gErr != nil {
+		return nil
+	}
+	cleanHome := filepath.Clean(home)
+	cur := filepath.Clean(dir)
+	for cur != cleanHome && strings.HasPrefix(cur, cleanHome+string(filepath.Separator)) {
+		if fi, statErr := os.Lstat(cur); statErr == nil {
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid == 0 {
+				_ = os.Lchown(cur, uid, gid)
+			}
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	return nil
 }
 
 // ResolveOrcaUser menentukan user pemilik instalasi Orca ADE. Saat wdev
@@ -325,24 +415,31 @@ func findExtractedOrcaDir(extractDir string) string {
 	return appDir
 }
 
-func orcaBinaryVersion(ctx context.Context, home, appDir string) string {
+func orcaBinaryVersion(ctx context.Context, user, home, appDir string) string {
 	bin := findOrcaBinary(appDir)
 	if bin == "" {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, bin, "--version")
-	cmd.Env = append(os.Environ(), "HOME="+home)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
+	if data, err := os.ReadFile(filepath.Join(filepath.Dir(bin), ".wdev-version")); err == nil {
+		if ver := parseOrcaVersionString(string(data)); ver != "" {
+			return ver
+		}
 	}
-	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-	line = strings.TrimPrefix(line, "v")
-	return strings.TrimSpace(line)
+	return runOrcaVersionProbe(ctx, user, home, bin)
 }
 
 func userSystemctlEnv(user, home string) []string {
-	env := os.Environ()
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "HOME=") ||
+			strings.HasPrefix(kv, "USER=") ||
+			strings.HasPrefix(kv, "LOGNAME=") ||
+			strings.HasPrefix(kv, "XDG_RUNTIME_DIR=") ||
+			strings.HasPrefix(kv, "DBUS_SESSION_BUS_ADDRESS=") {
+			continue
+		}
+		env = append(env, kv)
+	}
 	if home != "" {
 		env = append(env, "HOME="+home)
 	}
@@ -359,6 +456,38 @@ func userSystemctlEnv(user, home string) []string {
 		}
 	}
 	return env
+}
+
+// ensureUserSystemdSession mengaktifkan linger dan memastikan systemd user bus
+// milik user target aktif sebelum menjalankan systemctl --user.
+func ensureUserSystemdSession(ctx context.Context, cb LogCallback, user string) {
+	if os.Geteuid() != 0 || user == "" || user == "root" {
+		return
+	}
+	linger := exec.CommandContext(ctx, "loginctl", "enable-linger", user)
+	if out, err := linger.CombinedOutput(); err != nil && cb != nil {
+		cb(fmt.Sprintf("[WARN] loginctl enable-linger %s: %v (%s)", user, err, strings.TrimSpace(string(out))))
+	}
+	u, err := osuser.Lookup(user)
+	if err != nil || u.Uid == "" {
+		return
+	}
+	busPath := filepath.Join("/run/user", u.Uid, "bus")
+	if _, statErr := os.Stat(busPath); statErr == nil {
+		return
+	}
+	_ = exec.CommandContext(ctx, "systemctl", "start", "user@"+u.Uid+".service").Run()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(busPath); statErr == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 // runAsUser menjalankan perintah sebagai user target (mis. systemctl --user).
@@ -378,17 +507,37 @@ func runAsUser(ctx context.Context, cb LogCallback, user, home, name string, arg
 	}
 	cmd.Env = userSystemctlEnv(user, home)
 	out, err := cmd.CombinedOutput()
+	outStr := strings.TrimSpace(string(out))
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		if line != "" && cb != nil {
 			cb(line)
 		}
 	}
-	return err
+	if err != nil {
+		if outStr != "" {
+			return fmt.Errorf("%s %s gagal: %s", name, strings.Join(args, " "), outStr)
+		}
+		return err
+	}
+	return nil
 }
 
 func orcaUserUnitExists(home string) bool {
 	_, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", "orca.service"))
 	return err == nil
+}
+
+func orcaSystemUnitExists() bool {
+	for _, p := range []string{
+		"/etc/systemd/system/orca.service",
+		"/usr/lib/systemd/system/orca.service",
+		"/lib/systemd/system/orca.service",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func isSystemOrcaServiceActive(ctx context.Context) bool {
@@ -399,11 +548,14 @@ func stopOrcaService(ctx context.Context, cb LogCallback, user, home string) {
 	if orcaUserUnitExists(home) {
 		_ = runAsUser(ctx, cb, user, home, "systemctl", "--user", "stop", "orca.service")
 	}
-	_ = exec.CommandContext(ctx, "systemctl", "stop", "orca.service").Run()
+	if orcaSystemUnitExists() {
+		_ = exec.CommandContext(ctx, "systemctl", "stop", "orca.service").Run()
+	}
 }
 
 func startOrcaService(ctx context.Context, cb LogCallback, user, home string, useUserUnit bool) error {
 	if useUserUnit {
+		ensureUserSystemdSession(ctx, cb, user)
 		return orcaUserSystemctl(ctx, cb, user, home, "start", "orca.service")
 	}
 	return exec.CommandContext(ctx, "systemctl", "start", "orca.service").Run()
@@ -462,7 +614,7 @@ var legacyOrcaHelpers = []string{
 // - orca-ide -> symlink ke CLI resmi Orca dari paket .deb
 func ensureOrcaLauncher(user, home string) error {
 	binDir := filepath.Join(home, ".local", "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
+	if err := ensureUserDir(user, home, binDir); err != nil {
 		return err
 	}
 	wdev := wdevExecutable()
@@ -537,34 +689,37 @@ func orcaUserSystemctl(ctx context.Context, cb LogCallback, user, home string, a
 	return runAsUser(ctx, cb, user, home, "systemctl", append([]string{"--user"}, args...)...)
 }
 
-// applyOrcaMode mengaktifkan mode desktop/headless sepenuhnya dari Go.
-func applyOrcaMode(ctx context.Context, cb LogCallback, user, home, mode string) error {
-	if err := writeOrcaMode(home, user, mode); err != nil {
+func ensureOrcaUserServiceUnit(user, home string) error {
+	if err := ensureUserDir(user, home, filepath.Join(home, ".config", "orca")); err != nil {
 		return err
 	}
+	chownPath(user, filepath.Join(home, ".config", "orca"))
+
+	if orcaRealCLI(home) != "" {
+		if err := ensureOrcaLauncher(user, home); err != nil {
+			return err
+		}
+	}
+
 	binDir := filepath.Join(home, ".local", "bin")
 	unitDir := filepath.Join(home, ".config", "systemd", "user")
-	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+	if err := ensureUserDir(user, home, unitDir); err != nil {
 		return err
 	}
 
-	switch mode {
-	case "desktop":
-		cb("==> Menghentikan layanan Orca Headless...")
-		_ = orcaUserSystemctl(ctx, cb, user, home, "disable", "--now", "orca.service")
-		_ = orcaUserSystemctl(ctx, cb, user, home, "disable", "--now", "orca-update.timer")
-		_ = os.Remove(filepath.Join(home, ".config", "autostart", "orca-ide.desktop"))
-		ensureOrcaDesktopEntry(user, home, "")
-		cb("✓ Orca ADE diatur ke mode Desktop GUI.")
-		return nil
-
-	case "headless":
-		browser := detectOrcaBrowser()
-		envLine := ""
-		if browser != "" {
-			envLine = fmt.Sprintf("Environment=\"ORCA_BROWSER_EXECUTABLE=%s\"\n", browser)
+	execBin := filepath.Join(binDir, "orca-ide")
+	if !fileExistsLocal(execBin) || isWdevBinaryLink(execBin) {
+		if cli := orcaRealCLI(home); cli != "" {
+			execBin = cli
 		}
-		unit := fmt.Sprintf(`[Unit]
+	}
+
+	browser := detectOrcaBrowser()
+	envLine := ""
+	if browser != "" {
+		envLine = fmt.Sprintf("Environment=\"ORCA_BROWSER_EXECUTABLE=%s\"\n", browser)
+	}
+	unit := fmt.Sprintf(`[Unit]
 Description=Orca ADE Headless Server
 After=network.target
 
@@ -578,9 +733,9 @@ Environment="ORCA_ALLOW_INSECURE_WEB_PAIRING=1"
 %s
 [Install]
 WantedBy=default.target
-`, filepath.Join(binDir, "orca-ide"), binDir, envLine)
+`, execBin, binDir, envLine)
 
-		updateUnit := fmt.Sprintf(`[Unit]
+	updateUnit := fmt.Sprintf(`[Unit]
 Description=Periksa & terapkan pembaruan Orca ADE (wdev)
 After=network.target
 
@@ -588,7 +743,7 @@ After=network.target
 Type=oneshot
 ExecStart=%s install orca-update
 `, wdevExecutable())
-		updateTimer := `[Unit]
+	updateTimer := `[Unit]
 Description=Pemeriksaan pembaruan Orca ADE harian (wdev)
 
 [Timer]
@@ -599,30 +754,68 @@ RandomizedDelaySec=1h
 [Install]
 WantedBy=timers.target
 `
-		if err := os.WriteFile(filepath.Join(unitDir, "orca.service"), []byte(unit), 0o644); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(unitDir, "orca-update.service"), []byte(updateUnit), 0o644); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(unitDir, "orca-update.timer"), []byte(updateTimer), 0o644); err != nil {
-			return err
-		}
-		chownPath(user, unitDir)
+	if err := os.WriteFile(filepath.Join(unitDir, "orca.service"), []byte(unit), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "orca-update.service"), []byte(updateUnit), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "orca-update.timer"), []byte(updateTimer), 0o644); err != nil {
+		return err
+	}
+	chownPath(user, unitDir)
+	return nil
+}
 
-		if os.Geteuid() == 0 {
-			linger := exec.CommandContext(ctx, "loginctl", "enable-linger", user)
-			if out, err := linger.CombinedOutput(); err != nil && cb != nil {
-				cb(fmt.Sprintf("[WARN] loginctl enable-linger %s: %v (%s)", user, err, strings.TrimSpace(string(out))))
-			}
+// applyOrcaMode mengaktifkan mode desktop/headless sepenuhnya dari Go.
+func applyOrcaMode(ctx context.Context, cb LogCallback, user, home, mode string) error {
+	logf := func(msg string) {
+		if cb != nil {
+			cb(msg)
 		}
+	}
+	if !IsOrcaInstalled(home) {
+		return fmt.Errorf("Orca ADE belum terpasang; pasang terlebih dahulu melalui Setup Headless atau Setup Desktop")
+	}
+	if err := writeOrcaMode(home, user, mode); err != nil {
+		return err
+	}
+	unitDir := filepath.Join(home, ".config", "systemd", "user")
+	if err := ensureUserDir(user, home, unitDir); err != nil {
+		return err
+	}
+
+	switch mode {
+	case "desktop":
+		logf("==> Menghentikan layanan Orca Headless...")
+		if orcaUserUnitExists(home) {
+			_ = orcaUserSystemctl(ctx, cb, user, home, "disable", "--now", "orca.service")
+			_ = orcaUserSystemctl(ctx, cb, user, home, "disable", "--now", "orca-update.timer")
+		}
+		if orcaSystemUnitExists() {
+			_ = exec.CommandContext(ctx, "systemctl", "disable", "--now", "orca.service").Run()
+		}
+		_ = os.Remove(filepath.Join(home, ".config", "autostart", "orca-ide.desktop"))
+		ensureOrcaDesktopEntry(user, home, "")
+		logf("✓ Orca ADE diatur ke mode Desktop GUI.")
+		return nil
+
+	case "headless":
+		if err := ensureOrcaUserServiceUnit(user, home); err != nil {
+			return err
+		}
+		ensureUserSystemdSession(ctx, cb, user)
 
 		_ = orcaUserSystemctl(ctx, cb, user, home, "daemon-reload")
-		if err := orcaUserSystemctl(ctx, cb, user, home, "enable", "--now", "orca.service"); err != nil {
+		_ = orcaUserSystemctl(ctx, cb, user, home, "reset-failed", "orca.service")
+		if err := orcaUserSystemctl(ctx, cb, user, home, "enable", "orca.service"); err != nil {
+			return err
+		}
+		if err := orcaUserSystemctl(ctx, cb, user, home, "restart", "orca.service"); err != nil {
 			return err
 		}
 		_ = orcaUserSystemctl(ctx, cb, user, home, "enable", "--now", "orca-update.timer")
-		cb("✓ Orca ADE diatur ke mode Headless Server (systemd user, auto-start saat boot).")
+		logf("✓ Orca ADE diatur ke mode Headless Server (systemd user, auto-start saat boot).")
 		return nil
 	}
 	return fmt.Errorf("mode Orca tidak valid: %s", mode)
@@ -681,12 +874,14 @@ func (inst *Installer) installOrcaDeb(ctx context.Context, cb LogCallback, mode 
 	}
 
 	installDir := orcaInstallDir(home)
-	current := orcaBinaryVersion(ctx, home, installDir)
+	current := orcaBinaryVersion(ctx, user, home, installDir)
 	cb(fmt.Sprintf("Versi terpasang : %s", orcaVersionOrUnknown(current)))
 	cb(fmt.Sprintf("Versi terbaru   : %s", latest))
 
 	if current == latest {
 		cb("✓ Orca ADE sudah berada di versi paling mutakhir.")
+		_ = ensureUserDir(user, home, filepath.Join(home, ".config", "orca"))
+		chownPath(user, filepath.Join(home, ".config", "orca"))
 		removeLegacyOrcaShellHelpers(home, user)
 		return applyOrcaMode(ctx, cb, user, home, mode)
 	}
@@ -707,7 +902,7 @@ func (inst *Installer) installOrcaDeb(ctx context.Context, cb LogCallback, mode 
 		downloadURL = fmt.Sprintf("https://github.com/stablyai/orca/releases/download/v%s/%s", latest, assetName)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(installDir), 0o755); err != nil {
+	if err := ensureUserDir(user, home, filepath.Dir(installDir)); err != nil {
 		return err
 	}
 	staging, err := os.MkdirTemp(filepath.Dir(installDir), ".orca-update-*")
@@ -752,15 +947,21 @@ func (inst *Installer) installOrcaDeb(ctx context.Context, cb LogCallback, mode 
 		return fmt.Errorf("gagal menerapkan pembaruan Orca: %w", err)
 	}
 	_ = os.RemoveAll(backup)
+	if bin := findOrcaBinary(installDir); bin != "" {
+		_ = os.Chmod(bin, 0o755)
+		_ = os.WriteFile(filepath.Join(filepath.Dir(bin), ".wdev-version"), []byte(latest+"\n"), 0o644)
+	}
+	if appBin := orcaAppBinary(home); appBin != "" {
+		_ = os.Chmod(appBin, 0o755)
+	}
 	chownPath(user, installDir)
-	_ = os.Chmod(findOrcaBinary(installDir), 0o755)
 
 	removeLegacyOrcaShellHelpers(home, user)
 	if mode == "desktop" {
 		ensureOrcaDesktopEntry(user, home, extractDir)
 	}
 
-	applied := orcaBinaryVersion(ctx, home, installDir)
+	applied := orcaBinaryVersion(ctx, user, home, installDir)
 	if applied == "" {
 		applied = latest
 	}
@@ -905,15 +1106,17 @@ func (inst *Installer) installOrcaServerTarball(ctx context.Context, cb LogCallb
 
 	orcaBin := findOrcaServerBinary()
 	if orcaBin == "" {
-		return fmt.Errorf("biner 'orca' tidak ditemukan di dalam %s", installDir)
+		return fmt.Errorf("biner 'orca-ide' atau 'orca' tidak ditemukan di dalam %s", installDir)
 	}
 
 	_ = inst.runCmd(ctx, cb, "chmod", "+x", orcaBin)
-	_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/orca")
+	_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/orca", "/usr/local/bin/orca-ide")
 	_ = inst.runCmd(ctx, cb, "ln", "-sfn", orcaBin, "/usr/local/bin/orca")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", orcaBin, "/usr/local/bin/orca-ide")
 
 	svcUser, userHome := ResolveOrcaUser()
 	if latest != "" {
+		_ = inst.writeSystemFile(ctx, cb, filepath.Join(filepath.Dir(orcaBin), ".wdev-version"), []byte(latest+"\n"), "644")
 		_ = inst.writeSystemFile(ctx, cb, filepath.Join(installDir, ".wdev-version"), []byte(latest+"\n"), "644")
 		SetOrcaVersionCache(latest)
 	}
@@ -1014,7 +1217,72 @@ func (inst *Installer) SetOrcaMode(ctx context.Context, cb LogCallback, mode str
 	if home == "" {
 		return fmt.Errorf("tidak dapat menentukan home direktori user target")
 	}
+	if !IsOrcaInstalled(home) {
+		return fmt.Errorf("Orca ADE belum terpasang; pasang terlebih dahulu melalui Setup Headless atau Setup Desktop")
+	}
 	return applyOrcaMode(ctx, cb, user, home, mode)
+}
+
+// ControlOrcaService mengontrol layanan Orca ADE (start/stop/restart/reload)
+// baik yang berjalan sebagai systemd user service (Debian .deb) maupun
+// systemd system service (/etc/systemd/system/orca.service).
+func ControlOrcaService(ctx context.Context, action string) error {
+	switch action {
+	case "start", "stop", "restart", "reload":
+	default:
+		return fmt.Errorf("aksi tidak valid: %s", action)
+	}
+	effectiveAction := action
+	if effectiveAction == "reload" {
+		effectiveAction = "restart"
+	}
+
+	user, home := ResolveOrcaUser()
+
+	// 1. Jika terpasang sebagai unit systemd sistem (tarball server non-Debian)
+	if orcaSystemUnitExists() {
+		cmd := exec.CommandContext(ctx, "systemctl", effectiveAction, "orca.service")
+		if os.Geteuid() != 0 {
+			cmd = exec.CommandContext(ctx, "sudo", "systemctl", effectiveAction, "orca.service")
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("systemctl %s orca.service gagal: %s", effectiveAction, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	// 2. Unit systemd user (jalur utama Debian/Ubuntu)
+	if !IsOrcaInstalled(home) {
+		if effectiveAction == "stop" {
+			if home != "" && orcaUserUnitExists(home) {
+				_ = orcaUserSystemctl(ctx, nil, user, home, "stop", "orca.service")
+			}
+			return nil
+		}
+		return fmt.Errorf("Orca ADE belum terpasang; pasang terlebih dahulu melalui Setup Headless atau Setup Desktop")
+	}
+
+	if home == "" {
+		return fmt.Errorf("tidak dapat menentukan direktori home user target Orca")
+	}
+
+	if effectiveAction == "stop" {
+		if !orcaUserUnitExists(home) {
+			return nil
+		}
+		return orcaUserSystemctl(ctx, nil, user, home, "stop", "orca.service")
+	}
+
+	// Pastikan unit user, launcher, kepemilikan direktori, dan sesi systemd user siap
+	if err := ensureOrcaUserServiceUnit(user, home); err != nil {
+		return fmt.Errorf("gagal menyiapkan unit systemd user orca.service: %w", err)
+	}
+	ensureUserSystemdSession(ctx, nil, user)
+	_ = orcaUserSystemctl(ctx, nil, user, home, "daemon-reload")
+	_ = orcaUserSystemctl(ctx, nil, user, home, "reset-failed", "orca.service")
+	_ = orcaUserSystemctl(ctx, nil, user, home, "enable", "orca.service")
+	return orcaUserSystemctl(ctx, nil, user, home, effectiveAction, "orca.service")
 }
 
 // downloadFileCtx mengunduh berkas dengan dukungan pembatalan konteks.
@@ -1045,8 +1313,8 @@ func downloadFileCtx(ctx context.Context, url, dstPath string) error {
 func ensureOrcaDesktopEntry(user, home, extractDir string) {
 	appsDir := filepath.Join(home, ".local", "share", "applications")
 	iconsDir := filepath.Join(home, ".local", "share", "icons", "hicolor", "256x256", "apps")
-	_ = os.MkdirAll(appsDir, 0o755)
-	_ = os.MkdirAll(iconsDir, 0o755)
+	_ = ensureUserDir(user, home, appsDir)
+	_ = ensureUserDir(user, home, iconsDir)
 
 	binPath := filepath.Join(home, ".local", "lib", "orca-ide", "orca-ide")
 	launcher := filepath.Join(home, ".local", "bin", "orca-desktop")
