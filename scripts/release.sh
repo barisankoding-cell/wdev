@@ -101,9 +101,116 @@ if [ -n "$DIRTY_FILES" ]; then
     fi
 fi
 
+prepend_path_if_dir() {
+    local dir="$1"
+    if [ -d "$dir" ]; then
+        case ":${PATH}:" in
+            *":${dir}:"*) ;;
+            *) export PATH="${dir}:${PATH}" ;;
+        esac
+    fi
+}
+
+ensure_pnpm() {
+    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+    prepend_path_if_dir "${PNPM_HOME:-$HOME/.local/share/pnpm}"
+    prepend_path_if_dir "$HOME/.local/bin"
+    prepend_path_if_dir "$HOME/.npm-global/bin"
+
+    if command -v npm >/dev/null 2>&1; then
+        local existing_npm_prefix
+        existing_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+        if [ -n "$existing_npm_prefix" ]; then
+            prepend_path_if_dir "${existing_npm_prefix}/bin"
+        fi
+    fi
+
+    hash -r 2>/dev/null || true
+    if command -v pnpm >/dev/null 2>&1 && pnpm --version >/dev/null 2>&1; then
+        echo "==> pnpm terdeteksi: v$(pnpm --version) ($(command -v pnpm))"
+        return 0
+    fi
+
+    echo "==> pnpm belum ditemukan. Menginstal pnpm secara otomatis..."
+
+    # 1. Coba aktifkan via Corepack (bawaan Node.js)
+    if command -v corepack >/dev/null 2>&1; then
+        local corepack_bin corepack_dir created_local_shim=0
+        corepack_bin="$(readlink -f "$(command -v corepack)" 2>/dev/null || command -v corepack)"
+        corepack_dir="$(dirname "$corepack_bin")"
+        if [ -w "$corepack_dir" ]; then
+            corepack enable pnpm >/dev/null 2>&1 || true
+        else
+            mkdir -p "$HOME/.local/bin"
+            [ ! -e "$HOME/.local/bin/pnpm" ] && created_local_shim=1
+            corepack enable --install-directory "$HOME/.local/bin" pnpm >/dev/null 2>&1 || true
+            prepend_path_if_dir "$HOME/.local/bin"
+        fi
+        hash -r 2>/dev/null || true
+        if command -v pnpm >/dev/null 2>&1; then
+            if ! pnpm --version >/dev/null 2>&1; then
+                corepack prepare pnpm@latest --activate >/dev/null 2>&1 || true
+            fi
+            hash -r 2>/dev/null || true
+            if pnpm --version >/dev/null 2>&1; then
+                echo "✓ pnpm berhasil disiapkan via Corepack: v$(pnpm --version)"
+                return 0
+            fi
+            if [ "$created_local_shim" = "1" ]; then
+                rm -f "$HOME/.local/bin/pnpm" "$HOME/.local/bin/pnpx"
+            fi
+        fi
+    fi
+
+    # 2. Fallback via npm install -g pnpm
+    if command -v npm >/dev/null 2>&1; then
+        local npm_prefix
+        npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+        if [ -n "$npm_prefix" ] && [ -w "$npm_prefix" ]; then
+            if npm install -g pnpm; then
+                prepend_path_if_dir "${npm_prefix}/bin"
+            fi
+        else
+            mkdir -p "$HOME/.npm-global"
+            if npm install -g --prefix "$HOME/.npm-global" pnpm; then
+                prepend_path_if_dir "$HOME/.npm-global/bin"
+            fi
+        fi
+        hash -r 2>/dev/null || true
+        if command -v pnpm >/dev/null 2>&1 && pnpm --version >/dev/null 2>&1; then
+            echo "✓ pnpm berhasil diinstal via npm: v$(pnpm --version)"
+            return 0
+        fi
+    fi
+
+    # 3. Fallback via installer resmi pnpm
+    local pnpm_home="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+    if command -v curl >/dev/null 2>&1; then
+        PNPM_HOME="$pnpm_home" ENV=/dev/null SHELL="$(command -v bash || echo /bin/sh)" \
+            sh -c 'curl -fsSL https://get.pnpm.io/install.sh | sh -' || true
+        prepend_path_if_dir "$pnpm_home"
+    elif command -v wget >/dev/null 2>&1; then
+        PNPM_HOME="$pnpm_home" ENV=/dev/null SHELL="$(command -v bash || echo /bin/sh)" \
+            sh -c 'wget -qO- https://get.pnpm.io/install.sh | sh -' || true
+        prepend_path_if_dir "$pnpm_home"
+    fi
+
+    hash -r 2>/dev/null || true
+    if command -v pnpm >/dev/null 2>&1 && pnpm --version >/dev/null 2>&1; then
+        echo "✓ pnpm berhasil diinstal: v$(pnpm --version)"
+        return 0
+    fi
+
+    echo "Error: Gagal menginstal pnpm secara otomatis. Silakan pasang Node.js/pnpm terlebih dahulu (mis. npm install -g pnpm atau corepack enable pnpm)." >&2
+    exit 1
+}
+
 echo "=================================================================="
 echo "Memulai proses rilis $TAG (${BUMP_TYPE}) ..."
 echo "=================================================================="
+
+ensure_pnpm
 
 # 1. Update version.go
 echo "==> [1/6] Memperbarui internal/version/version.go ke $NEW_VERSION ..."
