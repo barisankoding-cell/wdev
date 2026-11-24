@@ -2432,6 +2432,7 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 
 	case "vps":
 		cb("[3/4] Menyiapkan Virtual Host Nginx Lokal untuk Full VPS...")
+		m.removeMailHostsEntries(cleanDom)
 		_ = m.ensureLocalMailFirewall()
 		_ = m.ensureLocalMailVhost(cleanDom)
 		_ = m.ensureWebmailFallbackVhost()
@@ -2453,6 +2454,7 @@ func (m *Manager) SetupMail(ctx context.Context, cb func(string), opts SetupMail
 
 	default: // "edge"
 		cb("[3/4] Mendaftarkan VPS MX Inbound Gateway (Queue) & Reverse Proxy ke Edge Agent...")
+		m.removeMailHostsEntries(cleanDom)
 		agentPayload := map[string]any{
 			"domain": cleanDom, "target_ip": localNB, "ssl": opts.SSL,
 		}

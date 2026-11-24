@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"wdev/internal/config"
@@ -325,9 +326,9 @@ func TestDualInsideAndOutsidePortProbe(t *testing.T) {
 	})
 
 	// Simulasi probe dari luar VPS (ifconfig.co): hanya 465 terbuka dari luar, 25 & 993 terblokir dari luar
-	var hits int
+	var hits atomic.Int32
 	probeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		hits.Add(1)
 		switch r.URL.Path {
 		case "/port/465":
 			_, _ = w.Write([]byte(`{"ip":"203.0.113.10","port":465,"reachable":true}`))
@@ -345,8 +346,8 @@ func TestDualInsideAndOutsidePortProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStatus failed: %v", err)
 	}
-	if hits != 4 {
-		t.Fatalf("expected 4 external probes (excluding internal 8080), got %d", hits)
+	if h := hits.Load(); h != 4 {
+		t.Fatalf("expected 4 external probes (excluding internal 8080), got %d", h)
 	}
 
 	byPort := make(map[int]PortStatus, len(st.StalwartPorts))
@@ -374,16 +375,16 @@ func TestDualInsideAndOutsidePortProbe(t *testing.T) {
 	if _, err := mgr.GetStatus(); err != nil {
 		t.Fatal(err)
 	}
-	if hits != 4 {
-		t.Fatalf("expected cached external probe (hits=4), got %d", hits)
+	if h := hits.Load(); h != 4 {
+		t.Fatalf("expected cached external probe (hits=4), got %d", h)
 	}
 
 	// forcePortProbe=true (Segarkan) memicu uji eksternal ulang (+4 hits -> 8)
 	if _, err := mgr.GetStatusWithOptions(true); err != nil {
 		t.Fatal(err)
 	}
-	if hits != 8 {
-		t.Fatalf("expected forced refresh external probe (hits=8), got %d", hits)
+	if h := hits.Load(); h != 8 {
+		t.Fatalf("expected forced refresh external probe (hits=8), got %d", h)
 	}
 
 	// Uji mode Edge Gateway: client men-dial IP VPS eksternal (174.128.205.124) secara langsung
@@ -417,5 +418,37 @@ func TestDualInsideAndOutsidePortProbe(t *testing.T) {
 	}
 	if p := edgeByPort[587]; p.Open || p.Public {
 		t.Fatalf("edge closed port 587 = %+v, want Open=false Public=false", p)
+	}
+}
+
+func TestDeleteDomainCleansLocalHostsEvenAfterModeSwitchToVPS(t *testing.T) {
+	mgr, cfg := newTestMailManager(t, "local")
+	dom := "switchmail.test"
+
+	mgr.ensureMailHostsEntries(dom, "127.0.0.1")
+	avail, enabled := mgr.nginxMailPaths(dom)
+	if err := os.WriteFile(avail, []byte(localMailVhostBlock(dom, "/run/php/php8.4-fpm.sock")), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(avail, enabled); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulasikan user pindah dari mode local -> vps lalu menghapus domain mail lama.
+	if err := mgr.pdnsMgr.SetMode("vps"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.DeleteDomain(dom, false); err != nil {
+		t.Fatalf("DeleteDomain after mode switch failed: %v", err)
+	}
+	hostsAfter, err := os.ReadFile(cfg.HostsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(hostsAfter), dom) {
+		t.Fatalf("expected stale local /etc/hosts entry cleaned even after switching to vps mode, got:\n%s", string(hostsAfter))
+	}
+	if _, statErr := os.Stat(avail); !os.IsNotExist(statErr) {
+		t.Fatalf("expected mail vhost file %s removed on DeleteDomain", avail)
 	}
 }

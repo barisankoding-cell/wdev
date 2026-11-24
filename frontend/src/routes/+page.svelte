@@ -317,7 +317,7 @@
 		{@const totalPendingUpdates = updatesCount + (hasPanelUpdate ? 1 : 0)}
 		{@const vpsIP = (st.public_ip && st.public_ip !== '-' && st.public_ip !== '127.0.0.1')
 			? st.public_ip
-			: (modeStore.publicIP && modeStore.publicIP !== '-' ? modeStore.publicIP : '')}
+			: (modeStore.mode !== 'local' && modeStore.publicIP && modeStore.publicIP !== '-' ? modeStore.publicIP : '')}
 		{@const lanIP = st.lan_ip || ''}
 		{@const netbirdInstalled = Boolean((st.services || []).find((s) => s.name === 'netbird')?.installed)}
 		{@const netbirdIP = netbirdInstalled && st.netbird_ip && st.netbird_ip !== '-' ? st.netbird_ip : ''}

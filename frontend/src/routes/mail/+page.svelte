@@ -116,6 +116,7 @@
 	let preflight = $state<PreflightStatus | null>(null);
 	let preflightLoading = $state(false);
 	let settingUp = $state(false);
+	let lastLoadedMode: string | null = null;
 
 	const totalAccounts = $derived(
 		domainGroups.reduce((sum, g) => sum + (g.accounts?.length ?? 0), 0)
@@ -274,6 +275,14 @@
 
 	$effect(() => {
 		if (cp.refreshTick > 0) loadMail();
+	});
+
+	$effect(() => {
+		const currentMode = modeStore.mode;
+		if (lastLoadedMode !== null && lastLoadedMode !== currentMode) {
+			void loadMail();
+		}
+		lastLoadedMode = currentMode;
 	});
 
 	function openAddAccount(domain = '') {

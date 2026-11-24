@@ -52,6 +52,9 @@ func New(
 	cf *cloudflare.Manager,
 	pdns *pdns.Manager,
 ) *TUI {
+	if sm != nil && pdns != nil {
+		sm.SetServerModeFn(pdns.GetMode)
+	}
 	return &TUI{
 		cfg:     cfg,
 		store:   s,
@@ -147,7 +150,7 @@ func (t *TUI) renderSystemSummary() {
 	if t.pdnsMgr != nil {
 		stats.ServerMode = t.pdnsMgr.GetMode()
 		cfg := t.pdnsMgr.LoadConfig()
-		if cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
+		if stats.ServerMode != "local" && cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
 			stats.PublicIP = cfg.VPSPublicIP
 		}
 	}

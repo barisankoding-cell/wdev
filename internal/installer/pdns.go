@@ -194,15 +194,27 @@ func (inst *Installer) InstallPowerDNS(ctx context.Context, cb LogCallback) erro
 	}
 	inst.openPDNSFirewallPorts(ctx, cb)
 
-	// 5. Simpan edge-dns.conf lokal agar Control Plane langsung terhubung tanpa NetBird.
+	// 5. Simpan profil lokal PowerDNS (dan edge-dns.conf bila tidak sedang berada di mode edge remote).
 	cb(">>> [5/5] Menyimpan konfigurasi integrasi DNS lokal (127.0.0.1:8081)...")
 	hostIP := inst.detectHostRecordIP(ctx)
 	confContent := fmt.Sprintf(
 		"VPS_NETBIRD_IP=\"127.0.0.1\"\nVPS_PUBLIC_IP=%q\nAPI_KEY=%q\nPDNS_PORT=\"8081\"\nAGENT_PORT=\"8082\"\n",
 		hostIP, apiKey,
 	)
-	if err := inst.writeWdevEdgeDNSConf(ctx, cb, confContent); err != nil {
-		return fmt.Errorf("gagal menyimpan edge-dns.conf: %w", err)
+	if err := inst.writeWdevNamedConf(ctx, cb, "local-pdns.conf", confContent); err != nil {
+		return fmt.Errorf("gagal menyimpan local-pdns.conf: %w", err)
+	}
+	curMode := ""
+	if inst.store != nil {
+		if val, err := inst.store.GetSetting("server_mode"); err == nil {
+			curMode = strings.ToLower(strings.TrimSpace(val))
+		}
+	}
+	if curMode != "edge" {
+		inst.backupRemoteEdgeConfIfNeeded(ctx, cb)
+		if err := inst.writeWdevNamedConf(ctx, cb, "edge-dns.conf", confContent); err != nil {
+			return fmt.Errorf("gagal menyimpan edge-dns.conf: %w", err)
+		}
 	}
 
 	if waitErr := waitPDNSAPIReady("127.0.0.1", "8081", apiKey); waitErr != nil {
@@ -303,32 +315,7 @@ func detectPDNSServiceUser() string {
 }
 
 func (inst *Installer) resolveExistingPDNSAPIKey() string {
-	var candidates []string
-	if inst.cfg != nil && inst.cfg.WdevEtc != "" {
-		candidates = append(candidates, filepath.Join(inst.cfg.WdevEtc, "edge-dns.conf"))
-	}
-	candidates = append(candidates, "/etc/wdev/edge-dns.conf", "/etc/wdev-edge/api.key")
-	for _, path := range candidates {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		if strings.HasSuffix(path, "api.key") {
-			if k := strings.TrimSpace(string(data)); k != "" {
-				return k
-			}
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "API_KEY=") {
-				v := strings.Trim(strings.TrimPrefix(line, "API_KEY="), "\"'")
-				if v != "" {
-					return v
-				}
-			}
-		}
-	}
+	// Utamakan key PowerDNS lokal agar tidak mengambil API_KEY milik VPS Edge Gateway.
 	if data, err := os.ReadFile("/etc/powerdns/pdns.conf"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
@@ -340,7 +327,48 @@ func (inst *Installer) resolveExistingPDNSAPIKey() string {
 			}
 		}
 	}
+	var candidates []string
+	if inst.cfg != nil && inst.cfg.WdevEtc != "" {
+		candidates = append(candidates,
+			filepath.Join(inst.cfg.WdevEtc, "local-pdns.conf"),
+			filepath.Join(inst.cfg.WdevEtc, "edge-dns.conf"),
+		)
+	}
+	candidates = append(candidates, "/etc/wdev/local-pdns.conf", "/etc/wdev/edge-dns.conf", "/etc/wdev-edge/api.key")
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.HasSuffix(path, "api.key") {
+			if k := strings.TrimSpace(string(data)); k != "" {
+				return k
+			}
+			continue
+		}
+		var nbIP, apiKey string
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "VPS_NETBIRD_IP=") {
+				nbIP = strings.Trim(strings.TrimPrefix(line, "VPS_NETBIRD_IP="), "\"'")
+			}
+			if strings.HasPrefix(line, "API_KEY=") {
+				apiKey = strings.Trim(strings.TrimPrefix(line, "API_KEY="), "\"'")
+			}
+		}
+		if strings.HasSuffix(path, "edge-dns.conf") && isRemoteEdgeNetbirdIP(nbIP) {
+			continue
+		}
+		if apiKey != "" {
+			return apiKey
+		}
+	}
 	return ""
+}
+
+func isRemoteEdgeNetbirdIP(nbIP string) bool {
+	v := strings.ToLower(strings.TrimSpace(nbIP))
+	return v != "" && v != "127.0.0.1" && v != "localhost" && v != "::1" && v != "0.0.0.0" && v != "-"
 }
 
 func generatePDNSAPIKey() (string, error) {
@@ -351,18 +379,40 @@ func generatePDNSAPIKey() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func (inst *Installer) writeWdevEdgeDNSConf(ctx context.Context, cb LogCallback, content string) error {
+func (inst *Installer) writeWdevNamedConf(ctx context.Context, cb LogCallback, filename, content string) error {
 	etcDir := "/etc/wdev"
 	if inst.cfg != nil && inst.cfg.WdevEtc != "" {
 		etcDir = inst.cfg.WdevEtc
 	}
-	confPath := filepath.Join(etcDir, "edge-dns.conf")
+	confPath := filepath.Join(etcDir, filename)
 	if err := os.MkdirAll(etcDir, 0755); err == nil {
 		if err := os.WriteFile(confPath, []byte(content), 0600); err == nil {
 			return nil
 		}
 	}
 	return inst.writeSystemFile(ctx, cb, confPath, []byte(content), "0600")
+}
+
+func (inst *Installer) backupRemoteEdgeConfIfNeeded(ctx context.Context, cb LogCallback) {
+	etcDir := "/etc/wdev"
+	if inst.cfg != nil && inst.cfg.WdevEtc != "" {
+		etcDir = inst.cfg.WdevEtc
+	}
+	data, err := os.ReadFile(filepath.Join(etcDir, "edge-dns.conf"))
+	if err != nil {
+		return
+	}
+	nbIP := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "VPS_NETBIRD_IP=") {
+			nbIP = strings.Trim(strings.TrimPrefix(line, "VPS_NETBIRD_IP="), "\"'")
+			break
+		}
+	}
+	if isRemoteEdgeNetbirdIP(nbIP) {
+		_ = inst.writeWdevNamedConf(ctx, cb, "edge-remote.conf", string(data))
+	}
 }
 
 func (inst *Installer) openPDNSFirewallPorts(ctx context.Context, cb LogCallback) {

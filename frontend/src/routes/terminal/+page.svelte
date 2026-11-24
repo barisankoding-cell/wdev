@@ -32,6 +32,7 @@
 		TableRow
 	} from '#lib/components/ui/table/index.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
+	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type { TerminalAuditRecord, TerminalInfo, TerminalTargetUser } from '#lib/types/api.js';
 	import ClipboardIcon from '@lucide/svelte/icons/clipboard';
 	import CopyIcon from '@lucide/svelte/icons/copy';
@@ -306,18 +307,32 @@
 		});
 	}
 
-	onMount(async () => {
+	async function refreshTerminalInfo() {
 		try {
 			const res = await api.getTerminalInfo();
 			info = res;
-			selectedShell = res.shell;
-			selectedUser = res.default_user || res.user;
+			if (!selectedShell) selectedShell = res.shell;
+			if (!selectedUser) selectedUser = res.default_user || res.user;
 		} catch (err) {
 			infoError =
 				err instanceof ApiError || err instanceof Error ? err.message : 'Gagal memuat info terminal';
 		} finally {
 			infoLoaded = true;
 		}
+	}
+
+	let lastTerminalMode: string | null = null;
+
+	onMount(async () => {
+		await refreshTerminalInfo();
+	});
+
+	$effect(() => {
+		const currentMode = modeStore.mode;
+		if (lastTerminalMode !== null && lastTerminalMode !== currentMode) {
+			void refreshTerminalInfo();
+		}
+		lastTerminalMode = currentMode;
 	});
 
 	$effect(() => {

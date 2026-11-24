@@ -176,3 +176,34 @@ func TestSetupMailDomainRejectsInvalidTargetIP(t *testing.T) {
 		t.Fatalf("expected error for loopback target_ip")
 	}
 }
+
+func TestAgentMailSetRelayValidation(t *testing.T) {
+	prevLoader := loadAPIKeyFn
+	loadAPIKeyFn = func() string { return "test-secret-key" }
+	defer func() { loadAPIKeyFn = prevLoader }()
+
+	h := NewAgentHandler()
+	send := func(method, body string) int {
+		req := httptest.NewRequest(method, "/api/v1/mail/set-relay", strings.NewReader(body))
+		req.RemoteAddr = "100.64.0.5:43210"
+		req.Header.Set("X-API-Key", "test-secret-key")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := send(http.MethodGet, `{"host":"smtp.resend.com"}`); code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /api/v1/mail/set-relay status = %d, want 405", code)
+	}
+	for _, badBody := range []string{
+		`{"host":"bad host; rm -rf","port":587}`,
+		`{"host":"smtp.resend.com","domain":"not_a_valid_domain!"}`,
+		`{"host":"smtp.resend.com","port":99999}`,
+		`{"host":"smtp.resend.com","port":0}`,
+		`{"host":"smtp.resend.com","port":587.5}`,
+	} {
+		if code := send(http.MethodPost, badBody); code != http.StatusBadRequest {
+			t.Fatalf("invalid set-relay payload %s status = %d, want 400", badBody, code)
+		}
+	}
+}

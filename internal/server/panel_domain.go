@@ -151,7 +151,7 @@ func (s *Server) cleanupPanelDomainResources(targetDomain string, deleteSite boo
 
 	deletedDNS := 0
 	if s.pdnsMgr != nil {
-		if hasSite && existing.ExposedTo != "" {
+		if s.pdnsMgr.GetMode() == "edge" && hasSite && existing.ExposedTo != "" {
 			_ = s.pdnsMgr.Unexpose(existing.ExposedTo, true)
 			if cnt, err := s.pdnsMgr.DeleteDomainDNSRecords(existing.ExposedTo); err == nil {
 				deletedDNS += cnt
@@ -390,9 +390,8 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if payload.SudoPass != "" && s.installer != nil {
-			if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
-				writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+		if payload.SudoPass != "" {
+			if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
 				return
 			}
 		}

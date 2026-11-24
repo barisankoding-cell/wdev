@@ -64,6 +64,7 @@ type Manager struct {
 	cfg           *config.Config
 	store         *store.Store
 	sudoPassFn    func() string
+	serverModeFn  func() string
 	skipNginxExec bool
 	certbotExecFn func(ctx context.Context, cb func(string), bin string, args []string) error
 }
@@ -77,6 +78,7 @@ type CreateOptions struct {
 	ProxyPort     int      `json:"proxy_port"`
 	SSLEnabled    bool     `json:"ssl_enabled"`
 	SkipHosts     bool     `json:"skip_hosts,omitempty"`
+	ForceHosts    bool     `json:"force_hosts,omitempty"`
 }
 
 type StaticVHostResult struct {
@@ -121,6 +123,38 @@ func NewWithSudo(cfg *config.Config, s *store.Store, sudoPassFn func() string) *
 // SetSudoPasswordFn menyetel fungsi penyedia password sudo.
 func (m *Manager) SetSudoPasswordFn(fn func() string) {
 	m.sudoPassFn = fn
+}
+
+// SetServerModeFn menyetel fungsi pembaca mode server aktif ("local", "edge", "vps").
+func (m *Manager) SetServerModeFn(fn func() string) {
+	m.serverModeFn = fn
+}
+
+func (m *Manager) serverMode() string {
+	if m == nil || m.serverModeFn == nil {
+		return "local"
+	}
+	mode := strings.ToLower(strings.TrimSpace(m.serverModeFn()))
+	switch mode {
+	case "edge", "vps", "local":
+		return mode
+	default:
+		return "local"
+	}
+}
+
+func (m *Manager) shouldSkipPublicHosts(domain string) bool {
+	return m.serverMode() != "local" && ValidateLetsEncryptDomain(domain) == nil
+}
+
+func (m *Manager) shouldManageHosts(domain string, opts CreateOptions) bool {
+	if opts.SkipHosts || m.cfg == nil || m.cfg.HostsFile == "" {
+		return false
+	}
+	if opts.ForceHosts {
+		return true
+	}
+	return !m.shouldSkipPublicHosts(domain)
 }
 
 // SetSkipNginxExec menonaktifkan eksekusi biner nginx/systemctl (dipakai di unit test terisolasi).
@@ -397,7 +431,7 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 	}
 
 	// Update /etc/hosts kecuali diminta skip (mis. domain publik di VPS / Edge Gateway)
-	if !opts.SkipHosts && m.cfg != nil && m.cfg.HostsFile != "" {
+	if m.shouldManageHosts(opts.Domain, opts) {
 		m.addHostsEntries(append([]string{opts.Domain}, cleanAliases...)...)
 	}
 
@@ -687,7 +721,7 @@ func (m *Manager) UpdateSite(domain string, opts CreateOptions) error {
 		}
 	}
 
-	if !opts.SkipHosts && m.cfg != nil && m.cfg.HostsFile != "" {
+	if m.shouldManageHosts(opts.Domain, opts) {
 		m.addHostsEntries(append([]string{opts.Domain}, cleanAliases...)...)
 	}
 
@@ -1124,8 +1158,12 @@ func (m *Manager) SyncAll() error {
 	certDir := "/etc/ssl/local-certs"
 	_ = m.ensureDir(certDir, 0755)
 	for _, s := range sites {
-		m.addHostsEntry(s.Domain)
-		if s.SSLEnabled {
+		if m.shouldSkipPublicHosts(s.Domain) {
+			m.removeHostsEntry(s.Domain)
+		} else {
+			m.addHostsEntry(s.Domain)
+		}
+		if s.SSLEnabled && !strings.EqualFold(s.SSLProvider, "letsencrypt") {
 			certFile := filepath.Join(certDir, s.Domain+".pem")
 			keyFile := filepath.Join(certDir, s.Domain+"-key.pem")
 			if !m.pathExists(certFile) {

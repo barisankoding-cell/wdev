@@ -387,6 +387,10 @@
 	$effect(() => {
 		const currentMode = modeStore.mode;
 		if (lastLoadedMode !== null && lastLoadedMode !== currentMode) {
+			deployHost = '';
+			connNetbirdIP = '';
+			connPublicIP = '';
+			connAPIKey = '';
 			void loadAll();
 		}
 		lastLoadedMode = currentMode;

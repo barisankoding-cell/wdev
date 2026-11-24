@@ -1220,22 +1220,34 @@ func NewAgentHandler() http.Handler {
 	}))
 
 	mux.HandleFunc("/api/v1/mail/set-relay", audit(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, map[string]string{"error": "Method not allowed"})
+			return
+		}
 		data, err := readBody(r)
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
 		host := strings.TrimSpace(stringOr(data, "host"))
-		if host == "" {
-			writeJSON(w, 400, map[string]string{"error": "Relay host is required"})
+		if host == "" || strings.ContainsAny(host, " \t\r\n\x00;") {
+			writeJSON(w, 400, map[string]string{"error": "Valid relay host is required"})
 			return
 		}
-		scope := strings.ToLower(strings.TrimSpace(stringOr(data, "domain")))
+		scope := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(stringOr(data, "domain")), "."))
 		if scope == "" {
 			scope = "global"
+		} else if scope != "global" && !validDomain(scope) {
+			writeJSON(w, 400, map[string]string{"error": "Invalid relay domain scope: " + scope})
+			return
 		}
 		port := 587
-		if v, ok := data["port"].(float64); ok && v > 0 {
+		if rawPort, exists := data["port"]; exists {
+			v, ok := rawPort.(float64)
+			if !ok || v < 1 || v > 65535 || float64(int(v)) != v {
+				writeJSON(w, 400, map[string]string{"error": "Invalid relay port (must be 1..65535)"})
+				return
+			}
 			port = int(v)
 		}
 		relays := loadMailRelays()

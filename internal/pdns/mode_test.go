@@ -1,8 +1,10 @@
 package pdns
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"wdev/internal/config"
 	"wdev/internal/store"
@@ -198,5 +200,120 @@ AGENT_PORT="19999"
 	}
 	if vpsConf.VPSNetbirdIP != "127.0.0.1" {
 		t.Fatalf("expected loopback VPSNetbirdIP in vps mode, got %q", vpsConf.VPSNetbirdIP)
+	}
+}
+
+func TestModeSwitchingRoundTripPreservesAndIsolatesConfigs(t *testing.T) {
+	restorePub := resetExternalPublicIPCacheForTest(func(context.Context) string { return "" })
+	defer restorePub()
+
+	tmp := t.TempDir()
+	etcDir := filepath.Join(tmp, "etc")
+	availDir := filepath.Join(tmp, "nginx", "sites-available")
+	confDDir := filepath.Join(tmp, "nginx", "conf.d")
+	for _, d := range []string{etcDir, availDir, confDDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := store.New(filepath.Join(tmp, "wdev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	mgr := New(&config.Config{WdevEtc: etcDir, NginxSitesAvail: availDir}, st)
+
+	// 1. Edge mode dengan konfigurasi VPS remote -> tersimpan & realip ditulis.
+	if err := mgr.SetMode("edge"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SaveConfig("100.64.0.10", "203.0.113.50", "edge-key-123", "8081", "8082"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(confDDir, "wdev-edge-realip.conf")); err != nil {
+		t.Fatalf("expected wdev-edge-realip.conf in edge mode, got err=%v", err)
+	}
+
+	// 2. Pindah ke local (tanpa PDNS lokal) -> edge-dns.conf tidak boleh membocorkan IP Edge remote,
+	//    realip dihapus, dan edge-remote.conf tetap aman.
+	if err := mgr.SetMode("local"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(confDDir, "wdev-edge-realip.conf")); !os.IsNotExist(err) {
+		t.Fatalf("expected wdev-edge-realip.conf removed in local mode, err=%v", err)
+	}
+	localClean := mgr.LoadConfig()
+	if localClean.Configured || localClean.VPSNetbirdIP != "" || localClean.VPSPublicIP != "" || localClean.APIKey != "" {
+		t.Fatalf("expected local mode isolated from remote edge conf, got %+v", localClean)
+	}
+
+	// 3. Simpan konfigurasi PDNS lokal dalam mode local, lalu pindah ke vps & kembali ke local.
+	if err := mgr.SaveConfig("127.0.0.1", "192.168.10.20", "local-key-999", "8081", "8082"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetMode("vps"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulasikan local-pdns.conf pernah menyimpan IP publik VPS saat mode vps, lalu balik ke local.
+	if err := mgr.SaveConfig("127.0.0.1", "198.51.100.77", "local-key-999", "8081", "8082"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetMode("local"); err != nil {
+		t.Fatal(err)
+	}
+	backToLocal := mgr.LoadConfig()
+	if !backToLocal.Configured || backToLocal.VPSNetbirdIP != "127.0.0.1" || backToLocal.APIKey != "local-key-999" {
+		t.Fatalf("expected local PDNS profile preserved across vps round-trip, got %+v", backToLocal)
+	}
+	if IsPublicIPv4String(backToLocal.VPSPublicIP) {
+		t.Fatalf("expected public VPS IP cleared when returning to local mode, got %q", backToLocal.VPSPublicIP)
+	}
+
+	// 4. Kembali ke edge -> koneksi VPS Edge lama (100.64.0.10 / 203.0.113.50 / edge-key-123) pulih otomatis
+	//    dan wdev-edge-realip.conf kembali dibuat.
+	if err := mgr.SetMode("edge"); err != nil {
+		t.Fatal(err)
+	}
+	restoredEdge := mgr.LoadConfig()
+	if !restoredEdge.Configured || restoredEdge.VPSNetbirdIP != "100.64.0.10" ||
+		restoredEdge.VPSPublicIP != "203.0.113.50" || restoredEdge.APIKey != "edge-key-123" {
+		t.Fatalf("expected edge profile restored on switch back to edge, got %+v", restoredEdge)
+	}
+	realIPBytes, err := os.ReadFile(filepath.Join(confDDir, "wdev-edge-realip.conf"))
+	if err != nil || !strings.Contains(string(realIPBytes), "set_real_ip_from 100.64.0.10;") {
+		t.Fatalf("expected wdev-edge-realip.conf restored in edge mode, err=%v content=%q", err, string(realIPBytes))
+	}
+
+	// 5. Jika hanya punya profil lokal (tanpa edge-remote.conf & tanpa edge-dns.conf remote)
+	//    lalu pindah ke edge, edge tidak boleh mengira 127.0.0.1 lokal adalah Edge Gateway.
+	_ = os.Remove(filepath.Join(etcDir, edgeRemoteConfFile))
+	_ = os.Remove(filepath.Join(etcDir, activeDNSConfFile))
+	if err := mgr.SetMode("vps"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SaveConfig("127.0.0.1", "198.51.100.77", "local-only-key", "8081", "8082"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetMode("edge"); err != nil {
+		t.Fatal(err)
+	}
+	unconfiguredEdge := mgr.LoadConfig()
+	if unconfiguredEdge.Configured || unconfiguredEdge.VPSNetbirdIP == "127.0.0.1" {
+		t.Fatalf("expected edge mode without remote profile not to treat local 127.0.0.1 as Edge Gateway, got %+v", unconfiguredEdge)
+	}
+
+	// 6. Operasi Edge Agent (ExposeSite, Unexpose, AgentPost) wajib ditolak bila bukan mode edge.
+	if err := mgr.SetMode("vps"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.ExposeSite("app.test", "app.example.com", false); err == nil {
+		t.Fatal("expected ExposeSite rejected in vps mode")
+	}
+	if err := mgr.Unexpose("app.example.com", true); err == nil {
+		t.Fatal("expected Unexpose rejected in vps mode")
+	}
+	if _, err := mgr.AgentPost("/api/v1/proxies", map[string]string{}); err == nil {
+		t.Fatal("expected AgentPost rejected in vps mode")
 	}
 }

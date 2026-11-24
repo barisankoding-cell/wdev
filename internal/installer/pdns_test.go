@@ -1,8 +1,11 @@
 package installer
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"wdev/internal/config"
 )
 
 func TestBuildStandalonePDNSConfLocksWebserverToLoopback(t *testing.T) {
@@ -30,5 +33,26 @@ func TestBuildStandalonePDNSConfLocksWebserverToLoopback(t *testing.T) {
 		if strings.Contains(conf, forbidden) {
 			t.Fatalf("standalone PDNS config must not expose webserver with %q:\n%s", forbidden, conf)
 		}
+	}
+}
+
+func TestResolveExistingPDNSAPIKeyIgnoresRemoteEdgeConf(t *testing.T) {
+	etcDir := t.TempDir()
+	remoteConf := "VPS_NETBIRD_IP=\"100.64.0.10\"\nVPS_PUBLIC_IP=\"203.0.113.50\"\nAPI_KEY=\"remote-edge-key\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte(remoteConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := New(&config.Config{WdevEtc: etcDir}, nil)
+	if got := inst.resolveExistingPDNSAPIKey(); got == "remote-edge-key" {
+		t.Fatalf("resolveExistingPDNSAPIKey must ignore remote Edge API_KEY, got %q", got)
+	}
+
+	localConf := "VPS_NETBIRD_IP=\"127.0.0.1\"\nAPI_KEY=\"local-pdns-key\"\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "local-pdns.conf"), []byte(localConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := inst.resolveExistingPDNSAPIKey(); got != "local-pdns-key" {
+		t.Fatalf("resolveExistingPDNSAPIKey = %q, want local-pdns-key", got)
 	}
 }

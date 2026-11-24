@@ -122,6 +122,9 @@ func New(cfg *config.Config, s *store.Store) *Manager {
 // SetSiteManager menyetel site.Manager agar penambahan domain PowerDNS otomatis menyiapkan vhost static HTML.
 func (m *Manager) SetSiteManager(sm *site.Manager) {
 	m.siteMgr = sm
+	if sm != nil {
+		sm.SetServerModeFn(m.GetMode)
+	}
 }
 
 // NormalizeMode menormalkan nama mode operasional server ("local", "edge", "vps").
@@ -355,39 +358,16 @@ func detectModeFromSignals(sig modeSignals) string {
 	return "local"
 }
 
-func (m *Manager) readEdgeDNSField(key string) string {
-	candidates := []string{filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")}
-	if m.cfg.WdevEtc != "/etc/wdev" {
-		candidates = append(candidates, "/etc/wdev/edge-dns.conf")
-	}
-	prefix := key + "="
-	for _, confFile := range candidates {
-		data, err := os.ReadFile(confFile)
-		if err != nil {
-			continue
-		}
-		scanner := bufio.NewScanner(strings.NewReader(string(data)))
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(line, prefix) {
-				v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, prefix)), "\"")
-				if v != "" {
-					return v
-				}
-			}
-		}
+func (m *Manager) readEdgeDNSFilePublicIP() string {
+	if c, ok := m.readNamedConf(activeDNSConfFile); ok {
+		return c.VPSPublicIP
 	}
 	return ""
 }
 
-func (m *Manager) readEdgeDNSFilePublicIP() string {
-	return m.readEdgeDNSField("VPS_PUBLIC_IP")
-}
-
 func (m *Manager) readRemoteEdgeHost() string {
-	v := m.readEdgeDNSField("VPS_NETBIRD_IP")
-	if v != "" && v != "127.0.0.1" && v != "localhost" && v != "::1" && v != "0.0.0.0" {
-		return v
+	if c, ok := m.readNamedConf(activeDNSConfFile); ok && isRemoteEdgeHost(c.VPSNetbirdIP) {
+		return c.VPSNetbirdIP
 	}
 	return ""
 }
@@ -397,6 +377,9 @@ func (m *Manager) GetMode() string {
 	explicit := ""
 	if m.store != nil {
 		if val, err := m.store.GetSetting("server_mode"); err == nil {
+			if norm, ok := NormalizeMode(val); ok {
+				return norm
+			}
 			explicit = val
 		}
 	}
@@ -431,18 +414,202 @@ func (m *Manager) IsModeSet() bool {
 	return ok
 }
 
-// SetMode mengubah mode antara "local", "edge", dan "vps".
+const (
+	activeDNSConfFile  = "edge-dns.conf"
+	edgeRemoteConfFile = "edge-remote.conf"
+	localPDNSConfFile  = "local-pdns.conf"
+)
+
+func isRemoteEdgeHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	return h != "" && h != "127.0.0.1" && h != "localhost" && h != "::1" && h != "0.0.0.0" && h != "-"
+}
+
+func isTempTestDir(dir string) bool {
+	clean := filepath.Clean(strings.TrimSpace(dir))
+	if clean == "" || clean == "." {
+		return false
+	}
+	tmp := filepath.Clean(os.TempDir())
+	return clean == tmp || strings.HasPrefix(clean, tmp+string(os.PathSeparator))
+}
+
+func (m *Manager) confDirs() []string {
+	var dirs []string
+	primary := "/etc/wdev"
+	if m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.WdevEtc) != "" {
+		primary = filepath.Clean(strings.TrimSpace(m.cfg.WdevEtc))
+	}
+	dirs = append(dirs, primary)
+	if primary != "/etc/wdev" && !isTempTestDir(primary) {
+		dirs = append(dirs, "/etc/wdev")
+	}
+	return dirs
+}
+
+func assignEndpointConfig(dst *EdgeConfig, src EdgeConfig) {
+	dst.Configured = true
+	dst.VPSNetbirdIP = src.VPSNetbirdIP
+	dst.VPSPublicIP = src.VPSPublicIP
+	dst.APIKey = src.APIKey
+	dst.PDNSPort = src.PDNSPort
+	dst.AgentPort = src.AgentPort
+}
+
+func parseEdgeConfigBytes(raw []byte) EdgeConfig {
+	conf := EdgeConfig{
+		Configured: true,
+		PDNSPort:   "8081",
+		AgentPort:  "8082",
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		k := strings.TrimSpace(parts[0])
+		v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+		switch k {
+		case "VPS_NETBIRD_IP":
+			conf.VPSNetbirdIP = v
+		case "VPS_PUBLIC_IP":
+			if v != "" {
+				conf.VPSPublicIP = v
+			}
+		case "API_KEY":
+			conf.APIKey = v
+		case "PDNS_PORT":
+			if v != "" {
+				conf.PDNSPort = v
+			}
+		case "AGENT_PORT":
+			if v != "" {
+				conf.AgentPort = v
+			}
+		}
+	}
+	return conf
+}
+
+func formatEdgeConfigBytes(conf EdgeConfig) []byte {
+	pdnsPort := strings.TrimSpace(conf.PDNSPort)
+	if pdnsPort == "" {
+		pdnsPort = "8081"
+	}
+	agentPort := strings.TrimSpace(conf.AgentPort)
+	if agentPort == "" {
+		agentPort = "8082"
+	}
+	return []byte(fmt.Sprintf(`# wdev Edge & PowerDNS Configuration
+VPS_NETBIRD_IP="%s"
+VPS_PUBLIC_IP="%s"
+API_KEY="%s"
+PDNS_PORT="%s"
+AGENT_PORT="%s"
+`, conf.VPSNetbirdIP, conf.VPSPublicIP, conf.APIKey, pdnsPort, agentPort))
+}
+
+func (m *Manager) readNamedConf(filename string) (EdgeConfig, bool) {
+	for _, dir := range m.confDirs() {
+		data, err := os.ReadFile(filepath.Join(dir, filename))
+		if err == nil {
+			return parseEdgeConfigBytes(data), true
+		}
+	}
+	return EdgeConfig{}, false
+}
+
+func (m *Manager) writeNamedConf(filename string, conf EdgeConfig) error {
+	content := formatEdgeConfigBytes(conf)
+	var writeErr error
+	for _, dir := range m.confDirs() {
+		if os.Geteuid() != 0 {
+			_ = exec.Command("sudo", "-n", "mkdir", "-p", dir).Run()
+		} else {
+			_ = os.MkdirAll(dir, 0700)
+		}
+		if err := writeSecretFileWithSudo(filepath.Join(dir, filename), content); err != nil {
+			writeErr = err
+		}
+	}
+	return writeErr
+}
+
+func (m *Manager) removeNamedConf(filename string) {
+	for _, dir := range m.confDirs() {
+		_ = removeFileWithSudo(filepath.Join(dir, filename))
+	}
+}
+
+func (m *Manager) hasLocalPDNSFiles() bool {
+	if _, err := os.Stat("/etc/powerdns/pdns.conf"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/etc/wdev-edge/edge.conf"); err == nil {
+		return true
+	}
+	return false
+}
+
+func (m *Manager) backupActiveProfile() {
+	activeCfg, ok := m.readNamedConf(activeDNSConfFile)
+	if !ok {
+		return
+	}
+	if isRemoteEdgeHost(activeCfg.VPSNetbirdIP) {
+		if activeCfg.APIKey != "" {
+			_ = m.writeNamedConf(edgeRemoteConfFile, activeCfg)
+		}
+		return
+	}
+	if activeCfg.VPSNetbirdIP != "" && activeCfg.APIKey != "" {
+		_, hasLocalProf := m.readNamedConf(localPDNSConfFile)
+		if m.hasLocalPDNSFiles() || hasLocalProf {
+			_ = m.writeNamedConf(localPDNSConfFile, activeCfg)
+		}
+	}
+}
+
+// SetMode mengubah mode antara "local", "edge", dan "vps" sambil menjaga profil
+// konfigurasi DNS masing-masing mode agar tidak saling menimpa atau bentrok.
 func (m *Manager) SetMode(mode string) error {
 	norm, ok := NormalizeMode(mode)
 	if !ok {
 		return fmt.Errorf("mode tidak valid: %s (harus 'local', 'edge', atau 'vps')", mode)
 	}
+
+	m.backupActiveProfile()
+
 	if err := m.store.SetSetting("server_mode", norm); err != nil {
 		return err
 	}
-	if norm == "vps" || norm == "local" {
+
+	hasLocalPDNS := m.hasLocalPDNSFiles()
+	switch norm {
+	case "edge":
+		if remoteCfg, hasRemote := m.readNamedConf(edgeRemoteConfFile); hasRemote && isRemoteEdgeHost(remoteCfg.VPSNetbirdIP) && remoteCfg.APIKey != "" {
+			_ = m.writeNamedConf(activeDNSConfFile, remoteCfg)
+		} else if activeCfg, hasActive := m.readNamedConf(activeDNSConfFile); hasActive && !isRemoteEdgeHost(activeCfg.VPSNetbirdIP) {
+			_, hasLocalProf := m.readNamedConf(localPDNSConfFile)
+			if hasLocalPDNS || hasLocalProf {
+				m.removeNamedConf(activeDNSConfFile)
+			}
+		}
+	case "vps", "local":
+		if localCfg, hasLocalProf := m.readNamedConf(localPDNSConfFile); hasLocalProf && localCfg.APIKey != "" {
+			localCfg.VPSNetbirdIP = "127.0.0.1"
+			if norm == "local" && IsPublicIPv4String(localCfg.VPSPublicIP) {
+				localCfg.VPSPublicIP = ""
+			}
+			_ = m.writeNamedConf(activeDNSConfFile, localCfg)
+		} else if activeCfg, hasActive := m.readNamedConf(activeDNSConfFile); hasActive && isRemoteEdgeHost(activeCfg.VPSNetbirdIP) {
+			m.removeNamedConf(activeDNSConfFile)
+		}
 		m.ensureLocalPDNSConfig(norm)
 	}
+
 	_, _ = m.EnsureEdgeRealIPConfig()
 	return nil
 }
@@ -466,12 +633,14 @@ func (m *Manager) readLocalPDNSFileSettings() (apiKey, pdnsPort string) {
 }
 
 func (m *Manager) ensureLocalPDNSConfig(mode string) {
+	m.backupActiveProfile()
+
 	apiKey := ""
 	pubIP := ""
 	pdnsPort := "8081"
 	agentPort := "8082"
 
-	// Baca dari /etc/wdev-edge/edge.conf jika ada
+	// 1. Baca dari /etc/wdev-edge/edge.conf jika ada
 	for _, p := range []string{"/etc/wdev-edge/edge.conf", filepath.Join(m.cfg.WdevEtc, "edge.conf")} {
 		if data, err := os.ReadFile(p); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
@@ -499,7 +668,23 @@ func (m *Manager) ensureLocalPDNSConfig(mode string) {
 		}
 	}
 
-	// Baca dari /etc/powerdns/pdns.conf jika belum ada API key
+	// 2. Cadangkan nilai dari local-pdns.conf bila sudah ada sebelumnya
+	if localCfg, ok := m.readNamedConf(localPDNSConfFile); ok {
+		if apiKey == "" {
+			apiKey = localCfg.APIKey
+		}
+		if pubIP == "" {
+			pubIP = localCfg.VPSPublicIP
+		}
+		if pdnsPort == "8081" && localCfg.PDNSPort != "" {
+			pdnsPort = localCfg.PDNSPort
+		}
+		if agentPort == "8082" && localCfg.AgentPort != "" {
+			agentPort = localCfg.AgentPort
+		}
+	}
+
+	// 3. Baca dari /etc/powerdns/pdns.conf jika belum ada API key
 	if apiKey == "" {
 		k, p := m.readLocalPDNSFileSettings()
 		apiKey = k
@@ -515,8 +700,13 @@ func (m *Manager) ensureLocalPDNSConfig(mode string) {
 		if !IsPublicIPv4String(pubIP) {
 			pubIP = ""
 		}
-	} else if pubIP == "" || !IsPublicIPv4String(pubIP) {
-		pubIP = ""
+	} else {
+		if IsPublicIPv4String(pubIP) {
+			pubIP = ""
+		}
+		if remoteCfg, ok := m.readNamedConf(edgeRemoteConfFile); ok && pubIP == remoteCfg.VPSPublicIP {
+			pubIP = ""
+		}
 	}
 
 	if apiKey != "" {
@@ -527,18 +717,7 @@ func (m *Manager) ensureLocalPDNSConfig(mode string) {
 func (m *Manager) LoadConfig() EdgeConfig {
 	mode := m.GetMode()
 	isSet := m.IsModeSet()
-	hasLocalPDNS := false
-	if _, err := os.Stat("/etc/powerdns/pdns.conf"); err == nil {
-		hasLocalPDNS = true
-	} else if _, err := os.Stat("/etc/wdev-edge/edge.conf"); err == nil {
-		hasLocalPDNS = true
-	}
-
-	confFile := filepath.Join(m.cfg.WdevEtc, "edge-dns.conf")
-	data, err := os.ReadFile(confFile)
-	if err != nil && m.cfg.WdevEtc != "/etc/wdev" {
-		data, err = os.ReadFile("/etc/wdev/edge-dns.conf")
-	}
+	hasLocalPDNS := m.hasLocalPDNSFiles()
 
 	conf := EdgeConfig{
 		Configured:     false,
@@ -550,54 +729,74 @@ func (m *Manager) LoadConfig() EdgeConfig {
 		LocalNetbirdIP: m.GetLocalNetbirdIP(),
 	}
 
-	parseConf := func(raw []byte) {
-		scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
-				continue
-			}
-			parts := strings.SplitN(line, "=", 2)
-			k := strings.TrimSpace(parts[0])
-			v := strings.Trim(strings.TrimSpace(parts[1]), "\"")
-			switch k {
-			case "VPS_NETBIRD_IP":
-				conf.VPSNetbirdIP = v
-			case "VPS_PUBLIC_IP":
-				if v != "" {
-					conf.VPSPublicIP = v
-				}
-			case "API_KEY":
-				conf.APIKey = v
-			case "PDNS_PORT":
-				if v != "" {
-					conf.PDNSPort = v
-				}
-			case "AGENT_PORT":
-				if v != "" {
-					conf.AgentPort = v
-				}
-			}
+	var parsed EdgeConfig
+	var hasParsed bool
+	for _, dir := range m.confDirs() {
+		if data, err := os.ReadFile(filepath.Join(dir, activeDNSConfFile)); err == nil {
+			parsed = parseEdgeConfigBytes(data)
+			hasParsed = true
+			break
+		}
+	}
+	if !hasParsed {
+		switch mode {
+		case "edge":
+			parsed, hasParsed = m.readNamedConf(edgeRemoteConfFile)
+		case "local", "vps":
+			parsed, hasParsed = m.readNamedConf(localPDNSConfFile)
 		}
 	}
 
-	if err == nil {
-		conf.Configured = true
-		parseConf(data)
+	if hasParsed {
+		assignEndpointConfig(&conf, parsed)
+	}
+
+	// Isolasi lintas mode: jangan biarkan konfigurasi mode lain membajak mode aktif.
+	if mode == "local" && conf.Configured && isRemoteEdgeHost(conf.VPSNetbirdIP) {
+		if conf.APIKey != "" {
+			_ = m.writeNamedConf(edgeRemoteConfFile, parsed)
+		}
+		if localCfg, ok := m.readNamedConf(localPDNSConfFile); ok && localCfg.APIKey != "" {
+			assignEndpointConfig(&conf, localCfg)
+			conf.VPSNetbirdIP = "127.0.0.1"
+			if IsPublicIPv4String(conf.VPSPublicIP) {
+				conf.VPSPublicIP = ""
+			}
+		} else {
+			conf.Configured = false
+			conf.VPSNetbirdIP = ""
+			conf.VPSPublicIP = ""
+			conf.APIKey = ""
+		}
+	} else if mode == "edge" && conf.Configured && !isRemoteEdgeHost(conf.VPSNetbirdIP) {
+		if remoteCfg, ok := m.readNamedConf(edgeRemoteConfFile); ok && isRemoteEdgeHost(remoteCfg.VPSNetbirdIP) && remoteCfg.APIKey != "" {
+			assignEndpointConfig(&conf, remoteCfg)
+		} else if _, hasLocalProf := m.readNamedConf(localPDNSConfFile); hasLocalPDNS || hasLocalProf {
+			conf.Configured = false
+			conf.VPSNetbirdIP = ""
+			conf.VPSPublicIP = ""
+			conf.APIKey = ""
+		}
 	}
 
 	// Pada mode VPS atau Lokal dengan PowerDNS lokal, target API selalu 127.0.0.1 tanpa NetBird.
 	if mode == "vps" || (mode == "local" && hasLocalPDNS) {
+		if mode == "vps" && conf.Configured && isRemoteEdgeHost(conf.VPSNetbirdIP) {
+			if conf.APIKey != "" {
+				_ = m.writeNamedConf(edgeRemoteConfFile, parsed)
+			}
+			if localCfg, ok := m.readNamedConf(localPDNSConfFile); ok && localCfg.APIKey != "" {
+				assignEndpointConfig(&conf, localCfg)
+			} else {
+				conf.APIKey = ""
+				conf.Configured = false
+			}
+			conf.VPSPublicIP = ""
+		}
 		if hasLocalPDNS && (!conf.Configured || conf.APIKey == "" || (conf.VPSNetbirdIP != "127.0.0.1" && conf.VPSNetbirdIP != "localhost")) {
 			m.ensureLocalPDNSConfig(mode)
-			if d, e := os.ReadFile(confFile); e == nil {
-				conf.Configured = true
-				parseConf(d)
-			} else if m.cfg.WdevEtc != "/etc/wdev" {
-				if d, e := os.ReadFile("/etc/wdev/edge-dns.conf"); e == nil {
-					conf.Configured = true
-					parseConf(d)
-				}
+			if refreshed, ok := m.readNamedConf(activeDNSConfFile); ok && !isRemoteEdgeHost(refreshed.VPSNetbirdIP) {
+				assignEndpointConfig(&conf, refreshed)
 			}
 		}
 		if hasLocalPDNS && conf.APIKey == "" {
@@ -722,6 +921,17 @@ func (m *Manager) requirePDNSConfig() (EdgeConfig, error) {
 			return conf, fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
 		}
 		return conf, fmt.Errorf("PowerDNS belum terpasang atau belum dikonfigurasi")
+	}
+	return conf, nil
+}
+
+func (m *Manager) requireEdgeAgentConfig() (EdgeConfig, error) {
+	conf := m.LoadConfig()
+	if conf.Mode != "edge" {
+		return conf, fmt.Errorf("fitur VPS Edge Gateway hanya tersedia pada mode edge (mode saat ini: %s)", conf.Mode)
+	}
+	if !conf.Configured || conf.VPSNetbirdIP == "" {
+		return conf, fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
 	}
 	return conf, nil
 }
@@ -1513,9 +1723,9 @@ func (m *Manager) Expose(domain string, targetPort int, useSSL bool, websocket b
 		return fmt.Errorf("port target tidak valid: %d", targetPort)
 	}
 
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requireEdgeAgentConfig()
+	if err != nil {
+		return err
 	}
 
 	localIP := m.GetLocalNetbirdIP()
@@ -1605,6 +1815,9 @@ func validatePortString(raw, label string) (string, error) {
 }
 
 func (m *Manager) ExposeSite(localDomain, publicDomain string, useSSL bool) error {
+	if _, err := m.requireEdgeAgentConfig(); err != nil {
+		return err
+	}
 	localDomain = strings.ToLower(strings.TrimSpace(localDomain))
 	publicDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(publicDomain), "."))
 
@@ -1774,9 +1987,9 @@ func (m *Manager) Unexpose(domain string, keepDNS bool) error {
 		return fmt.Errorf("domain tidak boleh kosong")
 	}
 
-	conf := m.LoadConfig()
-	if !conf.Configured || conf.VPSNetbirdIP == "" {
-		return fmt.Errorf("VPS Edge Gateway belum dikonfigurasi")
+	conf, err := m.requireEdgeAgentConfig()
+	if err != nil {
+		return err
 	}
 
 	agentPort := conf.AgentPort
@@ -2048,34 +2261,41 @@ func (m *Manager) SaveConfig(vpsNetbirdIP, vpsPublicIP, apiKey, pdnsPort, agentP
 	if agentPort == "" {
 		agentPort = "8082"
 	}
-	content := fmt.Sprintf(`# wdev Edge & PowerDNS Configuration
-VPS_NETBIRD_IP="%s"
-VPS_PUBLIC_IP="%s"
-API_KEY="%s"
-PDNS_PORT="%s"
-AGENT_PORT="%s"
-`, vpsNetbirdIP, vpsPublicIP, apiKey, pdnsPort, agentPort)
-
-	targets := []string{m.cfg.WdevEtc}
-	if m.cfg.WdevEtc != "/etc/wdev" {
-		targets = append(targets, "/etc/wdev")
+	conf := EdgeConfig{
+		VPSNetbirdIP: strings.TrimSpace(vpsNetbirdIP),
+		VPSPublicIP:  strings.TrimSpace(vpsPublicIP),
+		APIKey:       strings.TrimSpace(apiKey),
+		PDNSPort:     pdnsPort,
+		AgentPort:    agentPort,
 	}
 
-	var writeErr error
-	for _, dir := range targets {
-		if os.Geteuid() != 0 {
-			_ = exec.Command("sudo", "-n", "mkdir", "-p", dir).Run()
-		} else {
-			_ = os.MkdirAll(dir, 0700)
+	curMode := m.GetMode()
+	if isRemoteEdgeHost(conf.VPSNetbirdIP) {
+		if err := m.writeNamedConf(edgeRemoteConfFile, conf); err != nil {
+			return err
 		}
-		confFile := filepath.Join(dir, "edge-dns.conf")
-		if err := writeSecretFileWithSudo(confFile, []byte(content)); err != nil {
-			writeErr = err
+		if curMode == "edge" || !m.IsModeSet() {
+			if err := m.writeNamedConf(activeDNSConfFile, conf); err != nil {
+				return err
+			}
+		}
+	} else {
+		if m.hasLocalPDNSFiles() || curMode != "edge" {
+			if err := m.writeNamedConf(localPDNSConfFile, conf); err != nil {
+				return err
+			}
+		}
+		if curMode != "edge" {
+			if err := m.writeNamedConf(activeDNSConfFile, conf); err != nil {
+				return err
+			}
+		} else if _, hasRemote := m.readNamedConf(edgeRemoteConfFile); !hasRemote {
+			if err := m.writeNamedConf(activeDNSConfFile, conf); err != nil {
+				return err
+			}
 		}
 	}
-	if writeErr != nil {
-		return writeErr
-	}
+
 	_, _ = m.EnsureEdgeRealIPConfig()
 	return nil
 }
@@ -2136,18 +2356,24 @@ func (m *Manager) Connect(opts ConnectOptions) error {
 		return fmt.Errorf("PowerDNS API merespons status HTTP %d", resp.StatusCode)
 	}
 
-	return m.SaveConfig(opts.VPSNetbirdIP, opts.VPSPublicIP, opts.APIKey, opts.PDNSPort, opts.AgentPort)
+	if err := m.SaveConfig(opts.VPSNetbirdIP, opts.VPSPublicIP, opts.APIKey, opts.PDNSPort, opts.AgentPort); err != nil {
+		return err
+	}
+	if isRemoteEdgeHost(opts.VPSNetbirdIP) && m.GetMode() != "edge" {
+		return m.SetMode("edge")
+	}
+	return nil
 }
 
 // AgentPost performs an authenticated POST request to the VPS Edge Agent.
 func (m *Manager) AgentPost(path string, payload any) ([]byte, error) {
-	conf := m.LoadConfig()
-	if conf.VPSNetbirdIP == "" {
-		return nil, fmt.Errorf("VPS Edge Gateway belum terhubung (IP NetBird VPS kosong)")
+	conf, err := m.requireEdgeAgentConfig()
+	if err != nil {
+		return nil, err
 	}
 	agentPort := conf.AgentPort
 	if agentPort == "" {
-		agentPort = "3100"
+		agentPort = "8082"
 	}
 
 	jsonBytes, err := json.Marshal(payload)
@@ -2367,6 +2593,9 @@ func (m *Manager) DeployVPS(ctx context.Context, cb func(string), opts DeployOpt
 
 	if err := m.SaveConfig(vpsNetbird, pubIP, apiKey, pdnsPort, agentPort); err != nil {
 		return fmt.Errorf("gagal menyimpan konfigurasi lokal: %w", err)
+	}
+	if isRemoteEdgeHost(vpsNetbird) && m.GetMode() != "edge" {
+		_ = m.SetMode("edge")
 	}
 	cb("  ✓ Konfigurasi /etc/wdev/edge-dns.conf lokal berhasil diperbarui.")
 

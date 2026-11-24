@@ -1,4 +1,5 @@
 import { api, ApiError } from '#lib/api/client.js';
+import { cp } from '#lib/stores/control-plane.svelte.js';
 import { toast } from 'svelte-sonner';
 
 export type ServerMode = 'local' | 'edge' | 'vps';
@@ -46,6 +47,7 @@ class ModeStore {
 			});
 			this.modalOpen = false;
 			await this.fetchMode();
+			void cp.loadStatus(false);
 		} catch (err) {
 			const msg = err instanceof ApiError ? err.message : 'Gagal mengubah mode server';
 			toast.error('Gagal Mengubah Mode', { description: msg });

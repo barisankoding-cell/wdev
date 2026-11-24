@@ -908,3 +908,92 @@ func TestUpdateSite(t *testing.T) {
 		t.Fatalf("expected proxy_pass in nginx conf, got:\n%s", string(proxyConfData))
 	}
 }
+
+func TestModeAwareHostsAndSyncAllSkipsPublicDomainsInVPSAndEdgeModes(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "wdev.db")
+	db, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create test store: %v", err)
+	}
+	defer db.Close()
+
+	hostsFile := filepath.Join(tmp, "hosts")
+	if err := os.WriteFile(hostsFile, []byte("127.0.0.1 localhost\n127.0.0.1 legacy-public.com # wdev\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mode := "vps"
+	cfg := &config.Config{
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+		HostsFile:        hostsFile,
+	}
+	mgr := New(cfg, db)
+	mgr.SetSkipNginxExec(true)
+	mgr.SetServerModeFn(func() string { return mode })
+
+	// 1. In VPS mode, creating a public domain without ForceHosts does not add /etc/hosts.
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:    "legacy-public.com",
+		Framework: "static",
+	}); err != nil {
+		t.Fatalf("CreateSite public failed: %v", err)
+	}
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:    "localdev.test",
+		Framework: "static",
+	}); err != nil {
+		t.Fatalf("CreateSite .test failed: %v", err)
+	}
+
+	// Updating public domain in VPS mode also does not inject /etc/hosts.
+	if err := mgr.UpdateSite("legacy-public.com", CreateOptions{
+		Domain:    "legacy-public.com",
+		Framework: "proxy",
+		ProxyPort: 3001,
+	}); err != nil {
+		t.Fatalf("UpdateSite public failed: %v", err)
+	}
+
+	// 2. SyncAll in VPS mode cleans stale public /etc/hosts while keeping .test local entries.
+	if err := mgr.SyncAll(); err != nil {
+		t.Fatalf("SyncAll in vps mode failed: %v", err)
+	}
+	hostsBytes, err := os.ReadFile(hostsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostsText := string(hostsBytes)
+	if strings.Contains(hostsText, "legacy-public.com") {
+		t.Fatalf("expected stale public domain removed from /etc/hosts in vps mode, got:\n%s", hostsText)
+	}
+	if !strings.Contains(hostsText, "localdev.test") {
+		t.Fatalf("expected .test domain kept in /etc/hosts, got:\n%s", hostsText)
+	}
+
+	// 3. Explicit ForceHosts in edge mode overrides default skip when user asks for it.
+	mode = "edge"
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:     "forced-edge.com",
+		Framework:  "static",
+		ForceHosts: true,
+	}); err != nil {
+		t.Fatalf("CreateSite with ForceHosts failed: %v", err)
+	}
+	hostsBytes, _ = os.ReadFile(hostsFile)
+	if !strings.Contains(string(hostsBytes), "forced-edge.com") {
+		t.Fatalf("expected ForceHosts=true to write /etc/hosts, got:\n%s", string(hostsBytes))
+	}
+
+	// 4. In local mode, SyncAll writes public domains to /etc/hosts as local dev hosts.
+	mode = "local"
+	if err := mgr.SyncAll(); err != nil {
+		t.Fatalf("SyncAll in local mode failed: %v", err)
+	}
+	hostsBytes, _ = os.ReadFile(hostsFile)
+	if !strings.Contains(string(hostsBytes), "legacy-public.com") {
+		t.Fatalf("expected local mode SyncAll to include site in /etc/hosts, got:\n%s", string(hostsBytes))
+	}
+}

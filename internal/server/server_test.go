@@ -2433,3 +2433,134 @@ func TestSitesProxyRejectsReservedInternalPorts(t *testing.T) {
 		t.Fatalf("PUT /api/sites/app.example.test proxy_port=8081 = %d, want 400 body=%s", recUpdateBad.Code, recUpdateBad.Body.String())
 	}
 }
+
+func TestApplyPDNSModeToStatsIsolatesEdgePublicIPInLocalMode(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "mode-stats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{WdevEtc: dir, HTTPHost: "127.0.0.1", HTTPPort: "3200"}
+	pdnsMgr := pdns.New(cfg, db)
+	_ = pdnsMgr.SetMode("edge")
+	if err := pdnsMgr.SaveConfig("100.64.0.10", "174.128.205.124", "edge-key", "8081", "8082"); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{cfg: cfg, store: db, pdnsMgr: pdnsMgr}
+
+	edgeStats := &monitor.SystemStats{}
+	srv.applyPDNSModeToStats(edgeStats)
+	if edgeStats.ServerMode != "edge" || edgeStats.PublicIP != "174.128.205.124" {
+		t.Fatalf("expected edge stats with VPS IP, got %+v", edgeStats)
+	}
+
+	if err := pdnsMgr.SetMode("local"); err != nil {
+		t.Fatal(err)
+	}
+	localStats := &monitor.SystemStats{}
+	srv.applyPDNSModeToStats(localStats)
+	if localStats.ServerMode != "local" || localStats.PublicIP != "" {
+		t.Fatalf("expected local stats not to leak Edge PublicIP, got %+v", localStats)
+	}
+
+	// Switch back to edge -> VPS PublicIP returns automatically.
+	if err := pdnsMgr.SetMode("edge"); err != nil {
+		t.Fatal(err)
+	}
+	backStats := &monitor.SystemStats{}
+	srv.applyPDNSModeToStats(backStats)
+	if backStats.ServerMode != "edge" || backStats.PublicIP != "174.128.205.124" {
+		t.Fatalf("expected restored edge stats with VPS IP, got %+v", backStats)
+	}
+}
+
+func TestSudoRateLimitEnforcedAcrossAllEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: dir}
+	authMgr := auth.New(cfg, db)
+	inst := installer.New(cfg, db)
+	srv := &Server{
+		cfg:       cfg,
+		store:     db,
+		authMgr:   authMgr,
+		installer: inst,
+		mux:       http.NewServeMux(),
+		sudoVerifyFn: func(pass string) error {
+			if pass == "correct-sudo" {
+				return nil
+			}
+			return fmt.Errorf("autentikasi sudo gagal")
+		},
+	}
+	srv.routes()
+
+	sendSudoAttempt := func(method, path, body, ip string) int {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.RemoteAddr = ip + ":44444"
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		switch {
+		case path == "/api/sudo/verify":
+			srv.handleSudoVerify(rec, req)
+		case path == "/api/install":
+			srv.handleInstall(rec, req)
+		case strings.HasPrefix(path, "/api/switchers/"):
+			srv.handleSwitchersAction(rec, req)
+		case strings.HasPrefix(path, "/api/sites/"):
+			srv.handleSiteUpdate(rec, req)
+		case path == "/api/panel/domain":
+			srv.handlePanelDomain(rec, req)
+		case path == "/api/updater/apply":
+			srv.handleUpdaterApply(rec, req)
+		}
+		return rec.Code
+	}
+
+	attackerIP := "198.51.100.77"
+	attempts := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/api/install", `{"component":"node","version":"22","sudo_pass":"guess1"}`},
+		{http.MethodPost, "/api/switchers/node", `{"version":"22","sudo_pass":"guess2"}`},
+		{http.MethodPut, "/api/sites/app.example.com", `{"framework":"generic","sudo_pass":"guess3"}`},
+		{http.MethodPost, "/api/panel/domain", `{"domain":"panel.example.com","sudo_pass":"guess4"}`},
+		{http.MethodPost, "/api/updater/apply", `{"sudo_pass":"guess5"}`},
+	}
+	for i, tc := range attempts {
+		if code := sendSudoAttempt(tc.method, tc.path, tc.body, attackerIP); code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d (%s) = %d, want 401", i+1, tc.path, code)
+		}
+	}
+
+	// Subsequent guesses from same IP must now be locked out across /api/sudo/verify AND secondary endpoints.
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/api/sudo/verify", `{"password":"correct-sudo"}`},
+		{http.MethodPost, "/api/install", `{"component":"node","version":"22","sudo_pass":"correct-sudo"}`},
+		{http.MethodPost, "/api/switchers/node", `{"version":"22","sudo_pass":"correct-sudo"}`},
+		{http.MethodPut, "/api/sites/app.example.com", `{"framework":"generic","sudo_pass":"correct-sudo"}`},
+		{http.MethodPost, "/api/panel/domain", `{"domain":"panel.example.com","sudo_pass":"correct-sudo"}`},
+	} {
+		if code := sendSudoAttempt(tc.method, tc.path, tc.body, attackerIP); code != http.StatusTooManyRequests {
+			t.Fatalf("locked-out %s returned %d, want 429", tc.path, code)
+		}
+	}
+
+	// Clean peer IP with valid sudo password succeeds.
+	if code := sendSudoAttempt(http.MethodPost, "/api/sudo/verify", `{"password":"correct-sudo"}`, "198.51.100.88"); code != http.StatusOK {
+		t.Fatalf("valid sudo verify from clean IP = %d, want 200", code)
+	}
+}

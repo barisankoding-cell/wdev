@@ -332,7 +332,7 @@ func main() {
 		if pdnsMgr != nil {
 			stats.ServerMode = pdnsMgr.GetMode()
 			edgeCfg := pdnsMgr.LoadConfig()
-			if edgeCfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(edgeCfg.VPSPublicIP) {
+			if stats.ServerMode != "local" && edgeCfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(edgeCfg.VPSPublicIP) {
 				stats.PublicIP = edgeCfg.VPSPublicIP
 			}
 		}
@@ -1751,7 +1751,7 @@ func main() {
 				for _, td := range targets {
 					if rec, ok := siteMgr.GetSite(td); ok {
 						if pdnsMgr != nil {
-							if rec.ExposedTo != "" {
+							if pdnsMgr.GetMode() == "edge" && rec.ExposedTo != "" {
 								_ = pdnsMgr.Unexpose(rec.ExposedTo, false)
 							} else {
 								_, _ = pdnsMgr.DeleteDomainDNSRecords(td)

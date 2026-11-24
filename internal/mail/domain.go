@@ -285,6 +285,22 @@ func (m *Manager) DeleteDomain(domain string, deleteDNS bool) (DomainActionRepor
 	rep.add("State lokal", actionOK, "kredensial admin, relay, dan state domain dibersihkan")
 
 	mode := m.pdnsMgr.GetMode()
+	// Bersihkan artefak lokal (/etc/hosts, vhost lokal, cert SSL lokal) di semua mode agar
+	// domain yang sebelumnya dibuat di mode lain tidak meninggalkan sisa entri /etc/hosts atau vhost.
+	m.removeMailHostsEntries(domain)
+	sslDir := m.mailSSLDir(domain)
+	if err := os.RemoveAll(sslDir); err != nil {
+		_ = runRoot("rm", "-rf", sslDir)
+	}
+	available, enabled := m.nginxMailPaths(domain)
+	if err := os.Remove(enabled); err != nil && !os.IsNotExist(err) {
+		_ = runRoot("rm", "-f", enabled)
+	}
+	if err := os.Remove(available); err != nil && !os.IsNotExist(err) {
+		_ = runRoot("rm", "-f", available)
+	}
+	_ = reloadLocalNginx()
+
 	if mode == "edge" {
 		if _, err := m.pdnsMgr.AgentPost("/api/v1/mail/remove-domain", map[string]any{"domain": domain}); err != nil {
 			rep.add("VPS Edge Gateway", actionWarn, "gagal membersihkan vhost/stream/proxy di VPS: "+err.Error())
@@ -292,21 +308,6 @@ func (m *Manager) DeleteDomain(domain string, deleteDNS bool) (DomainActionRepor
 			rep.add("VPS Edge Gateway", actionOK, "vhost webmail/admin, postfix relay, dan stream mail dibersihkan di VPS")
 		}
 	} else {
-		available, enabled := m.nginxMailPaths(domain)
-		if err := os.Remove(enabled); err != nil && !os.IsNotExist(err) {
-			_ = runRoot("rm", "-f", enabled)
-		}
-		if err := os.Remove(available); err != nil && !os.IsNotExist(err) {
-			_ = runRoot("rm", "-f", available)
-		}
-		_ = reloadLocalNginx()
-		if mode == "local" {
-			m.removeMailHostsEntries(domain)
-			sslDir := m.mailSSLDir(domain)
-			if err := os.RemoveAll(sslDir); err != nil {
-				_ = runRoot("rm", "-rf", sslDir)
-			}
-		}
 		rep.add("Vhost Nginx Lokal", actionOK, "vhost webmail/admin lokal & entri akses dibersihkan (mode "+mode+")")
 	}
 
@@ -424,6 +425,7 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 	// 4. Segarkan gateway / vhost sesuai mode server.
 	switch mode {
 	case "edge":
+		m.removeMailHostsEntries(domain)
 		if localNB := m.pdnsMgr.GetLocalNetbirdIP(); localNB == "" {
 			rep.add("Edge Gateway", actionWarn, "IP NetBird lokal (wt0) tidak terdeteksi; vhost VPS tidak bisa disegarkan")
 		} else {
@@ -467,6 +469,8 @@ func (m *Manager) RepairDomain(domain string, cb func(string)) (DomainActionRepo
 		}
 		if mode == "local" {
 			m.ensureMailHostsEntries(domain, "127.0.0.1")
+		} else {
+			m.removeMailHostsEntries(domain)
 		}
 		scheme := "http"
 		if sslActive {

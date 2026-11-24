@@ -52,6 +52,7 @@ type Server struct {
 	fileMgr        *filemanager.Manager
 	termMgr        *terminal.Manager
 	termSec        *terminalSecurityState
+	sudoVerifyFn   func(string) error
 	mux            *http.ServeMux
 	orcaSyncCancel context.CancelFunc
 }
@@ -627,7 +628,7 @@ func (s *Server) applyPDNSModeToStats(stats *monitor.SystemStats) {
 	}
 	stats.ServerMode = s.pdnsMgr.GetMode()
 	cfg := s.pdnsMgr.LoadConfig()
-	if cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
+	if stats.ServerMode != "local" && cfg.VPSPublicIP != "" && pdns.IsPublicIPv4String(cfg.VPSPublicIP) {
 		stats.PublicIP = cfg.VPSPublicIP
 	}
 }
@@ -812,8 +813,7 @@ func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(spRaw, &sudoPass)
 		}
 		if sudoPass != "" {
-			if err := s.installer.VerifyAndSetSudoPassword(sudoPass); err != nil {
-				writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+			if !s.verifySudoPasswordWithRateLimit(w, r, sudoPass, "Password sudo tidak valid: ") {
 				return
 			}
 		}
@@ -1025,6 +1025,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		if !req.SkipHosts {
 			if req.AddHosts != nil {
 				req.SkipHosts = !*req.AddHosts
+				req.ForceHosts = *req.AddHosts
 			} else if (mode == "vps" || mode == "edge") && isPublic {
 				// Domain publik di mode VPS/Edge diselesaikan lewat PowerDNS/DNS publik, bukan /etc/hosts lokal.
 				req.SkipHosts = true
@@ -1204,9 +1205,8 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SudoPass != "" && s.installer != nil {
-		if err := s.installer.VerifyAndSetSudoPassword(req.SudoPass); err != nil {
-			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+	if req.SudoPass != "" {
+		if !s.verifySudoPasswordWithRateLimit(w, r, req.SudoPass, "Password sudo tidak valid: ") {
 			return
 		}
 	}
@@ -1265,9 +1265,8 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			SudoPass string `json:"sudo_pass"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.SudoPass != "" && s.installer != nil {
-			if err := s.installer.VerifyAndSetSudoPassword(body.SudoPass); err != nil {
-				writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.SudoPass != "" {
+			if !s.verifySudoPasswordWithRateLimit(w, r, body.SudoPass, "Password sudo tidak valid: ") {
 				return
 			}
 		}
@@ -1341,9 +1340,8 @@ func (s *Server) handleSiteSSL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Virtual host untuk %s tidak ditemukan", domain))
 		return
 	}
-	if payload.SudoPass != "" && s.installer != nil {
-		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
-			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+	if payload.SudoPass != "" {
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
 			return
 		}
 	}
@@ -1407,8 +1405,7 @@ func (s *Server) handleSwitchersAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if payload.SudoPass != "" {
-		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
-			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
 			return
 		}
 	}
@@ -1790,9 +1787,8 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if payload.SudoPass != "" && s.installer != nil {
-			if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
-				writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+		if payload.SudoPass != "" {
+			if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
 				return
 			}
 		}
@@ -2080,17 +2076,41 @@ func (s *Server) handleSudoStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleSudoVerify(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
-		return
+// verifySudoPasswordWithRateLimit validates a sudo password through the shared per-IP
+// auth rate limiter so secondary sudo_pass fields cannot bypass /api/sudo/verify lockouts.
+func (s *Server) verifySudoPasswordWithRateLimit(w http.ResponseWriter, r *http.Request, pass, invalidPrefix string) bool {
+	verifyFn := s.sudoVerifyFn
+	if verifyFn == nil && s.installer != nil {
+		verifyFn = s.installer.VerifyAndSetSudoPassword
+	}
+	if verifyFn == nil {
+		writeError(w, http.StatusServiceUnavailable, "Installer tidak tersedia")
+		return false
 	}
 	ip := auth.ClientIP(r)
 	if s.authMgr != nil {
 		if allowed, wait := s.authMgr.CheckRateLimit(ip); !allowed {
 			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Terlalu banyak percobaan gagal. Coba lagi dalam %d menit.", int(wait.Minutes())+1))
-			return
+			return false
 		}
+	}
+	if err := verifyFn(pass); err != nil {
+		if s.authMgr != nil {
+			s.authMgr.RecordLoginAttempt(ip, false)
+		}
+		writeError(w, http.StatusUnauthorized, invalidPrefix+err.Error())
+		return false
+	}
+	if s.authMgr != nil {
+		s.authMgr.RecordLoginAttempt(ip, true)
+	}
+	return true
+}
+
+func (s *Server) handleSudoVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
 	}
 	var payload struct {
 		Password string `json:"password"`
@@ -2099,15 +2119,8 @@ func (s *Server) handleSudoVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
-	if err := s.installer.VerifyAndSetSudoPassword(payload.Password); err != nil {
-		if s.authMgr != nil {
-			s.authMgr.RecordLoginAttempt(ip, false)
-		}
-		writeError(w, http.StatusUnauthorized, "Password sudo salah: "+err.Error())
+	if !s.verifySudoPasswordWithRateLimit(w, r, payload.Password, "Password sudo salah: ") {
 		return
-	}
-	if s.authMgr != nil {
-		s.authMgr.RecordLoginAttempt(ip, true)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "message": "Password sudo berhasil diverifikasi"})
 }
@@ -2395,8 +2408,7 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if payload.SudoPass != "" {
-		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
-			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
 			return
 		}
 	}
@@ -3513,8 +3525,7 @@ func (s *Server) handleEnvSync(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 	}
 	if payload.SudoPass != "" {
-		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
-			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
 			return
 		}
 	}
@@ -3574,8 +3585,7 @@ func (s *Server) handleUpdaterApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.SudoPass != "" {
-		if err := s.installer.VerifyAndSetSudoPassword(payload.SudoPass); err != nil {
-			writeError(w, http.StatusUnauthorized, "Password sudo tidak valid: "+err.Error())
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
 			return
 		}
 	}
