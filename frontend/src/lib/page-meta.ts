@@ -62,6 +62,12 @@ export function getPageMeta(pathname: string, mode: ServerMode): PageMeta {
 				description:
 					'Kelola Orca Autonomous Development Environment (ADE), akses Web Client, dan Oh My Zsh.'
 			};
+		case '/ports':
+			return {
+				title: 'Status Port & Jaringan',
+				seoTitle: buildSeoTitle('Status Port & Jaringan'),
+				description: 'Diagnostik port layanan wdev pada Lokal, VPN NetBird, Firewall, dan IP VPS.'
+			};
 		case '/files':
 			return {
 				title: 'File Manager',
@@ -133,6 +139,7 @@ const KNOWN_ROUTES = [
 	'/switchers',
 	'/toolchains',
 	'/workspace',
+	'/ports',
 	'/files',
 	'/terminal',
 	'/powerdns',

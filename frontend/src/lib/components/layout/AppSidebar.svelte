@@ -6,6 +6,7 @@
 	import { useSidebar } from '#lib/components/ui/sidebar/index.js';
 	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
+import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import WrenchIcon from '@lucide/svelte/icons/wrench';
@@ -48,6 +49,7 @@
 		{
 			title: 'Sistem & Berkas',
 			items: [
+				{ label: 'Status Port & Jaringan', href: '/ports', icon: EthernetPortIcon },
 				{ label: 'File Manager', href: '/files', icon: FolderOpenIcon },
 				{ label: 'Terminal SSH (PTY)', href: '/terminal', icon: SquareTerminalIcon }
 			]

@@ -26,6 +26,7 @@ import type {
 	PDNSExposePayload,
 	PHPConfig,
 	PHPInspectResult,
+	PortStatusReport,
 	PostgresConfig,
 	PostgresCreateDBPayload,
 	PostgresDeleteRolePayload,
@@ -706,5 +707,9 @@ export const api = {
 		if (opts.rows) params.set('rows', String(opts.rows));
 		const qs = params.toString();
 		return `${proto}//${window.location.host}/api/terminal/ws${qs ? `?${qs}` : ''}`;
-	}
+	},
+
+	// Diagnostik Port & Jaringan
+	getPortStatus: (forceRefresh = false) =>
+		apiFetch<PortStatusReport>(forceRefresh ? '/api/ports?refresh=1' : '/api/ports')
 };

@@ -958,3 +958,75 @@ export interface BindPanelDomainResponse {
 	message?: string;
 }
 
+export type PortScopeStatus = 'open' | 'blocked' | 'closed' | 'internal' | 'na' | 'unverified';
+export type PortColorTone = 'green' | 'yellow' | 'red' | 'neutral';
+
+export interface PortScopeDetail {
+	status: PortScopeStatus;
+	color: PortColorTone;
+	label: string;
+	target?: string;
+	detail?: string;
+	checked: boolean;
+}
+
+export interface PortEntry {
+	id: string;
+	port: number;
+	protocol: string;
+	service: string;
+	name: string;
+	category: 'system' | 'web' | 'database' | 'dns' | 'mail' | string;
+	category_label: string;
+	installed: boolean;
+	expected_scope: string;
+	bind_addresses?: string[];
+	config_hint?: string;
+	overall_status: 'open' | 'blocked' | 'closed' | 'internal' | 'not_installed' | string;
+	overall_color: PortColorTone;
+	overall_label: string;
+	local: PortScopeDetail;
+	vpn: PortScopeDetail;
+	vps: PortScopeDetail;
+	description: string;
+	recommendation?: string;
+}
+
+export interface PortFirewallInfo {
+	engine: 'ufw' | 'firewalld' | 'none' | string;
+	active: boolean;
+	default_incoming?: string;
+	summary: string;
+	rules_checked: boolean;
+	rules_error?: string;
+}
+
+export interface PortNetworkContext {
+	mode: ServerMode;
+	local_ip: string;
+	lan_ip?: string;
+	vpn_ip?: string;
+	vps_vpn_ip?: string;
+	vps_public_ip?: string;
+	netbird_active: boolean;
+	firewall: PortFirewallInfo;
+}
+
+export interface PortSummaryCounts {
+	total: number;
+	installed: number;
+	green: number;
+	yellow: number;
+	red: number;
+	neutral: number;
+	not_installed: number;
+}
+
+export interface PortStatusReport {
+	checked_at: string;
+	network: PortNetworkContext;
+	summary: PortSummaryCounts;
+	ports: PortEntry[];
+}
+
+

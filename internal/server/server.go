@@ -55,6 +55,7 @@ type Server struct {
 	sudoVerifyFn   func(string) error
 	mux            *http.ServeMux
 	orcaSyncCancel context.CancelFunc
+	portDeps       *portProbeDeps
 }
 
 func New(
@@ -159,6 +160,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/panel/domain", s.handlePanelDomain)
 	s.mux.HandleFunc("/api/panel/domain/block-ip", s.handlePanelDomainBlockIP)
 	s.mux.HandleFunc("/api/panel/ssl", s.handlePanelSSL)
+	s.mux.HandleFunc("/api/ports", s.handlePorts)
 	s.registerFileManagerRoutes()
 	s.registerTerminalRoutes()
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
