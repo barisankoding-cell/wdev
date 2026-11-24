@@ -7,7 +7,16 @@ import type {
 	CFLoginSession,
 	CFProfileInfo,
 	ChangeCredentialsPayload,
+	ComposeActionPayload,
+	ComposeCreatePayload,
+	ComposeDiskUsageSummary,
+	ComposeExposePayload,
+	ComposeProject,
+	ComposeProjectFiles,
+	ComposeStatusReport,
 	CreateSitePayload,
+	DockerConfig,
+	DockerInstallOptions,
 	DomainAccounts,
 	DomainActionReport,
 	EdgeConfig,
@@ -143,7 +152,7 @@ export const api = {
 		}),
 
 	// Service Config
-	getServiceConfig: <T = RedisConfig | PostgresConfig | PHPConfig | NginxConfig>(
+	getServiceConfig: <T = RedisConfig | PostgresConfig | PHPConfig | NginxConfig | DockerConfig>(
 		service: ServiceConfigKey,
 		version = ''
 	) => {
@@ -301,13 +310,19 @@ export const api = {
 		),
 
 	// Install & Tasks & Self-Update
-	triggerInstall: (component: string, version?: string, sudoPass?: string) =>
+	triggerInstall: (
+		component: string,
+		version?: string,
+		sudoPass?: string,
+		dockerOptions?: DockerInstallOptions
+	) =>
 		apiFetch<{ status: string; task_id?: number; message?: string }>('/api/install', {
 			method: 'POST',
 			body: JSON.stringify({
 				component,
 				...(version ? { version } : {}),
-				...(sudoPass ? { sudo_pass: sudoPass } : {})
+				...(sudoPass ? { sudo_pass: sudoPass } : {}),
+				...(dockerOptions ? { docker_options: dockerOptions } : {})
 			})
 		}),
 	triggerBatchInstall: (
@@ -759,7 +774,16 @@ export const api = {
 	getTerminalAudit: (limit = 50) =>
 		apiFetch<TerminalAuditRecord[]>(`/api/terminal/audit?limit=${limit}`),
 	terminalWsUrl: (
-		opts: { cwd?: string; shell?: string; user?: string; token?: string; cols?: number; rows?: number } = {}
+		opts: {
+			cwd?: string;
+			shell?: string;
+			user?: string;
+			token?: string;
+			cols?: number;
+			rows?: number;
+			compose_project?: string;
+			compose_service?: string;
+		} = {}
 	) => {
 		const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const params = new URLSearchParams();
@@ -769,9 +793,84 @@ export const api = {
 		if (opts.token) params.set('token', opts.token);
 		if (opts.cols) params.set('cols', String(opts.cols));
 		if (opts.rows) params.set('rows', String(opts.rows));
+		if (opts.compose_project) params.set('compose_project', opts.compose_project);
+		if (opts.compose_service) params.set('compose_service', opts.compose_service);
 		const qs = params.toString();
 		return `${proto}//${window.location.host}/api/terminal/ws${qs ? `?${qs}` : ''}`;
 	},
+
+	// Docker & Docker Compose v5
+	getComposeStatus: () => apiFetch<ComposeStatusReport>('/api/compose/status'),
+	listComposeProjects: () => apiFetch<ComposeProject[]>('/api/compose/projects'),
+	createComposeProject: (payload: ComposeCreatePayload) =>
+		apiFetch<{ status: string; project: ComposeProject; task_id?: number }>('/api/compose/projects', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+	getComposeProject: (name: string) =>
+		apiFetch<ComposeProject>(`/api/compose/projects/${encodeURIComponent(name)}`),
+	deleteComposeProject: (name: string, down = false) =>
+		apiFetch<{ status: string; message?: string }>(
+			`/api/compose/projects/${encodeURIComponent(name)}${down ? '?down=1' : ''}`,
+			{ method: 'DELETE' }
+		),
+	runComposeAction: (name: string, payload: ComposeActionPayload) =>
+		apiFetch<{ status: 'started' | 'sudo_required' | string; task_id?: number; message?: string }>(
+			`/api/compose/projects/${encodeURIComponent(name)}/action`,
+			{
+				method: 'POST',
+				body: JSON.stringify(payload)
+			}
+		),
+	getComposeFiles: (name: string) =>
+		apiFetch<ComposeProjectFiles>(`/api/compose/projects/${encodeURIComponent(name)}/files`),
+	saveComposeFiles: (
+		name: string,
+		payload: { compose_content: string; env_content: string; update_env: boolean }
+	) =>
+		apiFetch<{ status: string; files: ComposeProjectFiles }>(
+			`/api/compose/projects/${encodeURIComponent(name)}/files`,
+			{
+				method: 'PUT',
+				body: JSON.stringify(payload)
+			}
+		),
+	getComposeConfig: (name: string) =>
+		apiFetch<{ project: string; config: Record<string, unknown> }>(
+			`/api/compose/projects/${encodeURIComponent(name)}/config`
+		),
+	getComposeLogs: (name: string, service = '', tail = 200) => {
+		const params = new URLSearchParams({ tail: String(tail) });
+		if (service) params.set('service', service);
+		return apiFetch<{ project: string; service?: string; logs: string }>(
+			`/api/compose/projects/${encodeURIComponent(name)}/logs?${params.toString()}`
+		);
+	},
+	composeLogsStreamUrl: (name: string, service = '', tail = 120) => {
+		const params = new URLSearchParams({ tail: String(tail) });
+		if (service) params.set('service', service);
+		return `/api/compose/projects/${encodeURIComponent(name)}/logs/stream?${params.toString()}`;
+	},
+	exposeComposeService: (name: string, payload: ComposeExposePayload) =>
+		apiFetch<{
+			status: string;
+			dns_synced?: boolean;
+			dns_zone?: string;
+			dns_message?: string;
+			edge_exposed?: boolean;
+			edge_domain?: string;
+			edge_ssl?: boolean;
+			edge_error?: string;
+		}>(`/api/compose/projects/${encodeURIComponent(name)}/expose`, {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+	getComposeDiskUsage: () => apiFetch<ComposeDiskUsageSummary>('/api/compose/system/df'),
+	pruneComposeSystem: (target: string, sudoPass?: string) =>
+		apiFetch<{ status: string; task_id?: number; message?: string }>('/api/compose/system/prune', {
+			method: 'POST',
+			body: JSON.stringify({ target, ...(sudoPass ? { sudo_pass: sudoPass } : {}) })
+		}),
 
 	// Diagnostik Port & Jaringan
 	getPortStatus: (forceRefresh = false) =>

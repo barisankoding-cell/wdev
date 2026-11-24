@@ -41,6 +41,13 @@ export function getPageMeta(pathname: string, mode: ServerMode): PageMeta {
 					'Kelola virtual host Nginx, konfigurasi PHP-FPM, domain, serta sertifikat SSL.'
 			};
 		}
+		case '/compose':
+			return {
+				title: 'Docker & Compose v5',
+				seoTitle: buildSeoTitle('Docker & Compose v5'),
+				description:
+					'Kelola stack Docker Compose v5, status container, editor YAML/.env, live logs, exec shell, dan eksposur VHost.'
+			};
 		case '/switchers':
 			return {
 				title: 'Pengelola Multi-Versi Runtime',
@@ -136,6 +143,7 @@ export function getPageMeta(pathname: string, mode: ServerMode): PageMeta {
 const KNOWN_ROUTES = [
 	'/',
 	'/webstack',
+	'/compose',
 	'/switchers',
 	'/toolchains',
 	'/workspace',

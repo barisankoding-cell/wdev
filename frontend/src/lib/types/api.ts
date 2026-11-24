@@ -782,7 +782,39 @@ export interface NginxConfig {
 	restart?: boolean;
 }
 
-export type ServiceConfigKey = 'redis' | 'postgresql' | 'php-fpm' | 'nginx';
+export interface DockerConfig {
+	config_path: string;
+	service_unit: string;
+	installed: boolean;
+	active: boolean;
+	docker_version?: string;
+	compose_version?: string;
+	data_root: string;
+	log_driver: string;
+	log_max_size: string;
+	log_max_file: number;
+	live_restore: boolean;
+	no_new_privileges: boolean;
+	ipv6: boolean;
+	userland_proxy: boolean;
+	dns?: string[];
+	registry_mirrors?: string[];
+	default_address_pool_base?: string;
+	default_address_pool_size?: number;
+	docker_group_user?: string;
+	add_user_to_docker_group: boolean;
+	docker_group_members?: string[];
+	restart?: boolean;
+}
+
+export interface DockerInstallOptions {
+	source?: 'official' | 'distro' | string;
+	add_user_to_group: boolean;
+	enable_service: boolean;
+	daemon_config?: Partial<DockerConfig>;
+}
+
+export type ServiceConfigKey = 'redis' | 'postgresql' | 'php-fpm' | 'nginx' | 'docker';
 
 export interface TaskEvent {
 	seq?: number;
@@ -1070,6 +1102,178 @@ export interface PortStatusReport {
 	network: PortNetworkContext;
 	summary: PortSummaryCounts;
 	ports: PortEntry[];
+}
+
+export interface ComposeEngineInfo {
+	docker_installed: boolean;
+	docker_version?: string;
+	compose_installed: boolean;
+	compose_version?: string;
+	compose_major: number;
+	is_compose_v5: boolean;
+	daemon_running: boolean;
+	daemon_error?: string;
+	api_version?: string;
+	docker_root_dir?: string;
+	needs_sudo: boolean;
+}
+
+export interface ComposePortBinding {
+	service?: string;
+	host_ip: string;
+	host_port: number;
+	container_port: number;
+	protocol: string;
+	exposed_public: boolean;
+	sensitive_port: boolean;
+	summary: string;
+}
+
+export interface ComposeServiceSpec {
+	name: string;
+	image?: string;
+	build?: string;
+	container_name?: string;
+	restart?: string;
+	ports?: ComposePortBinding[];
+	profiles?: string[];
+	depends_on?: string[];
+	volumes_count: number;
+	has_healthcheck: boolean;
+	is_job?: boolean;
+	schedule_cron?: string;
+}
+
+export interface ComposeContainerStatus {
+	id: string;
+	name: string;
+	service: string;
+	image: string;
+	state: string;
+	status: string;
+	health?: string;
+	exit_code: number;
+	restarts?: number;
+	command?: string;
+	ports?: ComposePortBinding[];
+	cpu_perc?: string;
+	mem_usage?: string;
+	mem_perc?: string;
+	net_io?: string;
+	block_io?: string;
+	pids?: string;
+}
+
+export interface ComposeLinkedVHost {
+	domain: string;
+	proxy_port: number;
+	ssl_enabled: boolean;
+	exposed_to?: string;
+}
+
+export interface ComposeProject {
+	name: string;
+	dir_path: string;
+	compose_file: string;
+	config_files?: string[];
+	description?: string;
+	status: 'running' | 'partial' | 'exited' | 'stopped' | 'missing' | string;
+	raw_status?: string;
+	source: 'registered' | 'discovered' | 'both' | string;
+	registered: boolean;
+	file_exists: boolean;
+	has_env_file: boolean;
+	services_count: number;
+	running_count: number;
+	active_profiles?: string[];
+	available_profiles?: string[];
+	has_jobs: boolean;
+	exposed_ports?: ComposePortBinding[];
+	security_warnings?: string[];
+	defined_services?: ComposeServiceSpec[];
+	containers?: ComposeContainerStatus[];
+	linked_vhosts?: ComposeLinkedVHost[];
+	parse_error?: string;
+	created_at?: string;
+	updated_at?: string;
+}
+
+export interface ComposeProjectFiles {
+	project_name: string;
+	dir_path: string;
+	compose_file: string;
+	compose_content: string;
+	env_content: string;
+	has_env_file: boolean;
+	env_keys?: string[];
+}
+
+export interface ComposeTemplateSpec {
+	id: string;
+	name: string;
+	category: string;
+	description: string;
+	default_port?: number;
+	compose_content: string;
+	env_content: string;
+}
+
+export interface ComposeCreatePayload {
+	name: string;
+	dir_path: string;
+	compose_file?: string;
+	description?: string;
+	profiles?: string[];
+	template?: string;
+	compose_content?: string;
+	env_content?: string;
+	overwrite?: boolean;
+	start_after?: boolean;
+}
+
+export interface ComposeActionPayload {
+	action: 'up' | 'down' | 'start' | 'stop' | 'restart' | 'pull' | 'build' | 'run-job';
+	service?: string;
+	profiles?: string[];
+	build?: boolean;
+	force_recreate?: boolean;
+	remove_orphans?: boolean;
+	remove_volumes?: boolean;
+	no_cache?: boolean;
+	sudo_pass?: string;
+}
+
+export interface ComposeExposePayload {
+	domain: string;
+	proxy_port: number;
+	ssl_enabled?: boolean;
+	expose_edge?: boolean;
+	edge_domain?: string;
+	edge_ssl?: boolean;
+	add_hosts?: boolean;
+}
+
+export interface ComposeDiskUsageItem {
+	type: string;
+	total_count: string;
+	active: string;
+	size: string;
+	reclaimable: string;
+}
+
+export interface ComposeDiskUsageSummary {
+	items: ComposeDiskUsageItem[];
+}
+
+export interface ComposeStatusReport {
+	engine: ComposeEngineInfo;
+	projects: ComposeProject[];
+	templates: ComposeTemplateSpec[];
+	total: number;
+	running: number;
+	partial: number;
+	stopped: number;
+	warnings: number;
 }
 
 

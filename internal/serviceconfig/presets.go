@@ -151,6 +151,32 @@ func DetectRedisPreset(cfg RedisConfig) string {
 	}
 }
 
+// DetectDockerPreset menentukan preset Docker daemon.json yang cocok dengan konfigurasi aktif, atau "Custom".
+func DetectDockerPreset(cfg DockerConfig) string {
+	ld := strings.ToLower(strings.TrimSpace(cfg.LogDriver))
+	ms := strings.ToLower(strings.TrimSpace(cfg.LogMaxSize))
+	hasCustomNet := strings.TrimSpace(cfg.DataRoot) != "" ||
+		len(cfg.DNS) > 0 ||
+		len(cfg.RegistryMirrors) > 0 ||
+		strings.TrimSpace(cfg.DefaultAddressPoolBase) != "" ||
+		cfg.IPv6
+
+	if hasCustomNet {
+		return PresetCustom
+	}
+
+	switch {
+	case ld == "json-file" && ms == "10m" && cfg.LogMaxFile == 3 && cfg.LiveRestore && !cfg.NoNewPrivileges:
+		return "Dev Standar"
+	case (ld == "local" || ld == "json-file") && ms == "10m" && cfg.LogMaxFile == 2 && cfg.LiveRestore && !cfg.NoNewPrivileges:
+		return "Hemat Disk VPS"
+	case ld == "json-file" && ms == "50m" && cfg.LogMaxFile == 5 && cfg.LiveRestore && cfg.NoNewPrivileges:
+		return "Production Hardened"
+	default:
+		return PresetCustom
+	}
+}
+
 // DetectServicePreset membaca konfigurasi aktif layanan inti dan mengembalikan nama preset atau "Custom".
 // Mengembalikan string kosong bila layanan tidak memiliki preset atau berkas konfigurasi belum dapat diakses.
 func (m *Manager) DetectServicePreset(ctx context.Context, service string) string {
@@ -179,6 +205,12 @@ func (m *Manager) DetectServicePreset(ctx context.Context, service string) strin
 			return ""
 		}
 		return DetectRedisPreset(*cfg)
+	case "docker":
+		cfg, err := m.GetDockerConfig(ctx)
+		if err != nil || cfg == nil {
+			return ""
+		}
+		return DetectDockerPreset(*cfg)
 	default:
 		return ""
 	}

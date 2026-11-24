@@ -457,6 +457,35 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return conn.WriteMessage(websocket.BinaryMessage, data)
 	}
 
+	composeProject := strings.TrimSpace(q.Get("compose_project"))
+	composeService := strings.TrimSpace(q.Get("compose_service"))
+	if composeProject != "" || composeService != "" {
+		if composeProject == "" || composeService == "" {
+			_ = sendTextJSON(map[string]any{
+				"type":    "error",
+				"message": "Parameter compose_project dan compose_service keduanya wajib diisi",
+			})
+			return
+		}
+		execDir, execArgs, execLabel, execErr := s.ensureComposeManager().BuildExecCommand(
+			r.Context(),
+			composeProject,
+			composeService,
+			q.Get("shell"),
+		)
+		if execErr != nil {
+			_ = sendTextJSON(map[string]any{
+				"type":    "error",
+				"message": execErr.Error(),
+			})
+			return
+		}
+		opts.Cwd = execDir
+		opts.ExecBin = "docker"
+		opts.ExecArgs = execArgs
+		opts.ExecLabel = "compose:" + execLabel
+	}
+
 	sess, fallbackReason, err := mgr.StartSession(opts)
 	if err != nil {
 		_ = sendTextJSON(map[string]any{
@@ -498,9 +527,13 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	if sess.TargetUser.IsRoot {
 		privBadge = "\x1b[1;31mROOT\x1b[0m"
 	}
+	bannerHeader := "wdev PTY SSH Shell"
+	if opts.ExecLabel != "" {
+		bannerHeader = "wdev Container Exec PTY"
+	}
 	banner := fmt.Sprintf(
-		"\x1b[1;36mwdev PTY SSH Shell\x1b[0m \x1b[90m•\x1b[0m \x1b[32m%s@%s\x1b[0m [%s] \x1b[90m•\x1b[0m shell: \x1b[33m%s\x1b[0m\r\n\x1b[90mWorking Dir:\x1b[0m %s \x1b[90m• Auto-close idle %d menit\x1b[0m\r\n",
-		sess.User, sess.Hostname, privBadge, sess.Shell, sess.Cwd, int(sess.IdleTimeout.Minutes()),
+		"\x1b[1;36m%s\x1b[0m \x1b[90m•\x1b[0m \x1b[32m%s@%s\x1b[0m [%s] \x1b[90m•\x1b[0m shell: \x1b[33m%s\x1b[0m\r\n\x1b[90mWorking Dir:\x1b[0m %s \x1b[90m• Auto-close idle %d menit\x1b[0m\r\n",
+		bannerHeader, sess.User, sess.Hostname, privBadge, sess.Shell, sess.Cwd, int(sess.IdleTimeout.Minutes()),
 	)
 	if fallbackReason != "" {
 		banner += fmt.Sprintf("\x1b[33mCatatan:\x1b[0m %s\r\n", fallbackReason)

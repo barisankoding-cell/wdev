@@ -1,0 +1,1 @@
+import{n as e,r as t}from"./BansIzoP.js";import{l as n}from"./BrUeyN0s.js";var r={name:`terminal`,size:24,node:[[`path`,{d:`M12 19h8`}],[`path`,{d:`m4 17 6-6-6-6`}]]};r.node;var i=new Set([`$$slots`,`$$events`,`$$legacy`]);function a(a,o){let s=e(o,i);n(a,t(()=>s,{get icon(){return r}}))}export{a as t};

@@ -96,6 +96,16 @@ type TerminalAuditRecord struct {
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
 }
 
+type ComposeProjectRecord struct {
+	Name        string    `json:"name"`
+	DirPath     string    `json:"dir_path"`
+	ComposeFile string    `json:"compose_file,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Profiles    string    `json:"profiles,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 func New(dbPath string) (*Store, error) {
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -196,6 +206,15 @@ func (s *Store) migrate() error {
 			exit_code INTEGER NOT NULL DEFAULT 0,
 			started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			ended_at DATETIME
+		);`,
+		`CREATE TABLE IF NOT EXISTS compose_projects (
+			name TEXT PRIMARY KEY,
+			dir_path TEXT NOT NULL UNIQUE,
+			compose_file TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			profiles TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
 	}
 
@@ -671,4 +690,106 @@ func (s *Store) ListTerminalAudits(limit int) ([]TerminalAuditRecord, error) {
 	}
 	return out, rows.Err()
 }
+
+// SaveComposeProject menyimpan atau memperbarui metadata proyek Docker Compose terdaftar.
+func (s *Store) SaveComposeProject(rec ComposeProjectRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	createdAt := rec.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := rec.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO compose_projects (name, dir_path, compose_file, description, profiles, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET
+			dir_path=excluded.dir_path,
+			compose_file=excluded.compose_file,
+			description=excluded.description,
+			profiles=excluded.profiles,
+			updated_at=excluded.updated_at`,
+		rec.Name, rec.DirPath, rec.ComposeFile, rec.Description, rec.Profiles, createdAt.Format(time.RFC3339), updatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+func scanComposeProjectTime(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", raw); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
+// ListComposeProjects mengembalikan seluruh proyek Docker Compose yang terdaftar di database.
+func (s *Store) ListComposeProjects() ([]ComposeProjectRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT name, dir_path, compose_file, description, profiles, created_at, updated_at
+		 FROM compose_projects ORDER BY name ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ComposeProjectRecord
+	for rows.Next() {
+		var r ComposeProjectRecord
+		var createdStr, updatedStr string
+		if err := rows.Scan(&r.Name, &r.DirPath, &r.ComposeFile, &r.Description, &r.Profiles, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = scanComposeProjectTime(createdStr)
+		r.UpdatedAt = scanComposeProjectTime(updatedStr)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetComposeProject mengambil satu proyek Compose berdasarkan nama.
+func (s *Store) GetComposeProject(name string) (*ComposeProjectRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var r ComposeProjectRecord
+	var createdStr, updatedStr string
+	err := s.db.QueryRow(
+		`SELECT name, dir_path, compose_file, description, profiles, created_at, updated_at
+		 FROM compose_projects WHERE lower(name) = lower(?)`,
+		strings.TrimSpace(name),
+	).Scan(&r.Name, &r.DirPath, &r.ComposeFile, &r.Description, &r.Profiles, &createdStr, &updatedStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	r.CreatedAt = scanComposeProjectTime(createdStr)
+	r.UpdatedAt = scanComposeProjectTime(updatedStr)
+	return &r, nil
+}
+
+// DeleteComposeProject menghapus proyek Compose dari daftar terdaftar (tidak menghapus berkas di disk).
+func (s *Store) DeleteComposeProject(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM compose_projects WHERE lower(name) = lower(?)`, strings.TrimSpace(name))
+	return err
+}
+
 

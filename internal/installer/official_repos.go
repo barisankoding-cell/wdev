@@ -604,6 +604,108 @@ func (inst *Installer) ensureNetbirdRepo(ctx context.Context, cb LogCallback) bo
 	return false
 }
 
+func dpkgArch() string {
+	if out, err := exec.Command("dpkg", "--print-architecture").Output(); err == nil {
+		if a := strings.TrimSpace(string(out)); a != "" {
+			return a
+		}
+	}
+	switch runtime.GOARCH {
+	case "arm64":
+		return "arm64"
+	case "arm":
+		return "armhf"
+	default:
+		return "amd64"
+	}
+}
+
+// ensureDockerRepo menyiapkan repositori resmi Docker Engine & Docker Compose v5 (download.docker.com).
+func (inst *Installer) ensureDockerRepo(ctx context.Context, cb LogCallback) bool {
+	osInfo := readOSRelease()
+	if inst.isDebian {
+		codename := osInfo.debianCodename()
+		if codename == "" {
+			cb("[WARN] Codename Debian/Ubuntu tidak terdeteksi untuk repositori resmi Docker.")
+			return false
+		}
+		repoDistro := "debian"
+		if osInfo.isUbuntuBased() {
+			repoDistro = "ubuntu"
+		}
+		listPath := "/etc/apt/sources.list.d/docker.list"
+		existingData, readErr := os.ReadFile(listPath)
+		hadExisting := readErr == nil && strings.Contains(string(existingData), "download.docker.com")
+
+		keyring := "/etc/apt/keyrings/docker.gpg"
+		keyURL := fmt.Sprintf("https://download.docker.com/linux/%s/gpg", repoDistro)
+		cb(fmt.Sprintf("Menyiapkan repositori resmi Docker (%s/%s)...", repoDistro, codename))
+		if err := inst.ensureGPGKeyring(ctx, cb, keyURL, keyring); err != nil {
+			cb(fmt.Sprintf("[WARN] Gagal mengunduh GPG key Docker (%v).", err))
+			return false
+		}
+		listContent := fmt.Sprintf("deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable\n", dpkgArch(), keyring, repoDistro, codename)
+		if err := inst.writeSystemFile(ctx, cb, listPath, []byte(listContent), "644"); err != nil {
+			cb(fmt.Sprintf("[WARN] Gagal menulis %s (%v).", listPath, err))
+			return false
+		}
+		if err := inst.runCmd(ctx, cb, "apt-get", "update", "-y"); err != nil {
+			cb(fmt.Sprintf("[WARN] apt-get update repo resmi Docker gagal (%v).", err))
+			if !hadExisting {
+				_ = inst.runCmd(ctx, cb, "rm", "-f", listPath)
+				_ = inst.runCmd(ctx, cb, "apt-get", "update", "-y")
+			}
+			return false
+		}
+		return true
+	}
+
+	if inst.pkgMgr == "dnf" || inst.pkgMgr == "yum" {
+		repoPath := "/etc/yum.repos.d/docker-ce.repo"
+		if data, err := os.ReadFile(repoPath); err == nil && strings.Contains(string(data), "download.docker.com") {
+			cb("Repositori resmi Docker RPM sudah terpasang.")
+			return true
+		}
+		repoDistro := "rhel"
+		if osInfo.ID == "fedora" {
+			repoDistro = "fedora"
+		} else if osInfo.ID == "centos" || strings.Contains(osInfo.IDLike, "centos") {
+			repoDistro = "centos"
+		}
+		repoURL := fmt.Sprintf("https://download.docker.com/linux/%s/docker-ce.repo", repoDistro)
+		if !checkURLReachable(ctx, repoURL) {
+			cb(fmt.Sprintf("[WARN] Repo resmi Docker (%s) tidak terjangkau.", repoURL))
+			return false
+		}
+		cb("Menyiapkan repositori resmi Docker RPM...")
+		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(reqCtx, "GET", repoURL, nil)
+		if err != nil {
+			return false
+		}
+		req.Header.Set("User-Agent", "wdev-installer")
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			return false
+		}
+		repoBytes, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil || len(repoBytes) == 0 {
+			return false
+		}
+		if err := inst.writeSystemFile(ctx, cb, repoPath, repoBytes, "644"); err != nil {
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
 // fetchNetbirdLatestVersion mengambil tag versi rilis terbaru NetBird dari endpoint resmi pkgs.netbird.io.
 func fetchNetbirdLatestVersion(ctx context.Context) string {
 	reqCtx, cancel := context.WithTimeout(ctx, 4*time.Second)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"wdev/internal/cloudflare"
+	"wdev/internal/compose"
 	"wdev/internal/config"
 	"wdev/internal/installer"
 	"wdev/internal/monitor"
@@ -33,14 +34,15 @@ const (
 )
 
 type TUI struct {
-	cfg     *config.Config
-	store   *store.Store
-	inst    *installer.Installer
-	siteMgr *site.Manager
-	swMgr   *switcher.Manager
-	cfMgr   *cloudflare.Manager
-	pdnsMgr *pdns.Manager
-	reader  *bufio.Reader
+	cfg        *config.Config
+	store      *store.Store
+	inst       *installer.Installer
+	siteMgr    *site.Manager
+	swMgr      *switcher.Manager
+	cfMgr      *cloudflare.Manager
+	pdnsMgr    *pdns.Manager
+	composeMgr *compose.Manager
+	reader     *bufio.Reader
 }
 
 func New(
@@ -55,15 +57,20 @@ func New(
 	if sm != nil && pdns != nil {
 		sm.SetServerModeFn(pdns.GetMode)
 	}
+	var sudoFn func() string
+	if inst != nil {
+		sudoFn = inst.GetSudoPassword
+	}
 	return &TUI{
-		cfg:     cfg,
-		store:   s,
-		inst:    inst,
-		siteMgr: sm,
-		swMgr:   sw,
-		cfMgr:   cf,
-		pdnsMgr: pdns,
-		reader:  bufio.NewReader(os.Stdin),
+		cfg:        cfg,
+		store:      s,
+		inst:       inst,
+		siteMgr:    sm,
+		swMgr:      sw,
+		cfMgr:      cf,
+		pdnsMgr:    pdns,
+		composeMgr: compose.New(cfg, s, sudoFn),
+		reader:     bufio.NewReader(os.Stdin),
 	}
 }
 
@@ -105,7 +112,7 @@ func (t *TUI) Run() {
 		t.renderServices()
 		t.renderMenu()
 
-		choice := t.prompt("Pilih kategori [0-9]: ")
+		choice := t.prompt("Pilih kategori [0-10]: ")
 
 		switch choice {
 		case "1":
@@ -126,6 +133,8 @@ func (t *TUI) Run() {
 			t.menuFullInstall()
 		case "9":
 			t.menuModularInstall()
+		case "10":
+			t.menuCompose()
 		case "0", "q", "Q", "exit":
 			fmt.Println("\nSampai jumpa!")
 			return
@@ -232,8 +241,10 @@ func (t *TUI) renderMenu() {
 	fmt.Printf("      %s└─ Authoritative DNS mandiri, domain publik & eksposur port aplikasi%s\n", Dim, Reset)
 	fmt.Printf("  %s%s[8]%s 🚀 Instalasi Lengkap (Full Auto Setup)\n", Bold, Cyan, Reset)
 	fmt.Printf("      %s└─ Instal seluruh stack developer secara otomatis dari nol (14 langkah)%s\n", Dim, Reset)
-	fmt.Printf("  %s%s[9]%s 📦 Instalasi Komponen Modular (19 Item)\n", Bold, Cyan, Reset)
+	fmt.Printf("  %s%s[9]%s 📦 Instalasi Komponen Modular (22 Item)\n", Bold, Cyan, Reset)
 	fmt.Printf("      %s└─ Instal atau perbarui komponen tertentu sesuai kebutuhan%s\n", Dim, Reset)
+	fmt.Printf("  %s%s[10]%s 🐳 Docker & Compose v5\n", Bold, Cyan, Reset)
+	fmt.Printf("      %s└─ Kelola stack Compose, status container, logs, & instalasi Docker%s\n", Dim, Reset)
 	fmt.Printf("  %s%s[0]%s 🚪 Keluar\n", Bold, Yellow, Reset)
 	fmt.Println()
 }
@@ -830,9 +841,10 @@ func (t *TUI) menuModularInstall() {
 		fmt.Printf("  %s[19]%s Oh My Zsh (Plugin & Tema Populer)\n", Cyan, Reset)
 		fmt.Printf("  %s[20]%s Orca ADE - Desktop GUI (Aplikasi Desktop)\n", Cyan, Reset)
 		fmt.Printf("  %s[21]%s Orca ADE - Headless Server (Service 24/7)\n", Cyan, Reset)
+		fmt.Printf("  %s[22]%s Docker Engine & Compose v5 (Repo Resmi Docker)\n", Cyan, Reset)
 		fmt.Printf("  %s[0]%s  Kembali ke Menu Utama\n\n", Yellow, Reset)
 
-		c := t.prompt("Pilih komponen [0-21]: ")
+		c := t.prompt("Pilih komponen [0-22]: ")
 		switch c {
 		case "1":
 			t.runTask("Dependensi Dasar Sistem", t.inst.InstallBase)
@@ -890,6 +902,107 @@ func (t *TUI) menuModularInstall() {
 			t.runTask("Orca ADE (Headless Server)", func(ctx context.Context, cb installer.LogCallback) error {
 				return t.inst.InstallOrca(ctx, cb, "headless")
 			})
+		case "22":
+			t.runTask("Docker Engine & Compose v5", t.inst.InstallDocker)
+		case "0", "q", "Q":
+			return
+		}
+	}
+}
+
+// 10. DOCKER & COMPOSE V5
+func (t *TUI) menuCompose() {
+	for {
+		t.Clear()
+		fmt.Printf("%s%s=== [10] DOCKER & COMPOSE V5 ===%s\n\n", Bold, Blue, Reset)
+		eng := t.composeMgr.GetEngineInfo(context.Background())
+		if !eng.DockerInstalled {
+			fmt.Printf("  %sStatus:%s Docker belum terpasang\n\n", Yellow, Reset)
+		} else {
+			daemonStr := "Nonaktif"
+			if eng.DaemonRunning {
+				daemonStr = "Aktif"
+			}
+			fmt.Printf("  %sDocker:%s v%s  |  %sCompose:%s v%s  |  %sDaemon:%s %s\n\n",
+				Bold, Reset, eng.DockerVersion, Bold, Reset, eng.ComposeVersion, Bold, Reset, daemonStr)
+		}
+		fmt.Printf("  %s[1]%s 📋 Daftar Proyek Compose (list)\n", Bold, Reset)
+		fmt.Printf("  %s[2]%s ➕ Daftarkan / Buat Proyek Compose\n", Bold, Reset)
+		fmt.Printf("  %s[3]%s ▶️  Compose Up -d (Jalankan Stack)\n", Bold, Reset)
+		fmt.Printf("  %s[4]%s ⏹️  Compose Down (Hentikan Stack)\n", Bold, Reset)
+		fmt.Printf("  %s[5]%s 🔄 Compose Restart / Pull / Build\n", Bold, Reset)
+		fmt.Printf("  %s[6]%s 📜 Lihat Log Proyek\n", Bold, Reset)
+		fmt.Printf("  %s[7]%s 🚀 Pasang / Perbarui Docker Engine & Compose v5\n", Bold, Reset)
+		fmt.Printf("  %s[0]%s Kembali ke Menu Utama\n\n", Bold, Reset)
+
+		c := t.prompt("Pilih opsi [0-7]: ")
+		switch c {
+		case "1":
+			t.Clear()
+			projects, err := t.composeMgr.ListProjects(context.Background())
+			if err != nil {
+				fmt.Printf("%sError:%s %v\n", Red, Reset, err)
+			} else if len(projects) == 0 {
+				fmt.Println("Belum ada proyek Compose terdaftar atau berjalan.")
+			} else {
+				fmt.Printf("%-20s %-10s %-10s %s\n", "NAMA", "STATUS", "SERVICE", "DIREKTORI")
+				fmt.Println(strings.Repeat("-", 75))
+				for _, p := range projects {
+					fmt.Printf("%-20s %-10s %d/%-8d %s\n", p.Name, p.Status, p.RunningCount, p.ServicesCount, p.DirPath)
+				}
+			}
+			t.waitEnter()
+		case "2":
+			name := t.prompt("Nama proyek (huruf kecil/angka/-/_): ")
+			dir := t.prompt("Path direktori (mis. /var/www/myapp): ")
+			tpl := t.prompt("Template [kosong=register folder, nginx-static/postgres-redis/app-postgres-redis/wordpress/blank]: ")
+			if name != "" && dir != "" {
+				if _, err := t.composeMgr.CreateOrRegisterProject(context.Background(), compose.CreateProjectOptions{
+					Name:     name,
+					DirPath:  dir,
+					Template: tpl,
+				}); err != nil {
+					fmt.Printf("%sError:%s %v\n", Red, Reset, err)
+				} else {
+					fmt.Printf("✓ Proyek Compose %s siap dikelola.\n", name)
+				}
+				t.waitEnter()
+			}
+		case "3":
+			name := t.prompt("Nama proyek untuk Compose Up: ")
+			if name != "" {
+				t.runTask("Compose Up: "+name, func(ctx context.Context, cb installer.LogCallback) error {
+					return t.composeMgr.RunActionTask(ctx, name, compose.ActionOptions{Action: "up"}, cb)
+				})
+			}
+		case "4":
+			name := t.prompt("Nama proyek untuk Compose Down: ")
+			if name != "" {
+				t.runTask("Compose Down: "+name, func(ctx context.Context, cb installer.LogCallback) error {
+					return t.composeMgr.RunActionTask(ctx, name, compose.ActionOptions{Action: "down"}, cb)
+				})
+			}
+		case "5":
+			name := t.prompt("Nama proyek: ")
+			act := t.prompt("Aksi [restart/pull/build]: ")
+			if name != "" && act != "" {
+				t.runTask("Compose "+act+": "+name, func(ctx context.Context, cb installer.LogCallback) error {
+					return t.composeMgr.RunActionTask(ctx, name, compose.ActionOptions{Action: act}, cb)
+				})
+			}
+		case "6":
+			name := t.prompt("Nama proyek: ")
+			if name != "" {
+				out, err := t.composeMgr.GetLogs(context.Background(), name, "", 100)
+				if err != nil {
+					fmt.Printf("%sError:%s %v\n", Red, Reset, err)
+				} else {
+					fmt.Println(out)
+				}
+				t.waitEnter()
+			}
+		case "7":
+			t.runTask("Docker Engine & Compose v5", t.inst.InstallDocker)
 		case "0", "q", "Q":
 			return
 		}

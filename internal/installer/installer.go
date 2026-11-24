@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 	"wdev/internal/config"
+	"wdev/internal/serviceconfig"
 	"wdev/internal/store"
 )
 
@@ -110,7 +111,7 @@ func needsSudo(name string, args ...string) bool {
 		return true
 	}
 	switch base {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "nginx", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot", "runuser", "su", "rustup", "rustup-init", "sdkmanager":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "nginx", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "usermod", "certbot", "runuser", "su", "rustup", "rustup-init", "sdkmanager":
 		return true
 	case "git":
 		for _, arg := range args {
@@ -1638,6 +1639,147 @@ func (inst *Installer) InstallNetbird(ctx context.Context, cb LogCallback) error
 	return nil
 }
 
+// DockerInstallOptions mengonfigurasi sumber paket instalasi dan pra-konfigurasi daemon Docker.
+type DockerInstallOptions struct {
+	Source         string                      `json:"source,omitempty"` // "official" | "distro"
+	AddUserToGroup bool                        `json:"add_user_to_group"`
+	EnableService  bool                        `json:"enable_service"`
+	DaemonConfig   *serviceconfig.DockerConfig `json:"daemon_config,omitempty"`
+}
+
+// 17. Docker Engine & Docker Compose v5 (Repo Resmi Docker)
+func (inst *Installer) InstallDocker(ctx context.Context, cb LogCallback) error {
+	return inst.InstallDockerWithOptions(ctx, cb, DockerInstallOptions{
+		Source:         "official",
+		AddUserToGroup: true,
+		EnableService:  true,
+	})
+}
+
+// InstallDockerWithOptions memasang Docker Engine & Docker Compose v5 beserta konfigurasi awal daemon.json.
+func (inst *Installer) InstallDockerWithOptions(ctx context.Context, cb LogCallback, opts DockerInstallOptions) error {
+	cb("--- [17] Memasang / Memperbarui Docker Engine & Compose v5 ---")
+	wasActive := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "docker").Run() == nil
+
+	source := strings.ToLower(strings.TrimSpace(opts.Source))
+	if source == "" {
+		source = "official"
+	}
+	if opts.DaemonConfig != nil {
+		if err := serviceconfig.ValidateDockerConfig(*opts.DaemonConfig); err != nil {
+			return fmt.Errorf("konfigurasi awal Docker tidak valid: %w", err)
+		}
+	}
+
+	if inst.isDebian {
+		if source == "distro" {
+			cb("Memasang Docker & Compose dari repositori distribusi sistem...")
+			if err := inst.runCmd(ctx, cb, "apt-get", "update", "-y"); err != nil {
+				return err
+			}
+			if err := inst.runCmd(ctx, cb, "apt-get", "install", "-y", "docker.io", "docker-compose-v2"); err != nil {
+				return err
+			}
+		} else if inst.ensureDockerRepo(ctx, cb) {
+			// Bersihkan paket distro yang bentrok dengan docker-ce resmi (bila ada)
+			for _, oldPkg := range []string{"docker.io", "docker-doc", "docker-compose", "podman-docker", "containerd", "runc"} {
+				out, err := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Status}", oldPkg).CombinedOutput()
+				if err == nil && strings.Contains(string(out), "install ok installed") {
+					cb(fmt.Sprintf("Menghapus paket konflik distro: %s...", oldPkg))
+					_ = inst.runCmd(ctx, cb, "apt-get", "remove", "-y", oldPkg)
+				}
+			}
+			if err := inst.runCmd(ctx, cb, "apt-get", "install", "-y", "docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"); err != nil {
+				return err
+			}
+		} else {
+			cb("[WARN] Repo resmi Docker gagal disiapkan, mencoba paket distro...")
+			if err := inst.runCmd(ctx, cb, "apt-get", "install", "-y", "docker.io", "docker-compose-v2"); err != nil {
+				return err
+			}
+		}
+	} else if inst.pkgMgr == "dnf" || inst.pkgMgr == "yum" {
+		if !inst.ensureDockerRepo(ctx, cb) {
+			return fmt.Errorf("repositori resmi Docker RPM gagal disiapkan")
+		}
+		action := "install"
+		if rpmIsInstalled(ctx, "docker-ce") {
+			action = "upgrade"
+		}
+		args := []string{action, "-y"}
+		if inst.pkgMgr == "dnf" {
+			args = append(args, "--refresh")
+		}
+		args = append(args, "docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin")
+		if err := inst.runCmd(ctx, cb, inst.pkgMgr, args...); err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("package manager '%s' belum didukung untuk pemasangan otomatis Docker", inst.pkgMgr)
+	}
+
+	wroteDaemonConfig := false
+	if opts.DaemonConfig != nil {
+		existingJSON := ""
+		if raw, rerr := os.ReadFile("/etc/docker/daemon.json"); rerr == nil {
+			existingJSON = string(raw)
+		}
+		mergedBytes, merr := serviceconfig.ApplyDockerDaemonJSON(existingJSON, *opts.DaemonConfig)
+		if merr != nil {
+			return merr
+		}
+		if dr := strings.TrimSpace(opts.DaemonConfig.DataRoot); dr != "" && filepath.Clean(dr) != "/var/lib/docker" {
+			if err := inst.runCmd(ctx, cb, "mkdir", "-p", filepath.Clean(dr)); err != nil {
+				return fmt.Errorf("gagal menyiapkan direktori data-root %s: %w", dr, err)
+			}
+		}
+		cb("Menerapkan konfigurasi /etc/docker/daemon.json...")
+		if err := inst.writeSystemFile(ctx, cb, "/etc/docker/daemon.json", mergedBytes, "644"); err != nil {
+			return fmt.Errorf("gagal menulis /etc/docker/daemon.json: %w", err)
+		}
+		wroteDaemonConfig = true
+		cb("✓ Konfigurasi /etc/docker/daemon.json diterapkan.")
+	}
+
+	if exec.CommandContext(ctx, "systemctl", "cat", "docker").Run() == nil {
+		if opts.EnableService {
+			_ = inst.runCmd(ctx, cb, "systemctl", "enable", "docker")
+		}
+		if wasActive || wroteDaemonConfig {
+			if err := inst.runCmd(ctx, cb, "systemctl", "restart", "docker"); err != nil {
+				return fmt.Errorf("gagal menjalankan ulang service docker: %w", err)
+			}
+		} else if err := inst.runCmd(ctx, cb, "systemctl", "start", "docker"); err != nil {
+			cb(fmt.Sprintf("[WARN] Service docker terpasang namun belum dapat dijalankan otomatis: %v", err))
+		}
+	}
+
+	if opts.AddUserToGroup {
+		targetUser := ""
+		if opts.DaemonConfig != nil {
+			targetUser = strings.TrimSpace(opts.DaemonConfig.DockerGroupUser)
+		}
+		if targetUser == "" {
+			targetUser, _ = ResolveTargetUserAndHome()
+		}
+		if targetUser != "" && targetUser != "root" {
+			if err := inst.runCmd(ctx, cb, "usermod", "-aG", "docker", targetUser); err != nil {
+				cb(fmt.Sprintf("[WARN] Gagal menambahkan user %s ke grup docker: %v", targetUser, err))
+			} else {
+				cb(fmt.Sprintf("✓ User %s ditambahkan ke grup docker.", targetUser))
+			}
+		}
+	}
+
+	if out, err := exec.CommandContext(ctx, "docker", "--version").CombinedOutput(); err == nil {
+		cb("✓ " + strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "compose", "version").CombinedOutput(); err == nil {
+		cb("✓ " + strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // Full 14-Step Auto Setup
 func (inst *Installer) RunFullInstall(ctx context.Context, cb LogCallback) error {
 	cb("=================================================================")
@@ -2066,6 +2208,25 @@ func (inst *Installer) CheckUpdates(ctx context.Context, cb LogCallback) error {
 		HasUpdate: nbLatest != "-" && nbInst != "-" && hasNewerVersion(nbInst, nbLatest),
 	})
 
+	// 10b. Docker Compose v5
+	compPluginInst := "-"
+	if out, err := exec.CommandContext(ctx, "docker", "compose", "version", "--short").CombinedOutput(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			compPluginInst = strings.TrimPrefix(v, "v")
+		}
+	}
+	compPluginLatest := "-"
+	ghRelease.TagName = ""
+	if err := fetchJSON("https://api.github.com/repos/docker/compose/releases/latest", &ghRelease); err == nil && ghRelease.TagName != "" {
+		compPluginLatest = strings.TrimPrefix(ghRelease.TagName, "v")
+	}
+	results = append(results, VersionCheck{
+		Name:      "Docker Compose",
+		Installed: compPluginInst,
+		Latest:    compPluginLatest,
+		HasUpdate: compPluginLatest != "-" && compPluginInst != "-" && hasNewerVersion(compPluginInst, compPluginLatest),
+	})
+
 	// 11. Orca ADE
 	orcaInst := "-"
 	orcaUser, orcaHome := ResolveOrcaUser()
@@ -2189,7 +2350,7 @@ func (inst *Installer) RunSelfCheck(ctx context.Context, cb LogCallback) error {
 		}
 	}
 
-	bins := []string{"git", "curl", "node", "npm", "go", "rustc", "cargo", "mold", "java", "flutter", "psql", "redis-cli", "nginx", "php", "composer", "mkcert", "zsh", "cloudflared", "netbird", "orca", "pdns_server", "stalwart", "stalwart-cli"}
+	bins := []string{"git", "curl", "node", "npm", "go", "rustc", "cargo", "mold", "java", "flutter", "psql", "redis-cli", "nginx", "php", "composer", "mkcert", "zsh", "cloudflared", "netbird", "docker", "orca", "pdns_server", "stalwart", "stalwart-cli"}
 	for _, b := range bins {
 		checkBin(b)
 	}

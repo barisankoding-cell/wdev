@@ -228,3 +228,43 @@ func TestSyncFromDiskPreservesProxyPort(t *testing.T) {
 		t.Fatalf("SyncFromDisk did not parse proxy_port: %+v", sites[0])
 	}
 }
+
+func TestComposeProjectsCRUD(t *testing.T) {
+	db, err := New(filepath.Join(t.TempDir(), "compose.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rec := ComposeProjectRecord{
+		Name:        "api-stack",
+		DirPath:     "/var/www/api-stack",
+		ComposeFile: "compose.yaml",
+		Description: "Backend API",
+		Profiles:    "dev,worker",
+	}
+	if err := db.SaveComposeProject(rec); err != nil {
+		t.Fatalf("SaveComposeProject failed: %v", err)
+	}
+
+	got, err := db.GetComposeProject("API-STACK")
+	if err != nil || got == nil {
+		t.Fatalf("GetComposeProject failed: got=%+v err=%v", got, err)
+	}
+	if got.DirPath != "/var/www/api-stack" || got.Profiles != "dev,worker" {
+		t.Fatalf("unexpected ComposeProjectRecord: %+v", got)
+	}
+
+	list, err := db.ListComposeProjects()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListComposeProjects unexpected: %+v err=%v", list, err)
+	}
+
+	if err := db.DeleteComposeProject("api-stack"); err != nil {
+		t.Fatalf("DeleteComposeProject failed: %v", err)
+	}
+	gotAfter, err := db.GetComposeProject("api-stack")
+	if err != nil || gotAfter != nil {
+		t.Fatalf("expected deleted compose project nil, got=%+v err=%v", gotAfter, err)
+	}
+}

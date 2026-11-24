@@ -11,6 +11,7 @@ import (
 	"time"
 	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
+	"wdev/internal/compose"
 	"wdev/internal/config"
 	"wdev/internal/edge"
 	"wdev/internal/installer"
@@ -19,6 +20,7 @@ import (
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
 	"wdev/internal/server"
+	"wdev/internal/serviceconfig"
 	"wdev/internal/site"
 	"wdev/internal/store"
 	"wdev/internal/switcher"
@@ -130,7 +132,20 @@ MAIL SERVER & RELAY:
 INSTALASI & SYSTEMD SERVICE:
   wdev install [service]               Pasang wdev ke sistem & aktifkan systemd service (auto-start)
   wdev uninstall [--purge]             Hapus systemd service wdev & binary dari sistem
-  wdev install <komponen>              Pasang atau perbarui komponen (update, node, php, postgres, netbird, dll.)
+  wdev install <komponen>              Pasang atau perbarui komponen (update, docker, node, php, postgres, netbird, dll.)
+
+DOCKER & COMPOSE V5:
+  wdev compose list                    Daftar seluruh proyek/stack Docker Compose
+  wdev compose ps <proyek>             Lihat status container & port dalam proyek
+  wdev compose add <nama> <dir> [--template <tpl>] [--up]
+                                       Daftarkan atau buat proyek Compose baru
+  wdev compose rm <nama> [--down]      Hapus proyek dari daftar kelola wdev
+  wdev compose up|down|start|stop|restart|pull|build <nama> [service]
+                                       Kendalikan siklus hidup stack Compose v5
+  wdev compose logs <nama> [service] [--tail 200]
+                                       Tampilkan log container proyek
+  wdev compose config <nama>           Tampilkan konfigurasi JSON hasil interpolasi Compose
+  wdev compose df | prune <target>     Pantau & bersihkan cache/image Docker
 `, Version)
 }
 
@@ -183,6 +198,7 @@ func main() {
 	mailMgr := mail.New(cfg, db, pdnsMgr)
 	mailMgr.SetInstaller(inst.InstallMailStackWithDomain)
 	authMgr := auth.New(cfg, db)
+	composeMgr := compose.New(cfg, db, inst.GetSudoPassword)
 
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -1772,6 +1788,55 @@ func main() {
 		case "cloudflare":
 			taskName = "Cloudflare Tunnel (cloudflared)"
 			fn = inst.InstallCloudflared
+		case "docker", "compose", "docker-compose":
+			taskName = "Docker Engine & Compose v5"
+			opts := installer.DockerInstallOptions{
+				Source:         "official",
+				AddUserToGroup: true,
+				EnableService:  true,
+			}
+			var dCfg *serviceconfig.DockerConfig
+			ensureDCfg := func() *serviceconfig.DockerConfig {
+				if dCfg == nil {
+					def := serviceconfig.DefaultDockerConfig()
+					dCfg = &def
+				}
+				return dCfg
+			}
+			for i := 2; i < len(args); i++ {
+				switch args[i] {
+				case "--source":
+					if i+1 < len(args) {
+						opts.Source = args[i+1]
+						i++
+					}
+				case "--data-root":
+					if i+1 < len(args) {
+						ensureDCfg().DataRoot = args[i+1]
+						i++
+					}
+				case "--log-max-size":
+					if i+1 < len(args) {
+						ensureDCfg().LogMaxSize = args[i+1]
+						i++
+					}
+				case "--log-max-file":
+					if i+1 < len(args) {
+						if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 {
+							ensureDCfg().LogMaxFile = n
+						}
+						i++
+					}
+				case "--no-live-restore":
+					ensureDCfg().LiveRestore = false
+				case "--no-group":
+					opts.AddUserToGroup = false
+				}
+			}
+			opts.DaemonConfig = dCfg
+			fn = func(ctx context.Context, cb func(string)) error {
+				return inst.InstallDockerWithOptions(ctx, cb, opts)
+			}
 		case "netbird":
 			taskName = "NetBird Mesh VPN"
 			fn = inst.InstallNetbird
@@ -2283,6 +2348,9 @@ func main() {
 			fmt.Println("Penggunaan: wdev mode [get|set <local|edge|vps>]")
 		}
 
+	case "compose":
+		handleComposeCLI(composeMgr, args[1:])
+
 	case "-v", "--version", "version":
 		fmt.Printf("wdev version %s\n", Version)
 
@@ -2352,4 +2420,209 @@ func printPanelInfo(info auth.PanelAccessInfo) {
 	fmt.Println("Ubah sandi via CLI   : wdev panel password <password_baru>")
 	fmt.Println("Ubah entrance via CLI: wdev panel entrance <nama_path>")
 	fmt.Println("==================================================================")
+}
+
+func handleComposeCLI(mgr *compose.Manager, args []string) {
+	if len(args) == 0 {
+		fmt.Println("Penggunaan: wdev compose <list|ps|add|rm|up|down|start|stop|restart|pull|build|run-job|logs|config|df|prune>")
+		os.Exit(1)
+	}
+	ctx := context.Background()
+	sub := args[0]
+	switch sub {
+	case "list", "ls":
+		eng := mgr.GetEngineInfo(ctx)
+		if !eng.DockerInstalled {
+			fmt.Println("Docker belum terpasang. Jalankan: sudo wdev install docker")
+		} else {
+			fmt.Printf("Docker: v%s | Compose: v%s | Daemon: %v\n\n", eng.DockerVersion, eng.ComposeVersion, eng.DaemonRunning)
+		}
+		projects, err := mgr.ListProjects(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(projects) == 0 {
+			fmt.Println("Belum ada proyek Docker Compose terdaftar atau berjalan.")
+			return
+		}
+		fmt.Printf("%-20s %-10s %-10s %-12s %s\n", "PROYEK", "STATUS", "SERVICE", "SUMBER", "DIREKTORI")
+		fmt.Println(strings.Repeat("-", 90))
+		for _, p := range projects {
+			fmt.Printf("%-20s %-10s %d/%-8d %-12s %s\n", p.Name, p.Status, p.RunningCount, p.ServicesCount, p.Source, p.DirPath)
+		}
+
+	case "ps":
+		if len(args) < 2 {
+			fmt.Println("Penggunaan: wdev compose ps <nama_proyek>")
+			os.Exit(1)
+		}
+		proj, err := mgr.GetProject(ctx, args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Proyek: %s (%s) — Status: %s\n", proj.Name, proj.DirPath, proj.Status)
+		if len(proj.Containers) == 0 {
+			fmt.Println("Belum ada container aktif/terdaftar untuk proyek ini.")
+			return
+		}
+		fmt.Printf("%-28s %-14s %-12s %-12s %s\n", "CONTAINER", "SERVICE", "STATE", "HEALTH", "STATUS")
+		fmt.Println(strings.Repeat("-", 90))
+		for _, c := range proj.Containers {
+			health := c.Health
+			if health == "" {
+				health = "-"
+			}
+			fmt.Printf("%-28s %-14s %-12s %-12s %s\n", c.Name, c.Service, c.State, health, c.Status)
+		}
+
+	case "add", "register", "create":
+		if len(args) < 3 {
+			fmt.Println("Penggunaan: wdev compose add <nama> <dir> [--template <tpl>] [--file <compose.yaml>] [--up]")
+			os.Exit(1)
+		}
+		opts := compose.CreateProjectOptions{
+			Name:    args[1],
+			DirPath: args[2],
+		}
+		startAfter := false
+		for i := 3; i < len(args); i++ {
+			switch args[i] {
+			case "--template", "-t":
+				if i+1 < len(args) {
+					opts.Template = args[i+1]
+					i++
+				}
+			case "--file", "-f":
+				if i+1 < len(args) {
+					opts.ComposeFile = args[i+1]
+					i++
+				}
+			case "--up":
+				startAfter = true
+			}
+		}
+		proj, err := mgr.CreateOrRegisterProject(ctx, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ Proyek Compose %s terdaftar di %s (%s)\n", proj.Name, proj.DirPath, proj.ComposeFile)
+		if startAfter {
+			if err := mgr.RunActionTask(ctx, proj.Name, compose.ActionOptions{Action: "up"}, func(l string) { fmt.Println(l) }); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+	case "rm", "delete", "remove":
+		if len(args) < 2 {
+			fmt.Println("Penggunaan: wdev compose rm <nama> [--down]")
+			os.Exit(1)
+		}
+		runDown := false
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--down" {
+				runDown = true
+			}
+		}
+		if err := mgr.DeleteProject(ctx, args[1], runDown); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ Proyek Compose %s dihapus dari daftar kelola wdev.\n", args[1])
+
+	case "up", "down", "start", "stop", "restart", "pull", "build", "run-job":
+		if len(args) < 2 {
+			fmt.Printf("Penggunaan: wdev compose %s <nama_proyek> [service]\n", sub)
+			os.Exit(1)
+		}
+		opts := compose.ActionOptions{Action: sub}
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--build":
+				opts.Build = true
+			case "--volumes", "-v":
+				opts.RemoveVolumes = true
+			case "--remove-orphans":
+				opts.RemoveOrphans = true
+			case "--force-recreate":
+				opts.ForceRecreate = true
+			case "--no-cache":
+				opts.NoCache = true
+			default:
+				if !strings.HasPrefix(args[i], "-") && opts.Service == "" {
+					opts.Service = args[i]
+				}
+			}
+		}
+		if err := mgr.RunActionTask(ctx, args[1], opts, func(l string) { fmt.Println(l) }); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "logs":
+		if len(args) < 2 {
+			fmt.Println("Penggunaan: wdev compose logs <nama_proyek> [service] [--tail 200]")
+			os.Exit(1)
+		}
+		svc := ""
+		tail := 200
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--tail" && i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 {
+					tail = n
+				}
+				i++
+			} else if !strings.HasPrefix(args[i], "-") && svc == "" {
+				svc = args[i]
+			}
+		}
+		out, err := mgr.GetLogs(ctx, args[1], svc, tail)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(out)
+
+	case "config":
+		if len(args) < 2 {
+			fmt.Println("Penggunaan: wdev compose config <nama_proyek>")
+			os.Exit(1)
+		}
+		raw, err := mgr.RenderResolvedConfig(ctx, args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(raw))
+
+	case "df":
+		df, err := mgr.GetDiskUsage(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%-16s %-10s %-10s %-14s %s\n", "TIPE", "TOTAL", "AKTIF", "UKURAN", "RECLAIMABLE")
+		fmt.Println(strings.Repeat("-", 72))
+		for _, item := range df.Items {
+			fmt.Printf("%-16s %-10s %-10s %-14s %s\n", item.Type, item.TotalCount, item.Active, item.Size, item.Reclaimable)
+		}
+
+	case "prune":
+		target := "images"
+		if len(args) >= 2 {
+			target = args[1]
+		}
+		if err := mgr.Prune(ctx, target, func(l string) { fmt.Println(l) }); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	default:
+		fmt.Printf("Sub-perintah compose tidak dikenal: %s\n", sub)
+		fmt.Println("Gunakan: wdev compose <list|ps|add|rm|up|down|start|stop|restart|pull|build|run-job|logs|config|df|prune>")
+		os.Exit(1)
+	}
 }

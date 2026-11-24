@@ -162,10 +162,10 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-3 overflow-y-auto overscroll-contain sm:max-w-xl">
-		<Dialog.Header>
+		<Dialog.Header class="pr-8">
 			<Dialog.Title class="flex items-center gap-2">
-				<FolderOpenIcon class="size-4 text-primary" />
-				<span>{title}</span>
+				<FolderOpenIcon class="size-4 shrink-0 text-primary" />
+				<span class="leading-snug">{title}</span>
 			</Dialog.Title>
 			<Dialog.Description>{description}</Dialog.Description>
 		</Dialog.Header>

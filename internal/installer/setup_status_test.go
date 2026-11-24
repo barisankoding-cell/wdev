@@ -88,4 +88,7 @@ func TestGetComponentStatusesReportsInstalledAndBundles(t *testing.T) {
 	if statuses["pdns"].Installed {
 		t.Fatalf("expected local pdns false when pdns_server binary absent")
 	}
+	if statuses["docker"].Installed {
+		t.Fatalf("expected docker false when docker binary absent")
+	}
 }

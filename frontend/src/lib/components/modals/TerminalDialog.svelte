@@ -72,8 +72,8 @@
 </script>
 
 <Dialog.Root bind:open={cp.terminalOpen}>
-	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-3 sm:max-w-4xl">
-		<Dialog.Header>
+	<Dialog.Content class="flex max-h-[90dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-3 overflow-hidden sm:max-w-[min(calc(100vw-2rem),56rem)]">
+		<Dialog.Header class="shrink-0">
 			<div class="flex flex-wrap items-center justify-between gap-2 pr-8">
 				<div class="flex min-w-0 items-center gap-2.5">
 					<TerminalIcon class="size-5 shrink-0 text-primary" />
@@ -99,7 +99,7 @@
 		</Dialog.Header>
 
 		<Tabs.Root bind:value={activeTab} class="flex min-h-0 flex-1 flex-col gap-2">
-			<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+			<div class="flex shrink-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
 				<Tabs.List class="grid w-full grid-cols-2 sm:inline-flex sm:w-auto">
 					<Tabs.Trigger value="live">Live Stream (SSE)</Tabs.Trigger>
 					<Tabs.Trigger value="history">
@@ -202,7 +202,7 @@
 					aria-live="polite"
 					aria-label="Output Konsol Terminal"
 					tabindex="0"
-					class="h-[46dvh] sm:h-[52dvh] w-full overflow-auto rounded-lg border bg-terminal p-3 sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground"
+					class="min-h-36 flex-1 w-full overflow-auto overscroll-contain rounded-lg border bg-terminal p-3 sm:min-h-[45dvh] sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground"
 				>
 					{#if cp.terminalLogs.length === 0}
 						<p class="text-muted-foreground italic">
@@ -229,7 +229,7 @@
 				value="history"
 				class="mt-0 flex min-h-0 flex-1 flex-col gap-3 md:grid md:grid-cols-[260px_1fr]"
 			>
-				<div class="flex h-36 shrink-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-2 md:h-[52dvh]">
+				<div class="flex h-32 shrink-0 flex-col gap-1.5 overflow-y-auto overscroll-contain rounded-lg border p-2 md:h-[50dvh]">
 					{#if cp.recentTasks.length === 0}
 						<p class="p-3 text-center text-xs text-muted-foreground">Belum ada riwayat tugas tersimpan.</p>
 					{:else}
@@ -265,16 +265,18 @@
 					{/if}
 				</div>
 				<pre
-					class="h-48 min-h-0 flex-1 overflow-auto rounded-lg border bg-terminal p-3 sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground whitespace-pre-wrap break-words md:h-[52dvh]"
+					class="min-h-36 flex-1 overflow-auto overscroll-contain rounded-lg border bg-terminal p-3 sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground whitespace-pre-wrap break-words md:h-[50dvh]"
 				>{selectedTask ? selectedTask.log_output || '(Log kosong)' : 'Pilih tugas untuk melihat output log.'}</pre>
 			</Tabs.Content>
 		</Tabs.Root>
 
-		<Dialog.Footer class="sm:items-center sm:justify-between">
+		<Dialog.Footer class="shrink-0 pb-[max(1rem,env(safe-area-inset-bottom,0px))] sm:items-center sm:justify-between">
 			<p class="text-xs text-muted-foreground">
 				Streaming log langsung (SSE). Menutup jendela tidak menghentikan proses di background.
 			</p>
-			<Button type="button" onclick={() => (cp.terminalOpen = false)}>Tutup / Minimalkan</Button>
+			<Button type="button" class="min-h-10 sm:min-h-0" onclick={() => (cp.terminalOpen = false)}>
+				Tutup / Minimalkan
+			</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>

@@ -1067,6 +1067,26 @@ func fetchCoreLatestVersions(ctx context.Context) map[string]string {
 		}
 	}()
 
+	// 4. Docker Compose v5 (GitHub docker/compose release)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/repos/docker/compose/releases/latest", nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "wdev-control-plane")
+			resp, err := client.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				var rel struct {
+					TagName string `json:"tag_name"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil && rel.TagName != "" {
+					setVal("docker", strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v"))
+				}
+			}
+		}
+	}()
+
 	setVal("pdns", "4.9.18")
 	setVal("stalwart", "1.1.1")
 	setVal("wdev", version.Version)
@@ -1296,7 +1316,30 @@ func getServiceStatuses() []ServiceStatus {
 		InstallComponent: "mail",
 	})
 
-	// 9. wdev Control Plane Service
+	// 9. Docker Engine & Compose v5
+	dockerActive := isSystemdServiceActive("docker")
+	dockerVer := getDockerComposeOrEngineVersion()
+	dockerInstalled := dockerVer != "" || fileExists("/usr/bin/docker") || fileExists("/usr/local/bin/docker")
+	dockerLatest := cachedLatest["docker"]
+	if dockerLatest == "" && dockerVer != "" {
+		dockerLatest = cleanVersion(strings.TrimPrefix(dockerVer, "Compose "))
+	}
+	dockerVerClean := cleanVersion(strings.TrimPrefix(dockerVer, "Compose "))
+	list = append(list, ServiceStatus{
+		Name:             "docker",
+		DisplayName:      "Docker & Compose",
+		Category:         "Container / Runtime",
+		Active:           dockerActive,
+		StatusText:       statusText(dockerActive),
+		Version:          dockerVer,
+		Port:             "docker.sock",
+		Installed:        dockerInstalled,
+		LatestVersion:    dockerLatest,
+		HasUpdate:        dockerInstalled && dockerVerClean != "" && hasNewerVersion(dockerVerClean, dockerLatest),
+		InstallComponent: "docker",
+	})
+
+	// 10. wdev Control Plane Service
 	wdevActive := isSystemdServiceActive("wdev")
 	if !wdevActive {
 		_ = exec.Command("pgrep", "-f", "wdev serve").Run()
@@ -1344,6 +1387,28 @@ func runCmdStdout(bin string, args ...string) string {
 		return ""
 	}
 	return string(out)
+}
+
+func getDockerComposeOrEngineVersion() string {
+	if out := runCmdVersion("docker", "compose", "version", "--short"); out != "" {
+		v := strings.TrimSpace(out)
+		if v != "" {
+			if !strings.HasPrefix(v, "v") {
+				v = "v" + v
+			}
+			return "Compose " + v
+		}
+	}
+	if out := runCmdVersion("docker", "--version"); out != "" {
+		fields := strings.Fields(out)
+		if len(fields) >= 3 {
+			v := strings.TrimSuffix(strings.TrimPrefix(fields[2], "v"), ",")
+			if v != "" {
+				return "v" + v
+			}
+		}
+	}
+	return ""
 }
 
 func getNginxVersion() string {
@@ -1985,7 +2050,7 @@ func getRuntimeVersions() map[string]string {
 func isAllowedManagedService(name string) bool {
 	switch name {
 	case "nginx", "php-fpm", "postgresql", "redis", "redis-server", "valkey", "valkey-server",
-		"cloudflared", "netbird", "pdns", "stalwart", "postfix", "wdev", "orca":
+		"cloudflared", "netbird", "pdns", "stalwart", "postfix", "docker", "docker.service", "wdev", "orca":
 		return true
 	}
 	for _, v := range []string{"8.5", "8.4", "8.3", "8.2", "8.1", "8.0", "7.4"} {

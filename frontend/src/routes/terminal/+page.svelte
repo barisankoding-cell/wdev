@@ -59,6 +59,8 @@
 		cwd: string;
 		shell: string;
 		user: string;
+		composeProject?: string;
+		composeService?: string;
 		isRoot: boolean;
 		locked: boolean;
 		token: string;
@@ -132,7 +134,13 @@
 		return parts[parts.length - 1] || clean;
 	}
 
-	function createTab(cwd = '', shell = '', requestedUser = '') {
+	function createTab(
+		cwd = '',
+		shell = '',
+		requestedUser = '',
+		composeProject = '',
+		composeService = ''
+	) {
 		const id = nextTabSeq++;
 		const userObj = resolveTargetUserObj(requestedUser || selectedUser);
 		const targetUsername = userObj?.username || requestedUser || selectedUser || '';
@@ -140,9 +148,16 @@
 		const locked = doesUserNeedUnlock(userObj);
 
 		const cleanCwd = cwd.trim();
-		const targetShell = shell.trim() || userObj?.shell || selectedShell;
+		const cleanCompProj = composeProject.trim();
+		const cleanCompSvc = composeService.trim();
+		const isComposeExec = Boolean(cleanCompProj && cleanCompSvc);
+		const targetShell = isComposeExec ? shell.trim() || '/bin/sh' : shell.trim() || userObj?.shell || selectedShell;
 		const prefix = isRoot ? 'root' : targetUsername || 'shell';
-		const title = cleanCwd ? `${prefix}:${shortDirLabel(cleanCwd)}` : `${prefix}#${id}`;
+		const title = isComposeExec
+			? `exec:${cleanCompProj}/${cleanCompSvc}`
+			: cleanCwd
+				? `${prefix}:${shortDirLabel(cleanCwd)}`
+				: `${prefix}#${id}`;
 
 		const newTab: TerminalTab = {
 			id,
@@ -150,6 +165,8 @@
 			cwd: cleanCwd,
 			shell: targetShell,
 			user: targetUsername,
+			composeProject: cleanCompProj || undefined,
+			composeService: cleanCompSvc || undefined,
 			isRoot,
 			locked,
 			token: '',
@@ -340,17 +357,19 @@
 		const cwdParam = page.url.searchParams.get('cwd') ?? '';
 		const shellParam = page.url.searchParams.get('shell') ?? '';
 		const userParam = page.url.searchParams.get('user') ?? '';
-		const key = `${cwdParam}::${shellParam}::${userParam}`;
+		const compProjParam = page.url.searchParams.get('compose_project') ?? '';
+		const compSvcParam = page.url.searchParams.get('compose_service') ?? '';
+		const key = `${cwdParam}::${shellParam}::${userParam}::${compProjParam}::${compSvcParam}`;
 
 		if (lastHandledQueryKey === key && tabs.length > 0) return;
 		lastHandledQueryKey = key;
 
 		if (tabs.length === 0) {
-			createTab(cwdParam, shellParam, userParam);
+			createTab(cwdParam, shellParam, userParam, compProjParam, compSvcParam);
 			return;
 		}
-		if (cwdParam) {
-			createTab(cwdParam, shellParam, userParam);
+		if (cwdParam || (compProjParam && compSvcParam)) {
+			createTab(cwdParam, shellParam, userParam, compProjParam, compSvcParam);
 		}
 	});
 </script>
@@ -739,6 +758,8 @@
 									shell={tab.shell}
 									user={tab.user}
 									token={tab.token}
+									composeProject={tab.composeProject}
+									composeService={tab.composeService}
 									{fontSize}
 									active={tab.id === activeTabId}
 									onMeta={(meta) => handleTabMeta(tab.id, meta)}

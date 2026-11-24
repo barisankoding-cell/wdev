@@ -15,6 +15,7 @@
 	import { modeStore, MODE_LABELS, type ServerMode } from '#lib/stores/mode.svelte.js';
 	import type { SetupComponentStatus, TaskRecord } from '#lib/types/api.js';
 	import CheckIcon from '@lucide/svelte/icons/check';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
@@ -141,6 +142,11 @@
 					label: 'Bundel PHP Web Stack',
 					description: 'Pasang Nginx, PHP-FPM, Composer, dan SSL lokal sekaligus.',
 					modes: ['local']
+				},
+				{
+					component: 'docker',
+					label: 'Docker Engine & Compose v5',
+					description: 'Container runtime Docker & plugin Compose v5 dari repositori resmi Docker.'
 				}
 			]
 		},
@@ -882,16 +888,31 @@
 											<span class="text-[11px] text-muted-foreground/80">Otomatis / Terbaru</span>
 										{/if}
 
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											class="h-7 px-2.5 text-xs"
-											aria-label={`${installed ? 'Pasang ulang' : 'Pasang'} ${item.label} saja`}
-											onclick={() => installSingleModular(item)}
-										>
-											{installed ? 'Pasang Ulang' : 'Pasang Saja'}
-										</Button>
+										<div class="flex items-center gap-1">
+											{#if item.component === 'docker'}
+												<Button
+													type="button"
+													variant="ghost"
+													size="sm"
+													class="h-7 px-2 text-xs"
+													aria-label="Konfigurasi Docker Daemon"
+													onclick={() => cp.openServiceConfig('docker')}
+												>
+													<SettingsIcon class="size-3.5" data-icon="inline-start" />
+													Konfigurasi
+												</Button>
+											{/if}
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												class="h-7 px-2.5 text-xs"
+												aria-label={`${installed ? 'Pasang ulang' : 'Pasang'} ${item.label} saja`}
+												onclick={() => installSingleModular(item)}
+											>
+												{installed ? 'Pasang Ulang' : 'Pasang Saja'}
+											</Button>
+										</div>
 									</div>
 								</div>
 							{/each}

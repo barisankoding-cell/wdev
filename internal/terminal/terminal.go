@@ -67,6 +67,9 @@ type StartOptions struct {
 	User        string
 	Cwd         string
 	Shell       string
+	ExecBin     string
+	ExecArgs    []string
+	ExecLabel   string
 	Cols        uint16
 	Rows        uint16
 	IdleTimeout time.Duration // 0 => DefaultIdleTimeout; < 0 => nonaktif
@@ -657,9 +660,19 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	shellPath, err := m.ResolveShell(opts.Shell, target.Shell)
-	if err != nil {
-		return nil, "", err
+	isExecMode := strings.TrimSpace(opts.ExecBin) != "" && len(opts.ExecArgs) > 0
+	shellPath := ""
+	if isExecMode {
+		resolvedBin, lerr := exec.LookPath(strings.TrimSpace(opts.ExecBin))
+		if lerr != nil {
+			return nil, "", fmt.Errorf("perintah exec %q tidak ditemukan: %w", opts.ExecBin, lerr)
+		}
+		shellPath = resolvedBin
+	} else {
+		shellPath, err = m.ResolveShell(opts.Shell, target.Shell)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	cwd, fallbackReason := m.ResolveStartDir(opts.Cwd, target)
 	cols, rows := clampDimensions(opts.Cols, opts.Rows)
@@ -718,7 +731,16 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 		}
 	}
 
-	cmd := exec.Command(shellPath, shellArgs(shellPath)...)
+	var cmd *exec.Cmd
+	displayShell := shellPath
+	if isExecMode {
+		cmd = exec.Command(shellPath, opts.ExecArgs...)
+		if strings.TrimSpace(opts.ExecLabel) != "" {
+			displayShell = strings.TrimSpace(opts.ExecLabel)
+		}
+	} else {
+		cmd = exec.Command(shellPath, shellArgs(shellPath)...)
+	}
 	cmd.Dir = cwd
 	cmd.Env = buildTerminalEnv(target.Username, target.HomeDir, shellPath, cwd, target.IsRoot)
 	cmd.Stdin = tty
@@ -740,7 +762,7 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 		ID:          sessionID,
 		TargetUser:  target,
 		Cwd:         cwd,
-		Shell:       shellPath,
+		Shell:       displayShell,
 		User:        target.Username,
 		Hostname:    hostname,
 		StartedAt:   time.Now(),

@@ -362,6 +362,30 @@ func (inst *Installer) GetComponentStatuses(ctx context.Context) map[string]Setu
 		set("orca-headless", mode != "desktop", ver)
 	})
 
+	// 21. Docker Engine & Compose v5
+	runProbe(func() {
+		bin := findToolFn("docker")
+		installed := bin != "" || statExistsFn("/usr/bin/docker") || statExistsFn("/usr/local/bin/docker")
+		ver := ""
+		if bin != "" {
+			if out, err := toolCmd(probeCtx, bin, "compose", "version", "--short").CombinedOutput(); err == nil {
+				cVer := strings.TrimSpace(string(out))
+				if cVer != "" {
+					ver = "Compose v" + strings.TrimPrefix(cVer, "v")
+				}
+			}
+			if ver == "" {
+				if out, err := toolCmd(probeCtx, bin, "--version").CombinedOutput(); err == nil {
+					fields := strings.Fields(string(out))
+					if len(fields) >= 3 {
+						ver = "v" + strings.TrimSuffix(strings.TrimPrefix(fields[2], "v"), ",")
+					}
+				}
+			}
+		}
+		set("docker", installed, ver)
+	})
+
 	wg.Wait()
 
 	// 21. Bundel PHP Web Stack

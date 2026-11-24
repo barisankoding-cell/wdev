@@ -47,7 +47,7 @@
 	let checkingSelfUpdate = $state(false);
 	let applyingUpdate = $state(false);
 
-	const configurableServices = new Set<string>(['redis', 'postgresql', 'php-fpm', 'nginx']);
+	const configurableServices = new Set<string>(['redis', 'postgresql', 'php-fpm', 'nginx', 'docker']);
 
 	/** Menggabungkan mount eksternal dan /mnt tanpa duplikasi mount_point. */
 	function mergeExtraMounts(other?: MountDriveInfo[], mnt?: MountDriveInfo[]): MountDriveInfo[] {
@@ -772,6 +772,19 @@
 										<DownloadIcon data-icon="inline-start" />
 										Setup PowerDNS / Edge
 									</Button>
+								{:else if svc.name === 'docker'}
+									<Button size="sm" href="/compose">
+										<DownloadIcon data-icon="inline-start" />
+										Pasang &amp; Kelola
+									</Button>
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={() => cp.openServiceConfig('docker')}
+									>
+										<SettingsIcon data-icon="inline-start" />
+										Pra-Konfigurasi
+									</Button>
 								{:else}
 									<Button
 										size="sm"
@@ -857,6 +870,12 @@
 									>
 										<SettingsIcon data-icon="inline-start" />
 										Konfigurasi
+									</Button>
+								{/if}
+								{#if svc.name === 'docker'}
+									<Button variant="outline" size="sm" href="/compose">
+										<ChevronRightIcon data-icon="inline-start" />
+										Kelola Compose
 									</Button>
 								{/if}
 							{/if}

@@ -56,6 +56,7 @@
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import ContainerIcon from '@lucide/svelte/icons/container';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
 	import CopyIcon from '@lucide/svelte/icons/copy';
@@ -278,6 +279,19 @@
 	const rawEntries = $derived<FileEntry[]>(
 		searchResults !== null ? searchResults : (listing?.entries ?? [])
 	);
+	const hasComposeManifest = $derived.by(() => {
+		if (!listing || isSearchMode) return false;
+		return listing.entries.some((e) => {
+			if (e.is_dir) return false;
+			const low = e.name.toLowerCase();
+			return (
+				low === 'compose.yaml' ||
+				low === 'compose.yml' ||
+				low === 'docker-compose.yaml' ||
+				low === 'docker-compose.yml'
+			);
+		});
+	});
 
 	const visibleEntries = $derived.by(() => {
 		const list = [...rawEntries];
@@ -1148,6 +1162,12 @@
 
 		<!-- Desktop Header Actions -->
 		<div class="hidden flex-wrap items-center gap-2 sm:flex">
+			{#if hasComposeManifest && currentPath}
+				<Button variant="secondary" size="sm" href={`/compose?dir=${encodeURIComponent(currentPath)}`}>
+					<ContainerIcon data-icon="inline-start" />
+					Kelola di Compose
+				</Button>
+			{/if}
 			<Button variant="outline" size="sm" onclick={() => openTerminalAt(currentPath)} disabled={!currentPath}>
 				<SquareTerminalIcon data-icon="inline-start" />
 				Open Terminal

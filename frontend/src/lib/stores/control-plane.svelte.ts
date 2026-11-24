@@ -1,5 +1,11 @@
 import { api, ApiError } from '#lib/api/client.js';
-import type { ServiceConfigKey, SystemStats, TaskEvent, TaskRecord } from '#lib/types/api.js';
+import type {
+	DockerInstallOptions,
+	ServiceConfigKey,
+	SystemStats,
+	TaskEvent,
+	TaskRecord
+} from '#lib/types/api.js';
 import { toast } from 'svelte-sonner';
 
 export interface TerminalLogEntry {
@@ -40,6 +46,9 @@ export const COMPONENT_TITLES: Record<string, string> = {
 	mail: 'Mail Server Stack (Stalwart + SnappyMail)',
 	'mail-stack': 'Mail Server Stack (Stalwart + SnappyMail)',
 	cloudflare: 'Cloudflare Tunnel (cloudflared)',
+	docker: 'Docker Engine & Compose v5',
+	compose: 'Docker Engine & Compose v5',
+	'docker-compose': 'Docker Engine & Compose v5',
 	netbird: 'NetBird Mesh VPN',
 	pdns: 'PowerDNS Authoritative Server',
 	powerdns: 'PowerDNS Authoritative Server',
@@ -578,6 +587,17 @@ class ControlPlaneStore {
 			label,
 			`Jalankan operasi instalasi / pembaruan untuk: ${label}?`,
 			(sudoPass) => api.triggerInstall(component, version, sudoPass)
+		);
+	}
+
+	async triggerDockerInstall(dockerOptions: DockerInstallOptions) {
+		const label = 'Docker Engine & Compose v5';
+		const sourceLabel =
+			dockerOptions.source === 'distro' ? 'Repositori Distro' : 'Repositori Resmi Docker';
+		await this.runInstallWithConfirm(
+			label,
+			`Pasang / perbarui Docker Engine & Compose v5 (${sourceLabel}) dan terapkan konfigurasi /etc/docker/daemon.json?`,
+			(sudoPass) => api.triggerInstall('docker', undefined, sudoPass, dockerOptions)
 		);
 	}
 

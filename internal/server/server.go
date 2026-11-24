@@ -20,6 +20,7 @@ import (
 	"time"
 	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
+	"wdev/internal/compose"
 	"wdev/internal/config"
 	"wdev/internal/filemanager"
 	"wdev/internal/installer"
@@ -51,6 +52,7 @@ type Server struct {
 	svcCfgMgr      *serviceconfig.Manager
 	fileMgr        *filemanager.Manager
 	termMgr        *terminal.Manager
+	composeMgr     *compose.Manager
 	termSec        *terminalSecurityState
 	sudoVerifyFn   func(string) error
 	mux            *http.ServeMux
@@ -82,6 +84,10 @@ func New(
 	if cfMgr != nil && inst != nil {
 		cfMgr.SetSudoPasswordFn(inst.GetSudoPassword)
 	}
+	var sudoFn func() string
+	if inst != nil {
+		sudoFn = inst.GetSudoPassword
+	}
 	srv := &Server{
 		cfg:         cfg,
 		store:       s,
@@ -93,9 +99,10 @@ func New(
 		pdnsMgr:     pdnsMgr,
 		mailMgr:     mailMgr,
 		authMgr:     authMgr,
-		svcCfgMgr:   serviceconfig.New(inst.GetSudoPassword),
+		svcCfgMgr:   serviceconfig.New(sudoFn),
 		fileMgr:     filemanager.New(cfg, s),
 		termMgr:     terminal.New(cfg, s),
+		composeMgr:  compose.New(cfg, s, sudoFn),
 		mux:         http.NewServeMux(),
 	}
 	srv.routes()
@@ -172,6 +179,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/panel/domain/block-ip", s.handlePanelDomainBlockIP)
 	s.mux.HandleFunc("/api/panel/ssl", s.handlePanelSSL)
 	s.mux.HandleFunc("/api/ports", s.handlePorts)
+	s.registerComposeRoutes()
 	s.registerFileManagerRoutes()
 	s.registerTerminalRoutes()
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
@@ -665,7 +673,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			switch svc.Name {
-			case "nginx", "php-fpm", "postgresql", "redis":
+			case "nginx", "php-fpm", "postgresql", "redis", "docker":
 				wg.Add(1)
 				go func(target *monitor.ServiceStatus) {
 					defer wg.Done()
@@ -804,6 +812,8 @@ func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {
 			res, err = s.svcCfgMgr.GetPHPConfig(r.Context(), ver)
 		case "nginx":
 			res, err = s.svcCfgMgr.GetNginxConfig(r.Context())
+		case "docker":
+			res, err = s.svcCfgMgr.GetDockerConfig(r.Context())
 		default:
 			writeError(w, http.StatusBadRequest, "Konfigurasi layanan tidak didukung: "+service)
 			return
@@ -985,6 +995,13 @@ func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			saved, err = s.svcCfgMgr.SaveNginxConfig(r.Context(), cfg)
+		case "docker":
+			var cfg serviceconfig.DockerConfig
+			if err = json.Unmarshal(bodyBytes, &cfg); err != nil {
+				writeError(w, http.StatusBadRequest, "Format konfigurasi Docker tidak valid: "+err.Error())
+				return
+			}
+			saved, err = s.svcCfgMgr.SaveDockerConfig(r.Context(), cfg)
 		default:
 			writeError(w, http.StatusBadRequest, "Konfigurasi layanan tidak didukung: "+service)
 			return
@@ -1025,106 +1042,115 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, sites)
 
 	case http.MethodPost:
-		var req struct {
-			site.CreateOptions
-			ExposeEdge *bool  `json:"expose_edge,omitempty"`
-			EdgeDomain string `json:"edge_domain,omitempty"`
-			EdgeSSL    *bool  `json:"edge_ssl,omitempty"`
-			AddHosts   *bool  `json:"add_hosts,omitempty"`
-		}
+		var req siteCreatePayload
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "Payload tidak valid")
 			return
 		}
 
-		cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(req.Domain), "."))
-		isPublic := site.ValidateLetsEncryptDomain(cleanDom) == nil
-		mode := "local"
-		if s.pdnsMgr != nil {
-			mode = s.pdnsMgr.GetMode()
-		}
-
-		if !req.SkipHosts {
-			if req.AddHosts != nil {
-				req.SkipHosts = !*req.AddHosts
-				req.ForceHosts = *req.AddHosts
-			} else if (mode == "vps" || mode == "edge") && isPublic {
-				// Domain publik di mode VPS/Edge diselesaikan lewat PowerDNS/DNS publik, bukan /etc/hosts lokal.
-				req.SkipHosts = true
-			}
-		}
-
-		wantExpose := false
-		if mode == "edge" {
-			if req.ExposeEdge != nil {
-				wantExpose = *req.ExposeEdge
-			} else if isPublic && s.pdnsMgr != nil {
-				conf := s.pdnsMgr.LoadConfig()
-				if conf.Configured && conf.VPSNetbirdIP != "" {
-					wantExpose = true
-				}
-			}
-		}
-		if wantExpose {
-			// SSL Let's Encrypt diterbitkan di VPS Edge Gateway; vhost lokal melayani HTTP port 80 lewat tunnel NetBird.
-			req.SSLEnabled = false
-		}
-
-		if err := s.validateSiteProxyTarget(req.Framework, req.ProxyPort, ""); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		resp, statusCode, err := s.createSiteWithModeSync(req)
+		if err != nil {
+			writeError(w, statusCode, err.Error())
 			return
-		}
-
-		if err := s.siteMgr.CreateSite(req.CreateOptions); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		resp := map[string]any{"status": "created"}
-		if mode == "vps" && s.pdnsMgr != nil {
-			conf := s.pdnsMgr.LoadConfig()
-			if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
-				if zone, zErr := s.pdnsMgr.FindMatchingZone(cleanDom); zErr == nil && zone != "" {
-					if existing, lErr := s.pdnsMgr.LookupRecords(zone, cleanDom, "A"); lErr == nil && len(existing) == 0 {
-						if addErr := s.pdnsMgr.AddRecord(zone, cleanDom, "A", conf.VPSPublicIP, 300); addErr == nil {
-							resp["dns_synced"] = true
-							resp["dns_zone"] = strings.TrimSuffix(zone, ".")
-							resp["dns_message"] = fmt.Sprintf("Record DNS A %s -> %s ditambahkan ke PowerDNS", cleanDom, conf.VPSPublicIP)
-						}
-					}
-				}
-			}
-		} else if wantExpose && s.pdnsMgr != nil {
-			pubDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(req.EdgeDomain), "."))
-			if pubDom == "" {
-				pubDom = cleanDom
-			}
-			useSSL := true
-			if req.EdgeSSL != nil {
-				useSSL = *req.EdgeSSL
-			}
-			if expErr := s.pdnsMgr.ExposeSite(cleanDom, pubDom, useSSL); expErr != nil {
-				resp["edge_exposed"] = false
-				resp["edge_domain"] = pubDom
-				resp["edge_error"] = expErr.Error()
-			} else {
-				resp["edge_exposed"] = true
-				resp["edge_domain"] = pubDom
-				resp["edge_ssl"] = useSSL
-				if conf := s.pdnsMgr.LoadConfig(); conf.VPSPublicIP != "" {
-					if zone, zErr := s.pdnsMgr.FindMatchingZone(pubDom); zErr == nil && zone != "" {
-						resp["dns_synced"] = true
-						resp["dns_zone"] = strings.TrimSuffix(zone, ".")
-						resp["dns_message"] = fmt.Sprintf("Record A %s -> %s & tunnel VPS Edge aktif", pubDom, conf.VPSPublicIP)
-					}
-				}
-			}
 		}
 		writeJSON(w, http.StatusOK, resp)
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
 	}
+}
+
+type siteCreatePayload struct {
+	site.CreateOptions
+	ExposeEdge *bool  `json:"expose_edge,omitempty"`
+	EdgeDomain string `json:"edge_domain,omitempty"`
+	EdgeSSL    *bool  `json:"edge_ssl,omitempty"`
+	AddHosts   *bool  `json:"add_hosts,omitempty"`
+}
+
+func (s *Server) createSiteWithModeSync(req siteCreatePayload) (map[string]any, int, error) {
+	cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(req.Domain), "."))
+	isPublic := site.ValidateLetsEncryptDomain(cleanDom) == nil
+	mode := "local"
+	if s.pdnsMgr != nil {
+		mode = s.pdnsMgr.GetMode()
+	}
+
+	if !req.SkipHosts {
+		if req.AddHosts != nil {
+			req.SkipHosts = !*req.AddHosts
+			req.ForceHosts = *req.AddHosts
+		} else if (mode == "vps" || mode == "edge") && isPublic {
+			// Domain publik di mode VPS/Edge diselesaikan lewat PowerDNS/DNS publik, bukan /etc/hosts lokal.
+			req.SkipHosts = true
+		}
+	}
+
+	wantExpose := false
+	if mode == "edge" {
+		if req.ExposeEdge != nil {
+			wantExpose = *req.ExposeEdge
+		} else if isPublic && s.pdnsMgr != nil {
+			conf := s.pdnsMgr.LoadConfig()
+			if conf.Configured && conf.VPSNetbirdIP != "" {
+				wantExpose = true
+			}
+		}
+	}
+	if wantExpose {
+		// SSL Let's Encrypt diterbitkan di VPS Edge Gateway; vhost lokal melayani HTTP port 80 lewat tunnel NetBird.
+		req.SSLEnabled = false
+	}
+
+	if err := s.validateSiteProxyTarget(req.Framework, req.ProxyPort, ""); err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+
+	if err := s.siteMgr.CreateSite(req.CreateOptions); err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	resp := map[string]any{"status": "created"}
+	if mode == "vps" && s.pdnsMgr != nil {
+		conf := s.pdnsMgr.LoadConfig()
+		if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
+			if zone, zErr := s.pdnsMgr.FindMatchingZone(cleanDom); zErr == nil && zone != "" {
+				if existing, lErr := s.pdnsMgr.LookupRecords(zone, cleanDom, "A"); lErr == nil && len(existing) == 0 {
+					if addErr := s.pdnsMgr.AddRecord(zone, cleanDom, "A", conf.VPSPublicIP, 300); addErr == nil {
+						resp["dns_synced"] = true
+						resp["dns_zone"] = strings.TrimSuffix(zone, ".")
+						resp["dns_message"] = fmt.Sprintf("Record DNS A %s -> %s ditambahkan ke PowerDNS", cleanDom, conf.VPSPublicIP)
+					}
+				}
+			}
+		}
+	} else if wantExpose && s.pdnsMgr != nil {
+		pubDom := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(req.EdgeDomain), "."))
+		if pubDom == "" {
+			pubDom = cleanDom
+		}
+		useSSL := true
+		if req.EdgeSSL != nil {
+			useSSL = *req.EdgeSSL
+		}
+		if expErr := s.pdnsMgr.ExposeSite(cleanDom, pubDom, useSSL); expErr != nil {
+			resp["edge_exposed"] = false
+			resp["edge_domain"] = pubDom
+			resp["edge_error"] = expErr.Error()
+		} else {
+			resp["edge_exposed"] = true
+			resp["edge_domain"] = pubDom
+			resp["edge_ssl"] = useSSL
+			if conf := s.pdnsMgr.LoadConfig(); conf.VPSPublicIP != "" {
+				if zone, zErr := s.pdnsMgr.FindMatchingZone(pubDom); zErr == nil && zone != "" {
+					resp["dns_synced"] = true
+					resp["dns_zone"] = strings.TrimSuffix(zone, ".")
+					resp["dns_message"] = fmt.Sprintf("Record A %s -> %s & tunnel VPS Edge aktif", pubDom, conf.VPSPublicIP)
+				}
+			}
+		}
+	}
+	return resp, http.StatusOK, nil
 }
 
 func (s *Server) handleSiteByDomain(w http.ResponseWriter, r *http.Request) {
@@ -2356,6 +2382,8 @@ func canonicalInstallComponent(component string) string {
 		return "mail"
 	case "powerdns":
 		return "pdns"
+	case "compose", "docker-compose":
+		return "docker"
 	case "zsh-p10k", "zsh-agnoster", "zsh-robbyrussell":
 		return "zsh"
 	case "orca":
@@ -2411,6 +2439,8 @@ func installComponentOrder(canonical string) int {
 		return 150
 	case "cloudflare":
 		return 160
+	case "docker":
+		return 165
 	case "netbird":
 		return 170
 	case "zsh":
@@ -2553,11 +2583,12 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Component string               `json:"component"`
-		Version   string               `json:"version"`
-		Items     []installItemPayload `json:"items"`
-		Label     string               `json:"label"`
-		SudoPass  string               `json:"sudo_pass"`
+		Component     string                          `json:"component"`
+		Version       string                          `json:"version"`
+		Items         []installItemPayload            `json:"items"`
+		Label         string                          `json:"label"`
+		SudoPass      string                          `json:"sudo_pass"`
+		DockerOptions *installer.DockerInstallOptions `json:"docker_options,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
@@ -2572,10 +2603,23 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		}}
 	}
 
+	if payload.DockerOptions != nil && payload.DockerOptions.DaemonConfig != nil {
+		if err := serviceconfig.ValidateDockerConfig(*payload.DockerOptions.DaemonConfig); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	taskName, fn, needsSudo, errMsg := s.buildInstallBatch(items, payload.Label)
 	if errMsg != "" {
 		writeError(w, http.StatusBadRequest, errMsg)
 		return
+	}
+	if payload.DockerOptions != nil && len(items) == 1 && canonicalInstallComponent(strings.TrimSpace(items[0].Component)) == "docker" {
+		dockerOpts := *payload.DockerOptions
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.installer.InstallDockerWithOptions(ctx, cb, dockerOpts)
+		}
 	}
 
 	if payload.SudoPass != "" {
@@ -2754,6 +2798,11 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 		taskName = "Cloudflare Tunnel (cloudflared)"
 		fn = func(ctx context.Context, cb func(string)) error {
 			return s.installer.InstallCloudflared(ctx, cb)
+		}
+	case "docker", "compose", "docker-compose":
+		taskName = "Docker Engine & Compose v5"
+		fn = func(ctx context.Context, cb func(string)) error {
+			return s.installer.InstallDocker(ctx, cb)
 		}
 	case "netbird":
 		taskName = "NetBird Mesh VPN"

@@ -591,6 +591,8 @@ func (m *Manager) GetServiceLogs(ctx context.Context, service, version string, l
 			return "", "", err
 		}
 		unit = paths.unit
+	case "docker":
+		unit = "docker"
 	default:
 		return "", "", fmt.Errorf("layanan log tidak dikenal: %s", service)
 	}

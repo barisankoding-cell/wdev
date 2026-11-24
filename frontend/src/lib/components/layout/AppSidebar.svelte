@@ -6,6 +6,7 @@
 	import { useSidebar } from '#lib/components/ui/sidebar/index.js';
 	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
+	import ContainerIcon from '@lucide/svelte/icons/container';
 import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
@@ -41,6 +42,7 @@ import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 			title: 'Web & Pengembangan',
 			items: [
 				{ label: 'Web Stack & VHost', href: '/webstack', icon: GlobeIcon },
+				{ label: 'Docker & Compose', href: '/compose', icon: ContainerIcon },
 				{ label: 'Multi-Versi Runtime', href: '/switchers', icon: ArrowLeftRightIcon },
 				{ label: 'Toolchains & SDKs', href: '/toolchains', icon: WrenchIcon },
 				{ label: 'Workspace & ADE', href: '/workspace', icon: MonitorIcon }

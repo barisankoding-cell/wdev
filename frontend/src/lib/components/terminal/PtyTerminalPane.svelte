@@ -27,6 +27,8 @@
 		shell = '',
 		user = '',
 		token = '',
+		composeProject = '',
+		composeService = '',
 		fontSize = 14,
 		active = true,
 		onMeta,
@@ -36,6 +38,8 @@
 		shell?: string;
 		user?: string;
 		token?: string;
+		composeProject?: string;
+		composeService?: string;
 		fontSize?: number;
 		active?: boolean;
 		onMeta?: (meta: TerminalPaneMeta) => void;
@@ -118,6 +122,8 @@
 			shell: shell || undefined,
 			user: user || undefined,
 			token: useToken || undefined,
+			compose_project: composeProject || undefined,
+			compose_service: composeService || undefined,
 			cols: term.cols,
 			rows: term.rows
 		});

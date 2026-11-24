@@ -9,6 +9,7 @@
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import type {
+		DockerConfig,
 		NginxConfig,
 		PHPConfig,
 		PHPInspectResult,
@@ -24,6 +25,7 @@
 	import PostgresConfigPanel from './service-config/PostgresConfigPanel.svelte';
 	import PhpConfigPanel from './service-config/PhpConfigPanel.svelte';
 	import NginxConfigPanel from './service-config/NginxConfigPanel.svelte';
+	import DockerConfigPanel from './service-config/DockerConfigPanel.svelte';
 	import { toast } from 'svelte-sonner';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -39,6 +41,7 @@
 	let pgCfg = $state<PostgresConfig | null>(null);
 	let phpCfg = $state<PHPConfig | null>(null);
 	let nginxCfg = $state<NginxConfig | null>(null);
+	let dockerCfg = $state<DockerConfig | null>(null);
 
 	let redisInspect = $state<RedisInspectResult | null>(null);
 	let pgInspect = $state<PostgresInspectResult | null>(null);
@@ -68,7 +71,9 @@
 				? 'Konfigurasi PostgreSQL'
 				: cp.serviceConfigTarget === 'php-fpm'
 					? 'Konfigurasi PHP & PHP-FPM'
-					: 'Konfigurasi Global Nginx'
+					: cp.serviceConfigTarget === 'docker'
+						? 'Konfigurasi Docker & Compose'
+						: 'Konfigurasi Global Nginx'
 	);
 
 	const metaSubtitle = $derived.by(() => {
@@ -83,6 +88,14 @@
 		}
 		if (cp.serviceConfigTarget === 'nginx' && nginxCfg) {
 			return `${nginxCfg.config_path || '-'} · Unit: ${nginxCfg.service_unit || 'nginx'} (${nginxCfg.active ? 'Aktif' : 'Nonaktif'})`;
+		}
+		if (cp.serviceConfigTarget === 'docker' && dockerCfg) {
+			const statusTxt = !dockerCfg.installed
+				? 'Belum Terpasang — Pra-konfigurasi'
+				: dockerCfg.active
+					? 'Aktif'
+					: 'Nonaktif';
+			return `${dockerCfg.config_path || '/etc/docker/daemon.json'} · Unit: ${dockerCfg.service_unit || 'docker'} (${statusTxt})`;
 		}
 		return 'Memuat konfigurasi layanan...';
 	});
@@ -126,6 +139,8 @@
 				}
 			} else if (cp.serviceConfigTarget === 'nginx') {
 				nginxCfg = res.config as NginxConfig;
+			} else if (cp.serviceConfigTarget === 'docker') {
+				dockerCfg = res.config as DockerConfig;
 			}
 		} catch (err) {
 			loadError = err instanceof Error ? err.message : 'Gagal memuat konfigurasi';
@@ -333,13 +348,13 @@
 </script>
 
 <Dialog.Root bind:open={cp.serviceConfigOpen}>
-	<Dialog.Content class="flex max-h-[92dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-4 sm:max-w-[min(94vw,80rem)]">
-		<Dialog.Header>
-			<Dialog.Title class="flex items-center gap-2 pr-6">
+	<Dialog.Content class="flex max-h-[92dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-4 overflow-hidden sm:max-w-[min(94vw,80rem)]">
+		<Dialog.Header class="shrink-0 pr-8">
+			<Dialog.Title class="flex items-center gap-2">
 				<Settings2Icon class="size-4 shrink-0 text-primary" />
 				<span class="truncate">{modalTitle}</span>
 			</Dialog.Title>
-			<Dialog.Description class="break-all font-mono text-xs">{metaSubtitle}</Dialog.Description>
+			<Dialog.Description class="font-mono text-xs break-words">{metaSubtitle}</Dialog.Description>
 		</Dialog.Header>
 
 		{#if loadError}
@@ -348,7 +363,7 @@
 				<Alert.Title>Gagal Memuat Konfigurasi</Alert.Title>
 				<Alert.Description>{loadError}</Alert.Description>
 			</Alert.Root>
-		{:else if loading && !redisCfg && !pgCfg && !phpCfg && !nginxCfg}
+		{:else if loading && !redisCfg && !pgCfg && !phpCfg && !nginxCfg && !dockerCfg}
 			<div class="flex flex-col gap-3 py-4">
 				<Skeleton class="h-8 w-1/2" />
 				<Skeleton class="h-24 w-full" />
@@ -356,7 +371,7 @@
 			</div>
 		{:else}
 			<Tabs.Root bind:value={activeTab} onValueChange={handleTabChange} class="flex min-h-0 flex-1 flex-col gap-3">
-				<Tabs.List class={cn('grid w-full sm:inline-flex sm:w-auto', hasInspect ? 'grid-cols-3' : 'grid-cols-2')}>
+				<Tabs.List class={cn('grid w-full shrink-0 sm:inline-flex sm:w-auto', hasInspect ? 'grid-cols-3' : 'grid-cols-2')}>
 					<Tabs.Trigger value="settings">Pengaturan</Tabs.Trigger>
 					{#if hasInspect}
 						<Tabs.Trigger value="inspect">
@@ -372,7 +387,7 @@
 					<Tabs.Trigger value="logs">Log</Tabs.Trigger>
 				</Tabs.List>
 
-				<div class="min-h-0 flex-1 overflow-y-auto pr-1">
+				<div class="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1">
 					<Tabs.Content value="settings" class="mt-0">
 						{#if cp.serviceConfigTarget === 'redis' && redisCfg}
 							<RedisConfigPanel
@@ -427,6 +442,14 @@
 						{:else if cp.serviceConfigTarget === 'nginx' && nginxCfg}
 							<NginxConfigPanel
 								bind:config={nginxCfg}
+								{saving}
+								{formError}
+								onSave={saveConfig}
+								onCancel={() => (cp.serviceConfigOpen = false)}
+							/>
+						{:else if cp.serviceConfigTarget === 'docker' && dockerCfg}
+							<DockerConfigPanel
+								bind:config={dockerCfg}
 								{saving}
 								{formError}
 								onSave={saveConfig}
