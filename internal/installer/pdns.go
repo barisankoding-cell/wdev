@@ -68,6 +68,34 @@ CREATE TABLE IF NOT EXISTS tsigkeys (
 CREATE UNIQUE INDEX IF NOT EXISTS namealgoindex ON tsigkeys(name, algorithm);
 `
 
+// buildStandalonePDNSConf menyusun berkas konfigurasi PowerDNS standalone dengan
+// webserver API dikunci hanya pada antarmuka loopback.
+func buildStandalonePDNSConf(ownerLines, localAddr, dbFile, apiKey string) string {
+	return fmt.Sprintf(`# PowerDNS Configuration - wdev Standalone Authoritative Server
+include-dir=/etc/powerdns/pdns.d
+
+%slocal-address=%s
+local-port=53
+
+launch=gsqlite3
+gsqlite3-database=%s
+gsqlite3-pragma-synchronous=1
+gsqlite3-pragma-foreign-keys=1
+
+api=yes
+api-key=%s
+webserver=yes
+webserver-address=127.0.0.1
+webserver-port=8081
+webserver-allow-from=127.0.0.1,::1
+
+version-string=anonymous
+security-poll-suffix=
+
+default-soa-edit=INCEPTION-INCREMENT
+`, ownerLines, localAddr, dbFile, apiKey)
+}
+
 // InstallPowerDNS memasang dan mengonfigurasi PowerDNS Authoritative Server secara standalone
 // (SQLite3 + HTTP API di 127.0.0.1:8081) tanpa ketergantungan NetBird, Postfix, atau Edge Agent,
 // sehingga kompatibel penuh dengan mode Lokal, VPS, maupun Edge.
@@ -148,29 +176,7 @@ func (inst *Installer) InstallPowerDNS(ctx context.Context, cb LogCallback) erro
 		ownerLines = fmt.Sprintf("setuid=%s\nsetgid=%s\n", pdnsUser, pdnsUser)
 	}
 
-	pdnsConf := fmt.Sprintf(`# PowerDNS Configuration - wdev Standalone Authoritative Server
-include-dir=/etc/powerdns/pdns.d
-
-%slocal-address=%s
-local-port=53
-
-launch=gsqlite3
-gsqlite3-database=%s
-gsqlite3-pragma-synchronous=1
-gsqlite3-pragma-foreign-keys=1
-
-api=yes
-api-key=%s
-webserver=yes
-webserver-address=0.0.0.0
-webserver-port=8081
-webserver-allow-from=127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10
-
-version-string=anonymous
-security-poll-suffix=
-
-default-soa-edit=INCEPTION-INCREMENT
-`, ownerLines, localAddr, dbFile, apiKey)
+	pdnsConf := buildStandalonePDNSConf(ownerLines, localAddr, dbFile, apiKey)
 
 	if err := inst.writeSystemFile(ctx, cb, pdnsConfPath, []byte(pdnsConf), "0640"); err != nil {
 		return fmt.Errorf("gagal menulis %s: %w", pdnsConfPath, err)

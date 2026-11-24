@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -333,5 +334,48 @@ func TestAllowedRootsIncludesDetectedMountDrives(t *testing.T) {
 	}
 	if resolved != filepath.Join(mntDrive, "project") {
 		t.Fatalf("unexpected resolved path: %q", resolved)
+	}
+}
+
+func TestRemoteFetchBlocksCGNATSSRF(t *testing.T) {
+	mgr, root, _ := newTestFM(t)
+
+	for _, rawIP := range []string{"100.64.0.5", "100.100.100.200", "::ffff:100.64.0.1"} {
+		ip := net.ParseIP(rawIP)
+		if !isBlockedIP(ip) {
+			t.Fatalf("expected CGNAT/metadata IP %q to be blocked by SSRF filter", rawIP)
+		}
+	}
+	if isBlockedIP(net.ParseIP("1.1.1.1")) {
+		t.Fatalf("expected public IP 1.1.1.1 to remain allowed")
+	}
+
+	if _, err := mgr.FetchFromURL(context.Background(), "http://100.100.100.200/latest/meta-data", root, "", false); err == nil {
+		t.Fatal("expected FetchFromURL to reject CGNAT metadata URL")
+	}
+}
+
+func TestChmodRejectsSpecialPermissionBits(t *testing.T) {
+	mgr, root, _ := newTestFM(t)
+	sample := filepath.Join(root, "script.sh")
+	if err := os.WriteFile(sample, []byte("#!/bin/sh\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, badMode := range []string{"4755", "2755", "1777", "7777"} {
+		if err := mgr.Chmod([]string{sample}, badMode, false, false); err == nil {
+			t.Fatalf("expected Chmod to reject special permission bits mode %q", badMode)
+		}
+	}
+
+	if err := mgr.Chmod([]string{sample}, "0750", false, false); err != nil {
+		t.Fatalf("expected standard Chmod 0750 to succeed, got %v", err)
+	}
+	st, err := os.Stat(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0750 {
+		t.Fatalf("expected perm 0750, got %o", st.Mode().Perm())
 	}
 }

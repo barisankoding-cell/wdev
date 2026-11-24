@@ -6,6 +6,7 @@ set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
@@ -78,7 +79,13 @@ if command -v ufw >/dev/null 2>&1; then
     ufw allow 465/tcp comment 'SMTPS' >/dev/null 2>&1 || true
     ufw allow 587/tcp comment 'Submission' >/dev/null 2>&1 || true
     ufw allow 993/tcp comment 'IMAPS' >/dev/null 2>&1 || true
-    echo "    Port 3200, 80, 443, 53, 25, 465, 587, 993 dibuka di UFW."
+    ufw deny 8080/tcp comment 'Block direct Stalwart HTTP' >/dev/null 2>&1 || true
+    ufw deny 8081/tcp comment 'Block direct PDNS API' >/dev/null 2>&1 || true
+    echo "    Port 3200, 80, 443, 53, 25, 465, 587, 993 dibuka di UFW (8080/8081 diblokir)."
+  else
+    echo -e "${YELLOW}    [!] PERINGATAN KEAMANAN: UFW belum aktif!${NC}"
+    echo -e "${YELLOW}        Layanan lokal lain (seperti Stalwart Admin :8080 bila terpasang) dapat terekspos jika tidak ada Cloud Firewall.${NC}"
+    echo -e "${YELLOW}        Sangat disarankan mengaktifkan UFW (pastikan port SSH Anda diizinkan terlebih dahulu): ufw allow OpenSSH && ufw enable${NC}"
   fi
 fi
 

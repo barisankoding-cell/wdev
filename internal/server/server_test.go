@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -1380,14 +1381,24 @@ func TestPanelDomainBindingSSLAndBlockIP(t *testing.T) {
 		}
 	}
 
-	// 6. Akses HTTP biasa ke domain (tanpa X-Forwarded-Proto: https) di-redirect 308 ke HTTPS
+	// 6. Koneksi langsung ke port panel dari IP publik dengan header Host spoofed wajib ditolak 403,
+	//    sedangkan HTTP biasa melalui reverse proxy terpercaya (127.0.0.1, tanpa X-Forwarded-Proto) di-redirect 308 ke HTTPS
+	reqSpoofHost := httptest.NewRequest(http.MethodGet, "/files", nil)
+	reqSpoofHost.Host = "panel.appsone.id:3200"
+	reqSpoofHost.RemoteAddr = "103.171.85.72:54321"
+	recSpoofHost := httptest.NewRecorder()
+	handler.ServeHTTP(recSpoofHost, reqSpoofHost)
+	if recSpoofHost.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for untrusted direct peer spoofing panel domain Host, got %d body=%s", recSpoofHost.Code, recSpoofHost.Body.String())
+	}
+
 	reqHTTPDom := httptest.NewRequest(http.MethodGet, "/files", nil)
 	reqHTTPDom.Host = "panel.appsone.id:3200"
-	reqHTTPDom.RemoteAddr = "103.171.85.72:54321"
+	reqHTTPDom.RemoteAddr = "127.0.0.1:54321"
 	recHTTPDom := httptest.NewRecorder()
 	handler.ServeHTTP(recHTTPDom, reqHTTPDom)
 	if recHTTPDom.Code != http.StatusPermanentRedirect || recHTTPDom.Header().Get("Location") != "https://panel.appsone.id/files" {
-		t.Fatalf("expected 308 redirect to https://panel.appsone.id/files, got %d loc=%q", recHTTPDom.Code, recHTTPDom.Header().Get("Location"))
+		t.Fatalf("expected 308 redirect to https://panel.appsone.id/files via trusted proxy, got %d loc=%q", recHTTPDom.Code, recHTTPDom.Header().Get("Location"))
 	}
 
 	// 7. Akses lewat proxy HTTPS Nginx (peer 127.0.0.1 + X-Forwarded-Proto: https + Host: panel.appsone.id) diizinkan
@@ -1990,10 +2001,20 @@ func TestPanelDomainEdgeModeAndDirectSSLProxyFlow(t *testing.T) {
 		t.Fatalf("expected 200 OK with ssl_provider=edge (no 308 loop), got %d body=%s", recProxied.Code, recProxied.Body.String())
 	}
 
-	// 5. Plain HTTP without X-Forwarded-Proto: https still redirects 308 -> https://panel.nikaget.my.id
+	// 5. Direct untrusted peer spoofing Host header when block_direct_ip=true is rejected 403;
+	//    plain HTTP through trusted local proxy (127.0.0.1) without X-Forwarded-Proto still redirects 308 -> https://panel.nikaget.my.id
+	reqDirectSpoof := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqDirectSpoof.Host = "panel.nikaget.my.id"
+	reqDirectSpoof.RemoteAddr = "203.0.113.10:44444"
+	recDirectSpoof := httptest.NewRecorder()
+	plainHandler.ServeHTTP(recDirectSpoof, reqDirectSpoof)
+	if recDirectSpoof.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for untrusted direct peer when block_direct_ip=true, got %d body=%s", recDirectSpoof.Code, recDirectSpoof.Body.String())
+	}
+
 	reqPlain := httptest.NewRequest(http.MethodGet, "/", nil)
 	reqPlain.Host = "panel.nikaget.my.id"
-	reqPlain.RemoteAddr = "203.0.113.10:44444"
+	reqPlain.RemoteAddr = "127.0.0.1:44444"
 	recPlain := httptest.NewRecorder()
 	plainHandler.ServeHTTP(recPlain, reqPlain)
 	if recPlain.Code != http.StatusPermanentRedirect || recPlain.Header().Get("Location") != "https://panel.nikaget.my.id/" {
@@ -2270,5 +2291,145 @@ func TestApplyPDNSModeToStatsDoesNotOverwriteNetbirdIP(t *testing.T) {
 	}
 	if stats.NetbirdIP != "-" {
 		t.Fatalf("NetbirdIP = %q, want '-' (must not copy VPS PublicIP when NetBird is not installed)", stats.NetbirdIP)
+	}
+}
+
+func TestTerminalStepUpEnforcedInVPSMode(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "term-vps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: filepath.Join(tmp, "etc"), WebRootBase: tmp}
+	pdnsMgr := pdns.New(cfg, db)
+	_ = pdnsMgr.SetMode("vps")
+	authMgr := auth.New(cfg, db)
+	_ = authMgr.SetPassword("VpsStrong#2026")
+	srv := New(cfg, db, runner.New(db), nil, nil, nil, nil, pdnsMgr, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux))))
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	reqInfo := httptest.NewRequest(http.MethodGet, "/api/terminal/info", nil)
+	reqInfo.AddCookie(sessCookie)
+	recInfo := httptest.NewRecorder()
+	handler.ServeHTTP(recInfo, reqInfo)
+	if recInfo.Code != http.StatusOK || !strings.Contains(recInfo.Body.String(), `"step_up_always_required":true`) {
+		t.Fatalf("expected step_up_always_required=true in vps mode, got %d body=%s", recInfo.Code, recInfo.Body.String())
+	}
+
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+	tsURL, _ := url.Parse(ts.URL)
+	wsBase := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/terminal/ws?shell=" + url.QueryEscape("/bin/sh") + "&cwd=" + url.QueryEscape(tmp)
+
+	wsHeaders := http.Header{}
+	wsHeaders.Set("Cookie", sessCookie.String())
+	wsHeaders.Set("Origin", "http://"+tsURL.Host)
+	if cBad, respBad, dialErr := websocket.DefaultDialer.Dial(wsBase, wsHeaders); dialErr == nil {
+		_ = cBad.Close()
+		t.Fatal("expected terminal WS dial without step-up unlock in VPS mode to be rejected")
+	} else if respBad == nil || respBad.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 terminal_unlock_required in VPS mode, got resp=%+v err=%v", respBad, dialErr)
+	}
+
+	reqUnlock, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/terminal/unlock", strings.NewReader(`{"password":"VpsStrong#2026"}`))
+	reqUnlock.Header.Set("Origin", "http://"+tsURL.Host)
+	reqUnlock.AddCookie(sessCookie)
+	respUnlock, err := http.DefaultClient.Do(reqUnlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlockBody, _ := io.ReadAll(respUnlock.Body)
+	respUnlock.Body.Close()
+	var unlockRes struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(unlockBody, &unlockRes); err != nil || unlockRes.Token == "" {
+		t.Fatalf("expected valid terminal unlock token, code=%d body=%s", respUnlock.StatusCode, string(unlockBody))
+	}
+
+	connOK, _, err := websocket.DefaultDialer.Dial(wsBase+"&token="+url.QueryEscape(unlockRes.Token), wsHeaders)
+	if err != nil {
+		t.Fatalf("expected terminal WS dial with unlock token to succeed in VPS mode: %v", err)
+	}
+	_ = connOK.Close()
+}
+
+func TestSitesProxyRejectsReservedInternalPorts(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "sites-proxy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	etcDir := filepath.Join(tmp, "etc")
+	_ = os.MkdirAll(etcDir, 0755)
+	_ = os.WriteFile(filepath.Join(etcDir, "edge-dns.conf"), []byte("PDNS_PORT=\"8081\"\nAGENT_PORT=\"8082\"\nVPS_NETBIRD_IP=\"127.0.0.1\"\nAPI_KEY=\"k\"\n"), 0600)
+
+	cfg := &config.Config{
+		HTTPHost:         "127.0.0.1",
+		HTTPPort:         "3200",
+		WdevEtc:          etcDir,
+		NginxSitesAvail:  filepath.Join(tmp, "sites-available"),
+		NginxSitesEnable: filepath.Join(tmp, "sites-enabled"),
+		WebRootBase:      filepath.Join(tmp, "www"),
+	}
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	pdnsMgr := pdns.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), nil, siteMgr, nil, nil, pdnsMgr, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux))))
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	// Reserved ports must be rejected on POST /api/sites
+	for _, port := range []int{3200, 8081, 8082, 5432, 6379} {
+		req := httptest.NewRequest(http.MethodPost, "/api/sites", strings.NewReader(
+			fmt.Sprintf(`{"domain":"bad-%d.test","framework":"proxy","proxy_port":%d,"skip_hosts":true}`, port, port),
+		))
+		req.Host = "127.0.0.1:3200"
+		req.Header.Set("Origin", "http://127.0.0.1:3200")
+		req.AddCookie(sessCookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("POST /api/sites proxy_port=%d = %d, want 400 body=%s", port, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Legitimate app port works, but updating it later to reserved port 8081 must fail 400
+	reqOK := httptest.NewRequest(http.MethodPost, "/api/sites", strings.NewReader(
+		`{"domain":"app.example.test","framework":"proxy","proxy_port":4000,"skip_hosts":true}`,
+	))
+	reqOK.Host = "127.0.0.1:3200"
+	reqOK.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqOK.AddCookie(sessCookie)
+	recOK := httptest.NewRecorder()
+	handler.ServeHTTP(recOK, reqOK)
+	if recOK.Code != http.StatusOK {
+		t.Fatalf("POST /api/sites proxy_port=4000 = %d, body=%s", recOK.Code, recOK.Body.String())
+	}
+
+	reqUpdateBad := httptest.NewRequest(http.MethodPut, "/api/sites/app.example.test", strings.NewReader(`{"proxy_port":8081}`))
+	reqUpdateBad.Host = "127.0.0.1:3200"
+	reqUpdateBad.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqUpdateBad.AddCookie(sessCookie)
+	recUpdateBad := httptest.NewRecorder()
+	handler.ServeHTTP(recUpdateBad, reqUpdateBad)
+	if recUpdateBad.Code != http.StatusBadRequest {
+		t.Fatalf("PUT /api/sites/app.example.test proxy_port=8081 = %d, want 400 body=%s", recUpdateBad.Code, recUpdateBad.Body.String())
 	}
 }

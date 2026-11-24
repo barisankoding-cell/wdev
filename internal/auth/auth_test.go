@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -224,5 +225,54 @@ func TestClearInitialPassword(t *testing.T) {
 	}
 	if !mgr.ValidateCredentials("admin", initPass) {
 		t.Fatalf("expected password hash to remain valid after ClearInitialPassword")
+	}
+}
+
+func TestRateLimiterPreservesLockoutDuringIPFlood(t *testing.T) {
+	st, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	cfg := &config.Config{HTTPPort: "3200"}
+	mgr := New(cfg, st)
+
+	attackerIP := "198.51.100.77"
+	for i := 0; i < MaxFailedAttempts; i++ {
+		mgr.RecordLoginAttempt(attackerIP, false)
+	}
+	if allowed, _ := mgr.CheckRateLimit(attackerIP); allowed {
+		t.Fatalf("expected %s to be locked out before IP flood", attackerIP)
+	}
+
+	// Simulate an attacker rotating through > maxTrackedIPs distinct source IPs to trigger pruning.
+	for i := 0; i < maxTrackedIPs+200; i++ {
+		floodIP := fmt.Sprintf("203.0.%d.%d", (i/250)+1, (i%250)+1)
+		mgr.RecordLoginAttempt(floodIP, false)
+	}
+
+	allowed, remaining := mgr.CheckRateLimit(attackerIP)
+	if allowed || remaining <= 0 {
+		t.Fatalf("expected active lockout for %s to survive IP flood pruning (allowed=%v, remaining=%v)", attackerIP, allowed, remaining)
+	}
+}
+
+func TestIsTrustedProxyRequest(t *testing.T) {
+	for _, tc := range []struct {
+		remoteAddr string
+		want       bool
+	}{
+		{"127.0.0.1:45678", true},
+		{"[::1]:45678", true},
+		{"103.171.85.72:54321", false},
+		{"192.0.2.1:1234", false},
+		{"", false},
+	} {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = tc.remoteAddr
+		if got := IsTrustedProxyRequest(req); got != tc.want {
+			t.Fatalf("IsTrustedProxyRequest(%q) = %v, want %v", tc.remoteAddr, got, tc.want)
+		}
+	}
+	if IsTrustedProxyRequest(nil) {
+		t.Fatal("IsTrustedProxyRequest(nil) must return false")
 	}
 }

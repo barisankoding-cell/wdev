@@ -16,8 +16,19 @@ import (
 	"time"
 )
 
+var cgnatRange = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("100.64.0.0/10")
+	return n
+}()
+
 func isBlockedIP(ip net.IP) bool {
 	if ip == nil {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+	if cgnatRange != nil && cgnatRange.Contains(ip) {
 		return true
 	}
 	return ip.IsLoopback() ||

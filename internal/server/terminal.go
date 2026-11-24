@@ -198,9 +198,7 @@ func (s *Server) handleTerminalInfo(w http.ResponseWriter, r *http.Request) {
 	unlocked, exp := s.isRootTerminalUnlocked(r)
 	info.RootUnlocked = unlocked
 	info.RootUnlockExpiresAt = exp
-	if s.authMgr != nil {
-		info.StepUpAlwaysRequired = s.ensureTermSec().requireAll || (!s.authMgr.IsAuthEnabled() && os.Geteuid() == 0)
-	}
+	info.StepUpAlwaysRequired = s.requiresStepUpForAllTerminalUsers()
 	writeJSON(w, http.StatusOK, info)
 }
 
@@ -352,10 +350,20 @@ func parseQueryUint16(q url.Values, key string, fallback uint16) uint16 {
 	return uint16(v)
 }
 
+func (s *Server) requiresStepUpForAllTerminalUsers() bool {
+	if s.ensureTermSec().requireAll {
+		return true
+	}
+	if s.pdnsMgr != nil && strings.EqualFold(s.pdnsMgr.GetMode(), "vps") {
+		return true
+	}
+	return s.authMgr != nil && !s.authMgr.IsAuthEnabled() && os.Geteuid() == 0
+}
+
 func (s *Server) authorizeTerminalLaunch(r *http.Request, target terminal.TargetUser, token string) (bool, string) {
 	sec := s.ensureTermSec()
 	authEnabled := s.authMgr == nil || s.authMgr.IsAuthEnabled()
-	needStepUp := sec.requireAll || target.IsRoot || (!authEnabled && os.Geteuid() == 0)
+	needStepUp := s.requiresStepUpForAllTerminalUsers() || target.IsRoot
 	if !needStepUp {
 		return true, ""
 	}

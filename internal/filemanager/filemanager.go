@@ -910,8 +910,8 @@ func (m *Manager) Chmod(paths []string, modeStr string, recursive bool, webOwner
 		return fmt.Errorf("mode permission harus berupa 3 atau 4 digit oktal (mis. 755 atau 644)")
 	}
 	parsed, err := strconv.ParseUint(cleanMode, 8, 32)
-	if err != nil || parsed > 07777 {
-		return fmt.Errorf("mode permission oktal tidak valid: %q", modeStr)
+	if err != nil || parsed > 0777 {
+		return fmt.Errorf("mode permission oktal harus antara 000 dan 0777 (SUID/SGID/Sticky tidak diizinkan): %q", modeStr)
 	}
 	targetMode := os.FileMode(parsed)
 

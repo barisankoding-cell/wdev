@@ -66,8 +66,12 @@ func (s *Server) wrapPanelDomain(next http.Handler) http.Handler {
 
 		reqHost := extractRequestHost(r.Host)
 		isBoundMatch := strings.EqualFold(reqHost, boundDomain)
+		isTrustedProxy := auth.IsTrustedProxyRequest(r)
 
-		if !isBoundMatch && blockIP {
+		// Ketika block_direct_ip aktif, wajib lewat reverse proxy terpercaya (loopback Nginx /
+		// cloudflared / WDEV_TRUSTED_PROXIES) dengan Host sesuai boundDomain agar header Host
+		// palsu pada koneksi langsung ke :3200 tidak melewati kebijakan ini.
+		if blockIP && (!isBoundMatch || !isTrustedProxy) {
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				writeJSON(w, http.StatusForbidden, map[string]string{
 					"error": "Akses panel via IP atau host tidak terdaftar dinonaktifkan. Gunakan domain resmi panel.",

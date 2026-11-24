@@ -460,11 +460,29 @@ func (m *Manager) pruneAttemptsLocked(now time.Time) {
 		}
 	}
 	if len(m.attempts) >= maxTrackedIPs {
-		for k := range m.attempts {
-			delete(m.attempts, k)
-			if len(m.attempts) < maxTrackedIPs/2 {
+		// Evict unlocked/expired entries first so an IP flood cannot clear active lockouts.
+		for k, info := range m.attempts {
+			if info.lockedUntil.IsZero() || !now.Before(info.lockedUntil) {
+				delete(m.attempts, k)
+				if len(m.attempts) < maxTrackedIPs/2 {
+					return
+				}
+			}
+		}
+		// Only if active lockouts alone exhaust maxTrackedIPs, evict the soonest-to-expire entries.
+		for len(m.attempts) >= maxTrackedIPs {
+			var victimKey string
+			var earliestExp time.Time
+			for k, info := range m.attempts {
+				if victimKey == "" || info.lockedUntil.Before(earliestExp) {
+					victimKey = k
+					earliestExp = info.lockedUntil
+				}
+			}
+			if victimKey == "" {
 				break
 			}
+			delete(m.attempts, victimKey)
 		}
 	}
 }
@@ -737,6 +755,15 @@ func isTrustedProxy(peerIP string) bool {
 		}
 	}
 	return false
+}
+
+// IsTrustedProxyRequest mengembalikan true bila koneksi TCP langsung ke wdev
+// berasal dari loopback atau IP pada daftar WDEV_TRUSTED_PROXIES.
+func IsTrustedProxyRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return isTrustedProxy(remoteHost(r.RemoteAddr))
 }
 
 // ClientIP mengekstrak IP klien; header proxy (X-Forwarded-For / X-Real-IP) hanya

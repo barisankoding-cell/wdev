@@ -1047,6 +1047,11 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			req.SSLEnabled = false
 		}
 
+		if err := s.validateSiteProxyTarget(req.Framework, req.ProxyPort, ""); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
 		if err := s.siteMgr.CreateSite(req.CreateOptions); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1126,6 +1131,63 @@ func (s *Server) handleSiteGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, siteRec)
 }
 
+func isStalwartInstalled() bool {
+	for _, p := range []string{"/usr/local/bin/stalwart", "/etc/stalwart/config.json", "/etc/systemd/system/stalwart.service"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSiteProxyTarget mencegah eksposur port layanan internal (panel wdev, PowerDNS API,
+// Edge Agent, PostgreSQL, Redis, Stalwart Admin) lewat API Virtual Host proxy umum.
+func (s *Server) validateSiteProxyTarget(framework string, proxyPort int, existingDomain string) error {
+	if !strings.EqualFold(strings.TrimSpace(framework), "proxy") {
+		return nil
+	}
+	if proxyPort <= 0 || proxyPort > 65535 {
+		return fmt.Errorf("port proxy tidak valid: %d", proxyPort)
+	}
+	reserved := map[int]string{
+		5432: "PostgreSQL",
+		6379: "Redis",
+		8081: "PowerDNS API",
+		8082: "Edge Agent",
+	}
+	if s.pdnsMgr != nil {
+		conf := s.pdnsMgr.LoadConfig()
+		if p, err := strconv.Atoi(strings.TrimSpace(conf.PDNSPort)); err == nil && p > 0 {
+			reserved[p] = "PowerDNS API"
+		}
+		if p, err := strconv.Atoi(strings.TrimSpace(conf.AgentPort)); err == nil && p > 0 {
+			reserved[p] = "Edge Agent"
+		}
+	}
+	if isStalwartInstalled() {
+		reserved[8080] = "Stalwart Mail Admin"
+	}
+	panelPort := s.panelPortNumber()
+	if panelPort > 0 && proxyPort == panelPort {
+		allowBoundPanelUpdate := false
+		if existingDomain != "" && s.authMgr != nil {
+			boundDom := s.authMgr.GetPanelDomain()
+			if boundDom != "" && strings.EqualFold(existingDomain, boundDom) && s.siteMgr != nil {
+				if existing, ok := s.siteMgr.GetSite(existingDomain); ok && strings.EqualFold(existing.Framework, "proxy") && existing.ProxyPort == panelPort {
+					allowBoundPanelUpdate = true
+				}
+			}
+		}
+		if !allowBoundPanelUpdate {
+			return fmt.Errorf("port %d digunakan oleh panel wdev; gunakan pengaturan Domain Panel", proxyPort)
+		}
+	}
+	if svc, blocked := reserved[proxyPort]; blocked {
+		return fmt.Errorf("port proxy %d dicadangkan untuk layanan internal (%s) dan tidak dapat diekspos lewat Virtual Host", proxyPort, svc)
+	}
+	return nil
+}
+
 func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/sites/")), "."))
 	if domain == "" {
@@ -1150,6 +1212,23 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Domain = domain
+	effectiveFramework := req.Framework
+	effectivePort := req.ProxyPort
+	if s.siteMgr != nil {
+		if existing, ok := s.siteMgr.GetSite(domain); ok {
+			if strings.TrimSpace(effectiveFramework) == "" {
+				effectiveFramework = existing.Framework
+			}
+			if effectivePort == 0 && strings.EqualFold(effectiveFramework, "proxy") {
+				effectivePort = existing.ProxyPort
+			}
+		}
+	}
+	if err := s.validateSiteProxyTarget(effectiveFramework, effectivePort, domain); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := s.siteMgr.UpdateSite(domain, req.CreateOptions); err != nil {
 		if s.installer != nil && os.Geteuid() != 0 {
 			if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {

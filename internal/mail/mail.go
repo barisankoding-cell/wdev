@@ -782,6 +782,11 @@ server {
 	listen 80;
 	server_name mailadmin.%[1]s;
 
+	client_max_body_size 16M;
+	add_header X-Frame-Options "SAMEORIGIN" always;
+	add_header X-Content-Type-Options "nosniff" always;
+	add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
 	location / {
 		proxy_pass http://127.0.0.1:8080;
 		proxy_http_version 1.1;
@@ -933,6 +938,12 @@ server {
 
 	ssl_certificate %[3]s;
 	ssl_certificate_key %[4]s;
+
+	client_max_body_size 16M;
+	add_header Strict-Transport-Security "max-age=31536000" always;
+	add_header X-Frame-Options "SAMEORIGIN" always;
+	add_header X-Content-Type-Options "nosniff" always;
+	add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
 	location / {
 		proxy_pass http://127.0.0.1:8080;
@@ -1126,6 +1137,11 @@ func (m *Manager) ensureLocalMailFirewall() string {
 				default:
 					_ = runRoot("ufw", "allow", "from", "100.64.0.0/10", "to", "any", "port", fmt.Sprintf("%d", port), "proto", "tcp")
 				}
+			}
+			if mode == "vps" {
+				// Pastikan port admin internal Stalwart (8080) & API PDNS (8081) tetap terblokir dari antarmuka publik.
+				_ = runRoot("ufw", "deny", "8080/tcp")
+				_ = runRoot("ufw", "deny", "8081/tcp")
 			}
 			_ = runRoot("ufw", "reload")
 			switch mode {

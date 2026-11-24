@@ -48,6 +48,9 @@ func TestLocalMailVhostBlock(t *testing.T) {
 		"server_name webmail.example.com;",
 		"server_name mailadmin.example.com;",
 		"proxy_pass http://127.0.0.1:8080;",
+		`add_header X-Frame-Options "SAMEORIGIN" always;`,
+		`add_header X-Content-Type-Options "nosniff" always;`,
+		`add_header Referrer-Policy "strict-origin-when-cross-origin" always;`,
 		"server_name mail.example.com;",
 		"fastcgi_pass unix:/run/php/php8.4-fpm.sock;",
 	} {
@@ -103,5 +106,21 @@ func TestRelayDNSPlanLocalAndDefault(t *testing.T) {
 	unknownPlan := relayDNSPlan("unknown-provider", "example.com")
 	if len(unknownPlan) != 1 || !contains(unknownPlan[0], "SMTP Lokal") {
 		t.Fatalf("expected fallback local SMTP plan for unknown provider, got %v", unknownPlan)
+	}
+}
+
+func TestLocalMailSSLVhostBlockHardening(t *testing.T) {
+	block := localMailSSLVhostBlock("example.com", "/run/php/php8.4-fpm.sock", "/etc/ssl/cert.pem", "/etc/ssl/key.pem")
+	for _, want := range []string{
+		"server_name mailadmin.example.com;",
+		"proxy_pass http://127.0.0.1:8080;",
+		`add_header Strict-Transport-Security "max-age=31536000" always;`,
+		`add_header X-Frame-Options "SAMEORIGIN" always;`,
+		`add_header X-Content-Type-Options "nosniff" always;`,
+		`add_header Referrer-Policy "strict-origin-when-cross-origin" always;`,
+	} {
+		if !contains(block, want) {
+			t.Fatalf("ssl mail vhost tidak memuat %q:\n%s", want, block)
+		}
 	}
 }
