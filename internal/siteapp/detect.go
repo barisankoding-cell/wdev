@@ -39,6 +39,7 @@ type InspectResult struct {
 	RecommendedStart   string            `json:"recommended_start,omitempty"`
 	HasDotEnv          bool              `json:"has_dot_env"`
 	DotEnvVarCount     int               `json:"dot_env_var_count"`
+	ProjectEnvPath     string            `json:"project_env_path,omitempty"`
 	DetectedPortHint   int               `json:"detected_port_hint,omitempty"`
 	ToolchainInstalled bool              `json:"toolchain_installed"`
 	ToolchainBinary    string            `json:"toolchain_binary,omitempty"`
@@ -93,9 +94,11 @@ func inspectDirectoryPath(cleanDir string) (*InspectResult, error) {
 		WorkingDir: cleanDir,
 	}
 
-	if entries, _, dotErr := ReadEnvFile(filepath.Join(cleanDir, ".env")); dotErr == nil {
+	projectEnvPath := filepath.Join(cleanDir, ".env")
+	if entries, _, dotErr := ReadEnvFile(projectEnvPath); dotErr == nil {
 		res.HasDotEnv = true
 		res.DotEnvVarCount = len(entries)
+		res.ProjectEnvPath = projectEnvPath
 		for _, e := range entries {
 			if e.Key == "PORT" {
 				if p, pErr := strconv.Atoi(strings.TrimSpace(e.Value)); pErr == nil && p > 0 && p <= 65535 {

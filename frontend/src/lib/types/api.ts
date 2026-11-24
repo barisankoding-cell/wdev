@@ -93,6 +93,7 @@ export interface SiteAppConfig {
 	auto_start: boolean;
 	service_name: string;
 	env_file: string;
+	use_project_env?: boolean;
 	last_build_status?: string;
 	last_build_at?: string;
 	created_at: string;
@@ -128,6 +129,7 @@ export interface SiteAppInspectResult {
 	recommended_start?: string;
 	has_dot_env: boolean;
 	dot_env_var_count: number;
+	project_env_path?: string;
 	detected_port_hint?: number;
 	toolchain_installed: boolean;
 	toolchain_binary?: string;
@@ -160,6 +162,7 @@ export interface SiteAppInputConfig {
 	run_user?: string;
 	auto_start?: boolean;
 	run_build_now?: boolean;
+	use_project_env?: boolean;
 	import_project_env?: boolean;
 	initial_env_raw?: string;
 }

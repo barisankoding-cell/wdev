@@ -104,10 +104,10 @@ func RenderSystemdUnit(rec store.SiteAppRecord) string {
 	fmt.Fprintf(&b, "Type=simple\n")
 	fmt.Fprintf(&b, "User=%s\n", escapeSystemdValue(rec.RunUser))
 	fmt.Fprintf(&b, "WorkingDirectory=%s\n", escapeSystemdValue(rec.WorkingDir))
+	fmt.Fprintf(&b, "Environment=PORT=%d\n", rec.Port)
 	if strings.TrimSpace(rec.EnvFile) != "" {
 		fmt.Fprintf(&b, "EnvironmentFile=-%s\n", escapeSystemdValue(rec.EnvFile))
 	}
-	fmt.Fprintf(&b, "Environment=PORT=%d\n", rec.Port)
 	fmt.Fprintf(&b, "Environment=HOME=%s\n", escapeSystemdValue(homeDir))
 	fmt.Fprintf(&b, "Environment=PATH=%s\n", escapeSystemdValue(pathVal))
 	fmt.Fprintf(&b, "Environment=CARGO_HOME=/usr/local/cargo\n")

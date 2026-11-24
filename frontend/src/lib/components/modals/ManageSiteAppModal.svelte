@@ -52,6 +52,7 @@
 	let envLoading = $state(false);
 	let envSaving = $state(false);
 	let envFile = $state('');
+	let envIsProject = $state(false);
 	let envMode = $state<'pairs' | 'raw'>('pairs');
 	let envEntries = $state<SiteAppEnvEntry[]>([]);
 	let envRaw = $state('');
@@ -193,10 +194,12 @@
 				await api.verifySudo(sudoPass).catch(() => {});
 				const retryRes = await api.getSiteAppEnv(dom);
 				envFile = retryRes.env_file || app?.env_file || '';
+				envIsProject = retryRes.use_project_env ?? app?.use_project_env ?? false;
 				envEntries = retryRes.entries ? [...retryRes.entries] : [];
 				envRaw = retryRes.raw || '';
 			} else {
 				envFile = res.env_file || app?.env_file || '';
+				envIsProject = res.use_project_env ?? app?.use_project_env ?? false;
 				envEntries = res.entries ? [...res.entries] : [];
 				envRaw = res.raw || '';
 			}
@@ -234,12 +237,17 @@
 				(sudoPass) => api.saveSiteAppEnv({ ...payload, ...(sudoPass ? { sudo_pass: sudoPass } : {}) })
 			);
 			if (!res) return;
+			envFile = res.env_file || envFile;
 			envEntries = res.entries ? [...res.entries] : envEntries;
 			envRaw = res.raw ?? envRaw;
-			toast.success(
-				restart ? 'Environment .env disimpan dan service di-restart.' : 'Environment .env disimpan (0600).'
-			);
-			if (restart && onUpdated) await onUpdated();
+			if (res.port_synced) {
+				toast.success(`Environment .env disimpan & port VHost diselaraskan ke ${res.port_synced}.`);
+			} else {
+				toast.success(
+					restart ? 'Environment .env disimpan dan service di-restart.' : 'Environment .env disimpan (0600).'
+				);
+			}
+			if ((restart || res.port_synced) && onUpdated) await onUpdated();
 		} catch (err) {
 			envError = err instanceof Error ? err.message : 'Gagal menyimpan environment';
 		} finally {
@@ -320,36 +328,45 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="flex max-h-[92dvh] max-w-[calc(100vw-1.25rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
-		<Dialog.Header class="shrink-0 border-b px-5 pt-5 pb-3 pr-10">
-			<div class="flex flex-wrap items-center gap-2">
+	<Dialog.Content class="flex max-h-[92dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden p-0 sm:w-full sm:max-w-3xl">
+		<Dialog.Header class="shrink-0 border-b px-4 pt-4 pb-2.5 pr-10 sm:px-5 sm:pt-5 sm:pb-3">
+			<div class="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
 				<CpuIcon class="size-4 shrink-0 text-primary" />
-				<Dialog.Title class="truncate text-base sm:text-lg">{site?.domain || 'Managed App'}</Dialog.Title>
+				<Dialog.Title class="max-w-full truncate text-base sm:text-lg">{site?.domain || 'Managed App'}</Dialog.Title>
 				{#if runtimeLabel}
-					<Badge variant="secondary">{runtimeLabel}</Badge>
+					<Badge variant="secondary" class="text-[11px]">{runtimeLabel}</Badge>
 				{/if}
 				<StatusBadge tone={statusTone} label={statusText} />
 			</div>
-			<Dialog.Description class="truncate font-mono text-xs">
+			<Dialog.Description class="break-all font-mono text-[11px] sm:truncate sm:text-xs">
 				{app?.service_name ? `${app.service_name}.service` : ''}
 				{app?.port ? ` · 127.0.0.1:${app.port}` : ''}
 			</Dialog.Description>
 		</Dialog.Header>
 
-		<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
-			<Tabs.Root bind:value={activeTab} class="flex flex-col gap-4">
-				<Tabs.List class="grid w-full grid-cols-3">
-					<Tabs.Trigger value="overview" class="text-xs sm:text-sm">Kontrol &amp; Info</Tabs.Trigger>
-					<Tabs.Trigger value="env" class="text-xs sm:text-sm">Environment (.env)</Tabs.Trigger>
-					<Tabs.Trigger value="logs" class="text-xs sm:text-sm">Logs (journalctl)</Tabs.Trigger>
+		<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-5 sm:py-4">
+			<Tabs.Root bind:value={activeTab} class="flex min-w-0 flex-col gap-3.5 sm:gap-4">
+				<Tabs.List class="grid !h-auto w-full grid-cols-3 p-1">
+					<Tabs.Trigger value="overview" class="min-h-9 px-1.5 py-1.5 text-xs sm:min-h-8 sm:px-3 sm:text-sm">
+						<span class="sm:hidden">Kontrol</span>
+						<span class="hidden sm:inline">Kontrol &amp; Info</span>
+					</Tabs.Trigger>
+					<Tabs.Trigger value="env" class="min-h-9 px-1.5 py-1.5 text-xs sm:min-h-8 sm:px-3 sm:text-sm">
+						<span class="sm:hidden">.env</span>
+						<span class="hidden sm:inline">Environment (.env)</span>
+					</Tabs.Trigger>
+					<Tabs.Trigger value="logs" class="min-h-9 px-1.5 py-1.5 text-xs sm:min-h-8 sm:px-3 sm:text-sm">
+						<span class="sm:hidden">Logs</span>
+						<span class="hidden sm:inline">Logs (journalctl)</span>
+					</Tabs.Trigger>
 				</Tabs.List>
 
-				<Tabs.Content value="overview" class="flex flex-col gap-4">
+				<Tabs.Content value="overview" class="flex min-w-0 flex-col gap-3.5 sm:gap-4">
 					<div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
 						<Button
 							variant="outline"
 							size="sm"
-							class="min-h-10 sm:min-h-0"
+							class="min-h-10 min-w-0 px-2.5 text-xs sm:min-h-0 sm:text-sm"
 							disabled={actionPending !== null || status?.active_state === 'active'}
 							onclick={() => runAction('start')}
 						>
@@ -363,7 +380,7 @@
 						<Button
 							variant="outline"
 							size="sm"
-							class="min-h-10 sm:min-h-0"
+							class="min-h-10 min-w-0 px-2.5 text-xs sm:min-h-0 sm:text-sm"
 							disabled={actionPending !== null}
 							onclick={() => runAction('restart')}
 						>
@@ -377,7 +394,7 @@
 						<Button
 							variant="outline"
 							size="sm"
-							class="min-h-10 sm:min-h-0"
+							class="min-h-10 min-w-0 px-2.5 text-xs sm:min-h-0 sm:text-sm"
 							disabled={actionPending !== null || status?.active_state !== 'active'}
 							onclick={() => runAction('stop')}
 						>
@@ -391,7 +408,7 @@
 						<Button
 							variant="default"
 							size="sm"
-							class="min-h-10 sm:min-h-0"
+							class="min-h-10 min-w-0 px-2.5 text-xs sm:min-h-0 sm:text-sm"
 							disabled={actionPending !== null || !app?.build_command}
 							onclick={triggerBuild}
 						>
@@ -400,41 +417,41 @@
 							{:else}
 								<HammerIcon data-icon="inline-start" />
 							{/if}
-							Build &amp; Restart
+							<span class="truncate">Build &amp; Restart</span>
 						</Button>
 					</div>
 
-					<div class="grid gap-3 rounded-lg border bg-card p-3.5 sm:grid-cols-2">
-						<div class="flex flex-col gap-1">
+					<div class="grid min-w-0 gap-3 rounded-lg border bg-card p-3 sm:grid-cols-2 sm:p-3.5">
+						<div class="flex min-w-0 flex-col gap-1">
 							<span class="text-[11px] font-medium text-muted-foreground">Unit Systemd</span>
 							<code class="break-all font-mono text-xs text-foreground">{app?.service_name}.service</code>
 						</div>
-						<div class="flex flex-col gap-1">
+						<div class="flex min-w-0 flex-col gap-1">
 							<span class="text-[11px] font-medium text-muted-foreground">Target Reverse Proxy</span>
-							<code class="font-mono text-xs text-foreground">http://127.0.0.1:{app?.port || site?.proxy_port}</code>
+							<code class="break-all font-mono text-xs text-foreground">http://127.0.0.1:{app?.port || site?.proxy_port}</code>
 						</div>
-						<div class="flex flex-col gap-1 sm:col-span-2">
+						<div class="flex min-w-0 flex-col gap-1 sm:col-span-2">
 							<span class="text-[11px] font-medium text-muted-foreground">Working Directory</span>
-							<div class="flex items-center gap-1.5">
-								<FolderOpenIcon class="size-3.5 shrink-0 text-muted-foreground" />
-								<code class="break-all font-mono text-xs text-foreground">{app?.working_dir || site?.root_path}</code>
+							<div class="flex min-w-0 items-start gap-1.5">
+								<FolderOpenIcon class="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+								<code class="min-w-0 break-all font-mono text-xs text-foreground">{app?.working_dir || site?.root_path}</code>
 							</div>
 						</div>
 						{#if app?.build_command}
-							<div class="flex flex-col gap-1 sm:col-span-2">
+							<div class="flex min-w-0 flex-col gap-1 sm:col-span-2">
 								<span class="text-[11px] font-medium text-muted-foreground">Build Command</span>
 								<code class="break-all rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">{app.build_command}</code>
 							</div>
 						{/if}
-						<div class="flex flex-col gap-1 sm:col-span-2">
+						<div class="flex min-w-0 flex-col gap-1 sm:col-span-2">
 							<span class="text-[11px] font-medium text-muted-foreground">Start Command (ExecStart)</span>
 							<code class="break-all rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">{app?.start_command || '-'}</code>
 						</div>
-						<div class="flex flex-col gap-1">
+						<div class="flex min-w-0 flex-col gap-1">
 							<span class="text-[11px] font-medium text-muted-foreground">Run As User</span>
 							<span class="font-mono text-xs text-foreground">{app?.run_user || '-'}</span>
 						</div>
-						<div class="flex flex-col gap-1">
+						<div class="flex min-w-0 flex-col gap-1">
 							<span class="text-[11px] font-medium text-muted-foreground">PID &amp; Memori</span>
 							<span class="font-mono text-xs text-foreground">
 								{status?.main_pid ? `PID ${status.main_pid}` : 'Belum berjalan'} · {formatBytes(status?.memory_bytes)}
@@ -442,14 +459,15 @@
 						</div>
 					</div>
 
-					<div class="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3.5 sm:flex-row sm:items-center sm:justify-between">
-						<div class="flex flex-col gap-0.5">
-							<span class="text-sm font-medium">Auto-Start Saat Boot (`systemd enable`)</span>
-							<span class="text-xs text-muted-foreground">
+					<div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 p-3 sm:p-3.5">
+						<div class="flex min-w-0 flex-1 flex-col gap-0.5">
+							<span class="text-xs font-medium sm:text-sm">Auto-Start Saat Boot (<code>systemd enable</code>)</span>
+							<span class="text-[11px] text-muted-foreground sm:text-xs">
 								Otomatis menjalankan service aplikasi saat server dinyalakan ulang.
 							</span>
 						</div>
 						<Switch
+							class="shrink-0"
 							checked={status?.enabled ?? app?.auto_start ?? false}
 							disabled={actionPending !== null}
 							onCheckedChange={(checked) => runAction(checked ? 'enable' : 'disable')}
@@ -458,12 +476,16 @@
 					</div>
 				</Tabs.Content>
 
-				<Tabs.Content value="env" class="flex flex-col gap-4">
+				<Tabs.Content value="env" class="flex min-w-0 flex-col gap-3.5 sm:gap-4">
 					<Alert.Root>
 						<KeyRoundIcon />
-						<Alert.Title>File Environment Terkelola (0600)</Alert.Title>
-						<Alert.Description class="text-xs">
-							Disimpan di <code class="font-mono">{envFile || app?.env_file || '/etc/wdev/apps/...'}</code>. Variabel <code>PORT</code> selalu diselaraskan dengan port Nginx VHost (<code>{app?.port}</code>).
+						<Alert.Title>{envIsProject ? 'Menggunakan .env Proyek Langsung' : 'File Environment Terkelola wdev (0600)'}</Alert.Title>
+						<Alert.Description class="min-w-0 text-xs">
+							{#if envIsProject}
+								Membaca &amp; mengedit langsung <code class="font-mono break-all">{envFile || app?.env_file}</code> (aman saat VHost dihapus). Mengubah nilai <code>PORT</code> di sini otomatis menyelaraskan port reverse proxy Nginx.
+							{:else}
+								Disimpan di <code class="font-mono break-all">{envFile || app?.env_file || '/etc/wdev/apps/...'}</code>. Mengubah nilai <code>PORT</code> di sini juga menyelaraskan port Nginx VHost (<code>{app?.port}</code>).
+							{/if}
 						</Alert.Description>
 					</Alert.Root>
 
@@ -474,10 +496,11 @@
 					{/if}
 
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<div class="flex items-center gap-2">
+						<div class="flex items-center gap-1.5 sm:gap-2">
 							<Button
 								type="button"
 								size="xs"
+								class="h-8 px-2.5 sm:h-7"
 								variant={envMode === 'pairs' ? 'default' : 'outline'}
 								onclick={() => (envMode = 'pairs')}
 							>
@@ -486,6 +509,7 @@
 							<Button
 								type="button"
 								size="xs"
+								class="h-8 px-2.5 sm:h-7"
 								variant={envMode === 'raw' ? 'default' : 'outline'}
 								onclick={() => {
 									if (envEntries.length > 0 && !envRaw.trim()) {
@@ -497,7 +521,7 @@
 								Raw Text
 							</Button>
 						</div>
-						<Button type="button" size="xs" variant="outline" disabled={envLoading} onclick={() => loadEnv()}>
+						<Button type="button" size="xs" variant="outline" class="h-8 px-2.5 sm:h-7" disabled={envLoading} onclick={() => loadEnv()}>
 							<RefreshCwIcon data-icon="inline-start" />
 							Muat Ulang
 						</Button>
@@ -511,37 +535,39 @@
 					{:else if envMode === 'pairs'}
 						<Field.FieldGroup class="gap-2.5">
 							{#each envEntries as entry, idx (idx)}
-								<div class="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_auto] sm:items-center">
+								<div class="flex flex-col gap-2 rounded-lg border bg-muted/20 p-2.5 sm:grid sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_auto] sm:items-center sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
+									<div class="flex items-center gap-2 sm:contents">
+										<Input
+											class="h-10 min-w-0 flex-1 font-mono text-base sm:order-1 sm:h-9 sm:text-xs"
+											placeholder="KEY"
+											autocorrect="off"
+											autocapitalize="none"
+											spellcheck={false}
+											bind:value={entry.key}
+										/>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											class="size-10 shrink-0 text-muted-foreground hover:text-destructive sm:order-3 sm:size-9"
+											onclick={() => removeEnvRow(idx)}
+											aria-label="Hapus variabel"
+										>
+											<Trash2Icon />
+										</Button>
+									</div>
 									<Input
-										class="h-10 font-mono text-base sm:h-9 sm:text-xs"
-										placeholder="KEY"
-										autocorrect="off"
-										autocapitalize="none"
-										spellcheck={false}
-										bind:value={entry.key}
-									/>
-									<Input
-										class="h-10 font-mono text-base sm:h-9 sm:text-xs"
+										class="h-10 min-w-0 font-mono text-base sm:order-2 sm:h-9 sm:text-xs"
 										placeholder="value"
 										autocorrect="off"
 										autocapitalize="none"
 										spellcheck={false}
 										bind:value={entry.value}
 									/>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon"
-										class="justify-self-end text-muted-foreground hover:text-destructive"
-										onclick={() => removeEnvRow(idx)}
-										aria-label="Hapus variabel"
-									>
-										<Trash2Icon />
-									</Button>
 								</div>
 							{/each}
 							<div>
-								<Button type="button" size="xs" variant="outline" onclick={addEnvRow}>
+								<Button type="button" size="xs" variant="outline" class="h-8 px-3 sm:h-7" onclick={addEnvRow}>
 									<PlusIcon data-icon="inline-start" />
 									Tambah Variabel
 								</Button>
@@ -552,20 +578,20 @@
 							<Field.FieldLabel for="site-app-env-raw">Isi File .env</Field.FieldLabel>
 							<Textarea
 								id="site-app-env-raw"
-								rows={10}
-								class="font-mono text-xs"
+								rows={9}
+								class="font-mono text-base sm:text-xs"
 								placeholder="NODE_ENV=production&#10;DATABASE_URL=postgres://..."
 								bind:value={envRaw}
 							/>
 						</Field.Field>
 					{/if}
 
-					<div class="flex flex-col gap-2 sm:flex-row sm:justify-end">
-						<Button type="button" variant="outline" disabled={envSaving} onclick={() => saveEnv(false)}>
+					<div class="grid grid-cols-1 gap-2 sm:flex sm:flex-row sm:justify-end">
+						<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" disabled={envSaving} onclick={() => saveEnv(false)}>
 							<SaveIcon data-icon="inline-start" />
 							Simpan Saja
 						</Button>
-						<Button type="button" disabled={envSaving} onclick={() => saveEnv(true)}>
+						<Button type="button" class="min-h-10 sm:min-h-0" disabled={envSaving} onclick={() => saveEnv(true)}>
 							{#if envSaving}
 								<Spinner data-icon="inline-start" />
 								Menyimpan...
@@ -577,12 +603,13 @@
 					</div>
 				</Tabs.Content>
 
-				<Tabs.Content value="logs" class="flex flex-col gap-3">
+				<Tabs.Content value="logs" class="flex min-w-0 flex-col gap-3">
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<div class="flex items-center gap-2">
+						<div class="flex items-center gap-1.5 sm:gap-2">
 							<Button
 								type="button"
 								size="xs"
+								class="h-8 px-2.5 sm:h-7"
 								variant={logStreamLive ? 'default' : 'outline'}
 								onclick={() => (logStreamLive ? stopLogStream() : startLiveLogs())}
 							>
@@ -594,12 +621,12 @@
 									Live Stream
 								{/if}
 							</Button>
-							<Button type="button" size="xs" variant="outline" disabled={logsLoading} onclick={() => loadSnapshotLogs()}>
+							<Button type="button" size="xs" variant="outline" class="h-8 px-2.5 sm:h-7" disabled={logsLoading} onclick={() => loadSnapshotLogs()}>
 								<RefreshCwIcon data-icon="inline-start" />
 								Snapshot
 							</Button>
 						</div>
-						<Button type="button" size="xs" variant="outline" disabled={logLines.length === 0} onclick={copyAllLogs}>
+						<Button type="button" size="xs" variant="outline" class="h-8 px-2.5 sm:h-7" disabled={logLines.length === 0} onclick={copyAllLogs}>
 							{#if copiedLogs}
 								<CheckIcon data-icon="inline-start" />
 								Disalin
@@ -612,20 +639,21 @@
 
 					<pre
 						bind:this={logContainer}
-						class="h-[44dvh] sm:h-80 overflow-y-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/60 p-3 font-mono text-xs text-foreground"
+						class="h-[38dvh] min-h-44 overflow-y-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/60 p-3 font-mono text-[11px] leading-relaxed text-foreground sm:h-80 sm:text-xs"
 					>{#if logLines.length > 0}{logLines.join('\n')}{:else if logsLoading}Memuat log...{:else}Belum ada log journalctl untuk service ini.{/if}</pre>
 				</Tabs.Content>
 			</Tabs.Root>
 		</div>
 
-		<Separator />
-
-		<Dialog.Footer class="flex flex-col-reverse gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+		<Dialog.Footer class={site && onEditVhost
+			? 'mx-0 mb-0 grid shrink-0 grid-cols-2 gap-2 border-t bg-muted/20 px-4 py-2.5 sm:flex sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3'
+			: 'mx-0 mb-0 flex shrink-0 justify-end border-t bg-muted/20 px-4 py-2.5 sm:px-5 sm:py-3'}
+		>
 			{#if site && onEditVhost}
 				<Button
 					type="button"
 					variant="outline"
-					class="min-h-10 sm:min-h-0"
+					class="min-h-10 min-w-0 px-2.5 text-xs sm:min-h-0 sm:text-sm"
 					onclick={() => {
 						const target = site;
 						open = false;
@@ -633,7 +661,8 @@
 					}}
 				>
 					<PencilIcon data-icon="inline-start" />
-					Ubah Perintah / Port VHost
+					<span class="truncate sm:hidden">Edit VHost</span>
+					<span class="hidden sm:inline">Ubah Perintah / Port VHost</span>
 				</Button>
 			{/if}
 			<Button type="button" variant="secondary" class="min-h-10 sm:min-h-0" onclick={() => (open = false)}>

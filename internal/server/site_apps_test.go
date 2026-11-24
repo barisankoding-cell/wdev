@@ -234,3 +234,69 @@ func TestSiteAppAPICreateInspectUpdateSwitchAndDelete(t *testing.T) {
 		t.Fatalf("expected source files kept on disk after VHost delete: %v", err)
 	}
 }
+
+func TestProjectDotEnvAndPortAutoUsedAndSynced(t *testing.T) {
+	srv, cfg, db, _ := newTestSiteAppServer(t)
+
+	projDir := filepath.Join(cfg.WebRootBase, "express-app")
+	_ = os.MkdirAll(projDir, 0755)
+	_ = os.WriteFile(filepath.Join(projDir, "package.json"), []byte(`{"name":"express-app","scripts":{"start":"node index.js"}}`), 0644)
+	projEnv := filepath.Join(projDir, ".env")
+	_ = os.WriteFile(projEnv, []byte("# App Config\nPORT=4500\nSESSION_KEY=abc\n"), 0600)
+
+	// 1. Inspect -> suggested_port memakai 4500 dari .env
+	reqInspect := httptest.NewRequest(http.MethodPost, "/api/sites/inspect-dir", strings.NewReader(`{"path":"`+projDir+`"}`))
+	recInspect := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recInspect, reqInspect)
+	if recInspect.Code != http.StatusOK || !strings.Contains(recInspect.Body.String(), `"suggested_port":4500`) {
+		t.Fatalf("expected suggested_port=4500 from project .env, got (%d): %s", recInspect.Code, recInspect.Body.String())
+	}
+
+	// 2. Create tanpa mengirim proxy_port maupun use_project_env -> otomatis pakai .env proyek & port 4500!
+	reqCreate := httptest.NewRequest(http.MethodPost, "/api/sites", strings.NewReader(`{
+		"domain":"express.test",
+		"framework":"nodejs",
+		"root_path":"`+projDir+`",
+		"app_config":{"start_command":"pnpm run start"}
+	}`))
+	recCreate := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recCreate, reqCreate)
+	if recCreate.Code != http.StatusOK {
+		t.Fatalf("POST /api/sites failed (%d): %s", recCreate.Code, recCreate.Body.String())
+	}
+
+	appRec, err := db.GetSiteApp("express.test")
+	if err != nil || appRec == nil {
+		t.Fatalf("GetSiteApp failed: %+v err=%v", appRec, err)
+	}
+	if !appRec.UseProjectEnv || appRec.EnvFile != projEnv || appRec.Port != 4500 {
+		t.Fatalf("expected automatic project .env (%s) & port 4500, got %+v", projEnv, appRec)
+	}
+
+	// 3. Edit PORT melalui endpoint /api/sites/app/env -> Nginx VHost & DB ikut sinkron ke 4600!
+	reqEnvPut := httptest.NewRequest(http.MethodPut, "/api/sites/app/env", strings.NewReader(`{
+		"domain":"express.test",
+		"raw":"# App Config\nPORT=4600\nSESSION_KEY=abc\n",
+		"restart":true
+	}`))
+	recEnvPut := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recEnvPut, reqEnvPut)
+	if recEnvPut.Code != http.StatusOK || !strings.Contains(recEnvPut.Body.String(), `"port_synced":4600`) {
+		t.Fatalf("PUT /api/sites/app/env did not sync port 4600 (%d): %s", recEnvPut.Code, recEnvPut.Body.String())
+	}
+	siteRec, ok := srv.siteMgr.GetSite("express.test")
+	if !ok || siteRec.ProxyPort != 4600 {
+		t.Fatalf("expected Nginx VHost synced to port 4600, got ok=%v site=%+v", ok, siteRec)
+	}
+
+	// 4. Delete VHost -> unit terhapus, tetapi .env proyek tetap aman!
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/sites/express.test", nil)
+	recDel := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recDel, reqDel)
+	if recDel.Code != http.StatusOK {
+		t.Fatalf("DELETE failed (%d): %s", recDel.Code, recDel.Body.String())
+	}
+	if _, err := os.Stat(projEnv); err != nil {
+		t.Fatalf("expected project .env kept intact after delete: %v", err)
+	}
+}

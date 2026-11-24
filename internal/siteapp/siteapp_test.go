@@ -91,7 +91,7 @@ func TestInspectDirectoryDetectsNodeGoAndRust(t *testing.T) {
 	if nodeRes.RecommendedStart != "pnpm run start" || nodeRes.RecommendedBuild != "pnpm install && pnpm run build" {
 		t.Fatalf("unexpected node commands: build=%q start=%q", nodeRes.RecommendedBuild, nodeRes.RecommendedStart)
 	}
-	if !nodeRes.HasDotEnv || nodeRes.DotEnvVarCount != 2 || nodeRes.DetectedPortHint != 4100 {
+	if !nodeRes.HasDotEnv || nodeRes.DotEnvVarCount != 2 || nodeRes.DetectedPortHint != 4100 || nodeRes.ProjectEnvPath != filepath.Join(nodeDir, ".env") {
 		t.Fatalf("unexpected dotenv metadata: %+v", nodeRes)
 	}
 
@@ -365,5 +365,80 @@ func TestSuggestFreePortSkipsUsedAndListeningPorts(t *testing.T) {
 	}
 	if port == 3100 || port == 3101 || port == busyPort || port < DefaultPortMin {
 		t.Fatalf("unexpected suggested port: %d", port)
+	}
+}
+
+func TestUseProjectEnvDirectlyPreservesCommentsAndNeverDeletesOnRemove(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "proj-env.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	projectDir := filepath.Join(tmp, "node-direct-env")
+	_ = os.MkdirAll(projectDir, 0755)
+	projectEnvPath := filepath.Join(projectDir, ".env")
+	origEnv := "# Komentar Proyek\nPORT=4200\nAPI_KEY=\"secret-xyz\"\n"
+	if err := os.WriteFile(projectEnvPath, []byte(origEnv), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{WdevEtc: filepath.Join(tmp, "etc")}
+	mgr := New(cfg, db, nil)
+	mgr.SetSystemdDirForTest(filepath.Join(tmp, "systemd"))
+	mgr.SetAllowAnyDirForTest(true)
+	mock := &mockSysExec{}
+	mgr.SetExecForTest(mock)
+
+	ctx := context.Background()
+	saved, err := mgr.ProvisionOrSync(ctx, store.SiteAppRecord{
+		Domain:        "nodeenv.test",
+		Runtime:       RuntimeNodeJS,
+		WorkingDir:    projectDir,
+		StartCommand:  "pnpm run start",
+		Port:          4200,
+		RunUser:       "dietpi",
+		AutoStart:     true,
+		UseProjectEnv: true,
+	}, true, false, "")
+	if err != nil {
+		t.Fatalf("ProvisionOrSync(UseProjectEnv) failed: %v", err)
+	}
+	if !saved.UseProjectEnv || saved.EnvFile != projectEnvPath {
+		t.Fatalf("expected UseProjectEnv=true and EnvFile=%s, got %+v", projectEnvPath, saved)
+	}
+
+	unitBytes, err := os.ReadFile(mgr.UnitPath("nodeenv.test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unitBytes), "EnvironmentFile=-"+projectEnvPath) {
+		t.Fatalf("expected systemd unit pointing directly to %s:\n%s", projectEnvPath, string(unitBytes))
+	}
+
+	// File .env proyek tidak terhapus komentar atau format aslinya bila PORT sudah sama
+	afterProv, _ := os.ReadFile(projectEnvPath)
+	if string(afterProv) != origEnv {
+		t.Fatalf("expected project .env untouched when PORT matches, got:\n%s", string(afterProv))
+	}
+
+	// Edit VHost ke port 4300 -> hanya baris PORT yang berubah, komentar tetap utuh!
+	updated := saved
+	updated.Port = 4300
+	if _, err := mgr.UpdateAndSync(ctx, &saved, updated); err != nil {
+		t.Fatalf("UpdateAndSync failed: %v", err)
+	}
+	afterUpdate, _ := os.ReadFile(projectEnvPath)
+	if !strings.Contains(string(afterUpdate), "# Komentar Proyek") || !strings.Contains(string(afterUpdate), "PORT=4300") {
+		t.Fatalf("expected comments preserved & PORT updated to 4300, got:\n%s", string(afterUpdate))
+	}
+
+	// RemoveApp TIDAK boleh menghapus .env proyek milik user!
+	if err := mgr.RemoveApp(ctx, "nodeenv.test"); err != nil {
+		t.Fatalf("RemoveApp failed: %v", err)
+	}
+	if _, err := os.Stat(projectEnvPath); err != nil {
+		t.Fatalf("expected project .env NEVER deleted by RemoveApp, got err=%v", err)
 	}
 }

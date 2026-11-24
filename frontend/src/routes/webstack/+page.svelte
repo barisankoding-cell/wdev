@@ -953,11 +953,11 @@
 
 <!-- Modal Ekspos VHost ke VPS Edge Tunnel -->
 <Dialog.Root bind:open={exposeOpen}>
-	<Dialog.Content class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
+	<Dialog.Content class="max-h-[90dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain sm:w-full sm:max-w-md">
 		<Dialog.Header class="pr-8">
 			<Dialog.Title>Ekspos ke VPS Edge Gateway</Dialog.Title>
-			<Dialog.Description>
-				Memetakan vhost lokal <code class="font-mono">{exposeLocalDomain}</code> ke VPS Edge lewat NetBird Tunnel, menambah record DNS A (jika zone ada di PowerDNS), dan menerbitkan Let's Encrypt di VPS.
+			<Dialog.Description class="break-words">
+				Memetakan vhost lokal <code class="break-all font-mono">{exposeLocalDomain}</code> ke VPS Edge lewat NetBird Tunnel, menambah record DNS A (jika zone ada di PowerDNS), dan menerbitkan Let's Encrypt di VPS.
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -991,7 +991,7 @@
 				</Field.Field>
 			</Field.FieldGroup>
 
-			<Dialog.Footer>
+			<Dialog.Footer class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
 				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (exposeOpen = false)}>Batal</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={exposing}>
 					{#if exposing}
@@ -999,7 +999,7 @@
 						Mengekspos...
 					{:else}
 						<CloudUploadIcon data-icon="inline-start" />
-						Ekspos Sekarang
+						<span class="truncate">Ekspos Sekarang</span>
 					{/if}
 				</Button>
 			</Dialog.Footer>
@@ -1009,11 +1009,11 @@
 
 <!-- Modal Cabut Eksposur Tunnel -->
 <Dialog.Root bind:open={unexposeOpen}>
-	<Dialog.Content class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
+	<Dialog.Content class="max-h-[90dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain sm:w-full sm:max-w-md">
 		<Dialog.Header class="pr-8">
 			<Dialog.Title>Cabut Eksposur Tunnel</Dialog.Title>
-			<Dialog.Description>
-				Lepaskan reverse proxy VPS Edge untuk <strong class="font-mono">{unexposeTarget?.exposed_to}</strong>. Virtual host lokal <strong class="font-mono">{unexposeTarget?.domain}</strong> akan tetap dipertahankan.
+			<Dialog.Description class="break-words">
+				Lepaskan reverse proxy VPS Edge untuk <strong class="break-all font-mono">{unexposeTarget?.exposed_to}</strong>. Virtual host lokal <strong class="break-all font-mono">{unexposeTarget?.domain}</strong> akan tetap dipertahankan.
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -1026,27 +1026,27 @@
 			</Field.Field>
 		</div>
 
-		<Dialog.Footer>
+		<Dialog.Footer class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
 			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (unexposeOpen = false)}>Batal</Button>
 			<Button variant="destructive" class="min-h-10 sm:min-h-0" disabled={unexposing} onclick={confirmUnexpose}>
 				{#if unexposing}
 					<Spinner data-icon="inline-start" />
 					Mencabut...
 				{:else}
-					Cabut Eksposur
+					<span class="truncate">Cabut Eksposur</span>
 				{/if}
 			</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
 
-<!-- Modal Konfirmasi Hapus Situs (Mode Edge & VPS) -->
+<!-- Modal Konfirmasi Hapus Situs (Mode Edge & VPS & Managed App) -->
 <Dialog.Root bind:open={deleteOpen}>
-	<Dialog.Content class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
+	<Dialog.Content class="max-h-[90dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain sm:w-full sm:max-w-md">
 		<Dialog.Header class="pr-8">
 			<Dialog.Title>Hapus Virtual Host</Dialog.Title>
-			<Dialog.Description>
-				Hapus konfigurasi Nginx lokal dan data situs untuk <strong class="font-mono">{deleteTarget?.domain}</strong>. Berkas web di document root tetap aman.
+			<Dialog.Description class="break-words">
+				Hapus konfigurasi Nginx lokal dan data situs untuk <strong class="break-all font-mono">{deleteTarget?.domain}</strong>. Berkas web di document root tetap aman.
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -1055,8 +1055,8 @@
 				<Alert.Root>
 					<CpuIcon />
 					<Alert.Title>Pembersihan Service Systemd</Alert.Title>
-					<Alert.Description class="text-xs">
-						Unit <code class="font-mono">{deleteTarget.app?.service_name || `wdev-app-${deleteTarget.domain}`}.service</code> dan file environment terkelola akan dihentikan serta dihapus permanen. Folder proyek di <code class="font-mono break-all">{deleteTarget.root_path}</code> tetap aman di disk.
+					<Alert.Description class="min-w-0 text-xs">
+						Unit <code class="break-all font-mono">{deleteTarget.app?.service_name || `wdev-app-${deleteTarget.domain}`}.service</code> dan file env terkelola akan dihentikan serta dihapus permanen. Folder proyek dan <code>.env</code> proyek di <code class="font-mono break-all">{deleteTarget.root_path}</code> tetap aman di disk.
 					</Alert.Description>
 				</Alert.Root>
 			{/if}
@@ -1065,7 +1065,7 @@
 				<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
 					<Checkbox id="del-unexpose" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={deleteUnexpose} />
 					<Field.FieldLabel for="del-unexpose" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-						Cabut juga reverse proxy VPS Edge untuk <code class="font-mono">{deleteTarget.exposed_to}</code>
+						Cabut juga reverse proxy VPS Edge untuk <code class="break-all font-mono">{deleteTarget.exposed_to}</code>
 					</Field.FieldLabel>
 				</Field.Field>
 			{/if}
@@ -1080,7 +1080,7 @@
 			{/if}
 		</div>
 
-		<Dialog.Footer>
+		<Dialog.Footer class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
 			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (deleteOpen = false)}>Batal</Button>
 			<Button
 				variant="destructive"
@@ -1098,7 +1098,8 @@
 					Menghapus...
 				{:else}
 					<Trash2Icon data-icon="inline-start" />
-					Hapus Virtual Host
+					<span class="truncate sm:hidden">Hapus</span>
+					<span class="hidden sm:inline">Hapus Virtual Host</span>
 				{/if}
 			</Button>
 		</Dialog.Footer>

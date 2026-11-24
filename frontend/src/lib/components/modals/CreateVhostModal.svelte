@@ -82,7 +82,9 @@
 	let runUser = $state('');
 	let autoStart = $state(true);
 	let runBuildNow = $state(true);
-	let importProjectEnv = $state(true);
+	let useProjectEnv = $state(false);
+	let portTouched = $state(false);
+	let portConflictHint = $state('');
 	let inspectResult = $state<SiteAppInspectResult | null>(null);
 	let inspectLoading = $state(false);
 	let portSuggesting = $state(false);
@@ -239,11 +241,18 @@
 		const target = dirPath.trim();
 		if (!target) return;
 		inspectLoading = true;
+		portConflictHint = '';
 		try {
 			const res = await api.inspectSiteDir(target);
 			inspectResult = res.inspect;
-			if (!isEdit && res.suggested_port && (!proxyPortStr.trim() || proxyPortStr === '3000')) {
+			portConflictHint = res.port_conflict_hint || '';
+			if (!isEdit && res.suggested_port && (!portTouched || !proxyPortStr.trim() || proxyPortStr === '3000')) {
 				proxyPortStr = String(res.suggested_port);
+			}
+			if (res.inspect?.has_dot_env) {
+				useProjectEnv = true;
+			} else if (!isEdit) {
+				useProjectEnv = false;
 			}
 			if (applyDetected && res.inspect?.detected) {
 				if (res.inspect.runtime) {
@@ -255,7 +264,6 @@
 				if (res.inspect.recommended_start) {
 					startCommand = res.inspect.recommended_start;
 				}
-				importProjectEnv = Boolean(res.inspect.has_dot_env);
 				runBuildNow = Boolean(buildCommand.trim());
 			}
 		} catch (err) {
@@ -340,7 +348,9 @@
 					runUser = siteToEdit.app?.run_user || '';
 					autoStart = siteToEdit.app?.auto_start ?? true;
 					runBuildNow = false;
-					importProjectEnv = false;
+					useProjectEnv = Boolean(siteToEdit.app?.use_project_env);
+					portTouched = Boolean(siteToEdit.proxy_port);
+					portConflictHint = '';
 					inspectResult = null;
 					advancedAppOpen = Boolean(siteToEdit.app?.run_user);
 				} else {
@@ -364,7 +374,9 @@
 					runUser = '';
 					autoStart = true;
 					runBuildNow = true;
-					importProjectEnv = true;
+					useProjectEnv = false;
+					portTouched = false;
+					portConflictHint = '';
 					inspectResult = null;
 					advancedAppOpen = false;
 				}
@@ -466,7 +478,7 @@
 					...(runUser.trim() ? { run_user: runUser.trim() } : {}),
 					auto_start: autoStart,
 					run_build_now: runBuildNow && Boolean(buildCommand.trim()),
-					import_project_env: !isEdit && importProjectEnv
+					use_project_env: useProjectEnv
 				}
 			: undefined;
 
@@ -579,92 +591,101 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="flex max-h-[92dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-4 sm:max-w-[min(94vw,64rem)]">
-		<Dialog.Header>
-			<Dialog.Title class="flex items-center gap-2 pr-6">
+	<Dialog.Content class="flex max-h-[92dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden p-0 sm:w-full sm:max-w-[min(94vw,64rem)]">
+		<Dialog.Header class="shrink-0 border-b px-4 pt-4 pb-2.5 pr-10 sm:px-6 sm:pt-5 sm:pb-3">
+			<Dialog.Title class="flex min-w-0 items-center gap-2">
 				{#if isEdit}
 					<PencilIcon class="size-4 shrink-0 text-primary" />
-					<span class="truncate">Ubah Virtual Host</span>
+					<span class="truncate text-base sm:text-lg">Ubah Virtual Host</span>
 				{:else}
 					<GlobeIcon class="size-4 shrink-0 text-primary" />
-					<span class="truncate">Buat Virtual Host Baru</span>
+					<span class="truncate text-base sm:text-lg">Buat Virtual Host Baru</span>
 				{/if}
 			</Dialog.Title>
-			<Dialog.Description class="break-words font-mono text-xs">{metaSubtitle}</Dialog.Description>
+			<Dialog.Description class="line-clamp-2 break-all font-mono text-[11px] sm:line-clamp-none sm:text-xs">{metaSubtitle}</Dialog.Description>
 		</Dialog.Header>
 
-		<form onsubmit={handleSubmit} class="flex min-h-0 flex-1 flex-col gap-4">
-			<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-				<div class="flex flex-col gap-5">
+		<form onsubmit={handleSubmit} class="flex min-h-0 flex-1 flex-col overflow-hidden">
+			<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-6 sm:py-4">
+				<div class="flex min-w-0 flex-col gap-4 sm:gap-5">
 					{#if formError}
 						<Alert.Root variant="destructive" role="alert">
 							<AlertCircleIcon />
 							<Alert.Title>{isEdit ? 'Pembaruan Virtual Host Gagal' : 'Pembuatan Virtual Host Gagal'}</Alert.Title>
-							<Alert.Description>{formError}</Alert.Description>
+							<Alert.Description class="break-words">{formError}</Alert.Description>
 						</Alert.Root>
 					{/if}
 
-					<div class="flex flex-wrap items-center gap-2">
-						<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
-						<Button
-							type="button"
-							variant={activePreset === 'laravel' ? 'default' : 'outline'}
-							size="xs"
-							onclick={() => applyPreset('laravel')}
-						>
-							Laravel
-						</Button>
-						<Button
-							type="button"
-							variant={activePreset === 'wordpress' ? 'default' : 'outline'}
-							size="xs"
-							onclick={() => applyPreset('wordpress')}
-						>
-							WordPress
-						</Button>
-						<Button
-							type="button"
-							variant={activePreset === 'nodejs' ? 'default' : 'outline'}
-							size="xs"
-							onclick={() => applyPreset('nodejs')}
-						>
-							Node.js (systemd)
-						</Button>
-						<Button
-							type="button"
-							variant={activePreset === 'go' ? 'default' : 'outline'}
-							size="xs"
-							onclick={() => applyPreset('go')}
-						>
-							Go (systemd)
-						</Button>
-						<Button
-							type="button"
-							variant={activePreset === 'rust' ? 'default' : 'outline'}
-							size="xs"
-							onclick={() => applyPreset('rust')}
-						>
-							Rust (systemd)
-						</Button>
-						<Button
-							type="button"
-							variant={activePreset === 'proxy' ? 'default' : 'outline'}
-							size="xs"
-							onclick={() => applyPreset('proxy')}
-						>
-							Proxy Manual
-						</Button>
-						<Button
-							type="button"
-							variant={activePreset === 'static' ? 'default' : 'outline'}
-							size="xs"
-							onclick={() => applyPreset('static')}
-						>
-							Static HTML
-						</Button>
-						{#if activePreset === 'custom'}
-							<Badge variant="outline">Custom</Badge>
-						{/if}
+					<div class="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
+						<span class="shrink-0 text-xs font-medium text-muted-foreground">Preset Cepat:</span>
+						<div class="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
+							<Button
+								type="button"
+								class="shrink-0"
+								variant={activePreset === 'laravel' ? 'default' : 'outline'}
+								size="xs"
+								onclick={() => applyPreset('laravel')}
+							>
+								Laravel
+							</Button>
+							<Button
+								type="button"
+								class="shrink-0"
+								variant={activePreset === 'wordpress' ? 'default' : 'outline'}
+								size="xs"
+								onclick={() => applyPreset('wordpress')}
+							>
+								WordPress
+							</Button>
+							<Button
+								type="button"
+								class="shrink-0"
+								variant={activePreset === 'nodejs' ? 'default' : 'outline'}
+								size="xs"
+								onclick={() => applyPreset('nodejs')}
+							>
+								Node.js (systemd)
+							</Button>
+							<Button
+								type="button"
+								class="shrink-0"
+								variant={activePreset === 'go' ? 'default' : 'outline'}
+								size="xs"
+								onclick={() => applyPreset('go')}
+							>
+								Go (systemd)
+							</Button>
+							<Button
+								type="button"
+								class="shrink-0"
+								variant={activePreset === 'rust' ? 'default' : 'outline'}
+								size="xs"
+								onclick={() => applyPreset('rust')}
+							>
+								Rust (systemd)
+							</Button>
+							<Button
+								type="button"
+								class="shrink-0"
+								variant={activePreset === 'proxy' ? 'default' : 'outline'}
+								size="xs"
+								onclick={() => applyPreset('proxy')}
+							>
+								Proxy Manual
+							</Button>
+							<Button
+								type="button"
+								class="shrink-0"
+								variant={activePreset === 'static' ? 'default' : 'outline'}
+								size="xs"
+								onclick={() => applyPreset('static')}
+							>
+								Static HTML
+							</Button>
+							{#if activePreset === 'custom'}
+								<Badge variant="outline" class="shrink-0">Custom</Badge>
+							{/if}
+						</div>
 					</div>
 
 					<Field.FieldSet>
@@ -846,10 +867,10 @@
 
 					<Separator />
 
-					<Field.FieldSet>
+					<Field.FieldSet class="min-w-0">
 						<Field.FieldLegend variant="label">Runtime, Framework &amp; Target Aplikasi</Field.FieldLegend>
-						<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
-							<Field.Field>
+						<Field.FieldGroup class="grid min-w-0 gap-4 sm:grid-cols-2">
+							<Field.Field class="min-w-0">
 								<Field.FieldLabel for="site-framework">Framework / Pola Aplikasi</Field.FieldLabel>
 								<Select.Root
 									type="single"
@@ -900,7 +921,10 @@
 											enterkeyhint="done"
 											placeholder={isManagedApp ? '3100' : '3000'}
 											bind:value={proxyPortStr}
-											oninput={() => (formError = '')}
+											oninput={() => {
+												formError = '';
+												portTouched = true;
+											}}
 											required
 										/>
 										{#if isManagedApp}
@@ -911,7 +935,11 @@
 													size="xs"
 													class="h-7 px-2 text-xs"
 													disabled={portSuggesting}
-													onclick={() => fillSuggestedFreePort(true)}
+													onclick={() => {
+														portTouched = false;
+														portConflictHint = '';
+														void fillSuggestedFreePort(true);
+													}}
 												>
 													{#if portSuggesting}
 														<Spinner data-icon="inline-start" />
@@ -923,9 +951,17 @@
 										{/if}
 									</InputGroup.Root>
 									<Field.FieldDescription>
-										{isManagedApp
-											? 'Aplikasi dijalankan pada localhost port ini dan diteruskan Nginx (env PORT diatur otomatis).'
-											: 'Contoh: 3000 (Node/Vite), 8080 (Go/Docker), atau 3200 (Panel).'}
+										{#if portConflictHint}
+											<span class="font-medium text-warning">
+												{portConflictHint}; disarankan port {proxyPortStr}.
+											</span>
+										{:else if isManagedApp}
+											{inspectResult?.detected_port_hint
+												? `Diambil dari PORT=${inspectResult.detected_port_hint} di .env proyek dan diteruskan oleh Nginx.`
+												: 'Aplikasi dijalankan pada localhost port ini dan diteruskan Nginx (env PORT diselaraskan).'}
+										{:else}
+											Contoh: 3000 (Node/Vite), 8080 (Go/Docker), atau 3200 (Panel).
+										{/if}
 									</Field.FieldDescription>
 								</Field.Field>
 							{:else if !isStatic}
@@ -1127,8 +1163,8 @@
 									</Field.FieldDescription>
 								</Field.Field>
 
-								<Field.Field class="sm:col-span-2">
-									<Field.FieldLabel for="site-start-cmd">Start Command (`ExecStart`, Wajib)</Field.FieldLabel>
+								<Field.Field class="min-w-0 sm:col-span-2">
+									<Field.FieldLabel for="site-start-cmd">Start Command (<code>ExecStart</code>, Wajib)</Field.FieldLabel>
 									<Input
 										id="site-start-cmd"
 										name="start_command"
@@ -1149,18 +1185,18 @@
 									</Field.FieldDescription>
 								</Field.Field>
 
-								<div class="flex flex-col gap-3 rounded-lg border bg-muted/25 p-3 sm:col-span-2">
+								<div class="flex min-w-0 flex-col gap-3 rounded-lg border bg-muted/25 p-3 sm:col-span-2">
 									<div class="flex items-center justify-between gap-3">
-										<div class="flex flex-col gap-0.5">
+										<div class="flex min-w-0 flex-1 flex-col gap-0.5">
 											<span class="text-xs font-medium text-foreground">Auto-Start Saat Server Boot</span>
 											<span class="text-[11px] text-muted-foreground">Aktifkan <code>systemctl enable</code> untuk unit aplikasi ini.</span>
 										</div>
-										<Switch bind:checked={autoStart} aria-label="Auto-start saat boot" />
+										<Switch class="shrink-0" bind:checked={autoStart} aria-label="Auto-start saat boot" />
 									</div>
 
 									{#if buildCommand.trim()}
 										<div class="flex items-center justify-between gap-3 border-t pt-2.5">
-											<div class="flex flex-col gap-0.5">
+											<div class="flex min-w-0 flex-1 flex-col gap-0.5">
 												<span class="text-xs font-medium text-foreground">
 													{isEdit ? 'Rebuild & Restart Service Setelah Simpan' : 'Jalankan Build & Start Setelah VHost Dibuat'}
 												</span>
@@ -1168,21 +1204,27 @@
 													Membuka Live Terminal untuk memantau proses build hingga aplikasi menyala.
 												</span>
 											</div>
-											<Switch bind:checked={runBuildNow} aria-label="Jalankan build sekarang" />
+											<Switch class="shrink-0" bind:checked={runBuildNow} aria-label="Jalankan build sekarang" />
 										</div>
 									{/if}
 
-									{#if !isEdit && inspectResult?.has_dot_env}
-										<div class="flex items-center justify-between gap-3 border-t pt-2.5">
-											<div class="flex flex-col gap-0.5">
-												<span class="text-xs font-medium text-foreground">Impor File `.env` Proyek</span>
-												<span class="text-[11px] text-muted-foreground">
-													Salin {inspectResult.dot_env_var_count} variabel dari <code>.env</code> proyek ke file env terkelola <code>systemd</code> (<code>0600</code>).
-												</span>
-											</div>
-											<Switch bind:checked={importProjectEnv} aria-label="Impor .env proyek" />
+									<div class="flex items-center justify-between gap-3 border-t pt-2.5">
+										<div class="flex min-w-0 flex-1 flex-col gap-0.5">
+											<span class="text-xs font-medium text-foreground">
+												Gunakan File <code>.env</code> Proyek Langsung
+											</span>
+											<span class="text-[11px] break-words text-muted-foreground">
+												{#if useProjectEnv}
+													<code>systemd</code> memuat <code class="break-all">{rootPath.trim() ? `${rootPath.trim().replace(/\/+$/, '')}/.env` : '<folder>/.env'}</code> langsung (tidak terhapus saat VHost dihapus).
+												{:else if inspectResult?.has_dot_env}
+													File <code>.env</code> terdeteksi ({inspectResult.dot_env_var_count} var). Aktifkan agar memakai <code>.env</code> proyek langsung, atau matikan untuk memakai file terpisah di <code>/etc/wdev/apps/</code>.
+												{:else}
+													Aktifkan untuk memakai <code>.env</code> di folder proyek, atau biarkan nonaktif untuk memakai file terkelola <code>/etc/wdev/apps/</code> (<code>0600</code>).
+												{/if}
+											</span>
 										</div>
-									{/if}
+										<Switch class="shrink-0" bind:checked={useProjectEnv} aria-label="Gunakan .env proyek langsung" />
+									</div>
 								</div>
 
 								<Collapsible.Root bind:open={advancedAppOpen} class="sm:col-span-2">
@@ -1270,41 +1312,43 @@
 				</div>
 			</div>
 
-			<Separator />
-
-			<div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-				<p class="text-xs text-muted-foreground">
-					{#if effectiveDomain}
-						Konfigurasi Nginx akan diterapkan untuk <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{effectiveDomain}</code>.
-					{:else}
-						Lengkapi nama domain untuk membuat konfigurasi Virtual Host.
-					{/if}
-				</p>
-				<div class="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:items-center">
-					<Button
-						type="button"
-						variant="outline"
-						class="min-h-10 sm:min-h-0"
-						onclick={() => (open = false)}
-					>
-						Batal
-					</Button>
-					<Button
-						type="submit"
-						class="min-h-10 sm:min-h-0"
-						disabled={creating || (!isEdit && isEdge && domainChoices.length === 0)}
-					>
-						{#if creating}
-							<Spinner data-icon="inline-start" />
-							{isEdit ? 'Menyimpan...' : 'Membuat...'}
-						{:else if isEdit}
-							<SaveIcon data-icon="inline-start" />
-							Simpan Perubahan
+			<div class="shrink-0 border-t bg-muted/20 px-4 py-2.5 sm:px-6 sm:py-3">
+				<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+					<p class="hidden text-xs text-muted-foreground sm:block">
+						{#if effectiveDomain}
+							Konfigurasi Nginx akan diterapkan untuk <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{effectiveDomain}</code>.
 						{:else}
-							<PlusIcon data-icon="inline-start" />
-							Buat Virtual Host
+							Lengkapi nama domain untuk membuat konfigurasi Virtual Host.
 						{/if}
-					</Button>
+					</p>
+					<div class="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
+						<Button
+							type="button"
+							variant="outline"
+							class="min-h-10 sm:min-h-0"
+							onclick={() => (open = false)}
+						>
+							Batal
+						</Button>
+						<Button
+							type="submit"
+							class="min-h-10 px-2.5 text-xs sm:min-h-0 sm:px-4 sm:text-sm"
+							disabled={creating || (!isEdit && isEdge && domainChoices.length === 0)}
+						>
+							{#if creating}
+								<Spinner data-icon="inline-start" />
+								{isEdit ? 'Menyimpan...' : 'Membuat...'}
+							{:else if isEdit}
+								<SaveIcon data-icon="inline-start" />
+								<span class="truncate sm:hidden">Simpan</span>
+								<span class="hidden sm:inline">Simpan Perubahan</span>
+							{:else}
+								<PlusIcon data-icon="inline-start" />
+								<span class="truncate sm:hidden">Buat VHost</span>
+								<span class="hidden sm:inline">Buat Virtual Host</span>
+							{/if}
+						</Button>
+					</div>
 				</div>
 			</div>
 		</form>

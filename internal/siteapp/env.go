@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -137,4 +138,90 @@ func UpsertPortInEnvEntries(entries []EnvEntry, port int) []EnvEntry {
 		out = append([]EnvEntry{{Key: "PORT", Value: portStr}}, out...)
 	}
 	return out
+}
+
+// UpsertPortInRawEnv memperbarui nilai PORT di dalam isi teks .env yang sudah ada
+// sambil mempertahankan komentar, baris kosong, dan urutan baris lainnya.
+// Bila PORT belum ada di dalam raw atau sudah sama, (raw, false) dikembalikan apa adanya.
+func UpsertPortInRawEnv(raw string, port int) (string, bool) {
+	if port <= 0 {
+		return raw, false
+	}
+	portStr := fmt.Sprintf("%d", port)
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	changed := false
+	found := false
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		prefix := ""
+		rest := trimmed
+		if strings.HasPrefix(rest, "export ") {
+			prefix = "export "
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, "export "))
+		}
+		eq := strings.IndexByte(rest, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(rest[:eq])
+		if key != "PORT" {
+			continue
+		}
+		found = true
+		existingVal := strings.Trim(strings.TrimSpace(rest[eq+1:]), `"'`)
+		if existingVal != portStr {
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			lines[i] = indent + prefix + "PORT=" + portStr
+			changed = true
+		}
+	}
+	if !found || !changed {
+		return raw, false
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+// EnsurePortInRawEnv memastikan isi teks .env mengandung PORT=<port>, baik dengan memperbarui
+// baris PORT yang ada maupun menambahkannya bila belum ada, tanpa menghapus komentar.
+func EnsurePortInRawEnv(raw string, port int) string {
+	if port <= 0 {
+		return raw
+	}
+	if updated, changed := UpsertPortInRawEnv(raw, port); changed {
+		return updated
+	}
+	entries, err := ParseEnvContent(raw)
+	if err == nil {
+		for _, e := range entries {
+			if e.Key == "PORT" {
+				return raw
+			}
+		}
+	}
+	portLine := fmt.Sprintf("PORT=%d\n", port)
+	if strings.TrimSpace(raw) == "" {
+		return portLine
+	}
+	if !strings.HasSuffix(raw, "\n") {
+		return raw + "\n" + portLine
+	}
+	return raw + portLine
+}
+
+// FindEnvPort mengambil nilai integer PORT dari daftar EnvEntry jika valid.
+func FindEnvPort(entries []EnvEntry) int {
+	for _, e := range entries {
+		if strings.TrimSpace(e.Key) == "PORT" {
+			val := strings.TrimSpace(e.Value)
+			if p, err := strconv.Atoi(val); err == nil && p > 0 && p <= 65535 {
+				return p
+			}
+		}
+	}
+	return 0
 }

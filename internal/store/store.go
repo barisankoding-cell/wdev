@@ -119,6 +119,7 @@ type SiteAppRecord struct {
 	AutoStart       bool       `json:"auto_start"`
 	ServiceName     string     `json:"service_name"`
 	EnvFile         string     `json:"env_file"`
+	UseProjectEnv   bool       `json:"use_project_env"`
 	LastBuildStatus string     `json:"last_build_status,omitempty"`
 	LastBuildAt     *time.Time `json:"last_build_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
@@ -946,6 +947,8 @@ func scanSiteAppRow(scanner interface {
 		return nil, err
 	}
 	r.AutoStart = (autoInt == 1)
+	r.UseProjectEnv = r.EnvFile != "" && r.WorkingDir != "" &&
+		filepath.Clean(r.EnvFile) == filepath.Clean(filepath.Join(r.WorkingDir, ".env"))
 	r.LastBuildStatus = lastBuildStatus.String
 	if lastBuildAtStr.Valid && lastBuildAtStr.String != "" {
 		if t := scanStoreTime(lastBuildAtStr.String); !t.IsZero() {

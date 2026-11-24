@@ -1128,30 +1128,42 @@ func (s *Server) createSiteWithModeSync(req siteCreatePayload) (map[string]any, 
 	isManagedApp := store.IsManagedAppFramework(req.Framework)
 	var preparedAppRec store.SiteAppRecord
 	if isManagedApp {
-		if req.ProxyPort == 0 {
-			freePort, pErr := s.suggestFreeSitePort()
-			if pErr != nil {
-				return nil, http.StatusInternalServerError, pErr
-			}
-			req.ProxyPort = freePort
-		}
 		if req.AppConfig == nil {
 			return nil, http.StatusBadRequest, fmt.Errorf("konfigurasi app_config wajib diisi untuk Managed App")
+		}
+		appMgr := s.ensureSiteAppManager()
+		if req.ProxyPort == 0 {
+			if envPort := appMgr.DetectProjectEnvPort(req.RootPath); envPort > 0 && s.validateSiteProxyTarget(req.Framework, envPort, "") == nil {
+				req.ProxyPort = envPort
+			} else if freePort, pErr := s.suggestFreeSitePort(); pErr == nil {
+				req.ProxyPort = freePort
+			} else {
+				return nil, http.StatusInternalServerError, pErr
+			}
 		}
 		autoStart := true
 		if req.AppConfig.AutoStart != nil {
 			autoStart = *req.AppConfig.AutoStart
 		}
+		useProjectEnv := false
+		if req.AppConfig.UseProjectEnv != nil {
+			useProjectEnv = *req.AppConfig.UseProjectEnv
+		} else if projEnv := appMgr.ProjectEnvPath(req.RootPath); projEnv != "" {
+			if fi, err := os.Stat(projEnv); err == nil && !fi.IsDir() {
+				useProjectEnv = true
+			}
+		}
 		var vErr error
-		preparedAppRec, vErr = s.ensureSiteAppManager().NormalizeAndValidate(store.SiteAppRecord{
-			Domain:       cleanDom,
-			Runtime:      req.Framework,
-			WorkingDir:   req.RootPath,
-			BuildCommand: req.AppConfig.BuildCommand,
-			StartCommand: req.AppConfig.StartCommand,
-			Port:         req.ProxyPort,
-			RunUser:      req.AppConfig.RunUser,
-			AutoStart:    autoStart,
+		preparedAppRec, vErr = appMgr.NormalizeAndValidate(store.SiteAppRecord{
+			Domain:        cleanDom,
+			Runtime:       req.Framework,
+			WorkingDir:    req.RootPath,
+			BuildCommand:  req.AppConfig.BuildCommand,
+			StartCommand:  req.AppConfig.StartCommand,
+			Port:          req.ProxyPort,
+			RunUser:       req.AppConfig.RunUser,
+			AutoStart:     autoStart,
+			UseProjectEnv: useProjectEnv,
 		})
 		if vErr != nil {
 			return nil, http.StatusBadRequest, vErr
@@ -1359,7 +1371,14 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 		} else if hasPrevSite && prevSite.ProxyPort > 0 {
 			effectivePort = prevSite.ProxyPort
 		} else if store.IsManagedAppFramework(effectiveFramework) {
-			if freePort, pErr := s.suggestFreeSitePort(); pErr == nil {
+			appMgr := s.ensureSiteAppManager()
+			candidateDir := strings.TrimSpace(req.RootPath)
+			if candidateDir == "" && hasPrevSite {
+				candidateDir = prevSite.RootPath
+			}
+			if envPort := appMgr.DetectProjectEnvPort(candidateDir); envPort > 0 && s.validateSiteProxyTarget(effectiveFramework, envPort, domain) == nil {
+				effectivePort = envPort
+			} else if freePort, pErr := s.suggestFreeSitePort(); pErr == nil {
 				effectivePort = freePort
 			}
 		}
@@ -1387,11 +1406,18 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 		startCmd := ""
 		runUser := ""
 		autoStart := true
+		useProjectEnv := false
+		appMgr := s.ensureSiteAppManager()
 		if prevApp != nil {
 			buildCmd = prevApp.BuildCommand
 			startCmd = prevApp.StartCommand
 			runUser = prevApp.RunUser
 			autoStart = prevApp.AutoStart
+			useProjectEnv = prevApp.UseProjectEnv
+		} else if projEnv := appMgr.ProjectEnvPath(workingDir); projEnv != "" {
+			if fi, err := os.Stat(projEnv); err == nil && !fi.IsDir() {
+				useProjectEnv = true
+			}
 		}
 		if req.AppConfig != nil {
 			buildCmd = req.AppConfig.BuildCommand
@@ -1404,22 +1430,25 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 			if req.AppConfig.AutoStart != nil {
 				autoStart = *req.AppConfig.AutoStart
 			}
+			if req.AppConfig.UseProjectEnv != nil {
+				useProjectEnv = *req.AppConfig.UseProjectEnv
+			}
 			if req.AppConfig.RunBuildNow != nil {
 				runBuildAfter = *req.AppConfig.RunBuildNow && strings.TrimSpace(buildCmd) != ""
 			}
 		}
 
-		appMgr := s.ensureSiteAppManager()
 		var vErr error
 		nextAppRec, vErr = appMgr.NormalizeAndValidate(store.SiteAppRecord{
-			Domain:       domain,
-			Runtime:      effectiveFramework,
-			WorkingDir:   workingDir,
-			BuildCommand: buildCmd,
-			StartCommand: startCmd,
-			Port:         effectivePort,
-			RunUser:      runUser,
-			AutoStart:    autoStart,
+			Domain:        domain,
+			Runtime:       effectiveFramework,
+			WorkingDir:    workingDir,
+			BuildCommand:  buildCmd,
+			StartCommand:  startCmd,
+			Port:          effectivePort,
+			RunUser:       runUser,
+			AutoStart:     autoStart,
+			UseProjectEnv: useProjectEnv,
 		})
 		if vErr != nil {
 			writeError(w, http.StatusBadRequest, vErr.Error())

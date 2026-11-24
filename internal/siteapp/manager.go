@@ -93,6 +93,37 @@ func (m *Manager) EnvPath(domain string) string {
 	return filepath.Join(m.EnvDir(), ServiceNameForDomain(domain)+".env")
 }
 
+// ProjectEnvPath mengembalikan path file .env langsung di dalam folder proyek.
+func (m *Manager) ProjectEnvPath(workingDir string) string {
+	clean := strings.TrimSpace(workingDir)
+	if clean == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Clean(clean), ".env")
+}
+
+// IsManagedEnvPath melaporkan apakah envPath berada di direktori .env terkelola wdev (/etc/wdev/apps)
+// dan bukan file .env milik proyek pengguna.
+func (m *Manager) IsManagedEnvPath(envPath string) bool {
+	if strings.TrimSpace(envPath) == "" {
+		return false
+	}
+	return filepath.Clean(filepath.Dir(envPath)) == filepath.Clean(m.EnvDir())
+}
+
+// DetectProjectEnvPort membaca nilai PORT dari <workingDir>/.env jika ada dan valid.
+func (m *Manager) DetectProjectEnvPort(workingDir string) int {
+	pEnv := m.ProjectEnvPath(workingDir)
+	if pEnv == "" {
+		return 0
+	}
+	entries, _, err := ReadEnvFile(pEnv)
+	if err != nil {
+		return 0
+	}
+	return FindEnvPort(entries)
+}
+
 // SetSystemdDirForTest mengganti direktori unit systemd untuk isolasi unit test.
 func (m *Manager) SetSystemdDirForTest(dir string) {
 	m.systemdDir = dir
@@ -187,13 +218,68 @@ func (m *Manager) NormalizeAndValidate(rec store.SiteAppRecord) (store.SiteAppRe
 	}
 	rec.RunUser = runUser
 	rec.ServiceName = ServiceNameForDomain(domain)
-	rec.EnvFile = m.EnvPath(domain)
+	useProjectEnv := rec.UseProjectEnv
+	if !useProjectEnv && rec.EnvFile != "" && filepath.Clean(rec.EnvFile) == filepath.Clean(filepath.Join(cleanDir, ".env")) {
+		useProjectEnv = true
+	}
+	rec.UseProjectEnv = useProjectEnv
+	if useProjectEnv {
+		rec.EnvFile = filepath.Join(cleanDir, ".env")
+	} else {
+		rec.EnvFile = m.EnvPath(domain)
+	}
 	return rec, nil
 }
 
-// ProvisionOrSync menulis file .env (0600), file unit systemd, melakukan daemon-reload,
-// serta mengelola status enable/start unit. Bila initialEnvEntries != nil atau env terkelola
-// belum ada dan importProjectEnv == true, nilai akan ditulis ke env file sambil menyinkronkan PORT.
+func (m *Manager) syncEnvFile(
+	ctx context.Context,
+	norm store.SiteAppRecord,
+	importProjectEnv bool,
+	initialEnvRaw string,
+) error {
+	if norm.UseProjectEnv {
+		// Pakai file .env proyek langsung tanpa mengubah permission WorkingDir.
+		if strings.TrimSpace(initialEnvRaw) != "" {
+			if _, err := ParseEnvContent(initialEnvRaw); err != nil {
+				return fmt.Errorf("isi .env tidak valid: %w", err)
+			}
+			content := EnsurePortInRawEnv(initialEnvRaw, norm.Port)
+			return m.exec.WriteFile(ctx, norm.EnvFile, []byte(content), 0600, norm.RunUser)
+		}
+		existingBytes, readErr := m.exec.ReadFile(ctx, norm.EnvFile)
+		if readErr == nil {
+			updatedRaw, changed := UpsertPortInRawEnv(string(existingBytes), norm.Port)
+			if !changed {
+				return nil
+			}
+			return m.exec.WriteFile(ctx, norm.EnvFile, []byte(updatedRaw), 0600, norm.RunUser)
+		}
+		if os.IsNotExist(readErr) {
+			content := fmt.Sprintf("PORT=%d\n", norm.Port)
+			return m.exec.WriteFile(ctx, norm.EnvFile, []byte(content), 0600, norm.RunUser)
+		}
+		return fmt.Errorf("gagal membaca .env proyek %s: %w", norm.EnvFile, readErr)
+	}
+
+	envEntries, err := m.prepareEnvEntries(ctx, norm, importProjectEnv, initialEnvRaw)
+	if err != nil {
+		return err
+	}
+	envContent, err := SerializeEnvEntries(envEntries)
+	if err != nil {
+		return err
+	}
+	if err := m.exec.EnsureDir(ctx, filepath.Dir(norm.EnvFile), 0711, "root"); err != nil {
+		return fmt.Errorf("gagal menyiapkan direktori env %s: %w", filepath.Dir(norm.EnvFile), err)
+	}
+	if err := m.exec.WriteFile(ctx, norm.EnvFile, []byte(envContent), 0600, norm.RunUser); err != nil {
+		return fmt.Errorf("gagal menulis file env %s: %w", norm.EnvFile, err)
+	}
+	return nil
+}
+
+// ProvisionOrSync menulis file .env (atau menautkan .env proyek), file unit systemd,
+// melakukan daemon-reload, serta mengelola status enable/start unit.
 func (m *Manager) ProvisionOrSync(
 	ctx context.Context,
 	rec store.SiteAppRecord,
@@ -210,20 +296,8 @@ func (m *Manager) ProvisionOrSync(
 		return norm, err
 	}
 
-	envEntries, err := m.prepareEnvEntries(ctx, norm, importProjectEnv, initialEnvRaw)
-	if err != nil {
+	if err := m.syncEnvFile(ctx, norm, importProjectEnv, initialEnvRaw); err != nil {
 		return norm, err
-	}
-	envContent, err := SerializeEnvEntries(envEntries)
-	if err != nil {
-		return norm, err
-	}
-
-	if err := m.exec.EnsureDir(ctx, filepath.Dir(norm.EnvFile), 0711, "root"); err != nil {
-		return norm, fmt.Errorf("gagal menyiapkan direktori env %s: %w", filepath.Dir(norm.EnvFile), err)
-	}
-	if err := m.exec.WriteFile(ctx, norm.EnvFile, []byte(envContent), 0600, norm.RunUser); err != nil {
-		return norm, fmt.Errorf("gagal menulis file env %s: %w", norm.EnvFile, err)
 	}
 
 	unitContent := RenderSystemdUnit(norm)
@@ -278,21 +352,10 @@ func (m *Manager) UpdateAndSync(ctx context.Context, prev *store.SiteAppRecord, 
 		prev.StartCommand != norm.StartCommand ||
 		prev.Port != norm.Port ||
 		prev.RunUser != norm.RunUser ||
-		prev.Runtime != norm.Runtime
+		prev.Runtime != norm.Runtime ||
+		filepath.Clean(prev.EnvFile) != filepath.Clean(norm.EnvFile)
 
-	// Selalu perbarui PORT pada file env terkelola tanpa menghapus key lain.
-	envEntries, err := m.prepareEnvEntries(ctx, norm, false, "")
-	if err != nil {
-		return norm, err
-	}
-	envContent, err := SerializeEnvEntries(envEntries)
-	if err != nil {
-		return norm, err
-	}
-	if err := m.exec.EnsureDir(ctx, filepath.Dir(norm.EnvFile), 0711, "root"); err != nil {
-		return norm, err
-	}
-	if err := m.exec.WriteFile(ctx, norm.EnvFile, []byte(envContent), 0600, norm.RunUser); err != nil {
+	if err := m.syncEnvFile(ctx, norm, false, ""); err != nil {
 		return norm, err
 	}
 
@@ -363,12 +426,13 @@ func (m *Manager) RemoveApp(ctx context.Context, domain string) error {
 	if errors.Is(uErr, serviceconfig.ErrSudoRequired) {
 		return uErr
 	}
-	envExists, eErr := m.exec.FileExists(ctx, envPath)
-	if errors.Is(eErr, serviceconfig.ErrSudoRequired) {
-		return eErr
+	managedEnvPath := m.EnvPath(cleanDom)
+	managedEnvExists, meErr := m.exec.FileExists(ctx, managedEnvPath)
+	if errors.Is(meErr, serviceconfig.ErrSudoRequired) {
+		return meErr
 	}
 
-	if rec == nil && !unitExists && !envExists {
+	if rec == nil && !unitExists && !managedEnvExists {
 		return nil
 	}
 
@@ -389,9 +453,17 @@ func (m *Manager) RemoveApp(ctx context.Context, domain string) error {
 		_, _ = m.exec.Run(ctx, "systemctl", "reset-failed", unitName)
 	}
 
-	if envExists {
-		if err := m.exec.RemoveFile(ctx, envPath); err != nil {
-			return fmt.Errorf("gagal menghapus file env %s: %w", envPath, err)
+	// Hanya hapus file env terkelola (/etc/wdev/apps/...), JANGAN pernah hapus .env milik proyek pengguna!
+	if m.IsManagedEnvPath(envPath) {
+		if envExists, _ := m.exec.FileExists(ctx, envPath); envExists {
+			if err := m.exec.RemoveFile(ctx, envPath); err != nil {
+				return fmt.Errorf("gagal menghapus file env %s: %w", envPath, err)
+			}
+		}
+	}
+	if managedEnvExists && filepath.Clean(managedEnvPath) != filepath.Clean(envPath) {
+		if err := m.exec.RemoveFile(ctx, managedEnvPath); err != nil {
+			return fmt.Errorf("gagal menghapus file env terkelola %s: %w", managedEnvPath, err)
 		}
 	}
 
@@ -515,18 +587,18 @@ func (m *Manager) BatchStatus(ctx context.Context, domains []string) map[string]
 	return out
 }
 
-// GetEnv membaca variabel env terkelola milik domain dari /etc/wdev/apps/<slug>.env.
-func (m *Manager) GetEnv(ctx context.Context, domain string) ([]EnvEntry, string, error) {
+// GetEnv membaca variabel env aplikasi dari file .env aktif (proyek atau terkelola /etc/wdev/apps).
+func (m *Manager) GetEnv(ctx context.Context, domain string) (string, []EnvEntry, string, error) {
 	if m.store == nil {
-		return nil, "", fmt.Errorf("store tidak tersedia")
+		return "", nil, "", fmt.Errorf("store tidak tersedia")
 	}
 	cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(domain), "."), ".conf"))
 	rec, err := m.store.GetSiteApp(cleanDom)
 	if err != nil {
-		return nil, "", err
+		return "", nil, "", err
 	}
 	if rec == nil {
-		return nil, "", fmt.Errorf("aplikasi terkelola %s tidak ditemukan", cleanDom)
+		return "", nil, "", fmt.Errorf("aplikasi terkelola %s tidak ditemukan", cleanDom)
 	}
 
 	envPath := rec.EnvFile
@@ -536,67 +608,97 @@ func (m *Manager) GetEnv(ctx context.Context, domain string) ([]EnvEntry, string
 	data, readErr := m.exec.ReadFile(ctx, envPath)
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			return UpsertPortInEnvEntries(nil, rec.Port), fmt.Sprintf("PORT=%d\n", rec.Port), nil
+			return envPath, UpsertPortInEnvEntries(nil, rec.Port), fmt.Sprintf("PORT=%d\n", rec.Port), nil
 		}
-		return nil, "", readErr
+		return envPath, nil, "", readErr
 	}
 	raw := string(data)
 	entries, parseErr := ParseEnvContent(raw)
 	if parseErr != nil {
-		return nil, raw, parseErr
+		return envPath, nil, raw, parseErr
 	}
-	return entries, raw, nil
+	return envPath, entries, raw, nil
 }
 
-// SaveEnv menyimpan file .env terkelola aplikasi (0600) dan opsional me-restart service.
-func (m *Manager) SaveEnv(ctx context.Context, domain string, entries []EnvEntry, raw string, restart bool) ([]EnvEntry, string, error) {
+// SaveEnvResult berisi hasil penyimpanan file .env aplikasi beserta PORT yang terdeteksi.
+type SaveEnvResult struct {
+	EnvFile      string     `json:"env_file"`
+	Entries      []EnvEntry `json:"entries"`
+	Raw          string     `json:"raw"`
+	ResolvedPort int        `json:"resolved_port,omitempty"`
+}
+
+// SaveEnv menyimpan file .env aktif aplikasi (.env proyek atau terkelola) dengan izin 0600
+// sambil mempertahankan komentar jika menggunakan mode Raw Text, lalu opsional me-restart service.
+func (m *Manager) SaveEnv(ctx context.Context, domain string, entries []EnvEntry, raw string, restart bool) (*SaveEnvResult, error) {
 	if m.store == nil {
-		return nil, "", fmt.Errorf("store tidak tersedia")
+		return nil, fmt.Errorf("store tidak tersedia")
 	}
 	cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(domain), "."), ".conf"))
 	rec, err := m.store.GetSiteApp(cleanDom)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if rec == nil {
-		return nil, "", fmt.Errorf("aplikasi terkelola %s tidak ditemukan", cleanDom)
+		return nil, fmt.Errorf("aplikasi terkelola %s tidak ditemukan", cleanDom)
 	}
 
-	parsed := entries
-	if len(parsed) == 0 && strings.TrimSpace(raw) != "" {
+	var parsed []EnvEntry
+	var finalContent string
+
+	if strings.TrimSpace(raw) != "" && len(entries) == 0 {
 		parsed, err = ParseEnvContent(raw)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
-	}
-	parsed = UpsertPortInEnvEntries(parsed, rec.Port)
-	serialized, err := SerializeEnvEntries(parsed)
-	if err != nil {
-		return nil, "", err
+		finalContent = strings.ReplaceAll(raw, "\r\n", "\n")
+		if !strings.HasSuffix(finalContent, "\n") {
+			finalContent += "\n"
+		}
+		if !rec.UseProjectEnv && FindEnvPort(parsed) == 0 {
+			finalContent = EnsurePortInRawEnv(finalContent, rec.Port)
+			parsed, _ = ParseEnvContent(finalContent)
+		}
+	} else {
+		parsed = entries
+		if !rec.UseProjectEnv || FindEnvPort(parsed) == 0 {
+			parsed = UpsertPortInEnvEntries(parsed, rec.Port)
+		}
+		finalContent, err = SerializeEnvEntries(parsed)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if err := m.ensurePrivilegeReady(ctx); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	envPath := rec.EnvFile
 	if envPath == "" {
 		envPath = m.EnvPath(cleanDom)
 	}
-	if err := m.exec.EnsureDir(ctx, filepath.Dir(envPath), 0711, "root"); err != nil {
-		return nil, "", err
+	if m.IsManagedEnvPath(envPath) {
+		if err := m.exec.EnsureDir(ctx, filepath.Dir(envPath), 0711, "root"); err != nil {
+			return nil, err
+		}
 	}
-	if err := m.exec.WriteFile(ctx, envPath, []byte(serialized), 0600, rec.RunUser); err != nil {
-		return nil, "", err
+	if err := m.exec.WriteFile(ctx, envPath, []byte(finalContent), 0600, rec.RunUser); err != nil {
+		return nil, err
 	}
 
 	if restart {
 		unitName := UnitFilenameForDomain(cleanDom)
 		if out, err := m.exec.Run(ctx, "systemctl", "restart", unitName); err != nil {
-			return nil, "", fmt.Errorf("env tersimpan, tetapi gagal me-restart %s: %w (%s)", unitName, err, out)
+			return nil, fmt.Errorf("env tersimpan, tetapi gagal me-restart %s: %w (%s)", unitName, err, out)
 		}
 	}
 
-	return parsed, serialized, nil
+	return &SaveEnvResult{
+		EnvFile:      envPath,
+		Entries:      parsed,
+		Raw:          finalContent,
+		ResolvedPort: FindEnvPort(parsed),
+	}, nil
 }
 
 // StartBuild menjalankan BuildCommand melalui runner secara async sambil streaming output

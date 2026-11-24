@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"wdev/internal/serviceconfig"
+	"wdev/internal/site"
 	"wdev/internal/siteapp"
 	"wdev/internal/store"
 )
@@ -29,6 +30,7 @@ type siteAppPayload struct {
 	RunUser          string `json:"run_user,omitempty"`
 	AutoStart        *bool  `json:"auto_start,omitempty"`
 	RunBuildNow      *bool  `json:"run_build_now,omitempty"`
+	UseProjectEnv    *bool  `json:"use_project_env,omitempty"`
 	ImportProjectEnv bool   `json:"import_project_env,omitempty"`
 	InitialEnvRaw    string `json:"initial_env_raw,omitempty"`
 }
@@ -180,14 +182,22 @@ func (s *Server) handleInspectSiteDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	suggestedPort := res.DetectedPortHint
-	if suggestedPort <= 0 || s.validateSiteProxyTarget("nodejs", suggestedPort, "") != nil {
+	portConflictHint := ""
+	if suggestedPort > 0 {
+		if vErr := s.validateSiteProxyTarget("nodejs", suggestedPort, ""); vErr != nil {
+			portConflictHint = vErr.Error()
+			suggestedPort = 0
+		}
+	}
+	if suggestedPort <= 0 {
 		if freePort, pErr := s.suggestFreeSitePort(); pErr == nil {
 			suggestedPort = freePort
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"inspect":        res,
-		"suggested_port": suggestedPort,
+		"inspect":            res,
+		"suggested_port":     suggestedPort,
+		"port_conflict_hint": portConflictHint,
 	})
 }
 
@@ -315,19 +325,22 @@ func (s *Server) handleSiteAppEnv(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Parameter domain wajib diisi")
 			return
 		}
-		entries, raw, err := mgr.GetEnv(r.Context(), domain)
+		envFile, entries, raw, err := mgr.GetEnv(r.Context(), domain)
 		if err != nil {
-			if s.writeSudoRequiredIfNeeded(w, err, "Membaca file .env terkelola (0600) memerlukan hak akses administrator (sudo).") {
+			if s.writeSudoRequiredIfNeeded(w, err, "Membaca file .env (0600) memerlukan hak akses administrator (sudo).") {
 				return
 			}
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		rec, _ := s.store.GetSiteApp(domain)
+		useProjectEnv := rec != nil && rec.UseProjectEnv
 		writeJSON(w, http.StatusOK, map[string]any{
-			"domain":   domain,
-			"env_file": mgr.EnvPath(domain),
-			"entries":  entries,
-			"raw":      raw,
+			"domain":          domain,
+			"env_file":        envFile,
+			"use_project_env": useProjectEnv,
+			"entries":         entries,
+			"raw":             raw,
 		})
 
 	case http.MethodPut, http.MethodPost:
@@ -352,20 +365,72 @@ func (s *Server) handleSiteAppEnv(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		entries, raw, err := mgr.SaveEnv(r.Context(), req.Domain, req.Entries, req.Raw, req.Restart)
+		// Validasi terlebih dahulu bila pengguna mengubah PORT di dalam .env.
+		prevRec, _ := s.store.GetSiteApp(req.Domain)
+		requestedEntries := req.Entries
+		if strings.TrimSpace(req.Raw) != "" && len(requestedEntries) == 0 {
+			var pErr error
+			requestedEntries, pErr = siteapp.ParseEnvContent(req.Raw)
+			if pErr != nil {
+				writeError(w, http.StatusBadRequest, pErr.Error())
+				return
+			}
+		}
+		requestedPort := siteapp.FindEnvPort(requestedEntries)
+		portChanged := prevRec != nil && requestedPort > 0 && requestedPort != prevRec.Port
+		if portChanged {
+			if vErr := s.validateSiteProxyTarget(prevRec.Runtime, requestedPort, prevRec.Domain); vErr != nil {
+				writeError(w, http.StatusBadRequest, vErr.Error())
+				return
+			}
+		}
+
+		// Jika PORT berubah, simpan .env lalu sinkronkan Nginx VHost + systemd unit sebelum restart.
+		saveRes, err := mgr.SaveEnv(r.Context(), req.Domain, req.Entries, req.Raw, req.Restart && !portChanged)
 		if err != nil {
-			if s.writeSudoRequiredIfNeeded(w, err, "Menyimpan file .env terkelola memerlukan hak akses administrator (sudo).") {
+			if s.writeSudoRequiredIfNeeded(w, err, "Menyimpan file .env memerlukan hak akses administrator (sudo).") {
 				return
 			}
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+
+		portSynced := 0
+		if portChanged && prevRec != nil && s.siteMgr != nil {
+			if prevSite, hasSite := s.siteMgr.GetSite(prevRec.Domain); hasSite {
+				_ = s.siteMgr.UpdateSite(prevRec.Domain, site.CreateOptions{
+					Domain:     prevRec.Domain,
+					RootPath:   prevSite.RootPath,
+					Framework:  prevSite.Framework,
+					ProxyPort:  requestedPort,
+					SSLEnabled: prevSite.SSLEnabled,
+				})
+			}
+			updatedApp := *prevRec
+			updatedApp.Port = requestedPort
+			if _, syncErr := mgr.UpdateAndSync(r.Context(), prevRec, updatedApp); syncErr != nil {
+				if s.writeSudoRequiredIfNeeded(w, syncErr, "Menyinkronkan port VHost & systemd memerlukan hak akses administrator (sudo).") {
+					return
+				}
+				writeError(w, http.StatusInternalServerError, syncErr.Error())
+				return
+			}
+			if !req.Restart {
+				// UpdateAndSync me-restart bila port berubah; laporkan status akhir.
+				portSynced = requestedPort
+			} else {
+				portSynced = requestedPort
+			}
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     "saved",
-			"entries":    entries,
-			"raw":        raw,
-			"restarted":  req.Restart,
-			"app_status": mgr.Status(r.Context(), req.Domain),
+			"status":      "saved",
+			"env_file":    saveRes.EnvFile,
+			"entries":     saveRes.Entries,
+			"raw":         saveRes.Raw,
+			"restarted":   req.Restart || portChanged,
+			"port_synced": portSynced,
+			"app_status":  mgr.Status(r.Context(), req.Domain),
 		})
 
 	default:
