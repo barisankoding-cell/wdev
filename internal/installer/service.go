@@ -103,6 +103,13 @@ func (inst *Installer) InstallWdevService(ctx context.Context, cb LogCallback, p
 		return err
 	}
 
+	// 6. Audit dan selaraskan environment toolchain (/etc/profile.d/wdev.sh, izin bersama, symlink)
+	// agar `wdev install` / `wdev install service` otomatis merapikan konfigurasi yang tidak sesuai.
+	findings := inst.AuditToolchain(ctx, cb)
+	if err := inst.RepairToolchain(ctx, cb, findings); err != nil {
+		cb(fmt.Sprintf("[WARN] Penyelarasan toolchain otomatis: %v", err))
+	}
+
 	cb(fmt.Sprintf("✓ wdev.service berhasil diinstal dan aktif di port %s!", port))
 	cb(fmt.Sprintf("✓ Akses Web UI: http://localhost:%s", port))
 	cb("✓ Cek URL Security Entrance & kredensial panel: sudo wdev panel default")

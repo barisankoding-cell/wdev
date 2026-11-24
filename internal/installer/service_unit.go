@@ -18,6 +18,7 @@ var toolchainServiceEnv = [][2]string{
 	{"ANDROID_HOME", "/usr/local/android-sdk"},
 	{"ANDROID_SDK_ROOT", "/usr/local/android-sdk"},
 	{"NODE_HOME", "/usr/local/lib/nodejs/current"},
+	{"CAROOT", "/etc/ssl/local-certs/ca"},
 }
 
 // servicePath urutan PATH untuk wdev.service (area kanonik lebih dulu).
@@ -60,6 +61,19 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 `, envBlock, port, host)
+}
+
+func serviceUnitNeedsSync() bool {
+	return serviceUnitNeedsSyncAt(WdevServiceUnitPath)
+}
+
+func serviceUnitNeedsSyncAt(unitPath string) bool {
+	current, err := os.ReadFile(unitPath)
+	if err != nil {
+		return false
+	}
+	port, host := parseServiceExec(current)
+	return string(current) != WdevServiceUnitContent(port, host)
 }
 
 // EnsureWdevServiceUnit menyelaraskan unit systemd yang sudah terpasang

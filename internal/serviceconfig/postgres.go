@@ -348,6 +348,29 @@ func setPGConfKey(lines []string, key, value string, quote bool) []string {
 	return out
 }
 
+func isLocalOnlyPGListen(listen string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(listen))
+	return trimmed == "" || trimmed == "localhost" || trimmed == "127.0.0.1" || trimmed == "::1" || trimmed == "127.0.0.1,::1"
+}
+
+// normalizePostgresConfig menyelaraskan listen_addresses dengan remote_access_mode
+// agar mode "private_vpn" atau "all" tidak meninggalkan listen_addresses = 'localhost'.
+func normalizePostgresConfig(cfg *PostgresConfig) {
+	if cfg == nil {
+		return
+	}
+	switch cfg.RemoteAccessMode {
+	case "private_vpn", "all":
+		if isLocalOnlyPGListen(cfg.ListenAddresses) {
+			cfg.ListenAddresses = "*"
+		}
+	case "local":
+		if strings.TrimSpace(cfg.ListenAddresses) == "*" {
+			cfg.ListenAddresses = "localhost"
+		}
+	}
+}
+
 // ValidatePostgresConfig memvalidasi parameter konfigurasi PostgreSQL.
 func ValidatePostgresConfig(cfg PostgresConfig) error {
 	if err := validatePort(cfg.Port); err != nil {
@@ -498,6 +521,7 @@ func (m *Manager) GetPostgresConfig(ctx context.Context, version string) (*Postg
 
 // SavePostgresConfig menyimpan konfigurasi PostgreSQL (dan opsional password user postgres), lalu restart bila diminta.
 func (m *Manager) SavePostgresConfig(ctx context.Context, cfg PostgresConfig) (*PostgresConfig, error) {
+	normalizePostgresConfig(&cfg)
 	if err := ValidatePostgresConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -515,6 +539,7 @@ func (m *Manager) SavePostgresConfig(ctx context.Context, cfg PostgresConfig) (*
 	if err != nil {
 		return nil, err
 	}
+	origCfg := ParsePostgresConfig(origConf, origHba)
 
 	lines := strings.Split(strings.TrimRight(origConf, "\n"), "\n")
 	updatedConf := strings.Join(ApplyPostgresConfLines(lines, cfg), "\n") + "\n"
@@ -545,6 +570,10 @@ func (m *Manager) SavePostgresConfig(ctx context.Context, cfg PostgresConfig) (*
 				return nil, fmt.Errorf("gagal restart %s (konfigurasi dikembalikan): %w", unit, err)
 			}
 		}
+	}
+
+	if err := m.syncPostgresFirewall(ctx, origCfg.Port, cfg.Port, cfg.RemoteAccessMode); err != nil {
+		return nil, err
 	}
 
 	if cfg.NewPostgresPassword != "" {

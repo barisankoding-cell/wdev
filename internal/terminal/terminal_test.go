@@ -168,3 +168,39 @@ func TestPTYSessionIdleTimeoutClosesShell(t *testing.T) {
 		t.Fatalf("expected 0 active sessions after idle timeout, got %d", info.ActiveSessions)
 	}
 }
+
+func TestBuildTerminalEnvCargoHomePerUser(t *testing.T) {
+	t.Setenv("CARGO_HOME", "/usr/local/cargo")
+	t.Setenv("CAROOT", "/etc/ssl/local-certs/ca")
+	t.Setenv("NPM_CONFIG_PREFIX", "")
+	t.Setenv("npm_config_prefix", "")
+
+	getEnv := func(env []string, key string) string {
+		prefix := key + "="
+		for _, kv := range env {
+			if strings.HasPrefix(kv, prefix) {
+				return strings.TrimPrefix(kv, prefix)
+			}
+		}
+		return ""
+	}
+
+	nonRootEnv := buildTerminalEnv("dietpi", "/home/dietpi", "/bin/zsh", "/home/dietpi", false)
+	if got := getEnv(nonRootEnv, "CARGO_HOME"); got != "/home/dietpi/.cargo" {
+		t.Fatalf("non-root CARGO_HOME = %q, want /home/dietpi/.cargo", got)
+	}
+	if got := getEnv(nonRootEnv, "npm_config_prefix"); got != "/home/dietpi/.npm-global" {
+		t.Fatalf("non-root npm_config_prefix = %q, want /home/dietpi/.npm-global", got)
+	}
+	if got := getEnv(nonRootEnv, "CAROOT"); got != "" {
+		t.Fatalf("non-root CAROOT harus kosong, dapat %q", got)
+	}
+
+	rootEnv := buildTerminalEnv("root", "/root", "/bin/bash", "/root", true)
+	if got := getEnv(rootEnv, "CARGO_HOME"); got != "/usr/local/cargo" {
+		t.Fatalf("root CARGO_HOME = %q, want /usr/local/cargo", got)
+	}
+	if got := getEnv(rootEnv, "CAROOT"); got != "/etc/ssl/local-certs/ca" {
+		t.Fatalf("root CAROOT = %q, want /etc/ssl/local-certs/ca", got)
+	}
+}

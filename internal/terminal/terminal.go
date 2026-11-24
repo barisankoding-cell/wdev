@@ -560,7 +560,7 @@ func shellArgs(shellPath string) []string {
 	}
 }
 
-func buildTerminalEnv(userName, homeDir, shellPath, cwd string) []string {
+func buildTerminalEnv(userName, homeDir, shellPath, cwd string, isRoot bool) []string {
 	overrides := map[string]string{
 		"TERM":          "xterm-256color",
 		"COLORTERM":     "truecolor",
@@ -570,6 +570,14 @@ func buildTerminalEnv(userName, homeDir, shellPath, cwd string) []string {
 		"SHELL":         shellPath,
 		"PWD":           cwd,
 		"WDEV_TERMINAL": "1",
+	}
+	// wdev.service membawa CARGO_HOME=/usr/local/cargo & CAROOT=/etc/ssl/local-certs/ca
+	// (milik root); untuk sesi non-root arahkan tool user ke $HOME agar tidak Permission denied.
+	if !isRoot && homeDir != "" {
+		overrides["CARGO_HOME"] = filepath.Join(homeDir, ".cargo")
+		if os.Getenv("NPM_CONFIG_PREFIX") == "" && os.Getenv("npm_config_prefix") == "" {
+			overrides["npm_config_prefix"] = filepath.Join(homeDir, ".npm-global")
+		}
 	}
 
 	baseEnv := os.Environ()
@@ -584,6 +592,9 @@ func buildTerminalEnv(userName, homeDir, shellPath, cwd string) []string {
 			continue
 		}
 		k := kv[:idx]
+		if !isRoot && kv == "CAROOT=/etc/ssl/local-certs/ca" {
+			continue
+		}
 		if k == "LANG" {
 			hasLang = true
 		}
@@ -709,7 +720,7 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 
 	cmd := exec.Command(shellPath, shellArgs(shellPath)...)
 	cmd.Dir = cwd
-	cmd.Env = buildTerminalEnv(target.Username, target.HomeDir, shellPath, cwd)
+	cmd.Env = buildTerminalEnv(target.Username, target.HomeDir, shellPath, cwd, target.IsRoot)
 	cmd.Stdin = tty
 	cmd.Stdout = tty
 	cmd.Stderr = tty

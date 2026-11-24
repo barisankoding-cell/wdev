@@ -819,10 +819,16 @@ func (inst *Installer) removeDistroPackagesIfInstalled(ctx context.Context, cb L
 }
 
 // ensureWdevProfileEnv mendelegasikan sinkronisasi PATH ke SyncToolchainEnv
-// agar hanya ada satu sumber environment (lihat internal/installer/env.go).
+// agar hanya ada satu sumber environment (lihat internal/installer/env.go),
+// sekaligus menyelaraskan unit wdev.service bila env unit tertinggal.
 func (inst *Installer) ensureWdevProfileEnv(ctx context.Context, cb LogCallback) {
 	if err := inst.SyncToolchainEnv(ctx, cb); err != nil {
 		cb(fmt.Sprintf("[WARN] Sinkronisasi environment gagal: %v", err))
+	}
+	if serviceUnitNeedsSync() {
+		if err := inst.EnsureWdevServiceUnit(ctx, cb); err != nil {
+			cb(fmt.Sprintf("[WARN] Penyelarasan unit wdev.service gagal: %v", err))
+		}
 	}
 }
 

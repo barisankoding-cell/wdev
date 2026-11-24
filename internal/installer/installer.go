@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"wdev/internal/config"
 	"wdev/internal/store"
@@ -109,8 +110,23 @@ func needsSudo(name string, args ...string) bool {
 		return true
 	}
 	switch base {
-	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "nginx", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot", "runuser", "su":
+	case "apt-get", "apt", "apt-cache", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "systemctl", "nginx", "ufw", "firewall-cmd", "netfilter-persistent", "update-alternatives", "alternatives", "postgresql-setup", "pg_createcluster", "pg_dropcluster", "pg_ctlcluster", "restorecon", "systemd-tmpfiles", "ldconfig", "useradd", "certbot", "runuser", "su", "rustup", "rustup-init", "sdkmanager":
 		return true
+	case "git":
+		for _, arg := range args {
+			if arg == "--system" || strings.HasPrefix(arg, "/usr/local") || strings.Contains(arg, "=/usr/local") {
+				return true
+			}
+		}
+	case "flutter":
+		if strings.HasPrefix(name, "/usr/local/flutter") {
+			return true
+		}
+		for _, arg := range args {
+			if arg == "upgrade" || arg == "precache" {
+				return true
+			}
+		}
 	case "sqlite3":
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "/var") || strings.HasPrefix(arg, "/etc") {
@@ -200,6 +216,59 @@ func (inst *Installer) runCmd(ctx context.Context, cb LogCallback, name string, 
 	return inst.runCmdStdin(ctx, cb, "", name, args...)
 }
 
+// sudoCommandSpec membungkus perintah toolchain dengan `env` saat dijalankan
+// melalui sudo agar env_reset tidak membuang variabel lokasi kanonik wdev.
+func sudoCommandSpec(name string, args []string) (string, []string) {
+	base := filepath.Base(name)
+	switch base {
+	case "rustup", "rustup-init":
+		wrapped := make([]string, 0, 3+len(args))
+		wrapped = append(wrapped, "CARGO_HOME=/usr/local/cargo", "RUSTUP_HOME=/usr/local/rustup", name)
+		wrapped = append(wrapped, args...)
+		return "env", wrapped
+	case "mkcert":
+		wrapped := make([]string, 0, 2+len(args))
+		wrapped = append(wrapped, "CAROOT=/etc/ssl/local-certs/ca", name)
+		wrapped = append(wrapped, args...)
+		return "env", wrapped
+	case "flutter":
+		wrapped := make([]string, 0, 3+len(args))
+		wrapped = append(wrapped, "FLUTTER_ROOT=/usr/local/flutter", "CI=true", name)
+		wrapped = append(wrapped, args...)
+		return "env", wrapped
+	}
+	return name, args
+}
+
+// withEnvOverrides menyetel atau menimpa variabel environment tanpa duplikasi kunci.
+func withEnvOverrides(base []string, overrides [][2]string) []string {
+	overrideMap := make(map[string]string, len(overrides))
+	for _, kv := range overrides {
+		overrideMap[kv[0]] = kv[1]
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	seen := make(map[string]bool, len(overrides))
+	for _, entry := range base {
+		if k, _, ok := strings.Cut(entry, "="); ok {
+			if val, has := overrideMap[k]; has {
+				if !seen[k] {
+					out = append(out, k+"="+val)
+					seen[k] = true
+				}
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	for _, kv := range overrides {
+		if !seen[kv[0]] {
+			out = append(out, kv[0]+"="+kv[1])
+			seen[kv[0]] = true
+		}
+	}
+	return out
+}
+
 // runCmdStdin menjalankan perintah dengan stdin opsional (tanpa shell).
 func (inst *Installer) runCmdStdin(ctx context.Context, cb LogCallback, stdinData, name string, args ...string) error {
 	useSudo := needsSudo(name, args...)
@@ -213,9 +282,10 @@ func (inst *Installer) runCmdStdin(ctx context.Context, cb LogCallback, stdinDat
 	var stdinPipe io.WriteCloser
 
 	if useSudo {
+		effName, effArgs := sudoCommandSpec(name, args)
 		sudoPass := inst.GetSudoPassword()
 		if sudoPass != "" {
-			sudoArgs := append([]string{"-S", "-p", "", name}, args...)
+			sudoArgs := append([]string{"-S", "-p", "", effName}, effArgs...)
 			cmd = exec.CommandContext(ctx, "sudo", sudoArgs...)
 			var err error
 			stdinPipe, err = cmd.StdinPipe()
@@ -223,7 +293,7 @@ func (inst *Installer) runCmdStdin(ctx context.Context, cb LogCallback, stdinDat
 				return err
 			}
 		} else {
-			sudoArgs := append([]string{"-n", name}, args...)
+			sudoArgs := append([]string{"-n", effName}, effArgs...)
 			cmd = exec.CommandContext(ctx, "sudo", sudoArgs...)
 		}
 	} else {
@@ -238,7 +308,17 @@ func (inst *Installer) runCmdStdin(ctx context.Context, cb LogCallback, stdinDat
 		cmd.Dir = "/"
 	}
 
-	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "COMPOSER_ALLOW_SUPERUSER=1", "COMPOSER_NO_INTERACTION=1", "NEEDRESTART_MODE=a", "CARGO_HOME=/usr/local/cargo", "RUSTUP_HOME=/usr/local/rustup")
+	cmd.Env = withEnvOverrides(os.Environ(), [][2]string{
+		{"DEBIAN_FRONTEND", "noninteractive"},
+		{"COMPOSER_ALLOW_SUPERUSER", "1"},
+		{"COMPOSER_NO_INTERACTION", "1"},
+		{"NEEDRESTART_MODE", "a"},
+		{"CARGO_HOME", "/usr/local/cargo"},
+		{"RUSTUP_HOME", "/usr/local/rustup"},
+		{"CAROOT", "/etc/ssl/local-certs/ca"},
+		{"FLUTTER_ROOT", "/usr/local/flutter"},
+		{"CI", "true"},
+	})
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -315,6 +395,18 @@ func (inst *Installer) InstallBase(ctx context.Context, cb LogCallback) error {
 	return err
 }
 
+func needsRootPermFix(dir string) bool {
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		return false
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != 0 {
+		return true
+	}
+	perm := fi.Mode().Perm()
+	return (perm&0o022) != 0 || (perm&0o005) != 0o005
+}
+
 // 2. Node.js (Multi-version)
 func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver string) error {
 	if ver == "" {
@@ -357,6 +449,10 @@ func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver stri
 	nodeBin := filepath.Join(targetDir, "bin", "node")
 	if _, err := os.Stat(nodeBin); err == nil {
 		cb(fmt.Sprintf("Node.js v%s sudah terpasang di %s, melewati unduhan.", fullVer, targetDir))
+		if needsRootPermFix(targetDir) {
+			_ = inst.runCmd(ctx, cb, "chown", "-R", "root:root", targetDir)
+			_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", targetDir)
+		}
 	} else {
 		cb(fmt.Sprintf("Mengunduh Node.js dari: %s", url))
 		tmpDir, err := os.MkdirTemp("", "wdev-node-*")
@@ -374,9 +470,10 @@ func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver stri
 		_ = inst.runCmd(ctx, cb, "rm", "-rf", targetDir)
 
 		cb("Mengekstrak berkas Node.js...")
-		if err := inst.runCmd(ctx, cb, "tar", "-xJf", tmpTar, "-C", nodeBaseDir); err != nil {
+		if err := inst.runCmd(ctx, cb, "tar", "--no-same-owner", "-xJf", tmpTar, "-C", nodeBaseDir); err != nil {
 			return err
 		}
+		_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", targetDir)
 	}
 
 	// Create canonical current symlink & /usr/local/bin symlinks
@@ -433,6 +530,8 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 		cb("Rust sudah terpasang di /usr/local/cargo, memperbarui...")
 		_ = inst.runCmd(ctx, cb, rustupBin, "update", "stable")
 	}
+	// Pastikan toolchain bersama dapat dibaca/dieksekusi user non-root tanpa membuka izin tulis global.
+	_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", "/usr/local/cargo", "/usr/local/rustup")
 
 	// 2. Mold Linker (Rilis Resmi GitHub rui314/mold)
 	cb("Memasang Mold linker dari rilis resmi...")
@@ -516,9 +615,10 @@ func (inst *Installer) InstallGolang(ctx context.Context, cb LogCallback) error 
 
 		cb("Mengekstrak ke /usr/local/go...")
 		_ = inst.runCmd(ctx, cb, "rm", "-rf", "/usr/local/go")
-		if err := inst.runCmd(ctx, cb, "tar", "-xzf", tmpTar, "-C", "/usr/local"); err != nil {
+		if err := inst.runCmd(ctx, cb, "tar", "--no-same-owner", "-xzf", tmpTar, "-C", "/usr/local"); err != nil {
 			return err
 		}
+		_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", "/usr/local/go")
 	}
 
 	// Symlink go & gofmt
@@ -676,9 +776,10 @@ func (inst *Installer) installMoldOfficial(ctx context.Context, cb LogCallback) 
 
 		_ = inst.runCmd(ctx, cb, "rm", "-rf", moldDir)
 		_ = inst.runCmd(ctx, cb, "mkdir", "-p", moldDir)
-		if err := inst.runCmd(ctx, cb, "tar", "-xzf", tmpTar, "-C", moldDir, "--strip-components=1"); err != nil {
+		if err := inst.runCmd(ctx, cb, "tar", "--no-same-owner", "-xzf", tmpTar, "-C", moldDir, "--strip-components=1"); err != nil {
 			return err
 		}
+		_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", moldDir)
 	}
 
 	for _, b := range []string{"mold", "ld.mold"} {
@@ -710,7 +811,7 @@ func (inst *Installer) InstallAndroidSDK(ctx context.Context, cb LogCallback) er
 		cb("Android Command Line Tools sudah terpasang, memperbarui komponen SDK...")
 		_ = inst.runCmdStdin(ctx, cb, strings.Repeat("y\n", 50), sdkManager, "--sdk_root="+sdkDir, "--licenses")
 		_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "--update")
-		_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "platform-tools", "platforms;android-34", "platforms;android-35")
+		_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "platform-tools", "build-tools;34.0.0", "build-tools;35.0.0", "platforms;android-34", "platforms;android-35")
 	} else {
 		zipName := "commandlinetools-linux-11076708_latest.zip"
 		url := "https://dl.google.com/android/repository/" + zipName
@@ -741,13 +842,34 @@ func (inst *Installer) InstallAndroidSDK(ctx context.Context, cb LogCallback) er
 		cb("Menerima lisensi Android SDK...")
 		if _, err := os.Stat(sdkManager); err == nil {
 			_ = inst.runCmdStdin(ctx, cb, strings.Repeat("y\n", 50), sdkManager, "--sdk_root="+sdkDir, "--licenses")
-			_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "platform-tools", "platforms;android-34", "platforms;android-35")
+			_ = inst.runCmd(ctx, cb, sdkManager, fmt.Sprintf("--sdk_root=%s", sdkDir), "platform-tools", "build-tools;34.0.0", "build-tools;35.0.0", "platforms;android-34", "platforms;android-35")
 		}
 	}
 
+	_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", sdkDir)
 	inst.ensureWdevProfileEnv(ctx, cb)
 	cb("✓ Android SDK berhasil dipasang di " + sdkDir)
 	return nil
+}
+
+func isGitSystemSafeDirectory(ctx context.Context, dir string) bool {
+	out, err := exec.CommandContext(ctx, "git", "config", "--system", "--get-all", "safe.directory").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == dir {
+			return true
+		}
+	}
+	return false
+}
+
+func (inst *Installer) ensureGitSafeDirectory(ctx context.Context, cb LogCallback, dir string) {
+	if isGitSystemSafeDirectory(ctx, dir) {
+		return
+	}
+	_ = inst.runCmd(ctx, cb, "git", "config", "--system", "--add", "safe.directory", dir)
 }
 
 // 7. Flutter SDK
@@ -766,9 +888,16 @@ func (inst *Installer) InstallFlutter(ctx context.Context, cb LogCallback) error
 		_ = inst.runCmd(ctx, cb, "git", "-c", "safe.directory="+flutterDir, "-C", flutterDir, "pull")
 	}
 
+	inst.ensureGitSafeDirectory(ctx, cb, flutterDir)
+	flutterBin := filepath.Join(flutterDir, "bin", "flutter")
+	cb("Menyiapkan cache Dart SDK & artefak Flutter...")
+	_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "--version")
+	_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "precache")
+	_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", flutterDir)
+
 	// Symlink flutter & dart
 	_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/flutter", "/usr/local/bin/dart")
-	_ = inst.runCmd(ctx, cb, "ln", "-sfn", filepath.Join(flutterDir, "bin", "flutter"), "/usr/local/bin/flutter")
+	_ = inst.runCmd(ctx, cb, "ln", "-sfn", flutterBin, "/usr/local/bin/flutter")
 	_ = inst.runCmd(ctx, cb, "ln", "-sfn", filepath.Join(flutterDir, "bin", "dart"), "/usr/local/bin/dart")
 
 	inst.ensureWdevProfileEnv(ctx, cb)
@@ -1176,8 +1305,10 @@ func (inst *Installer) InstallMkcert(ctx context.Context, cb LogCallback) error 
 
 	inst.removeDistroPackagesIfInstalled(ctx, cb, "mkcert")
 
+	_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/etc/ssl/local-certs/ca")
+	_ = inst.runCmd(ctx, cb, "chmod", "755", "/etc/ssl/local-certs", "/etc/ssl/local-certs/ca")
 	_ = inst.runCmd(ctx, cb, dst, "-install")
-	_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/etc/ssl/local-certs")
+	inst.ensureWdevProfileEnv(ctx, cb)
 
 	cb("✓ mkcert berhasil dipasang dan root CA lokal diinisialisasi.")
 	return nil
@@ -1550,11 +1681,15 @@ func (inst *Installer) RunUpdateAll(ctx context.Context, cb LogCallback) error {
 	if _, err := exec.LookPath("composer"); err == nil {
 		_ = inst.runCmd(ctx, cb, "composer", "self-update")
 	}
-	if _, err := exec.LookPath("rustup"); err == nil {
-		_ = inst.runCmd(ctx, cb, "rustup", "update")
+	if rustupBin := findTool("rustup"); rustupBin != "" {
+		_ = inst.runCmd(ctx, cb, rustupBin, "update")
+		_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", "/usr/local/cargo", "/usr/local/rustup")
 	}
-	if _, err := exec.LookPath("flutter"); err == nil {
-		_ = inst.runCmd(ctx, cb, "flutter", "upgrade")
+	if flutterBin := findTool("flutter"); flutterBin != "" {
+		inst.ensureGitSafeDirectory(ctx, cb, "/usr/local/flutter")
+		_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "upgrade")
+		_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "precache")
+		_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", "/usr/local/flutter")
 	}
 
 	inst.ensureWdevProfileEnv(ctx, cb)

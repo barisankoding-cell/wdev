@@ -3,6 +3,7 @@ package installer
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -96,5 +97,112 @@ func TestPathDuplicatesParser(t *testing.T) {
 	dups := pathDuplicates(home)
 	if len(dups) == 0 {
 		t.Fatal("duplikat entri _wdev_prepend_path tidak terdeteksi")
+	}
+}
+
+func TestUnusedHomeToolchainFindingsAllowsUserCargo(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".cargo", "registry"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := unusedHomeToolchainFindings(home); len(got) != 0 {
+		t.Fatalf("direktori ~/.cargo tidak boleh dianggap sisa tak terpakai, dapat %+v", got)
+	}
+
+	if err := os.MkdirAll(filepath.Join(home, ".rustup"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := unusedHomeToolchainFindings(home)
+	if len(got) != 1 || got[0].Tool != ".rustup" {
+		t.Fatalf("direktori ~/.rustup harus tetap dilaporkan, dapat %+v", got)
+	}
+}
+
+func TestProfileDriftAndRustPermFindings(t *testing.T) {
+	dir := t.TempDir()
+	prof := filepath.Join(dir, "wdev.sh")
+	if err := os.WriteFile(prof, []byte("export CARGO_HOME=\"/usr/local/cargo\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if f := profileDriftFinding(prof, profileScript()); f == nil || !f.Fixable || f.Kind != "profile-drift" {
+		t.Fatalf("profile drift tidak terdeteksi: %+v", f)
+	}
+	if err := os.WriteFile(prof, []byte(profileScript()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if f := profileDriftFinding(prof, profileScript()); f != nil {
+		t.Fatalf("profile yang sudah mutakhir tidak boleh drift: %+v", f)
+	}
+
+	badDir := filepath.Join(dir, "cargo")
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(badDir, 0o700)
+	if f := toolchainDirPermFinding(badDir); f == nil || !f.Fixable || f.Kind != "toolchain-perm" {
+		t.Fatalf("izin direktori 0700 harus dilaporkan toolchain-perm: %+v", f)
+	}
+	_ = os.Chmod(badDir, 0o777)
+	if f := toolchainDirPermFinding(badDir); f == nil || !f.Fixable || f.Kind != "toolchain-perm" {
+		t.Fatalf("izin direktori 0777 harus dilaporkan toolchain-perm: %+v", f)
+	}
+	_ = os.Chmod(badDir, 0o755)
+	if f := toolchainDirPermFinding(badDir); f != nil {
+		t.Fatalf("izin direktori 0755 tidak boleh dilaporkan: %+v", f)
+	}
+}
+
+func TestToolchainSudoHandlingAndEnvOverrides(t *testing.T) {
+	if os.Geteuid() != 0 {
+		for _, tc := range []struct {
+			name string
+			args []string
+		}{
+			{"/tmp/wdev-rustup-123/rustup-init", []string{"-y"}},
+			{"/usr/local/cargo/bin/rustup", []string{"update", "stable"}},
+			{"/usr/local/android-sdk/cmdline-tools/latest/bin/sdkmanager", []string{"--update"}},
+			{"/usr/local/flutter/bin/flutter", []string{"precache"}},
+			{"git", []string{"config", "--system", "--add", "safe.directory", "/usr/local/flutter"}},
+			{"git", []string{"clone", "-b", "stable", "https://github.com/flutter/flutter.git", "/usr/local/flutter"}},
+			{"/usr/local/bin/mkcert", []string{"-install"}},
+		} {
+			if !needsSudo(tc.name, tc.args...) {
+				t.Fatalf("needsSudo(%q, %v) harus true saat non-root", tc.name, tc.args)
+			}
+		}
+	}
+
+	effName, effArgs := sudoCommandSpec("/usr/local/cargo/bin/rustup", []string{"update", "stable"})
+	wantArgs := []string{"CARGO_HOME=/usr/local/cargo", "RUSTUP_HOME=/usr/local/rustup", "/usr/local/cargo/bin/rustup", "update", "stable"}
+	if effName != "env" || !reflect.DeepEqual(effArgs, wantArgs) {
+		t.Fatalf("sudoCommandSpec(rustup) = (%q, %v), want (\"env\", %v)", effName, effArgs, wantArgs)
+	}
+
+	effName, effArgs = sudoCommandSpec("/usr/local/bin/mkcert", []string{"-install"})
+	wantMkcert := []string{"CAROOT=/etc/ssl/local-certs/ca", "/usr/local/bin/mkcert", "-install"}
+	if effName != "env" || !reflect.DeepEqual(effArgs, wantMkcert) {
+		t.Fatalf("sudoCommandSpec(mkcert) = (%q, %v), want (\"env\", %v)", effName, effArgs, wantMkcert)
+	}
+
+	effName, effArgs = sudoCommandSpec("/usr/local/flutter/bin/flutter", []string{"precache"})
+	wantFlutter := []string{"FLUTTER_ROOT=/usr/local/flutter", "CI=true", "/usr/local/flutter/bin/flutter", "precache"}
+	if effName != "env" || !reflect.DeepEqual(effArgs, wantFlutter) {
+		t.Fatalf("sudoCommandSpec(flutter) = (%q, %v), want (\"env\", %v)", effName, effArgs, wantFlutter)
+	}
+
+	env := withEnvOverrides(
+		[]string{"PATH=/usr/bin", "CARGO_HOME=/home/user/.cargo", "LANG=C.UTF-8"},
+		[][2]string{{"CARGO_HOME", "/usr/local/cargo"}, {"RUSTUP_HOME", "/usr/local/rustup"}},
+	)
+	wantEnv := []string{"PATH=/usr/bin", "CARGO_HOME=/usr/local/cargo", "LANG=C.UTF-8", "RUSTUP_HOME=/usr/local/rustup"}
+	if !reflect.DeepEqual(env, wantEnv) {
+		t.Fatalf("withEnvOverrides = %v, want %v", env, wantEnv)
+	}
+
+	if os.Geteuid() != 0 {
+		dir := t.TempDir()
+		if !needsRootPermFix(dir) {
+			t.Fatal("direktori milik non-root harus terdeteksi needsRootPermFix saat bukan root")
+		}
 	}
 }

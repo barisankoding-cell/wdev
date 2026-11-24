@@ -2,6 +2,7 @@ package installer
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -133,12 +134,117 @@ func TestProfileScriptSingleSource(t *testing.T) {
 	for _, key := range []string{
 		`export NODE_HOME="/usr/local/lib/nodejs/current"`,
 		`export CAROOT="/etc/ssl/local-certs/ca"`,
+		`export RUSTUP_HOME="/usr/local/rustup"`,
+		`export CARGO_HOME="/usr/local/cargo"`,
+		`export CARGO_HOME="${HOME}/.cargo"`,
+		`export npm_config_prefix="${HOME}/.npm-global"`,
 		"ORCA_BROWSER_EXECUTABLE",
 		`_wdev_prepend_path "/usr/local/cargo/bin"`,
+		`_wdev_append_path "${HOME}/.cargo/bin"`,
+		`_wdev_append_path "${HOME}/.npm-global/bin"`,
+		`_wdev_append_path "${GOPATH:-${HOME}/go}/bin"`,
 	} {
 		if !strings.Contains(script, key) {
 			t.Fatalf("profileScript tidak memuat %q", key)
 		}
+	}
+
+	shCheck := exec.Command("sh", "-n")
+	shCheck.Stdin = strings.NewReader(script)
+	if out, err := shCheck.CombinedOutput(); err != nil {
+		t.Fatalf("profileScript bukan skrip POSIX sh yang valid: %v\n%s", err, out)
+	}
+}
+
+func TestProfileScriptCargoHomeIsolation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("pengujian perilaku non-root dilewati saat berjalan sebagai root")
+	}
+
+	tmpHome := t.TempDir()
+	userCargoBin := filepath.Join(tmpHome, ".cargo", "bin")
+	userNpmBin := filepath.Join(tmpHome, ".npm-global", "bin")
+	userGoBin := filepath.Join(tmpHome, "go", "bin")
+	for _, d := range []string{userCargoBin, userNpmBin, userGoBin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sysCargoBin := filepath.Join(t.TempDir(), "sys-cargo-bin")
+	if err := os.MkdirAll(sysCargoBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := strings.ReplaceAll(profileScript(), `"/usr/local/cargo/bin"`, `"`+sysCargoBin+`"`)
+
+	runProfile := func(extraEnv ...string) (cargoHome, rustupHome, npmPrefix, caRoot, pathVal string) {
+		t.Helper()
+		cmd := exec.Command("sh", "-c", script+"\nprintf '%s|%s|%s|%s|%s\\n' \"${CARGO_HOME:-}\" \"${RUSTUP_HOME:-}\" \"${npm_config_prefix:-}\" \"${CAROOT:-}\" \"$PATH\"")
+		cmd.Env = append([]string{
+			"HOME=" + tmpHome,
+			"PATH=" + sysCargoBin + ":/usr/bin:/bin",
+		}, extraEnv...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("gagal mengeksekusi profileScript: %v\n%s", err, out)
+		}
+		parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 5)
+		if len(parts) != 5 {
+			t.Fatalf("output tidak terduga: %q", string(out))
+		}
+		return parts[0], parts[1], parts[2], parts[3], parts[4]
+	}
+
+	// 1. Kosong -> memakai ~/.cargo & ~/.npm-global, CAROOT kosong, RUSTUP_HOME ke /usr/local/rustup
+	cHome, rHome, npmPref, caRoot, pathVal := runProfile()
+	wantUserCargo := filepath.Join(tmpHome, ".cargo")
+	wantNpmPrefix := filepath.Join(tmpHome, ".npm-global")
+	if cHome != wantUserCargo {
+		t.Fatalf("CARGO_HOME non-root = %q, want %q", cHome, wantUserCargo)
+	}
+	if rHome != "/usr/local/rustup" {
+		t.Fatalf("RUSTUP_HOME = %q, want /usr/local/rustup", rHome)
+	}
+	if npmPref != wantNpmPrefix {
+		t.Fatalf("npm_config_prefix = %q, want %q", npmPref, wantNpmPrefix)
+	}
+	if caRoot != "" {
+		t.Fatalf("CAROOT non-root harus kosong agar memakai default user, dapat %q", caRoot)
+	}
+	sysIdx := strings.Index(pathVal, sysCargoBin)
+	usrIdx := strings.Index(pathVal, userCargoBin)
+	if sysIdx == -1 || usrIdx == -1 || usrIdx < sysIdx {
+		t.Fatalf("urutan PATH salah (sysCargoBin harus sebelum userCargoBin): %s", pathVal)
+	}
+	if !strings.Contains(pathVal, userNpmBin) {
+		t.Fatalf("PATH harus memuat %s: %s", userNpmBin, pathVal)
+	}
+	if !strings.Contains(pathVal, userGoBin) {
+		t.Fatalf("PATH harus memuat %s: %s", userGoBin, pathVal)
+	}
+
+	// 2. Terwarisi nilai lama milik root (/usr/local/cargo & /etc/ssl/local-certs/ca) -> harus dibersihkan
+	cHome, _, _, caRoot, _ = runProfile("CARGO_HOME=/usr/local/cargo", "CAROOT=/etc/ssl/local-certs/ca")
+	if cHome != wantUserCargo {
+		t.Fatalf("CARGO_HOME=/usr/local/cargo harus di-reset ke %q, dapat %q", wantUserCargo, cHome)
+	}
+	if caRoot != "" {
+		t.Fatalf("CAROOT=/etc/ssl/local-certs/ca untuk non-root harus di-unset, dapat %q", caRoot)
+	}
+
+	// 3. Nilai kustom user -> dipertahankan
+	customCargo := filepath.Join(tmpHome, "custom-cargo")
+	customNpm := filepath.Join(tmpHome, "custom-npm")
+	customCA := filepath.Join(tmpHome, "custom-ca")
+	cHome, _, npmPref, caRoot, _ = runProfile("CARGO_HOME="+customCargo, "npm_config_prefix="+customNpm, "CAROOT="+customCA)
+	if cHome != customCargo {
+		t.Fatalf("CARGO_HOME kustom = %q, want %q", cHome, customCargo)
+	}
+	if npmPref != customNpm {
+		t.Fatalf("npm_config_prefix kustom = %q, want %q", npmPref, customNpm)
+	}
+	if caRoot != customCA {
+		t.Fatalf("CAROOT kustom = %q, want %q", caRoot, customCA)
 	}
 }
 

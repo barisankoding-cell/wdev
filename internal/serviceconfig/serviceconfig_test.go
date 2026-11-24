@@ -440,3 +440,63 @@ func TestDetectServicePresets(t *testing.T) {
 		t.Fatalf("redis custom = %q, want Custom", got)
 	}
 }
+
+func TestNormalizePostgresConfigAndFirewallPlans(t *testing.T) {
+	cfgAll := PostgresConfig{RemoteAccessMode: "all", ListenAddresses: "localhost"}
+	normalizePostgresConfig(&cfgAll)
+	if cfgAll.ListenAddresses != "*" {
+		t.Fatalf("mode all dengan localhost harus jadi '*', dapat %q", cfgAll.ListenAddresses)
+	}
+
+	cfgVPN := PostgresConfig{RemoteAccessMode: "private_vpn", ListenAddresses: "127.0.0.1"}
+	normalizePostgresConfig(&cfgVPN)
+	if cfgVPN.ListenAddresses != "*" {
+		t.Fatalf("mode private_vpn dengan 127.0.0.1 harus jadi '*', dapat %q", cfgVPN.ListenAddresses)
+	}
+
+	cfgCustom := PostgresConfig{RemoteAccessMode: "all", ListenAddresses: "100.68.154.24"}
+	normalizePostgresConfig(&cfgCustom)
+	if cfgCustom.ListenAddresses != "100.68.154.24" {
+		t.Fatalf("listen_addresses spesifik tidak boleh ditimpa, dapat %q", cfgCustom.ListenAddresses)
+	}
+
+	cfgLocal := PostgresConfig{RemoteAccessMode: "local", ListenAddresses: "*"}
+	normalizePostgresConfig(&cfgLocal)
+	if cfgLocal.ListenAddresses != "localhost" {
+		t.Fatalf("mode local dengan '*' harus kembali ke 'localhost', dapat %q", cfgLocal.ListenAddresses)
+	}
+
+	planHasArg := func(steps []firewallStep, substr string) bool {
+		for _, s := range steps {
+			if strings.Contains(strings.Join(s.args, " "), substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	ufwAll := buildUFWPostgresPlan(5432, 5432, "all")
+	if !planHasArg(ufwAll, "allow 5432/tcp") {
+		t.Fatalf("UFW plan mode all harus membuka 5432/tcp: %+v", ufwAll)
+	}
+
+	ufwVPN := buildUFWPostgresPlan(5432, 5433, "private_vpn")
+	if !planHasArg(ufwVPN, "delete allow 5432/tcp") || !planHasArg(ufwVPN, "allow from 100.64.0.0/10 to any port 5433 proto tcp") {
+		t.Fatalf("UFW plan mode private_vpn harus bersihkan port lama & izinkan NetBird di port baru: %+v", ufwVPN)
+	}
+
+	ufwLocal := buildUFWPostgresPlan(5432, 5432, "local")
+	if planHasArg(ufwLocal, "allow 5432/tcp comment") || planHasArg(ufwLocal, "from 100.64.0.0/10 to any port 5432 proto tcp comment") {
+		t.Fatalf("UFW plan mode local tidak boleh menambah rule allow baru: %+v", ufwLocal)
+	}
+
+	fwAll := buildFirewalldPostgresPlan(5432, 5432, "all")
+	if !planHasArg(fwAll, "--add-port=5432/tcp") {
+		t.Fatalf("firewalld plan mode all harus menambah 5432/tcp: %+v", fwAll)
+	}
+
+	fwVPN := buildFirewalldPostgresPlan(5432, 5432, "private_vpn")
+	if !planHasArg(fwVPN, `--add-rich-rule=rule family="ipv4" source address="100.64.0.0/10" port protocol="tcp" port="5432" accept`) {
+		t.Fatalf("firewalld plan mode private_vpn harus menambah rich-rule 100.64.0.0/10: %+v", fwVPN)
+	}
+}

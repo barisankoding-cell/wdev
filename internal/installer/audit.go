@@ -245,20 +245,21 @@ func (inst *Installer) AuditToolchain(ctx context.Context, cb LogCallback) []Fin
 		}
 	}
 
-	// Direktori toolchain user yang menambah PATH kedua.
-	if home != "" {
-		for _, dir := range []string{".cargo", ".rustup", ".nvm", ".pyenv"} {
-			p := filepath.Join(home, dir)
-			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-				findings = append(findings, Finding{
-					Severity: SeverityWarning,
-					Kind:     "path-dupe",
-					Tool:     dir,
-					Detail:   p + " ada di home (tidak dipakai wdev; hapus manual bila tak diperlukan)",
-					Fixable:  false,
-				})
-			}
-		}
+	// Direktori toolchain user yang menambah PATH kedua (catatan: ~/.cargo sah dipakai
+	// sebagai CARGO_HOME per-user untuk cache crate & cargo install; duplikat biner
+	// rustc/cargo/rustup di ~/.cargo/bin tetap diaudit lewat managedTools di atas).
+	findings = append(findings, unusedHomeToolchainFindings(home)...)
+
+	if f := profileDriftFinding(envProfilePath, profileScript()); f != nil {
+		findings = append(findings, *f)
+	}
+
+	if f := toolchainDirPermFinding("/usr/local/cargo", "/usr/local/rustup", "/usr/local/flutter", "/usr/local/android-sdk", "/usr/local/go", "/usr/local/mold", "/usr/local/lib/nodejs"); f != nil {
+		findings = append(findings, *f)
+	}
+
+	if f := flutterGitSafeFinding(ctx, "/usr/local/flutter"); f != nil {
+		findings = append(findings, *f)
 	}
 
 	// Unit systemd wdev: environment toolchain (RUSTUP_HOME dll.).
@@ -328,6 +329,87 @@ func (inst *Installer) AuditToolchain(ctx context.Context, cb LogCallback) []Fin
 		cb(f.String())
 	}
 	return findings
+}
+
+func unusedHomeToolchainFindings(home string) []Finding {
+	if home == "" {
+		return nil
+	}
+	var out []Finding
+	for _, dir := range []string{".rustup", ".nvm", ".pyenv"} {
+		p := filepath.Join(home, dir)
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			out = append(out, Finding{
+				Severity: SeverityWarning,
+				Kind:     "path-dupe",
+				Tool:     dir,
+				Detail:   p + " ada di home (tidak dipakai wdev; hapus manual bila tak diperlukan)",
+				Fixable:  false,
+			})
+		}
+	}
+	return out
+}
+
+func profileDriftFinding(profilePath, expected string) *Finding {
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return nil
+	}
+	if string(data) == expected {
+		return nil
+	}
+	return &Finding{
+		Severity: SeverityWarning,
+		Kind:     "profile-drift",
+		Tool:     filepath.Base(profilePath),
+		Detail:   profilePath + " belum mutakhir dengan konfigurasi terbaru wdev (mis. CARGO_HOME per-user)",
+		Fixable:  true,
+	}
+}
+
+func toolchainDirPermFinding(dirs ...string) *Finding {
+	var bad []string
+	var details []string
+	for _, dir := range dirs {
+		fi, err := os.Stat(dir)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		perm := fi.Mode().Perm()
+		if (perm&0o022) != 0 || (perm&0o005) != 0o005 {
+			bad = append(bad, dir)
+			details = append(details, fmt.Sprintf("%s (%04o)", dir, perm))
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return &Finding{
+		Severity: SeverityWarning,
+		Kind:     "toolchain-perm",
+		Tool:     "toolchain",
+		Detail:   "izin direktori toolchain bersama perlu dinormalkan (0755): " + strings.Join(details, ", "),
+		Fixable:  true,
+		Paths:    bad,
+	}
+}
+
+func flutterGitSafeFinding(ctx context.Context, flutterDir string) *Finding {
+	if _, err := os.Stat(filepath.Join(flutterDir, ".git")); err != nil {
+		return nil
+	}
+	if isGitSystemSafeDirectory(ctx, flutterDir) {
+		return nil
+	}
+	return &Finding{
+		Severity: SeverityWarning,
+		Kind:     "flutter-git-safe",
+		Tool:     "flutter",
+		Detail:   flutterDir + " belum terdaftar di safe.directory sistem (/etc/gitconfig)",
+		Fixable:  true,
+		Paths:    []string{flutterDir},
+	}
 }
 
 // pathDuplicates mendeteksi direktori yang muncul lebih dari sekali pada PATH hasil
@@ -402,6 +484,14 @@ func (inst *Installer) RepairToolchain(ctx context.Context, cb LogCallback, find
 		case "pgdg-libpq-shadow":
 			if err := inst.EnsureSystemLibpqPriority(ctx, cb); err != nil {
 				cb(fmt.Sprintf("[WARN] Gagal memulihkan prioritas libpq sistem: %v", err))
+			}
+		case "toolchain-perm", "rust-perm":
+			for _, p := range f.Paths {
+				_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", p)
+			}
+		case "flutter-git-safe":
+			for _, p := range f.Paths {
+				inst.ensureGitSafeDirectory(ctx, cb, p)
 			}
 		case "duplicate-path", "foreign-copy":
 			for _, p := range f.Paths {

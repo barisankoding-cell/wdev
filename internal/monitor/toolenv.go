@@ -27,6 +27,7 @@ var toolchainEnvDefaults = [][2]string{
 	{"ANDROID_HOME", "/usr/local/android-sdk"},
 	{"ANDROID_SDK_ROOT", "/usr/local/android-sdk"},
 	{"NODE_HOME", "/usr/local/lib/nodejs/current"},
+	{"CAROOT", "/etc/ssl/local-certs/ca"},
 }
 
 // toolEnv menyusun environment untuk eksekusi toolchain.

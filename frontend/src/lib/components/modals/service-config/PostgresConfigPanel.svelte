@@ -138,6 +138,19 @@
 
 	const showListenWarning = $derived(remoteMode !== 'local' && listenAddresses.trim() === 'localhost');
 
+	function handleRemoteModeChange(nextMode: string) {
+		if (!nextMode) return;
+		remoteMode = nextMode;
+		const curListen = listenAddresses.trim().toLowerCase();
+		if (nextMode !== 'local') {
+			if (curListen === '' || curListen === 'localhost' || curListen === '127.0.0.1' || curListen === '::1') {
+				listenAddresses = '*';
+			}
+		} else if (curListen === '*') {
+			listenAddresses = 'localhost';
+		}
+	}
+
 	function applyPreset(preset: 'dev' | 'balanced' | 'high') {
 		localError = '';
 		if (preset === 'dev') {
@@ -334,7 +347,7 @@
 				<TriangleAlertIcon />
 				<Alert.Title>Perhatian Listen Addresses</Alert.Title>
 				<Alert.Description>
-					Aturan remote diaktifkan: ubah Listen Addresses menjadi <code>*</code> agar koneksi dari luar localhost dapat diterima.
+					Aturan remote diaktifkan: Listen Addresses akan disetel otomatis ke <code>*</code> saat disimpan agar koneksi dari luar localhost dapat diterima.
 				</Alert.Description>
 			</Alert.Root>
 		{/if}
@@ -417,7 +430,7 @@
 
 				<Field.Field>
 					<Field.FieldLabel for="pg-cfg-remote-mode">Aturan Akses (pg_hba.conf)</Field.FieldLabel>
-					<Select.Root type="single" bind:value={remoteMode}>
+					<Select.Root type="single" value={remoteMode} onValueChange={handleRemoteModeChange}>
 						<Select.Trigger id="pg-cfg-remote-mode" class="w-full">
 							{remoteOptions.find((o) => o.value === remoteMode)?.label ?? remoteMode}
 						</Select.Trigger>
@@ -429,6 +442,9 @@
 							</Select.Group>
 						</Select.Content>
 					</Select.Root>
+					<Field.FieldDescription>
+						Memilih mode remote otomatis menyetel Listen Addresses ke <code>*</code> dan menyelaraskan UFW/firewalld (bila aktif).
+					</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field>

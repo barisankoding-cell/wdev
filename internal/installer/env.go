@@ -118,13 +118,25 @@ func profileScript() string {
 # File ini dibuat ulang otomatis oleh: wdev env sync
 # Jangan tambahkan file /etc/profile.d/*.sh lain untuk tool yang sama.
 export GOROOT="/usr/local/go"
-export CARGO_HOME="/usr/local/cargo"
 export RUSTUP_HOME="/usr/local/rustup"
 export FLUTTER_ROOT="/usr/local/flutter"
 export ANDROID_HOME="/usr/local/android-sdk"
 export ANDROID_SDK_ROOT="/usr/local/android-sdk"
 export NODE_HOME="/usr/local/lib/nodejs/current"
-export CAROOT="/etc/ssl/local-certs/ca"
+if [ "$(id -u)" -eq 0 ]; then
+	export CARGO_HOME="/usr/local/cargo"
+	export CAROOT="/etc/ssl/local-certs/ca"
+elif [ -n "${HOME:-}" ]; then
+	if [ -z "${CARGO_HOME:-}" ] || [ "${CARGO_HOME}" = "/usr/local/cargo" ]; then
+		export CARGO_HOME="${HOME}/.cargo"
+	fi
+	if [ -z "${NPM_CONFIG_PREFIX:-}" ] && [ -z "${npm_config_prefix:-}" ]; then
+		export npm_config_prefix="${HOME}/.npm-global"
+	fi
+	if [ "${CAROOT:-}" = "/etc/ssl/local-certs/ca" ]; then
+		unset CAROOT
+	fi
+fi
 
 # Browser automation Orca ADE (satu-satunya definisi).
 if [ -z "${ORCA_BROWSER_EXECUTABLE:-}" ] || [ ! -x "${ORCA_BROWSER_EXECUTABLE:-}" ]; then
@@ -140,7 +152,14 @@ fi
 _wdev_prepend_path() {
 	case ":$PATH:" in
 	*":$1:"*) ;;
-	*) [ -d "$1" ] && PATH="$1:$PATH" ;;
+	*) [ -d "$1" ] && PATH="$1${PATH:+:$PATH}" ;;
+	esac
+}
+
+_wdev_append_path() {
+	case ":$PATH:" in
+	*":$1:"*) ;;
+	*) [ -d "$1" ] && PATH="${PATH:+$PATH:}$1" ;;
 	esac
 }
 
@@ -151,8 +170,15 @@ _wdev_prepend_path "/usr/local/flutter/bin"
 _wdev_prepend_path "/usr/local/android-sdk/platform-tools"
 _wdev_prepend_path "/usr/local/android-sdk/cmdline-tools/latest/bin"
 _wdev_prepend_path "/usr/local/lib/nodejs/current/bin"
+if [ "$(id -u)" -ne 0 ] && [ -n "${HOME:-}" ]; then
+	_wdev_append_path "${HOME}/.cargo/bin"
+	_wdev_append_path "${HOME}/.npm-global/bin"
+fi
+if [ -n "${HOME:-}" ]; then
+	_wdev_append_path "${GOPATH:-${HOME}/go}/bin"
+fi
 export PATH
-unset -f _wdev_prepend_path
+unset -f _wdev_prepend_path _wdev_append_path
 `
 }
 

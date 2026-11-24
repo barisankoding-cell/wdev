@@ -2,6 +2,8 @@ package installer
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -137,5 +139,29 @@ func TestIsCgroupInUnit(t *testing.T) {
 		if got := isCgroupInUnit(c.content, "wdev.service"); got != c.want {
 			t.Errorf("%s: isCgroupInUnit = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestServiceUnitNeedsSyncAt(t *testing.T) {
+	dir := t.TempDir()
+	unitPath := filepath.Join(dir, "wdev.service")
+
+	if serviceUnitNeedsSyncAt(unitPath) {
+		t.Fatal("unit yang belum ada tidak boleh dilaporkan perlu sync")
+	}
+
+	if err := os.WriteFile(unitPath, []byte(WdevServiceUnitContent("3200", "0.0.0.0")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if serviceUnitNeedsSyncAt(unitPath) {
+		t.Fatal("unit yang sudah mutakhir tidak boleh dilaporkan perlu sync")
+	}
+
+	outdated := strings.Replace(WdevServiceUnitContent("3200", "0.0.0.0"), "Environment=\"CAROOT=/etc/ssl/local-certs/ca\"\n", "", 1)
+	if err := os.WriteFile(unitPath, []byte(outdated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !serviceUnitNeedsSyncAt(unitPath) {
+		t.Fatal("unit tanpa CAROOT harus dilaporkan perlu sync")
 	}
 }
