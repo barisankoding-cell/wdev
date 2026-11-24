@@ -3,6 +3,20 @@
 ## [v2.8.0] - 2026-11-24
 
 ### 🚀 Fitur Baru
+- feat(compose): tambahkan pengelolaan Docker Compose dan instalasi Docker (8d3e107)
+- feat(cloudflare): dukung pengelolaan tunnel multi-profil (172376f)
+- feat: tambahkan diagnostik status port dan jaringan (0bc7dc4)
+
+### 🐛 Perbaikan Bug
+- fix: siapkan pnpm otomatis sebelum proses rilis (96a59c6)
+- fix: selaraskan environment toolchain dan akses remote PostgreSQL (5a0e0a2)
+- fix(installer): benahi deteksi dan kontrol layanan Orca (353a508)
+- fix: isolasi konfigurasi server berdasarkan mode operasional (e463c5f)
+- fix(security): perketat akses layanan internal dan terminal (a90ffdb)
+
+## [v2.8.0] - 2026-11-24
+
+### 🚀 Fitur Baru
 - feat(cloudflare): dukung pengelolaan tunnel multi-profil (172376f)
 - feat: tambahkan diagnostik status port dan jaringan (0bc7dc4)
 
