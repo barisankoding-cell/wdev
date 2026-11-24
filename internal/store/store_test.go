@@ -268,3 +268,78 @@ func TestComposeProjectsCRUD(t *testing.T) {
 		t.Fatalf("expected deleted compose project nil, got=%+v err=%v", gotAfter, err)
 	}
 }
+
+func TestSiteAppsCRUDAndSyncFromDiskPreservesRuntime(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := New(filepath.Join(tmp, "site-apps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.SaveSite(SiteRecord{
+		Domain:    "app.erposoft.my.id",
+		RootPath:  "/home/dietpi/apps/my-node-app",
+		Framework: "nodejs",
+		ProxyPort: 3105,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSiteApp(SiteAppRecord{
+		Domain:       "APP.erposoft.my.id",
+		Runtime:      "nodejs",
+		WorkingDir:   "/home/dietpi/apps/my-node-app",
+		BuildCommand: "pnpm run build",
+		StartCommand: "pnpm run start",
+		Port:         3105,
+		RunUser:      "dietpi",
+		AutoStart:    true,
+		ServiceName:  "wdev-app-app-erposoft-my-id",
+		EnvFile:      "/etc/wdev/apps/app-erposoft-my-id.env",
+	}); err != nil {
+		t.Fatalf("SaveSiteApp failed: %v", err)
+	}
+
+	got, err := db.GetSiteApp("app.erposoft.my.id")
+	if err != nil || got == nil {
+		t.Fatalf("GetSiteApp failed: got=%+v err=%v", got, err)
+	}
+	if got.Runtime != "nodejs" || got.Port != 3105 || !got.AutoStart {
+		t.Fatalf("unexpected SiteAppRecord: %+v", got)
+	}
+
+	avail := filepath.Join(tmp, "sites-available")
+	if err := os.MkdirAll(avail, 0755); err != nil {
+		t.Fatal(err)
+	}
+	vhost := `server {
+    listen 80;
+    server_name app.erposoft.my.id;
+    location / {
+        proxy_pass http://127.0.0.1:3105;
+        proxy_set_header Host $host;
+    }
+}
+`
+	if err := os.WriteFile(filepath.Join(avail, "app.erposoft.my.id"), []byte(vhost), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	db.SyncFromDisk(avail, filepath.Join(tmp, "exposures"))
+
+	sites, err := db.ListSites()
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("unexpected ListSites after sync: %+v err=%v", sites, err)
+	}
+	if sites[0].Framework != "nodejs" || sites[0].RootPath != "/home/dietpi/apps/my-node-app" || sites[0].ProxyPort != 3105 {
+		t.Fatalf("SyncFromDisk clobbered Managed App metadata: %+v", sites[0])
+	}
+
+	if err := db.DeleteSiteApp("app.erposoft.my.id"); err != nil {
+		t.Fatalf("DeleteSiteApp failed: %v", err)
+	}
+	after, err := db.GetSiteApp("app.erposoft.my.id")
+	if err != nil || after != nil {
+		t.Fatalf("expected deleted site app nil, got=%+v err=%v", after, err)
+	}
+}

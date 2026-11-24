@@ -7,6 +7,7 @@
 	import * as Table from '#lib/components/ui/table/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import * as InputGroup from '#lib/components/ui/input-group/index.js';
+	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { cn } from '#lib/utils.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
@@ -18,6 +19,7 @@
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import CreateVhostModal from '#lib/components/modals/CreateVhostModal.svelte';
+	import ManageSiteAppModal from '#lib/components/modals/ManageSiteAppModal.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
@@ -37,18 +39,31 @@
 	import NetworkIcon from '@lucide/svelte/icons/network';
 	import LinkIcon from '@lucide/svelte/icons/link';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
+	import CpuIcon from '@lucide/svelte/icons/cpu';
+	import HammerIcon from '@lucide/svelte/icons/hammer';
+	import PlayIcon from '@lucide/svelte/icons/play';
+	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
+	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
+	import SquareIcon from '@lucide/svelte/icons/square';
 
 	let sites = $state<SiteRecord[]>([]);
 	let zones = $state<ZoneInfo[]>([]);
 	let loading = $state(true);
 	let searchQuery = $state('');
+	let categoryFilter = $state<'all' | 'web' | 'app' | 'proxy'>('all');
 	let siteDeleting = $state<Record<string, boolean>>({});
 	let sslPending = $state<Record<string, boolean>>({});
+	let appActionPending = $state<Record<string, boolean>>({});
 	let lastLoadedMode = $state<string | null>(null);
 
 	// Modal Tambah & Ubah VHost
 	let createOpen = $state(false);
 	let editingSite = $state<SiteRecord | null>(null);
+
+	// Modal Kelola Managed App (systemd + .env + logs)
+	let manageAppOpen = $state(false);
+	let manageAppDomain = $state('');
+	const manageAppSite = $derived(sites.find((s) => s.domain === manageAppDomain) ?? null);
 
 	// Modal Ekspos & SSL Edge (untuk situs yang belum terekspos)
 	let exposeOpen = $state(false);
@@ -119,16 +134,48 @@
 		}
 	}
 
+	function isManagedApp(site: SiteRecord): boolean {
+		return site.framework === 'nodejs' || site.framework === 'go' || site.framework === 'rust';
+	}
+
+	function frameworkBadgeLabel(fw: string): string {
+		if (fw === 'nodejs') return 'NODE.JS';
+		if (fw === 'go') return 'GO';
+		if (fw === 'rust') return 'RUST';
+		return fw.toUpperCase();
+	}
+
+	function appRuntimeTone(site: SiteRecord): 'success' | 'info' | 'destructive' | 'neutral' {
+		const st = site.app_status?.active_state;
+		if (st === 'active') return 'success';
+		if (st === 'activating' || st === 'reloading') return 'info';
+		if (st === 'failed') return 'destructive';
+		return 'neutral';
+	}
+
+	function appRuntimeLabel(site: SiteRecord): string {
+		const st = site.app_status?.active_state || 'inactive';
+		if (st === 'active') return 'Running';
+		if (st === 'activating') return 'Starting';
+		if (st === 'failed') return 'Failed';
+		return 'Stopped';
+	}
+
 	const filteredSites = $derived.by(() => {
 		const q = searchQuery.trim().toLowerCase();
-		if (!q) return sites;
-		return sites.filter(
-			(s) =>
+		return sites.filter((s) => {
+			if (categoryFilter === 'app' && !isManagedApp(s)) return false;
+			if (categoryFilter === 'proxy' && s.framework !== 'proxy') return false;
+			if (categoryFilter === 'web' && (isManagedApp(s) || s.framework === 'proxy')) return false;
+			if (!q) return true;
+			return (
 				s.domain.toLowerCase().includes(q) ||
 				s.framework.toLowerCase().includes(q) ||
 				(s.root_path || '').toLowerCase().includes(q) ||
-				(s.exposed_to || '').toLowerCase().includes(q)
-		);
+				(s.exposed_to || '').toLowerCase().includes(q) ||
+				(s.app?.service_name || '').toLowerCase().includes(q)
+			);
+		});
 	});
 
 	// Pagination (Max 10 data per page)
@@ -140,6 +187,7 @@
 
 	$effect(() => {
 		const _ = searchQuery;
+		const __ = categoryFilter;
 		sitePage = 1;
 	});
 
@@ -191,6 +239,49 @@
 	function openEdit(site: SiteRecord) {
 		editingSite = site;
 		createOpen = true;
+	}
+
+	function openManageApp(site: SiteRecord) {
+		manageAppDomain = site.domain;
+		manageAppOpen = true;
+	}
+
+	async function runQuickAppAction(site: SiteRecord, action: 'start' | 'stop' | 'restart') {
+		appActionPending = { ...appActionPending, [site.domain]: true };
+		try {
+			const res = await cp.runWithSudoRetry(
+				`Mengontrol service systemd untuk ${site.domain} memerlukan hak akses administrator (sudo).`,
+				(sudoPass) => api.siteAppAction(site.domain, action, sudoPass)
+			);
+			if (!res) return;
+			const verb = action === 'start' ? 'dijalankan' : action === 'stop' ? 'dihentikan' : 'di-restart';
+			toast.success(`Service ${site.domain} berhasil ${verb}.`);
+			await loadSites();
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : `Gagal menjalankan ${action}`);
+		} finally {
+			const next = { ...appActionPending };
+			delete next[site.domain];
+			appActionPending = next;
+		}
+	}
+
+	async function triggerQuickAppBuild(site: SiteRecord) {
+		appActionPending = { ...appActionPending, [site.domain]: true };
+		try {
+			const res = await cp.runWithSudoRetry(
+				`Menjalankan build & restart service ${site.domain} memerlukan hak akses administrator (sudo).`,
+				(sudoPass) => api.buildSiteApp(site.domain, true, sudoPass)
+			);
+			if (!res) return;
+			cp.openTerminal(`Build ${site.domain} (${frameworkBadgeLabel(site.framework)})`);
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : 'Gagal memulai proses build');
+		} finally {
+			const next = { ...appActionPending };
+			delete next[site.domain];
+			appActionPending = next;
+		}
 	}
 
 	async function triggerLetsEncrypt(siteDomain: string, skipConfirm = false) {
@@ -396,7 +487,7 @@
 	async function deleteSite(site: SiteRecord) {
 		const hasEdgeExposure = isEdge && Boolean(site.exposed_to);
 		const hasVPSPublicDNS = isVPS && !isLocalOnlyDomain(site.domain);
-		if (hasEdgeExposure || hasVPSPublicDNS) {
+		if (hasEdgeExposure || hasVPSPublicDNS || isManagedApp(site)) {
 			deleteTarget = site;
 			deleteUnexpose = hasEdgeExposure;
 			deleteDNSRecord = false;
@@ -462,19 +553,38 @@
 		</Alert.Root>
 	{/if}
 
-	<search class="w-full sm:max-w-sm">
-		<InputGroup.Root>
-			<InputGroup.Addon align="inline-start">
-				<SearchIcon />
-			</InputGroup.Addon>
-			<InputGroup.Input
-				type="search"
-				placeholder="Cari domain, framework, atau path..."
-				aria-label="Cari virtual host"
-				bind:value={searchQuery}
-			/>
-		</InputGroup.Root>
-	</search>
+	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+		<search class="w-full sm:max-w-sm">
+			<InputGroup.Root>
+				<InputGroup.Addon align="inline-start">
+					<SearchIcon />
+				</InputGroup.Addon>
+				<InputGroup.Input
+					type="search"
+					placeholder="Cari domain, framework, unit, atau path..."
+					aria-label="Cari virtual host"
+					bind:value={searchQuery}
+				/>
+			</InputGroup.Root>
+		</search>
+
+		<ToggleGroup.Root
+			type="single"
+			value={categoryFilter}
+			onValueChange={(v) => {
+				if (v === 'all' || v === 'web' || v === 'app' || v === 'proxy') categoryFilter = v;
+			}}
+			variant="outline"
+			spacing={1}
+			class="grid w-full grid-cols-2 sm:inline-flex sm:w-auto"
+			aria-label="Filter tipe virtual host"
+		>
+			<ToggleGroup.Item value="all" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Semua</ToggleGroup.Item>
+			<ToggleGroup.Item value="web" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Web / PHP</ToggleGroup.Item>
+			<ToggleGroup.Item value="app" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Managed App</ToggleGroup.Item>
+			<ToggleGroup.Item value="proxy" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Proxy</ToggleGroup.Item>
+		</ToggleGroup.Root>
+	</div>
 
 	{#if loading}
 		<div class="flex flex-col gap-2">
@@ -552,14 +662,32 @@
 								{/if}
 							</Table.Cell>
 							<Table.Cell data-label="Framework">
-								<Badge variant="secondary" class="uppercase">{site.framework}</Badge>
+								<div class="flex flex-wrap items-center gap-1.5">
+									<Badge variant={isManagedApp(site) ? 'default' : 'secondary'} class="uppercase">
+										{frameworkBadgeLabel(site.framework)}
+									</Badge>
+									{#if isManagedApp(site)}
+										<StatusBadge tone={appRuntimeTone(site)} label={appRuntimeLabel(site)} />
+									{/if}
+								</div>
 							</Table.Cell>
 							<Table.Cell data-label="Target" class="font-mono text-xs">
-								{site.framework === 'proxy'
-									? `Forward :${site.proxy_port}`
-									: site.framework === 'static'
-										? 'Static HTML'
-										: `PHP ${site.php_version || '8.4'}`}
+								{#if isManagedApp(site)}
+									<div class="flex flex-col gap-0.5">
+										<span>127.0.0.1:{site.proxy_port}</span>
+										{#if site.app?.service_name}
+											<span class="truncate text-[11px] text-muted-foreground" title={`${site.app.service_name}.service`}>
+												{site.app.service_name}
+											</span>
+										{/if}
+									</div>
+								{:else if site.framework === 'proxy'}
+									Forward :{site.proxy_port}
+								{:else if site.framework === 'static'}
+									Static HTML
+								{:else}
+									PHP {site.php_version || '8.4'}
+								{/if}
 							</Table.Cell>
 							<Table.Cell data-label="Root">
 								{#if site.root_path && site.framework !== 'proxy'}
@@ -649,8 +777,24 @@
 								</Table.Cell>
 							{/if}
 							<Table.Cell data-label="Aksi" class="text-right">
-								{@const busySite = Boolean(sslPending[site.domain]) || Boolean(siteDeleting[site.domain])}
-								<div class="flex justify-end">
+								{@const busySite =
+									Boolean(sslPending[site.domain]) ||
+									Boolean(siteDeleting[site.domain]) ||
+									Boolean(appActionPending[site.domain])}
+								{@const managed = isManagedApp(site)}
+								{@const appRunning = site.app_status?.active_state === 'active'}
+								<div class="flex flex-wrap items-center justify-end gap-1.5">
+									{#if managed}
+										<Button
+											variant="outline"
+											size="xs"
+											disabled={busySite}
+											onclick={() => openManageApp(site)}
+										>
+											<SlidersHorizontalIcon data-icon="inline-start" />
+											Kelola
+										</Button>
+									{/if}
 									<DropdownMenu.Root>
 										<DropdownMenu.Trigger>
 											{#snippet child({ props })}
@@ -661,6 +805,9 @@
 													{:else if siteDeleting[site.domain]}
 														<Spinner data-icon="inline-start" />
 														Menghapus...
+													{:else if appActionPending[site.domain]}
+														<Spinner data-icon="inline-start" />
+														Service...
 													{:else}
 														Aksi
 														<ChevronDownIcon data-icon="inline-end" />
@@ -682,6 +829,34 @@
 														</a>
 													{/snippet}
 												</DropdownMenu.Item>
+												{#if managed}
+													<DropdownMenu.Item disabled={busySite} onclick={() => openManageApp(site)}>
+														<CpuIcon />
+														<span>Kelola App, .env &amp; Logs</span>
+													</DropdownMenu.Item>
+													{#if site.app?.build_command}
+														<DropdownMenu.Item disabled={busySite} onclick={() => triggerQuickAppBuild(site)}>
+															<HammerIcon />
+															<span>Rebuild &amp; Restart</span>
+														</DropdownMenu.Item>
+													{/if}
+													{#if appRunning}
+														<DropdownMenu.Item disabled={busySite} onclick={() => runQuickAppAction(site, 'restart')}>
+															<RotateCwIcon />
+															<span>Restart Service</span>
+														</DropdownMenu.Item>
+														<DropdownMenu.Item disabled={busySite} onclick={() => runQuickAppAction(site, 'stop')}>
+															<SquareIcon />
+															<span>Stop Service</span>
+														</DropdownMenu.Item>
+													{:else}
+														<DropdownMenu.Item disabled={busySite} onclick={() => runQuickAppAction(site, 'start')}>
+															<PlayIcon />
+															<span>Start Service</span>
+														</DropdownMenu.Item>
+													{/if}
+													<DropdownMenu.Separator />
+												{/if}
 												<DropdownMenu.Item disabled={busySite} onclick={() => openEdit(site)}>
 													<PencilIcon />
 													<span>Ubah Virtual Host</span>
@@ -764,6 +939,15 @@
 	onCreated={handleVhostCreated}
 	onUpdated={async () => {
 		await loadSites();
+	}}
+/>
+
+<ManageSiteAppModal
+	bind:open={manageAppOpen}
+	site={manageAppSite}
+	onUpdated={loadSites}
+	onEditVhost={(site) => {
+		openEdit(site);
 	}}
 />
 
@@ -867,6 +1051,16 @@
 		</Dialog.Header>
 
 		<div class="flex flex-col gap-3 py-1">
+			{#if deleteTarget && isManagedApp(deleteTarget)}
+				<Alert.Root>
+					<CpuIcon />
+					<Alert.Title>Pembersihan Service Systemd</Alert.Title>
+					<Alert.Description class="text-xs">
+						Unit <code class="font-mono">{deleteTarget.app?.service_name || `wdev-app-${deleteTarget.domain}`}.service</code> dan file environment terkelola akan dihentikan serta dihapus permanen. Folder proyek di <code class="font-mono break-all">{deleteTarget.root_path}</code> tetap aman di disk.
+					</Alert.Description>
+				</Alert.Root>
+			{/if}
+
 			{#if isEdge && deleteTarget?.exposed_to}
 				<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
 					<Checkbox id="del-unexpose" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={deleteUnexpose} />

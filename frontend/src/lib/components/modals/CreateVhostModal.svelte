@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
+	import * as Collapsible from '#lib/components/ui/collapsible/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
@@ -12,20 +13,25 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
+	import { Switch } from '#lib/components/ui/switch/index.js';
 	import FolderPickerDialog from '#lib/components/modals/FolderPickerDialog.svelte';
 	import { api } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
-	import type { FileRootInfo, SiteRecord } from '#lib/types/api.js';
+	import type { FileRootInfo, SiteAppInspectResult, SiteRecord } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import CpuIcon from '@lucide/svelte/icons/cpu';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
+	import HammerIcon from '@lucide/svelte/icons/hammer';
 	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 	import NetworkIcon from '@lucide/svelte/icons/network';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SaveIcon from '@lucide/svelte/icons/save';
+	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 
 	let {
 		open = $bindable(false),
@@ -70,21 +76,44 @@
 	let edgeSSLEnabled = $state(true);
 	let addLocalHosts = $state(false);
 
-	const frameworks = [
+	// Managed App (Node.js / Go / Rust via systemd) state
+	let buildCommand = $state('');
+	let startCommand = $state('');
+	let runUser = $state('');
+	let autoStart = $state(true);
+	let runBuildNow = $state(true);
+	let importProjectEnv = $state(true);
+	let inspectResult = $state<SiteAppInspectResult | null>(null);
+	let inspectLoading = $state(false);
+	let portSuggesting = $state(false);
+	let advancedAppOpen = $state(false);
+
+	const webFrameworks = [
 		{ value: 'laravel', label: 'Laravel (root di /public)' },
 		{ value: 'wordpress', label: 'WordPress' },
 		{ value: 'ci4', label: 'CodeIgniter 4 (root di /public)' },
 		{ value: 'ci3', label: 'CodeIgniter 3' },
 		{ value: 'symfony', label: 'Symfony (root di /public)' },
 		{ value: 'generic', label: 'Generic PHP' },
-		{ value: 'static', label: 'Static HTML (index.html)' },
-		{ value: 'proxy', label: 'Reverse Proxy (Node/Go/Python/Docker)' }
+		{ value: 'static', label: 'Static HTML (index.html)' }
 	];
+
+	const managedAppFrameworks = [
+		{ value: 'nodejs', label: 'Node.js (systemd · pnpm / npm / bun)' },
+		{ value: 'go', label: 'Go (systemd · Binary Service)' },
+		{ value: 'rust', label: 'Rust (systemd · Cargo Service)' }
+	];
+
+	const proxyFrameworks = [{ value: 'proxy', label: 'Reverse Proxy (Manual / Eksternal / Docker)' }];
+
+	const frameworks = [...webFrameworks, ...managedAppFrameworks, ...proxyFrameworks];
 
 	const phpVersions = ['8.4', '8.3', '8.2', '8.1'];
 
 	const isProxy = $derived(framework === 'proxy');
 	const isStatic = $derived(framework === 'static');
+	const isManagedApp = $derived(framework === 'nodejs' || framework === 'go' || framework === 'rust');
+	const usesProxyPort = $derived(isProxy || isManagedApp);
 	const isVPS = $derived(modeStore.mode === 'vps');
 	const isEdge = $derived(modeStore.mode === 'edge');
 	const isLocal = $derived(modeStore.mode === 'local');
@@ -142,6 +171,9 @@
 	const activePreset = $derived.by(() => {
 		if (framework === 'laravel' && phpVersion === '8.4') return 'laravel';
 		if (framework === 'wordpress' && phpVersion === '8.4') return 'wordpress';
+		if (framework === 'nodejs') return 'nodejs';
+		if (framework === 'go') return 'go';
+		if (framework === 'rust') return 'rust';
 		if (framework === 'proxy') return 'proxy';
 		if (framework === 'static') return 'static';
 		return 'custom';
@@ -149,11 +181,14 @@
 
 	const metaSubtitle = $derived.by(() => {
 		const dom = effectiveDomain || (isLocal ? '<domain>.test' : '<domain>');
-		const targetDesc = isProxy
-			? `http://127.0.0.1:${proxyPortStr.trim() || '3000'}`
-			: rootPath.trim()
-				? rootPath.trim()
-				: `/var/www/${effectiveDomain || '<domain>'}`;
+		const portDisplay = proxyPortStr.trim() || '3100';
+		const targetDesc = isManagedApp
+			? `systemd → 127.0.0.1:${portDisplay}`
+			: isProxy
+				? `http://127.0.0.1:${proxyPortStr.trim() || '3000'}`
+				: rootPath.trim()
+					? rootPath.trim()
+					: `/var/www/${effectiveDomain || '<domain>'}`;
 		if (isEdge) {
 			return `${dom} → ${targetDesc} · Tunnel VPS Edge${modeStore.publicIP ? ` (${modeStore.publicIP})` : ''}`;
 		}
@@ -171,12 +206,97 @@
 		}
 	}
 
-	function applyPreset(preset: 'laravel' | 'wordpress' | 'proxy' | 'static') {
+	async function fillSuggestedFreePort(force = false) {
+		if (portSuggesting) return;
+		if (!force && isEdit && siteToEdit?.proxy_port) return;
+		portSuggesting = true;
+		try {
+			const res = await api.suggestSitePort();
+			if (res?.port) {
+				proxyPortStr = String(res.port);
+			}
+		} catch {
+			if (!proxyPortStr.trim()) proxyPortStr = '3100';
+		} finally {
+			portSuggesting = false;
+		}
+	}
+
+	function applyManagedAppDefaults(rt: 'nodejs' | 'go' | 'rust', onlyIfEmpty = true) {
+		if (rt === 'nodejs') {
+			if (!onlyIfEmpty || !startCommand.trim()) startCommand = 'pnpm run start';
+		} else if (rt === 'go') {
+			if (!onlyIfEmpty || !buildCommand.trim()) buildCommand = 'go build -o ./bin/app .';
+			if (!onlyIfEmpty || !startCommand.trim()) startCommand = './bin/app';
+		} else if (rt === 'rust') {
+			if (!onlyIfEmpty || !buildCommand.trim()) buildCommand = 'cargo build --release';
+			if (!onlyIfEmpty || !startCommand.trim()) startCommand = './target/release/app';
+		}
+		runBuildNow = Boolean(buildCommand.trim());
+	}
+
+	async function inspectFolder(dirPath: string, applyDetected = true) {
+		const target = dirPath.trim();
+		if (!target) return;
+		inspectLoading = true;
+		try {
+			const res = await api.inspectSiteDir(target);
+			inspectResult = res.inspect;
+			if (!isEdit && res.suggested_port && (!proxyPortStr.trim() || proxyPortStr === '3000')) {
+				proxyPortStr = String(res.suggested_port);
+			}
+			if (applyDetected && res.inspect?.detected) {
+				if (res.inspect.runtime) {
+					framework = res.inspect.runtime;
+				}
+				if (res.inspect.recommended_build !== undefined) {
+					buildCommand = res.inspect.recommended_build || '';
+				}
+				if (res.inspect.recommended_start) {
+					startCommand = res.inspect.recommended_start;
+				}
+				importProjectEnv = Boolean(res.inspect.has_dot_env);
+				runBuildNow = Boolean(buildCommand.trim());
+			}
+		} catch (err) {
+			inspectResult = null;
+			toast.error(err instanceof Error ? err.message : 'Gagal memeriksa direktori proyek');
+		} finally {
+			inspectLoading = false;
+		}
+	}
+
+	function onFrameworkChanged(nextFw: string) {
+		framework = nextFw;
 		formError = '';
-		framework = preset;
+		if (nextFw === 'nodejs' || nextFw === 'go' || nextFw === 'rust') {
+			applyManagedAppDefaults(nextFw, true);
+			if (!isEdit && (!proxyPortStr.trim() || proxyPortStr === '3000')) {
+				void fillSuggestedFreePort(true);
+			}
+			if (rootPath.trim() && !inspectResult) {
+				void inspectFolder(rootPath.trim(), false);
+			}
+		} else if (nextFw === 'proxy' && !proxyPortStr.trim()) {
+			proxyPortStr = '3000';
+		}
+	}
+
+	function applyPreset(preset: 'laravel' | 'wordpress' | 'nodejs' | 'go' | 'rust' | 'proxy' | 'static') {
+		formError = '';
 		if (preset === 'laravel' || preset === 'wordpress') {
+			framework = preset;
 			phpVersion = '8.4';
-		} else if (preset === 'proxy' && !proxyPortStr.trim()) {
+			return;
+		}
+		if (preset === 'nodejs' || preset === 'go' || preset === 'rust') {
+			buildCommand = '';
+			startCommand = '';
+			onFrameworkChanged(preset);
+			return;
+		}
+		framework = preset;
+		if (preset === 'proxy' && !proxyPortStr.trim()) {
 			proxyPortStr = '3000';
 		}
 	}
@@ -208,13 +328,21 @@
 					formError = '';
 					framework = siteToEdit.framework || 'laravel';
 					phpVersion = siteToEdit.php_version || '8.4';
-					rootPath = siteToEdit.root_path || '';
+					rootPath = siteToEdit.app?.working_dir || siteToEdit.root_path || '';
 					selectedDriveRoot = null;
-					proxyPortStr = siteToEdit.proxy_port ? String(siteToEdit.proxy_port) : '3000';
+					proxyPortStr = siteToEdit.proxy_port ? String(siteToEdit.proxy_port) : '3100';
 					sslEnabled = Boolean(siteToEdit.ssl_enabled);
 					edgeExposeEnabled = isEdge && Boolean(siteToEdit.exposed_to);
 					edgeSSLEnabled = true;
 					addLocalHosts = false;
+					buildCommand = siteToEdit.app?.build_command || '';
+					startCommand = siteToEdit.app?.start_command || '';
+					runUser = siteToEdit.app?.run_user || '';
+					autoStart = siteToEdit.app?.auto_start ?? true;
+					runBuildNow = false;
+					importProjectEnv = false;
+					inspectResult = null;
+					advancedAppOpen = Boolean(siteToEdit.app?.run_user);
 				} else {
 					domainMode = isEdge ? 'subdomain' : 'custom';
 					domain = '';
@@ -231,6 +359,14 @@
 					edgeExposeEnabled = isEdge;
 					edgeSSLEnabled = true;
 					addLocalHosts = false;
+					buildCommand = '';
+					startCommand = '';
+					runUser = '';
+					autoStart = true;
+					runBuildNow = true;
+					importProjectEnv = true;
+					inspectResult = null;
+					advancedAppOpen = false;
 				}
 
 				void api
@@ -305,38 +441,67 @@
 		}
 
 		const proxyPort = parseInt(proxyPortStr, 10) || 0;
-		if (isProxy && (proxyPort < 1 || proxyPort > 65535)) {
-			formError = 'Port aplikasi proxy harus antara 1 sampai 65535.';
+		if (usesProxyPort && (proxyPort < 1 || proxyPort > 65535)) {
+			formError = 'Port aplikasi lokal harus antara 1 sampai 65535.';
 			document.getElementById('site-proxy-port')?.focus();
 			return;
 		}
+		if (isManagedApp) {
+			if (!rootPath.trim()) {
+				formError = 'Direktori proyek wajib dipilih untuk Managed App.';
+				document.getElementById('site-root-path')?.focus();
+				return;
+			}
+			if (!startCommand.trim()) {
+				formError = 'Start Command wajib diisi (mis. pnpm run start, ./bin/app, atau cargo run).';
+				document.getElementById('site-start-cmd')?.focus();
+				return;
+			}
+		}
+
+		const appConfigPayload = isManagedApp
+			? {
+					build_command: buildCommand.trim(),
+					start_command: startCommand.trim(),
+					...(runUser.trim() ? { run_user: runUser.trim() } : {}),
+					auto_start: autoStart,
+					run_build_now: runBuildNow && Boolean(buildCommand.trim()),
+					import_project_env: !isEdit && importProjectEnv
+				}
+			: undefined;
 
 		if (isEdit) {
 			creating = true;
 			try {
 				const res = await cp.runWithSudoRetry(
-					`Pembaruan konfigurasi Nginx untuk ${cleanDomain} memerlukan hak akses administrator (sudo).`,
+					`Pembaruan konfigurasi Nginx${isManagedApp ? ' & service systemd' : ''} untuk ${cleanDomain} memerlukan hak akses administrator (sudo).`,
 					(sudoPass) =>
 						api.updateSite(cleanDomain, {
 							domain: cleanDomain,
 							framework,
-							php_version: isProxy || isStatic ? '' : phpVersion,
+							php_version: usesProxyPort || isStatic ? '' : phpVersion,
 							root_path: rootPath.trim(),
 							proxy_port: proxyPort,
 							ssl_enabled: sslEnabled,
+							...(appConfigPayload ? { app_config: appConfigPayload } : {}),
 							sudo_pass: sudoPass
 						})
 				);
 				if (res) {
 					toast.success(`Virtual host ${cleanDomain} berhasil diperbarui!`);
 					open = false;
+					if (res.build_task_id) {
+						cp.openTerminal(`Build App: ${cleanDomain}`);
+					} else if (res.build_error) {
+						toast.warning(`VHost diperbarui, namun build otomatis gagal dimulai: ${res.build_error}`);
+					}
 					if (onUpdated) {
 						await onUpdated(
 							res.site ||
 								({
 									...siteToEdit,
 									framework,
-									php_version: isProxy || isStatic ? '' : phpVersion,
+									php_version: usesProxyPort || isStatic ? '' : phpVersion,
 									root_path: rootPath.trim(),
 									proxy_port: proxyPort,
 									ssl_enabled: sslEnabled
@@ -358,22 +523,29 @@
 
 		creating = true;
 		try {
-			const res = await api.createSite({
-				domain: cleanDomain,
-				framework,
-				php_version: isProxy || isStatic ? '' : phpVersion,
-				root_path: rootPath.trim(),
-				proxy_port: proxyPort,
-				ssl_enabled: wantVPSLetsEncrypt || wantEdgeTunnel ? false : sslEnabled,
-				...(isEdge ? { add_hosts: addLocalHosts } : {}),
-				...(wantEdgeTunnel
-					? {
-							expose_edge: true,
-							edge_domain: cleanDomain,
-							edge_ssl: edgeSSLEnabled
-						}
-					: {})
-			});
+			const res = await cp.runWithSudoRetry(
+				`Pembuatan Virtual Host ${cleanDomain}${isManagedApp ? ' & service systemd' : ''} memerlukan hak akses administrator (sudo).`,
+				(sudoPass) =>
+					api.createSite({
+						domain: cleanDomain,
+						framework,
+						php_version: usesProxyPort || isStatic ? '' : phpVersion,
+						root_path: rootPath.trim(),
+						proxy_port: proxyPort,
+						ssl_enabled: wantVPSLetsEncrypt || wantEdgeTunnel ? false : sslEnabled,
+						...(isEdge ? { add_hosts: addLocalHosts } : {}),
+						...(wantEdgeTunnel
+							? {
+									expose_edge: true,
+									edge_domain: cleanDomain,
+									edge_ssl: edgeSSLEnabled
+								}
+							: {}),
+						...(appConfigPayload ? { app_config: appConfigPayload } : {}),
+						...(sudoPass ? { sudo_pass: sudoPass } : {})
+					})
+			);
+			if (!res) return;
 
 			if (res?.edge_error) {
 				toast.warning(
@@ -390,6 +562,11 @@
 			}
 
 			open = false;
+			if (res?.build_task_id) {
+				cp.openTerminal(`Build App: ${cleanDomain}`);
+			} else if (res?.build_error) {
+				toast.warning(`VHost dibuat, namun build otomatis gagal dimulai: ${res.build_error}`);
+			}
 			if (onCreated) {
 				await onCreated({ domain: cleanDomain, wantVPSLetsEncrypt });
 			}
@@ -435,7 +612,7 @@
 							size="xs"
 							onclick={() => applyPreset('laravel')}
 						>
-							Laravel (PHP 8.4)
+							Laravel
 						</Button>
 						<Button
 							type="button"
@@ -447,11 +624,35 @@
 						</Button>
 						<Button
 							type="button"
+							variant={activePreset === 'nodejs' ? 'default' : 'outline'}
+							size="xs"
+							onclick={() => applyPreset('nodejs')}
+						>
+							Node.js (systemd)
+						</Button>
+						<Button
+							type="button"
+							variant={activePreset === 'go' ? 'default' : 'outline'}
+							size="xs"
+							onclick={() => applyPreset('go')}
+						>
+							Go (systemd)
+						</Button>
+						<Button
+							type="button"
+							variant={activePreset === 'rust' ? 'default' : 'outline'}
+							size="xs"
+							onclick={() => applyPreset('rust')}
+						>
+							Rust (systemd)
+						</Button>
+						<Button
+							type="button"
 							variant={activePreset === 'proxy' ? 'default' : 'outline'}
 							size="xs"
 							onclick={() => applyPreset('proxy')}
 						>
-							Reverse Proxy
+							Proxy Manual
 						</Button>
 						<Button
 							type="button"
@@ -650,13 +851,34 @@
 						<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 							<Field.Field>
 								<Field.FieldLabel for="site-framework">Framework / Pola Aplikasi</Field.FieldLabel>
-								<Select.Root type="single" bind:value={framework}>
+								<Select.Root
+									type="single"
+									value={framework}
+									onValueChange={(v) => {
+										if (v) onFrameworkChanged(v);
+									}}
+								>
 									<Select.Trigger id="site-framework" class="h-11 w-full text-base sm:h-9 sm:text-sm">
 										<span class="truncate">{frameworks.find((f) => f.value === framework)?.label ?? framework}</span>
 									</Select.Trigger>
 									<Select.Content>
 										<Select.Group>
-											{#each frameworks as fw (fw.value)}
+											<Select.Label>Web &amp; PHP</Select.Label>
+											{#each webFrameworks as fw (fw.value)}
+												<Select.Item value={fw.value}>{fw.label}</Select.Item>
+											{/each}
+										</Select.Group>
+										<Select.Separator />
+										<Select.Group>
+											<Select.Label>Managed App (systemd)</Select.Label>
+											{#each managedAppFrameworks as fw (fw.value)}
+												<Select.Item value={fw.value}>{fw.label}</Select.Item>
+											{/each}
+										</Select.Group>
+										<Select.Separator />
+										<Select.Group>
+											<Select.Label>Reverse Proxy Manual</Select.Label>
+											{#each proxyFrameworks as fw (fw.value)}
 												<Select.Item value={fw.value}>{fw.label}</Select.Item>
 											{/each}
 										</Select.Group>
@@ -664,23 +886,47 @@
 								</Select.Root>
 							</Field.Field>
 
-							{#if isProxy}
+							{#if usesProxyPort}
 								<Field.Field>
 									<Field.FieldLabel for="site-proxy-port">Port Aplikasi Lokal</Field.FieldLabel>
-									<Input
-										id="site-proxy-port"
-										type="text"
-										name="proxy_port"
-										class="h-11 font-mono text-base sm:h-9 sm:text-sm"
-										inputmode="numeric"
-										pattern="[0-9]+"
-										enterkeyhint="done"
-										placeholder="3000"
-										bind:value={proxyPortStr}
-										oninput={() => (formError = '')}
-										required
-									/>
-									<Field.FieldDescription>Contoh: 3000 (Node/Vite), 8080 (Go/Docker), atau 3200 (Panel).</Field.FieldDescription>
+									<InputGroup.Root class="h-11 sm:h-9">
+										<InputGroup.Input
+											id="site-proxy-port"
+											type="text"
+											name="proxy_port"
+											class="h-full font-mono text-base sm:text-sm"
+											inputmode="numeric"
+											pattern="[0-9]+"
+											enterkeyhint="done"
+											placeholder={isManagedApp ? '3100' : '3000'}
+											bind:value={proxyPortStr}
+											oninput={() => (formError = '')}
+											required
+										/>
+										{#if isManagedApp}
+											<InputGroup.Addon align="inline-end">
+												<Button
+													type="button"
+													variant="ghost"
+													size="xs"
+													class="h-7 px-2 text-xs"
+													disabled={portSuggesting}
+													onclick={() => fillSuggestedFreePort(true)}
+												>
+													{#if portSuggesting}
+														<Spinner data-icon="inline-start" />
+													{:else}
+														Auto
+													{/if}
+												</Button>
+											</InputGroup.Addon>
+										{/if}
+									</InputGroup.Root>
+									<Field.FieldDescription>
+										{isManagedApp
+											? 'Aplikasi dijalankan pada localhost port ini dan diteruskan Nginx (env PORT diatur otomatis).'
+											: 'Contoh: 3000 (Node/Vite), 8080 (Go/Docker), atau 3200 (Panel).'}
+									</Field.FieldDescription>
 								</Field.Field>
 							{:else if !isStatic}
 								<Field.Field>
@@ -710,17 +956,21 @@
 
 							{#if !isProxy}
 								<Field.Field class="sm:col-span-2">
-									<Field.FieldLabel for="site-root-path">Document Root (Opsional)</Field.FieldLabel>
+									<Field.FieldLabel for="site-root-path">
+										{isManagedApp ? 'Direktori Proyek Aplikasi (Wajib)' : 'Document Root (Opsional)'}
+									</Field.FieldLabel>
 									<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
 										<Input
 											id="site-root-path"
 											name="root_path"
 											class="h-11 min-w-0 flex-1 font-mono text-base sm:h-9 sm:text-xs"
-											placeholder={effectiveDomain
-												? `/var/www/${effectiveDomain}`
-												: isLocal
-													? '/var/www/proyekanda.test'
-													: '/var/www/domainanda.com'}
+											placeholder={isManagedApp
+												? '/home/dietpi/apps/my-app'
+												: effectiveDomain
+													? `/var/www/${effectiveDomain}`
+													: isLocal
+														? '/var/www/proyekanda.test'
+														: '/var/www/domainanda.com'}
 											autocorrect="off"
 											autocapitalize="none"
 											spellcheck={false}
@@ -729,18 +979,37 @@
 											oninput={() => {
 												selectedDriveRoot = null;
 											}}
+											required={isManagedApp}
 										/>
-										<Button
-											type="button"
-											variant="outline"
-											class="min-h-11 w-full shrink-0 sm:min-h-0 sm:h-9 sm:w-auto"
-											onclick={() => (folderPickerOpen = true)}
-										>
-											<FolderOpenIcon data-icon="inline-start" />
-											Cari Folder
-										</Button>
+										<div class="grid grid-cols-1 gap-2 sm:flex sm:shrink-0 sm:items-center">
+											{#if isManagedApp}
+												<Button
+													type="button"
+													variant="secondary"
+													class="min-h-11 sm:min-h-0 sm:h-9"
+													disabled={inspectLoading || !rootPath.trim()}
+													onclick={() => inspectFolder(rootPath, true)}
+												>
+													{#if inspectLoading}
+														<Spinner data-icon="inline-start" />
+													{:else}
+														<SparklesIcon data-icon="inline-start" />
+													{/if}
+													Deteksi Proyek
+												</Button>
+											{/if}
+											<Button
+												type="button"
+												variant="outline"
+												class="min-h-11 w-full shrink-0 sm:min-h-0 sm:h-9 sm:w-auto"
+												onclick={() => (folderPickerOpen = true)}
+											>
+												<FolderOpenIcon data-icon="inline-start" />
+												Cari Folder
+											</Button>
+										</div>
 									</div>
-									{#if detectedDrives.length > 0}
+									{#if detectedDrives.length > 0 && !isManagedApp}
 										<div class="flex flex-wrap items-center gap-1.5 pt-1">
 											<span class="text-xs text-muted-foreground">Drive cepat:</span>
 											<Button
@@ -774,12 +1043,175 @@
 										</div>
 									{/if}
 									<Field.FieldDescription>
-										Kosongkan untuk otomatis di <code>/var/www/&lt;domain&gt;</code>, atau klik <strong>Cari Folder</strong>.
-										{#if !isStatic}
-											Untuk Laravel/CI4/Symfony pilih folder root proyek (<code>/public</code> ditambahkan otomatis).
+										{#if isManagedApp}
+											Pilih folder kode proyek (<code>package.json</code>, <code>go.mod</code>, atau <code>Cargo.toml</code>) di bawah <code>/home</code>, <code>/var/www</code>, <code>/srv</code>, atau <code>/mnt</code>.
+										{:else}
+											Kosongkan untuk otomatis di <code>/var/www/&lt;domain&gt;</code>, atau klik <strong>Cari Folder</strong>.
+											{#if !isStatic}
+												Untuk Laravel/CI4/Symfony pilih folder root proyek (<code>/public</code> ditambahkan otomatis).
+											{/if}
 										{/if}
 									</Field.FieldDescription>
 								</Field.Field>
+							{/if}
+
+							{#if isManagedApp}
+								{#if inspectResult?.detected}
+									<div class="flex flex-col gap-2 rounded-lg border bg-muted/35 p-3 sm:col-span-2">
+										<div class="flex flex-wrap items-center justify-between gap-2">
+											<div class="flex flex-wrap items-center gap-2 text-xs">
+												<CpuIcon class="size-3.5 text-primary" />
+												<span class="font-medium text-foreground">
+													Terdeteksi: {inspectResult.runtime?.toUpperCase()}
+													{inspectResult.package_manager ? ` (${inspectResult.package_manager})` : ''}
+												</span>
+												{#if inspectResult.app_name}
+													<Badge variant="outline" class="font-mono text-[11px]">{inspectResult.app_name}</Badge>
+												{/if}
+												{#if !inspectResult.toolchain_installed}
+													<Badge variant="destructive" class="text-[11px]">Toolchain belum terpasang</Badge>
+												{/if}
+											</div>
+											{#if inspectResult.has_dot_env}
+												<Badge variant="secondary" class="text-[11px]">
+													.env proyek ({inspectResult.dot_env_var_count} var)
+												</Badge>
+											{/if}
+										</div>
+
+										{#if inspectResult.candidates && inspectResult.candidates.length > 0}
+											<div class="flex flex-wrap items-center gap-1.5">
+												<span class="text-[11px] text-muted-foreground">Mode cepat:</span>
+												{#each inspectResult.candidates as cand (cand.label)}
+													{@const activeCand = startCommand.trim() === cand.start_command}
+													<Button
+														type="button"
+														size="xs"
+														variant={activeCand ? 'default' : 'outline'}
+														class="h-7 text-[11px]"
+														onclick={() => {
+															buildCommand = cand.build_command || '';
+															startCommand = cand.start_command;
+															runBuildNow = Boolean(buildCommand.trim());
+														}}
+													>
+														{cand.label}
+													</Button>
+												{/each}
+											</div>
+										{/if}
+									</div>
+								{/if}
+
+								<Field.Field class="sm:col-span-2">
+									<Field.FieldLabel for="site-build-cmd">Build Command (Opsional)</Field.FieldLabel>
+									<Input
+										id="site-build-cmd"
+										name="build_command"
+										class="h-11 font-mono text-base sm:h-9 sm:text-xs"
+										placeholder={framework === 'nodejs'
+											? 'pnpm install && pnpm run build'
+											: framework === 'go'
+												? 'go build -o ./bin/app .'
+												: 'cargo build --release'}
+										autocorrect="off"
+										autocapitalize="none"
+										spellcheck={false}
+										bind:value={buildCommand}
+										oninput={() => {
+											if (!buildCommand.trim()) runBuildNow = false;
+										}}
+									/>
+									<Field.FieldDescription>
+										Dijalankan saat tombol <strong>Build &amp; Restart</strong> ditekan (output terminal live). Kosongkan bila menjalankan mode dev langsung.
+									</Field.FieldDescription>
+								</Field.Field>
+
+								<Field.Field class="sm:col-span-2">
+									<Field.FieldLabel for="site-start-cmd">Start Command (`ExecStart`, Wajib)</Field.FieldLabel>
+									<Input
+										id="site-start-cmd"
+										name="start_command"
+										class="h-11 font-mono text-base sm:h-9 sm:text-xs"
+										placeholder={framework === 'nodejs'
+											? 'pnpm run start atau pnpm run dev'
+											: framework === 'go'
+												? './bin/app'
+												: './target/release/app'}
+										autocorrect="off"
+										autocapitalize="none"
+										spellcheck={false}
+										bind:value={startCommand}
+										required
+									/>
+									<Field.FieldDescription>
+										Perintah yang dikelola daemon <code>systemd</code>. Gunakan <code>$PORT</code> bila CLI butuh flag port manual (mis. <code>pnpm run dev -- --port $PORT</code>).
+									</Field.FieldDescription>
+								</Field.Field>
+
+								<div class="flex flex-col gap-3 rounded-lg border bg-muted/25 p-3 sm:col-span-2">
+									<div class="flex items-center justify-between gap-3">
+										<div class="flex flex-col gap-0.5">
+											<span class="text-xs font-medium text-foreground">Auto-Start Saat Server Boot</span>
+											<span class="text-[11px] text-muted-foreground">Aktifkan <code>systemctl enable</code> untuk unit aplikasi ini.</span>
+										</div>
+										<Switch bind:checked={autoStart} aria-label="Auto-start saat boot" />
+									</div>
+
+									{#if buildCommand.trim()}
+										<div class="flex items-center justify-between gap-3 border-t pt-2.5">
+											<div class="flex flex-col gap-0.5">
+												<span class="text-xs font-medium text-foreground">
+													{isEdit ? 'Rebuild & Restart Service Setelah Simpan' : 'Jalankan Build & Start Setelah VHost Dibuat'}
+												</span>
+												<span class="text-[11px] text-muted-foreground">
+													Membuka Live Terminal untuk memantau proses build hingga aplikasi menyala.
+												</span>
+											</div>
+											<Switch bind:checked={runBuildNow} aria-label="Jalankan build sekarang" />
+										</div>
+									{/if}
+
+									{#if !isEdit && inspectResult?.has_dot_env}
+										<div class="flex items-center justify-between gap-3 border-t pt-2.5">
+											<div class="flex flex-col gap-0.5">
+												<span class="text-xs font-medium text-foreground">Impor File `.env` Proyek</span>
+												<span class="text-[11px] text-muted-foreground">
+													Salin {inspectResult.dot_env_var_count} variabel dari <code>.env</code> proyek ke file env terkelola <code>systemd</code> (<code>0600</code>).
+												</span>
+											</div>
+											<Switch bind:checked={importProjectEnv} aria-label="Impor .env proyek" />
+										</div>
+									{/if}
+								</div>
+
+								<Collapsible.Root bind:open={advancedAppOpen} class="sm:col-span-2">
+									<Collapsible.Trigger class="flex w-full items-center justify-between rounded-md border bg-muted/20 px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground">
+										<span class="flex items-center gap-1.5">
+											<HammerIcon class="size-3.5" />
+											Opsi Lanjutan Systemd (Run As User)
+										</span>
+										<ChevronDownIcon class={advancedAppOpen ? 'size-4 rotate-180 transition-transform' : 'size-4 transition-transform'} />
+									</Collapsible.Trigger>
+									<Collapsible.Content class="pt-3">
+										<Field.Field>
+											<Field.FieldLabel for="site-run-user">Run As User Linux (Opsional)</Field.FieldLabel>
+											<Input
+												id="site-run-user"
+												name="run_user"
+												class="h-10 font-mono text-base sm:h-9 sm:text-xs"
+												placeholder="Kosongkan = user non-root aktif (mis. dietpi)"
+												autocorrect="off"
+												autocapitalize="none"
+												spellcheck={false}
+												bind:value={runUser}
+											/>
+											<Field.FieldDescription>
+												Disarankan tetap non-root agar kepemilikan folder proyek (<code>node_modules</code>, <code>target</code>) tetap konsisten.
+											</Field.FieldDescription>
+										</Field.Field>
+									</Collapsible.Content>
+								</Collapsible.Root>
 							{/if}
 						</Field.FieldGroup>
 					</Field.FieldSet>
@@ -885,5 +1317,8 @@
 	onSelect={(picked) => {
 		selectedDriveRoot = null;
 		rootPath = picked;
+		if (isManagedApp) {
+			void inspectFolder(picked, !isEdit);
+		}
 	}}
 />

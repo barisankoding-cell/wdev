@@ -22,6 +22,7 @@ import (
 	"wdev/internal/server"
 	"wdev/internal/serviceconfig"
 	"wdev/internal/site"
+	"wdev/internal/siteapp"
 	"wdev/internal/store"
 	"wdev/internal/switcher"
 	"wdev/internal/tui"
@@ -190,6 +191,10 @@ func main() {
 	runMgr := runner.New(db)
 	inst := installer.New(cfg, db)
 	siteMgr := site.NewWithSudo(cfg, db, inst.GetSudoPassword)
+	siteAppMgr := siteapp.New(cfg, db, inst.GetSudoPassword)
+	siteMgr.SetAppCleanupHook(func(domain string) error {
+		return siteAppMgr.RemoveApp(context.Background(), domain)
+	})
 	swMgr := switcher.NewWithInstaller(inst)
 	cfMgr := cloudflare.New(cfg, db)
 	cfMgr.SetSudoPasswordFn(inst.GetSudoPassword)

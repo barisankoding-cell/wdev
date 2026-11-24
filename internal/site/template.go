@@ -108,7 +108,7 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     {{end}}
 
-    {{if eq .Framework "proxy"}}
+    {{if or .UseReverseProxy (eq .Framework "proxy")}}
     client_max_body_size 260m;
 
     location / {

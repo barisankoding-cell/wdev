@@ -80,6 +80,64 @@ export interface SystemStats {
 	runtimes: Record<string, string>;
 }
 
+export type SiteAppRuntime = 'nodejs' | 'go' | 'rust';
+
+export interface SiteAppConfig {
+	domain: string;
+	runtime: SiteAppRuntime;
+	working_dir: string;
+	build_command?: string;
+	start_command: string;
+	port: number;
+	run_user: string;
+	auto_start: boolean;
+	service_name: string;
+	env_file: string;
+	last_build_status?: string;
+	last_build_at?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface SiteAppRuntimeStatus {
+	service_name: string;
+	unit_exists: boolean;
+	active_state: 'active' | 'activating' | 'inactive' | 'failed' | string;
+	sub_state: string;
+	enabled: boolean;
+	main_pid: number;
+	memory_bytes: number;
+	started_at?: string;
+}
+
+export interface SiteAppScriptCandidate {
+	label: string;
+	build_command?: string;
+	start_command: string;
+}
+
+export interface SiteAppInspectResult {
+	working_dir: string;
+	detected: boolean;
+	runtime?: SiteAppRuntime;
+	app_name?: string;
+	package_manager?: string;
+	scripts?: string[];
+	candidates?: SiteAppScriptCandidate[];
+	recommended_build?: string;
+	recommended_start?: string;
+	has_dot_env: boolean;
+	dot_env_var_count: number;
+	detected_port_hint?: number;
+	toolchain_installed: boolean;
+	toolchain_binary?: string;
+}
+
+export interface SiteAppEnvEntry {
+	key: string;
+	value: string;
+}
+
 export interface SiteRecord {
 	domain: string;
 	root_path: string;
@@ -92,6 +150,18 @@ export interface SiteRecord {
 	ssl_days_left?: number;
 	exposed_to: string;
 	created_at: string;
+	app?: SiteAppConfig;
+	app_status?: SiteAppRuntimeStatus;
+}
+
+export interface SiteAppInputConfig {
+	build_command?: string;
+	start_command: string;
+	run_user?: string;
+	auto_start?: boolean;
+	run_build_now?: boolean;
+	import_project_env?: boolean;
+	initial_env_raw?: string;
 }
 
 export interface CreateSitePayload {
@@ -106,10 +176,13 @@ export interface CreateSitePayload {
 	expose_edge?: boolean;
 	edge_domain?: string;
 	edge_ssl?: boolean;
+	sudo_pass?: string;
+	app_config?: SiteAppInputConfig;
 }
 
 export interface CreateSiteResponse {
 	status: string;
+	message?: string;
 	dns_synced?: boolean;
 	dns_zone?: string;
 	dns_message?: string;
@@ -117,6 +190,9 @@ export interface CreateSiteResponse {
 	edge_domain?: string;
 	edge_ssl?: boolean;
 	edge_error?: string;
+	app?: SiteAppConfig;
+	build_task_id?: number;
+	build_error?: string;
 }
 
 export interface DeleteSiteResponse {

@@ -65,6 +65,7 @@ type Manager struct {
 	store         *store.Store
 	sudoPassFn    func() string
 	serverModeFn  func() string
+	appCleanupFn  func(domain string) error
 	skipNginxExec bool
 	certbotExecFn func(ctx context.Context, cb func(string), bin string, args []string) error
 }
@@ -91,17 +92,18 @@ type StaticVHostResult struct {
 }
 
 type TemplateData struct {
-	Domain         string
-	ServerNames    string
-	EffectiveRoot  string
-	Framework      string
-	ProxyPort      int
-	SSLEnabled     bool
-	IPv6Enabled    bool
-	CertFile       string
-	KeyFile        string
-	PHPSocket      string
-	PHPFastCGIPass string
+	Domain          string
+	ServerNames     string
+	EffectiveRoot   string
+	Framework       string
+	UseReverseProxy bool
+	ProxyPort       int
+	SSLEnabled      bool
+	IPv6Enabled     bool
+	CertFile        string
+	KeyFile         string
+	PHPSocket       string
+	PHPFastCGIPass  string
 }
 
 func New(cfg *config.Config, s *store.Store) *Manager {
@@ -165,6 +167,88 @@ func (m *Manager) SetSkipNginxExec(skip bool) {
 // SetCertbotExecFn mengganti eksekutor certbot (dipakai di unit test terisolasi).
 func (m *Manager) SetCertbotExecFn(fn func(ctx context.Context, cb func(string), bin string, args []string) error) {
 	m.certbotExecFn = fn
+}
+
+// SetAppCleanupHook mendaftarkan callback pembersihan layanan Managed App (systemd) saat DeleteSite dipanggil.
+func (m *Manager) SetAppCleanupHook(fn func(domain string) error) {
+	m.appCleanupFn = fn
+}
+
+// UsesReverseProxy melaporkan apakah framework VHost meneruskan trafik Nginx ke port lokal (proxy atau Managed App).
+func UsesReverseProxy(framework string) bool {
+	fw := strings.ToLower(strings.TrimSpace(framework))
+	return fw == "proxy" || store.IsManagedAppFramework(fw)
+}
+
+func (m *Manager) resolveAndValidateTarget(opts *CreateOptions, existing *store.SiteRecord) (string, error) {
+	fw := strings.ToLower(strings.TrimSpace(opts.Framework))
+	if fw == "" {
+		if existing != nil && existing.Framework != "" {
+			fw = strings.ToLower(strings.TrimSpace(existing.Framework))
+		} else {
+			fw = "generic"
+		}
+	}
+	opts.Framework = fw
+
+	switch {
+	case fw == "proxy":
+		if opts.ProxyPort <= 0 || opts.ProxyPort > 65535 {
+			return "", fmt.Errorf("port proxy tidak valid: %d", opts.ProxyPort)
+		}
+		opts.PHPVersion = ""
+		return "", nil
+
+	case store.IsManagedAppFramework(fw):
+		if opts.ProxyPort <= 0 || opts.ProxyPort > 65535 {
+			return "", fmt.Errorf("port aplikasi tidak valid: %d", opts.ProxyPort)
+		}
+		if opts.RootPath == "" && existing != nil && existing.RootPath != "" {
+			opts.RootPath = existing.RootPath
+		}
+		cleanRoot, err := m.validateRootPath(opts.RootPath)
+		if err != nil {
+			return "", err
+		}
+		opts.RootPath = cleanRoot
+		opts.PHPVersion = ""
+		return cleanRoot, nil
+
+	default:
+		if opts.RootPath == "" {
+			if existing != nil && existing.RootPath != "" {
+				opts.RootPath = existing.RootPath
+			} else {
+				opts.RootPath = filepath.Join(m.webRootBase(), opts.Domain)
+			}
+		}
+		cleanRoot, err := m.validateRootPath(opts.RootPath)
+		if err != nil {
+			return "", err
+		}
+		opts.RootPath = cleanRoot
+		if fw == "static" {
+			opts.PHPVersion = ""
+		} else {
+			if opts.PHPVersion == "" {
+				if existing != nil && existing.PHPVersion != "" {
+					opts.PHPVersion = existing.PHPVersion
+				} else {
+					opts.PHPVersion = "8.4"
+				}
+			}
+			opts.PHPVersion = strings.TrimSpace(opts.PHPVersion)
+			if !phpVerRe.MatchString(opts.PHPVersion) {
+				return "", fmt.Errorf("versi PHP tidak valid: %q", opts.PHPVersion)
+			}
+		}
+		effectiveRoot := opts.RootPath
+		switch fw {
+		case "laravel", "ci4", "symfony":
+			effectiveRoot = filepath.Join(opts.RootPath, "public")
+		}
+		return effectiveRoot, nil
+	}
 }
 
 // HasSite memeriksa apakah virtual host untuk domain sudah terdaftar di disk atau store.
@@ -282,39 +366,13 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 	}
 	serverNames := strings.Join(append([]string{opts.Domain}, cleanAliases...), " ")
 
-	if opts.Framework == "proxy" {
-		if opts.ProxyPort <= 0 || opts.ProxyPort > 65535 {
-			return fmt.Errorf("port proxy tidak valid: %d", opts.ProxyPort)
-		}
-	} else {
-		if opts.RootPath == "" {
-			opts.RootPath = filepath.Join(m.webRootBase(), opts.Domain)
-		}
-		cleanRoot, err := m.validateRootPath(opts.RootPath)
-		if err != nil {
-			return err
-		}
-		opts.RootPath = cleanRoot
-		if opts.Framework == "static" {
-			opts.PHPVersion = ""
-		} else {
-			if opts.PHPVersion == "" {
-				opts.PHPVersion = "8.4"
-			}
-			opts.PHPVersion = strings.TrimSpace(opts.PHPVersion)
-			if !phpVerRe.MatchString(opts.PHPVersion) {
-				return fmt.Errorf("versi PHP tidak valid: %q", opts.PHPVersion)
-			}
-		}
-	}
-
-	effectiveRoot := opts.RootPath
-	switch opts.Framework {
-	case "laravel", "ci4", "symfony":
-		effectiveRoot = filepath.Join(opts.RootPath, "public")
+	effectiveRoot, err := m.resolveAndValidateTarget(&opts, nil)
+	if err != nil {
+		return err
 	}
 
 	// Siapkan direktori web & file index bawaan tanpa menimpa file yang sudah ada.
+	// Untuk Managed App dan proxy, direktori proyek tidak ditulis placeholder apa pun.
 	if opts.Framework == "static" {
 		if err := m.ensureDir(effectiveRoot, 0755); err != nil {
 			return fmt.Errorf("gagal membuat direktori root %s: %w", effectiveRoot, err)
@@ -333,7 +391,7 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 				return fmt.Errorf("gagal menulis template HTML default %s: %w", indexHTML, err)
 			}
 		}
-	} else if opts.Framework != "proxy" {
+	} else if !UsesReverseProxy(opts.Framework) {
 		if err := m.ensureDir(effectiveRoot, 0755); err != nil {
 			return fmt.Errorf("gagal membuat direktori root %s: %w", effectiveRoot, err)
 		}
@@ -371,17 +429,18 @@ func (m *Manager) CreateSite(opts CreateOptions) error {
 	}
 
 	data := TemplateData{
-		Domain:         opts.Domain,
-		ServerNames:    serverNames,
-		EffectiveRoot:  effectiveRoot,
-		Framework:      opts.Framework,
-		ProxyPort:      opts.ProxyPort,
-		SSLEnabled:     opts.SSLEnabled,
-		IPv6Enabled:    hasIPv6(),
-		CertFile:       certFile,
-		KeyFile:        keyFile,
-		PHPSocket:      phpSocket,
-		PHPFastCGIPass: phpFastCGIPass,
+		Domain:          opts.Domain,
+		ServerNames:     serverNames,
+		EffectiveRoot:   effectiveRoot,
+		Framework:       opts.Framework,
+		UseReverseProxy: UsesReverseProxy(opts.Framework),
+		ProxyPort:       opts.ProxyPort,
+		SSLEnabled:      opts.SSLEnabled,
+		IPv6Enabled:     hasIPv6(),
+		CertFile:        certFile,
+		KeyFile:         keyFile,
+		PHPSocket:       phpSocket,
+		PHPFastCGIPass:  phpFastCGIPass,
 	}
 
 	var buf bytes.Buffer
@@ -512,47 +571,17 @@ func (m *Manager) UpdateSite(domain string, opts CreateOptions) error {
 	}
 	serverNames := strings.Join(append([]string{opts.Domain}, cleanAliases...), " ")
 
-	if opts.Framework == "proxy" {
-		if opts.ProxyPort <= 0 || opts.ProxyPort > 65535 {
-			return fmt.Errorf("port proxy tidak valid: %d", opts.ProxyPort)
-		}
-	} else {
-		if opts.RootPath == "" {
-			if hasRec && existingRec.RootPath != "" {
-				opts.RootPath = existingRec.RootPath
-			} else {
-				opts.RootPath = filepath.Join(m.webRootBase(), opts.Domain)
-			}
-		}
-		cleanRoot, err := m.validateRootPath(opts.RootPath)
-		if err != nil {
-			return err
-		}
-		opts.RootPath = cleanRoot
-		if opts.Framework == "static" {
-			opts.PHPVersion = ""
-		} else {
-			if opts.PHPVersion == "" {
-				if hasRec && existingRec.PHPVersion != "" {
-					opts.PHPVersion = existingRec.PHPVersion
-				} else {
-					opts.PHPVersion = "8.4"
-				}
-			}
-			opts.PHPVersion = strings.TrimSpace(opts.PHPVersion)
-			if !phpVerRe.MatchString(opts.PHPVersion) {
-				return fmt.Errorf("versi PHP tidak valid: %q", opts.PHPVersion)
-			}
-		}
+	var existingPtr *store.SiteRecord
+	if hasRec {
+		existingPtr = &existingRec
+	}
+	effectiveRoot, err := m.resolveAndValidateTarget(&opts, existingPtr)
+	if err != nil {
+		return err
 	}
 
-	effectiveRoot := opts.RootPath
-	switch opts.Framework {
-	case "laravel", "ci4", "symfony":
-		effectiveRoot = filepath.Join(opts.RootPath, "public")
-	}
-
-	// Pastikan direktori root ada tanpa menimpa berkas proyek apapun milik pengguna
+	// Pastikan direktori root ada tanpa menimpa berkas proyek apapun milik pengguna.
+	// Managed App dan proxy tidak menuliskan index placeholder ke folder proyek.
 	if opts.Framework == "static" {
 		if err := m.ensureDir(effectiveRoot, 0755); err != nil {
 			return fmt.Errorf("gagal membuat direktori root %s: %w", effectiveRoot, err)
@@ -569,7 +598,7 @@ func (m *Manager) UpdateSite(domain string, opts CreateOptions) error {
 			placeholder := renderStaticDefaultHTML(opts.Domain, effectiveRoot)
 			_ = m.writeFile(indexHTML, []byte(placeholder), 0644)
 		}
-	} else if opts.Framework != "proxy" {
+	} else if !UsesReverseProxy(opts.Framework) {
 		if err := m.ensureDir(effectiveRoot, 0755); err != nil {
 			return fmt.Errorf("gagal membuat direktori root %s: %w", effectiveRoot, err)
 		}
@@ -640,17 +669,18 @@ func (m *Manager) UpdateSite(domain string, opts CreateOptions) error {
 	}
 
 	data := TemplateData{
-		Domain:         opts.Domain,
-		ServerNames:    serverNames,
-		EffectiveRoot:  effectiveRoot,
-		Framework:      opts.Framework,
-		ProxyPort:      opts.ProxyPort,
-		SSLEnabled:     opts.SSLEnabled,
-		IPv6Enabled:    hasIPv6(),
-		CertFile:       certFile,
-		KeyFile:        keyFile,
-		PHPSocket:      phpSocket,
-		PHPFastCGIPass: phpFastCGIPass,
+		Domain:          opts.Domain,
+		ServerNames:     serverNames,
+		EffectiveRoot:   effectiveRoot,
+		Framework:       opts.Framework,
+		UseReverseProxy: UsesReverseProxy(opts.Framework),
+		ProxyPort:       opts.ProxyPort,
+		SSLEnabled:      opts.SSLEnabled,
+		IPv6Enabled:     hasIPv6(),
+		CertFile:        certFile,
+		KeyFile:         keyFile,
+		PHPSocket:       phpSocket,
+		PHPFastCGIPass:  phpFastCGIPass,
 	}
 
 	var buf bytes.Buffer
@@ -836,6 +866,12 @@ func (m *Manager) DeleteSite(domain string) error {
 	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(domain), "."), ".conf"))
 	if err := ValidateDomain(domain); err != nil {
 		return err
+	}
+
+	if m.appCleanupFn != nil {
+		if err := m.appCleanupFn(domain); err != nil {
+			return err
+		}
 	}
 
 	// Hapus semua variasi berkas konfigurasi & symlink Nginx (tanpa menyentuh folder web root_path)

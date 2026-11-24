@@ -59,6 +59,9 @@ import type {
 	TerminalUnlockResponse,
 	SetupComponentStatus,
 	SetupMailPayload,
+	SiteAppEnvEntry,
+	SiteAppInspectResult,
+	SiteAppRuntimeStatus,
 	SiteRecord,
 	SwitchersMap,
 	SystemStats,
@@ -206,11 +209,12 @@ export const api = {
 			body: JSON.stringify(payload)
 		}),
 
-	// Sites
+	// Sites & Managed Apps
 	listSites: () => apiFetch<SiteRecord[]>('/api/sites'),
 	createSite: (payload: CreateSitePayload) =>
 		apiFetch<{
 			status: string;
+			message?: string;
 			dns_synced?: boolean;
 			dns_zone?: string;
 			dns_message?: string;
@@ -218,6 +222,8 @@ export const api = {
 			edge_domain?: string;
 			edge_ssl?: boolean;
 			edge_error?: string;
+			build_task_id?: number;
+			build_error?: string;
 		}>('/api/sites', {
 			method: 'POST',
 			body: JSON.stringify(payload)
@@ -229,11 +235,77 @@ export const api = {
 		apiFetch<{
 			status: string;
 			site?: SiteRecord;
+			build_task_id?: number;
+			build_error?: string;
 			message?: string;
 		}>(`/api/sites/${encodeURIComponent(domain)}`, {
 			method: 'PUT',
 			body: JSON.stringify(payload)
 		}),
+	inspectSiteDir: (path: string) =>
+		apiFetch<{ inspect: SiteAppInspectResult; suggested_port: number }>('/api/sites/inspect-dir', {
+			method: 'POST',
+			body: JSON.stringify({ path })
+		}),
+	suggestSitePort: () => apiFetch<{ port: number }>('/api/sites/suggest-port'),
+	siteAppAction: (
+		domain: string,
+		action: 'start' | 'stop' | 'restart' | 'enable' | 'disable',
+		sudoPass?: string
+	) =>
+		apiFetch<{ status: string; message?: string; app_status?: SiteAppRuntimeStatus }>(
+			'/api/sites/app/action',
+			{
+				method: 'POST',
+				body: JSON.stringify({
+					domain,
+					action,
+					...(sudoPass ? { sudo_pass: sudoPass } : {})
+				})
+			}
+		),
+	buildSiteApp: (domain: string, restart = true, sudoPass?: string) =>
+		apiFetch<{ status: string; task_id?: number; message?: string }>('/api/sites/app/build', {
+			method: 'POST',
+			body: JSON.stringify({
+				domain,
+				restart,
+				...(sudoPass ? { sudo_pass: sudoPass } : {})
+			})
+		}),
+	getSiteAppEnv: (domain: string) =>
+		apiFetch<{
+			status?: string;
+			message?: string;
+			domain?: string;
+			env_file?: string;
+			entries?: SiteAppEnvEntry[];
+			raw?: string;
+		}>(`/api/sites/app/env?domain=${encodeURIComponent(domain)}`),
+	saveSiteAppEnv: (payload: {
+		domain: string;
+		entries?: SiteAppEnvEntry[];
+		raw?: string;
+		restart?: boolean;
+		sudo_pass?: string;
+	}) =>
+		apiFetch<{
+			status: string;
+			message?: string;
+			entries?: SiteAppEnvEntry[];
+			raw?: string;
+			restarted?: boolean;
+			app_status?: SiteAppRuntimeStatus;
+		}>('/api/sites/app/env', {
+			method: 'PUT',
+			body: JSON.stringify(payload)
+		}),
+	getSiteAppLogs: (domain: string, lines = 200) =>
+		apiFetch<{ status?: string; message?: string; domain?: string; service_name?: string; logs?: string }>(
+			`/api/sites/app/logs?domain=${encodeURIComponent(domain)}&lines=${lines}`
+		),
+	siteAppLogsStreamUrl: (domain: string, tail = 100) =>
+		`/api/sites/app/logs/stream?domain=${encodeURIComponent(domain)}&tail=${tail}`,
 	enableSiteSSL: (domain: string, email = '', sudoPass?: string) =>
 		apiFetch<{ status: string; task_id?: number; domain?: string; message?: string }>('/api/sites/ssl', {
 			method: 'POST',

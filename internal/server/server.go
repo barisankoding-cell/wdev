@@ -30,6 +30,7 @@ import (
 	"wdev/internal/runner"
 	"wdev/internal/serviceconfig"
 	"wdev/internal/site"
+	"wdev/internal/siteapp"
 	"wdev/internal/store"
 	"wdev/internal/switcher"
 	"wdev/internal/terminal"
@@ -53,6 +54,7 @@ type Server struct {
 	fileMgr        *filemanager.Manager
 	termMgr        *terminal.Manager
 	composeMgr     *compose.Manager
+	siteAppMgr     *siteapp.Manager
 	termSec        *terminalSecurityState
 	sudoVerifyFn   func(string) error
 	mux            *http.ServeMux
@@ -103,7 +105,14 @@ func New(
 		fileMgr:     filemanager.New(cfg, s),
 		termMgr:     terminal.New(cfg, s),
 		composeMgr:  compose.New(cfg, s, sudoFn),
+		siteAppMgr:  siteapp.New(cfg, s, sudoFn),
 		mux:         http.NewServeMux(),
+	}
+	if siteMgr != nil && srv.siteAppMgr != nil {
+		mgr := srv.siteAppMgr
+		siteMgr.SetAppCleanupHook(func(domain string) error {
+			return mgr.RemoveApp(context.Background(), domain)
+		})
 	}
 	srv.routes()
 	return srv
@@ -116,6 +125,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/service-config/", s.handleServiceConfig)
 	s.mux.HandleFunc("/api/sites", s.handleSites)
 	s.mux.HandleFunc("/api/sites/ssl", s.handleSiteSSL)
+	s.mux.HandleFunc("/api/sites/inspect-dir", s.handleInspectSiteDir)
+	s.mux.HandleFunc("/api/sites/suggest-port", s.handleSuggestSitePort)
+	s.mux.HandleFunc("/api/sites/app/action", s.handleSiteAppAction)
+	s.mux.HandleFunc("/api/sites/app/build", s.handleSiteAppBuild)
+	s.mux.HandleFunc("/api/sites/app/env", s.handleSiteAppEnv)
+	s.mux.HandleFunc("/api/sites/app/logs", s.handleSiteAppLogs)
+	s.mux.HandleFunc("/api/sites/app/logs/stream", s.handleSiteAppLogsStream)
 	s.mux.HandleFunc("/api/sites/", s.handleSiteByDomain)
 	s.mux.HandleFunc("/api/switchers", s.handleSwitchers)
 	s.mux.HandleFunc("/api/switchers/", s.handleSwitchersAction)
@@ -1036,10 +1052,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if sites == nil {
-			sites = []store.SiteRecord{}
-		}
-		writeJSON(w, http.StatusOK, sites)
+		writeJSON(w, http.StatusOK, s.enrichSitesWithApps(r.Context(), sites))
 
 	case http.MethodPost:
 		var req siteCreatePayload
@@ -1047,9 +1060,17 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Payload tidak valid")
 			return
 		}
+		if req.SudoPass != "" {
+			if !s.verifySudoPasswordWithRateLimit(w, r, req.SudoPass, "Password sudo tidak valid: ") {
+				return
+			}
+		}
 
 		resp, statusCode, err := s.createSiteWithModeSync(req)
 		if err != nil {
+			if s.writeSudoRequiredIfNeeded(w, err, "Membuat konfigurasi VHost & service systemd memerlukan hak akses administrator (sudo).") {
+				return
+			}
 			writeError(w, statusCode, err.Error())
 			return
 		}
@@ -1062,10 +1083,12 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 
 type siteCreatePayload struct {
 	site.CreateOptions
-	ExposeEdge *bool  `json:"expose_edge,omitempty"`
-	EdgeDomain string `json:"edge_domain,omitempty"`
-	EdgeSSL    *bool  `json:"edge_ssl,omitempty"`
-	AddHosts   *bool  `json:"add_hosts,omitempty"`
+	ExposeEdge *bool           `json:"expose_edge,omitempty"`
+	EdgeDomain string          `json:"edge_domain,omitempty"`
+	EdgeSSL    *bool           `json:"edge_ssl,omitempty"`
+	AddHosts   *bool           `json:"add_hosts,omitempty"`
+	AppConfig  *siteAppPayload `json:"app_config,omitempty"`
+	SudoPass   string          `json:"sudo_pass,omitempty"`
 }
 
 func (s *Server) createSiteWithModeSync(req siteCreatePayload) (map[string]any, int, error) {
@@ -1102,6 +1125,39 @@ func (s *Server) createSiteWithModeSync(req siteCreatePayload) (map[string]any, 
 		req.SSLEnabled = false
 	}
 
+	isManagedApp := store.IsManagedAppFramework(req.Framework)
+	var preparedAppRec store.SiteAppRecord
+	if isManagedApp {
+		if req.ProxyPort == 0 {
+			freePort, pErr := s.suggestFreeSitePort()
+			if pErr != nil {
+				return nil, http.StatusInternalServerError, pErr
+			}
+			req.ProxyPort = freePort
+		}
+		if req.AppConfig == nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("konfigurasi app_config wajib diisi untuk Managed App")
+		}
+		autoStart := true
+		if req.AppConfig.AutoStart != nil {
+			autoStart = *req.AppConfig.AutoStart
+		}
+		var vErr error
+		preparedAppRec, vErr = s.ensureSiteAppManager().NormalizeAndValidate(store.SiteAppRecord{
+			Domain:       cleanDom,
+			Runtime:      req.Framework,
+			WorkingDir:   req.RootPath,
+			BuildCommand: req.AppConfig.BuildCommand,
+			StartCommand: req.AppConfig.StartCommand,
+			Port:         req.ProxyPort,
+			RunUser:      req.AppConfig.RunUser,
+			AutoStart:    autoStart,
+		})
+		if vErr != nil {
+			return nil, http.StatusBadRequest, vErr
+		}
+	}
+
 	if err := s.validateSiteProxyTarget(req.Framework, req.ProxyPort, ""); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
@@ -1111,6 +1167,32 @@ func (s *Server) createSiteWithModeSync(req siteCreatePayload) (map[string]any, 
 	}
 
 	resp := map[string]any{"status": "created"}
+	if isManagedApp {
+		appMgr := s.ensureSiteAppManager()
+		runBuildNow := req.AppConfig.BuildCommand != "" && (req.AppConfig.RunBuildNow == nil || *req.AppConfig.RunBuildNow)
+		savedApp, provErr := appMgr.ProvisionOrSync(
+			context.Background(),
+			preparedAppRec,
+			!runBuildNow,
+			req.AppConfig.ImportProjectEnv,
+			req.AppConfig.InitialEnvRaw,
+		)
+		if provErr != nil {
+			_ = s.siteMgr.DeleteSite(cleanDom)
+			if errors.Is(provErr, serviceconfig.ErrSudoRequired) {
+				return nil, http.StatusOK, provErr
+			}
+			return nil, http.StatusInternalServerError, provErr
+		}
+		resp["app"] = savedApp
+		if runBuildNow && s.runner != nil {
+			if taskID, bErr := appMgr.StartBuild(s.runner, cleanDom, true); bErr != nil {
+				resp["build_error"] = bErr.Error()
+			} else {
+				resp["build_task_id"] = taskID
+			}
+		}
+	}
 	if mode == "vps" && s.pdnsMgr != nil {
 		conf := s.pdnsMgr.LoadConfig()
 		if conf.VPSPublicIP != "" && (conf.Configured || conf.HasLocalPDNS) {
@@ -1177,7 +1259,7 @@ func (s *Server) handleSiteGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Virtual host tidak ditemukan")
 		return
 	}
-	writeJSON(w, http.StatusOK, siteRec)
+	writeJSON(w, http.StatusOK, s.enrichSingleSiteWithApp(r.Context(), siteRec))
 }
 
 func isStalwartInstalled() bool {
@@ -1190,32 +1272,15 @@ func isStalwartInstalled() bool {
 }
 
 // validateSiteProxyTarget mencegah eksposur port layanan internal (panel wdev, PowerDNS API,
-// Edge Agent, PostgreSQL, Redis, Stalwart Admin) lewat API Virtual Host proxy umum.
+// Edge Agent, PostgreSQL, Redis, Stalwart Admin) maupun bentrok port antar-VHost reverse proxy / Managed App.
 func (s *Server) validateSiteProxyTarget(framework string, proxyPort int, existingDomain string) error {
-	if !strings.EqualFold(strings.TrimSpace(framework), "proxy") {
+	if !site.UsesReverseProxy(framework) {
 		return nil
 	}
 	if proxyPort <= 0 || proxyPort > 65535 {
 		return fmt.Errorf("port proxy tidak valid: %d", proxyPort)
 	}
-	reserved := map[int]string{
-		5432: "PostgreSQL",
-		6379: "Redis",
-		8081: "PowerDNS API",
-		8082: "Edge Agent",
-	}
-	if s.pdnsMgr != nil {
-		conf := s.pdnsMgr.LoadConfig()
-		if p, err := strconv.Atoi(strings.TrimSpace(conf.PDNSPort)); err == nil && p > 0 {
-			reserved[p] = "PowerDNS API"
-		}
-		if p, err := strconv.Atoi(strings.TrimSpace(conf.AgentPort)); err == nil && p > 0 {
-			reserved[p] = "Edge Agent"
-		}
-	}
-	if isStalwartInstalled() {
-		reserved[8080] = "Stalwart Mail Admin"
-	}
+	reserved := s.reservedSitePortsMap()
 	panelPort := s.panelPortNumber()
 	if panelPort > 0 && proxyPort == panelPort {
 		allowBoundPanelUpdate := false
@@ -1234,6 +1299,18 @@ func (s *Server) validateSiteProxyTarget(framework string, proxyPort int, existi
 	if svc, blocked := reserved[proxyPort]; blocked {
 		return fmt.Errorf("port proxy %d dicadangkan untuk layanan internal (%s) dan tidak dapat diekspos lewat Virtual Host", proxyPort, svc)
 	}
+	if s.siteMgr != nil {
+		if sites, err := s.siteMgr.ListSites(); err == nil {
+			for _, st := range sites {
+				if existingDomain != "" && strings.EqualFold(st.Domain, existingDomain) {
+					continue
+				}
+				if site.UsesReverseProxy(st.Framework) && st.ProxyPort == proxyPort {
+					return fmt.Errorf("port lokal %d sudah digunakan oleh Virtual Host %s", proxyPort, st.Domain)
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -1246,7 +1323,8 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		site.CreateOptions
-		SudoPass string `json:"sudo_pass,omitempty"`
+		AppConfig *siteAppPayload `json:"app_config,omitempty"`
+		SudoPass  string          `json:"sudo_pass,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
@@ -1260,42 +1338,140 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Domain = domain
-	effectiveFramework := req.Framework
-	effectivePort := req.ProxyPort
+	var prevSite store.SiteRecord
+	var hasPrevSite bool
 	if s.siteMgr != nil {
-		if existing, ok := s.siteMgr.GetSite(domain); ok {
-			if strings.TrimSpace(effectiveFramework) == "" {
-				effectiveFramework = existing.Framework
-			}
-			if effectivePort == 0 && strings.EqualFold(effectiveFramework, "proxy") {
-				effectivePort = existing.ProxyPort
+		prevSite, hasPrevSite = s.siteMgr.GetSite(domain)
+	}
+	var prevApp *store.SiteAppRecord
+	if s.store != nil {
+		prevApp, _ = s.store.GetSiteApp(domain)
+	}
+
+	effectiveFramework := strings.ToLower(strings.TrimSpace(req.Framework))
+	if effectiveFramework == "" && hasPrevSite {
+		effectiveFramework = strings.ToLower(strings.TrimSpace(prevSite.Framework))
+	}
+	effectivePort := req.ProxyPort
+	if effectivePort == 0 && site.UsesReverseProxy(effectiveFramework) {
+		if prevApp != nil && prevApp.Port > 0 {
+			effectivePort = prevApp.Port
+		} else if hasPrevSite && prevSite.ProxyPort > 0 {
+			effectivePort = prevSite.ProxyPort
+		} else if store.IsManagedAppFramework(effectiveFramework) {
+			if freePort, pErr := s.suggestFreeSitePort(); pErr == nil {
+				effectivePort = freePort
 			}
 		}
+		req.ProxyPort = effectivePort
 	}
 	if err := s.validateSiteProxyTarget(effectiveFramework, effectivePort, domain); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	if err := s.siteMgr.UpdateSite(domain, req.CreateOptions); err != nil {
-		if s.installer != nil && os.Geteuid() != 0 {
-			if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
-				writeJSON(w, http.StatusOK, map[string]any{
-					"status":  "sudo_required",
-					"message": "Memperbarui konfigurasi Nginx memerlukan hak akses administrator (sudo).",
-				})
+	isNextManagedApp := store.IsManagedAppFramework(effectiveFramework)
+	var nextAppRec store.SiteAppRecord
+	var runBuildAfter bool
+	if isNextManagedApp {
+		workingDir := strings.TrimSpace(req.RootPath)
+		if workingDir == "" && prevApp != nil {
+			workingDir = prevApp.WorkingDir
+		}
+		if workingDir == "" && hasPrevSite {
+			workingDir = prevSite.RootPath
+		}
+		req.RootPath = workingDir
+
+		buildCmd := ""
+		startCmd := ""
+		runUser := ""
+		autoStart := true
+		if prevApp != nil {
+			buildCmd = prevApp.BuildCommand
+			startCmd = prevApp.StartCommand
+			runUser = prevApp.RunUser
+			autoStart = prevApp.AutoStart
+		}
+		if req.AppConfig != nil {
+			buildCmd = req.AppConfig.BuildCommand
+			if strings.TrimSpace(req.AppConfig.StartCommand) != "" || prevApp == nil {
+				startCmd = req.AppConfig.StartCommand
+			}
+			if strings.TrimSpace(req.AppConfig.RunUser) != "" {
+				runUser = req.AppConfig.RunUser
+			}
+			if req.AppConfig.AutoStart != nil {
+				autoStart = *req.AppConfig.AutoStart
+			}
+			if req.AppConfig.RunBuildNow != nil {
+				runBuildAfter = *req.AppConfig.RunBuildNow && strings.TrimSpace(buildCmd) != ""
+			}
+		}
+
+		appMgr := s.ensureSiteAppManager()
+		var vErr error
+		nextAppRec, vErr = appMgr.NormalizeAndValidate(store.SiteAppRecord{
+			Domain:       domain,
+			Runtime:      effectiveFramework,
+			WorkingDir:   workingDir,
+			BuildCommand: buildCmd,
+			StartCommand: startCmd,
+			Port:         effectivePort,
+			RunUser:      runUser,
+			AutoStart:    autoStart,
+		})
+		if vErr != nil {
+			writeError(w, http.StatusBadRequest, vErr.Error())
+			return
+		}
+	}
+
+	// Jika VHost beralih dari Managed App ke mode non-app (PHP/Static/Proxy), bersihkan unit systemd.
+	wasManagedApp := prevApp != nil || (hasPrevSite && store.IsManagedAppFramework(prevSite.Framework))
+	if wasManagedApp && !isNextManagedApp {
+		if err := s.ensureSiteAppManager().RemoveApp(r.Context(), domain); err != nil {
+			if s.writeSudoRequiredIfNeeded(w, err, "Menghapus service systemd Managed App memerlukan hak akses administrator (sudo).") {
 				return
 			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if err := s.siteMgr.UpdateSite(domain, req.CreateOptions); err != nil {
+		if s.writeSudoRequiredIfNeeded(w, err, "Memperbarui konfigurasi Nginx memerlukan hak akses administrator (sudo).") {
+			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	siteRec, _ := s.siteMgr.GetSite(domain)
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status": "updated",
-		"site":   siteRec,
-	})
+	}
+
+	if isNextManagedApp {
+		appMgr := s.ensureSiteAppManager()
+		if _, err := appMgr.UpdateAndSync(r.Context(), prevApp, nextAppRec); err != nil {
+			if s.writeSudoRequiredIfNeeded(w, err, "Menyinkronkan service systemd aplikasi memerlukan hak akses administrator (sudo).") {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if runBuildAfter && s.runner != nil {
+			if taskID, bErr := appMgr.StartBuild(s.runner, domain, true); bErr != nil {
+				resp["build_error"] = bErr.Error()
+			} else {
+				resp["build_task_id"] = taskID
+			}
+		}
+	}
+
+	siteRec, _ := s.siteMgr.GetSite(domain)
+	resp["site"] = s.enrichSingleSiteWithApp(r.Context(), siteRec)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
@@ -1329,14 +1505,8 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.siteMgr.DeleteSite(domain); err != nil {
-		if s.installer != nil && os.Geteuid() != 0 {
-			if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
-				writeJSON(w, http.StatusOK, map[string]any{
-					"status":  "sudo_required",
-					"message": "Menghapus berkas konfigurasi Nginx memerlukan hak akses administrator (sudo).",
-				})
-				return
-			}
+		if s.writeSudoRequiredIfNeeded(w, err, "Menghapus konfigurasi Nginx dan layanan aplikasi memerlukan hak akses administrator (sudo).") {
+			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -997,3 +997,67 @@ func TestModeAwareHostsAndSyncAllSkipsPublicDomainsInVPSAndEdgeModes(t *testing.
 		t.Fatalf("expected local mode SyncAll to include site in /etc/hosts, got:\n%s", string(hostsBytes))
 	}
 }
+
+func TestManagedAppVHostProxyTemplateAndDeleteHook(t *testing.T) {
+	mgr, cfg, db := newTestSiteManager(t)
+
+	var hookCalls []string
+	mgr.SetAppCleanupHook(func(domain string) error {
+		hookCalls = append(hookCalls, domain)
+		return nil
+	})
+
+	appDir := filepath.Join(cfg.WebRootBase, "node-api")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.CreateSite(CreateOptions{
+		Domain:    "nodeapi.test",
+		RootPath:  appDir,
+		Framework: "nodejs",
+		ProxyPort: 3120,
+	}); err != nil {
+		t.Fatalf("CreateSite(nodejs) failed: %v", err)
+	}
+
+	// Jangan pernah menuliskan index.php atau index.html placeholder ke proyek Managed App.
+	if _, err := os.Stat(filepath.Join(appDir, "index.php")); !os.IsNotExist(err) {
+		t.Fatalf("expected no index.php written for Managed App")
+	}
+	confBytes, err := os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "nodeapi.test"))
+	if err != nil {
+		t.Fatalf("failed reading nginx conf: %v", err)
+	}
+	if !strings.Contains(string(confBytes), "proxy_pass http://127.0.0.1:3120;") {
+		t.Fatalf("expected proxy_pass in nginx conf:\n%s", string(confBytes))
+	}
+
+	// Update port ke 3125 & pastikan metadata tetap tersimpan
+	if err := mgr.UpdateSite("nodeapi.test", CreateOptions{
+		Domain:    "nodeapi.test",
+		RootPath:  appDir,
+		Framework: "go",
+		ProxyPort: 3125,
+	}); err != nil {
+		t.Fatalf("UpdateSite(go) failed: %v", err)
+	}
+	confBytes, _ = os.ReadFile(filepath.Join(cfg.NginxSitesAvail, "nodeapi.test"))
+	if !strings.Contains(string(confBytes), "proxy_pass http://127.0.0.1:3125;") {
+		t.Fatalf("expected updated proxy_pass 3125 in nginx conf:\n%s", string(confBytes))
+	}
+	rec, ok := mgr.GetSite("nodeapi.test")
+	if !ok || rec.Framework != "go" || rec.PHPVersion != "" || rec.ProxyPort != 3125 {
+		t.Fatalf("unexpected updated site record: ok=%v rec=%+v", ok, rec)
+	}
+
+	if err := mgr.DeleteSite("nodeapi.test"); err != nil {
+		t.Fatalf("DeleteSite failed: %v", err)
+	}
+	if len(hookCalls) != 1 || hookCalls[0] != "nodeapi.test" {
+		t.Fatalf("expected appCleanupFn called once for nodeapi.test, got %v", hookCalls)
+	}
+	if _, err := db.GetSiteApp("nodeapi.test"); err != nil {
+		t.Fatalf("unexpected GetSiteApp error: %v", err)
+	}
+}

@@ -106,6 +106,35 @@ type ComposeProjectRecord struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// SiteAppRecord menyimpan konfigurasi aplikasi terkelola (Node.js/Go/Rust via systemd)
+// yang terhubung 1:1 dengan Virtual Host domain di tabel sites.
+type SiteAppRecord struct {
+	Domain          string     `json:"domain"`
+	Runtime         string     `json:"runtime"` // "nodejs" | "go" | "rust"
+	WorkingDir      string     `json:"working_dir"`
+	BuildCommand    string     `json:"build_command,omitempty"`
+	StartCommand    string     `json:"start_command"`
+	Port            int        `json:"port"`
+	RunUser         string     `json:"run_user"`
+	AutoStart       bool       `json:"auto_start"`
+	ServiceName     string     `json:"service_name"`
+	EnvFile         string     `json:"env_file"`
+	LastBuildStatus string     `json:"last_build_status,omitempty"`
+	LastBuildAt     *time.Time `json:"last_build_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// IsManagedAppFramework melaporkan apakah framework VHost termasuk tipe Managed App terkelola systemd.
+func IsManagedAppFramework(framework string) bool {
+	switch strings.ToLower(strings.TrimSpace(framework)) {
+	case "nodejs", "go", "rust":
+		return true
+	default:
+		return false
+	}
+}
+
 func New(dbPath string) (*Store, error) {
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -213,6 +242,22 @@ func (s *Store) migrate() error {
 			compose_file TEXT NOT NULL DEFAULT '',
 			description TEXT NOT NULL DEFAULT '',
 			profiles TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS site_apps (
+			domain TEXT PRIMARY KEY,
+			runtime TEXT NOT NULL DEFAULT 'nodejs',
+			working_dir TEXT NOT NULL DEFAULT '',
+			build_command TEXT NOT NULL DEFAULT '',
+			start_command TEXT NOT NULL DEFAULT '',
+			port INTEGER NOT NULL DEFAULT 0,
+			run_user TEXT NOT NULL DEFAULT '',
+			auto_start INTEGER NOT NULL DEFAULT 1,
+			service_name TEXT NOT NULL DEFAULT '',
+			env_file TEXT NOT NULL DEFAULT '',
+			last_build_status TEXT NOT NULL DEFAULT '',
+			last_build_at DATETIME,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
@@ -427,10 +472,11 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 	// Clean up stale or non-site entries from database
 	_, _ = s.db.Exec(`DELETE FROM sites WHERE domain LIKE '%.conf' OR domain LIKE '%.custom.conf' OR domain LIKE 'wdev_%' OR domain = 'default'`)
 
-	// Preserve framework and exposed_to metadata already stored for domains whose local Nginx
-	// vhost uses generic FastCGI directives or matching public domain in server_name.
+	// Preserve framework, root_path, and exposed_to metadata already stored for domains whose local Nginx
+	// vhost uses generic FastCGI directives, Managed App reverse proxy, or matching public domain in server_name.
 	type existingSiteMeta struct {
 		Framework string
+		RootPath  string
 		ExposedTo string
 	}
 	existingMeta := make(map[string]existingSiteMeta)
@@ -438,8 +484,15 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 		for _, ps := range prevSites {
 			existingMeta[strings.ToLower(strings.TrimSpace(ps.Domain))] = existingSiteMeta{
 				Framework: ps.Framework,
+				RootPath:  ps.RootPath,
 				ExposedTo: ps.ExposedTo,
 			}
+		}
+	}
+	managedApps := make(map[string]SiteAppRecord)
+	if apps, appErr := s.ListSiteApps(); appErr == nil {
+		for _, app := range apps {
+			managedApps[normalizeSiteAppDomain(app.Domain)] = app
 		}
 	}
 
@@ -529,8 +582,24 @@ func (s *Store) SyncFromDisk(nginxSitesAvail string, exposuresDir string) {
 				if framework == "generic" && prev.Framework != "" && prev.Framework != "static" && prev.Framework != "proxy" {
 					framework = prev.Framework
 				}
+				if framework == "proxy" && IsManagedAppFramework(prev.Framework) {
+					framework = prev.Framework
+					phpVer = ""
+					if rootPath == "" && prev.RootPath != "" {
+						rootPath = prev.RootPath
+					}
+				}
 				if exposedTo == "" && prev.ExposedTo != "" {
 					exposedTo = prev.ExposedTo
+				}
+			}
+			if app, hasApp := managedApps[domain]; hasApp && framework == "proxy" {
+				if IsManagedAppFramework(app.Runtime) {
+					framework = app.Runtime
+				}
+				phpVer = ""
+				if rootPath == "" && app.WorkingDir != "" {
+					rootPath = app.WorkingDir
 				}
 			}
 
@@ -720,7 +789,7 @@ func (s *Store) SaveComposeProject(rec ComposeProjectRecord) error {
 	return err
 }
 
-func scanComposeProjectTime(raw string) time.Time {
+func scanStoreTime(raw string) time.Time {
 	if raw == "" {
 		return time.Time{}
 	}
@@ -754,8 +823,8 @@ func (s *Store) ListComposeProjects() ([]ComposeProjectRecord, error) {
 		if err := rows.Scan(&r.Name, &r.DirPath, &r.ComposeFile, &r.Description, &r.Profiles, &createdStr, &updatedStr); err != nil {
 			return nil, err
 		}
-		r.CreatedAt = scanComposeProjectTime(createdStr)
-		r.UpdatedAt = scanComposeProjectTime(updatedStr)
+		r.CreatedAt = scanStoreTime(createdStr)
+		r.UpdatedAt = scanStoreTime(updatedStr)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -779,8 +848,8 @@ func (s *Store) GetComposeProject(name string) (*ComposeProjectRecord, error) {
 		}
 		return nil, err
 	}
-	r.CreatedAt = scanComposeProjectTime(createdStr)
-	r.UpdatedAt = scanComposeProjectTime(updatedStr)
+	r.CreatedAt = scanStoreTime(createdStr)
+	r.UpdatedAt = scanStoreTime(updatedStr)
 	return &r, nil
 }
 
@@ -789,6 +858,175 @@ func (s *Store) DeleteComposeProject(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM compose_projects WHERE lower(name) = lower(?)`, strings.TrimSpace(name))
+	return err
+}
+
+func normalizeSiteAppDomain(domain string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(domain), "."), ".conf"))
+}
+
+// SaveSiteApp menyimpan atau memperbarui metadata Managed App untuk suatu Virtual Host domain.
+func (s *Store) SaveSiteApp(rec SiteAppRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	domain := normalizeSiteAppDomain(rec.Domain)
+	if domain == "" {
+		return fmt.Errorf("domain aplikasi tidak boleh kosong")
+	}
+
+	now := time.Now()
+	createdAt := rec.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := rec.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+	autoInt := 0
+	if rec.AutoStart {
+		autoInt = 1
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO site_apps (domain, runtime, working_dir, build_command, start_command, port, run_user, auto_start, service_name, env_file, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(domain) DO UPDATE SET
+			runtime=excluded.runtime,
+			working_dir=excluded.working_dir,
+			build_command=excluded.build_command,
+			start_command=excluded.start_command,
+			port=excluded.port,
+			run_user=excluded.run_user,
+			auto_start=excluded.auto_start,
+			service_name=excluded.service_name,
+			env_file=excluded.env_file,
+			updated_at=excluded.updated_at`,
+		domain,
+		strings.ToLower(strings.TrimSpace(rec.Runtime)),
+		strings.TrimSpace(rec.WorkingDir),
+		strings.TrimSpace(rec.BuildCommand),
+		strings.TrimSpace(rec.StartCommand),
+		rec.Port,
+		strings.TrimSpace(rec.RunUser),
+		autoInt,
+		strings.TrimSpace(rec.ServiceName),
+		strings.TrimSpace(rec.EnvFile),
+		createdAt.Format(time.RFC3339),
+		updatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+func scanSiteAppRow(scanner interface {
+	Scan(dest ...any) error
+}) (*SiteAppRecord, error) {
+	var r SiteAppRecord
+	var autoInt int
+	var lastBuildStatus sql.NullString
+	var lastBuildAtStr sql.NullString
+	var createdStr, updatedStr string
+	if err := scanner.Scan(
+		&r.Domain,
+		&r.Runtime,
+		&r.WorkingDir,
+		&r.BuildCommand,
+		&r.StartCommand,
+		&r.Port,
+		&r.RunUser,
+		&autoInt,
+		&r.ServiceName,
+		&r.EnvFile,
+		&lastBuildStatus,
+		&lastBuildAtStr,
+		&createdStr,
+		&updatedStr,
+	); err != nil {
+		return nil, err
+	}
+	r.AutoStart = (autoInt == 1)
+	r.LastBuildStatus = lastBuildStatus.String
+	if lastBuildAtStr.Valid && lastBuildAtStr.String != "" {
+		if t := scanStoreTime(lastBuildAtStr.String); !t.IsZero() {
+			r.LastBuildAt = &t
+		}
+	}
+	r.CreatedAt = scanStoreTime(createdStr)
+	r.UpdatedAt = scanStoreTime(updatedStr)
+	return &r, nil
+}
+
+// GetSiteApp mengambil konfigurasi Managed App berdasarkan domain VHost.
+func (s *Store) GetSiteApp(domain string) (*SiteAppRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	clean := normalizeSiteAppDomain(domain)
+	row := s.db.QueryRow(
+		`SELECT domain, runtime, working_dir, build_command, start_command, port, run_user, auto_start, service_name, env_file, last_build_status, last_build_at, created_at, updated_at
+		 FROM site_apps WHERE lower(domain) = ?`,
+		clean,
+	)
+	r, err := scanSiteAppRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return r, nil
+}
+
+// ListSiteApps mengembalikan seluruh konfigurasi Managed App yang terdaftar.
+func (s *Store) ListSiteApps() ([]SiteAppRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT domain, runtime, working_dir, build_command, start_command, port, run_user, auto_start, service_name, env_file, last_build_status, last_build_at, created_at, updated_at
+		 FROM site_apps ORDER BY domain ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SiteAppRecord
+	for rows.Next() {
+		r, err := scanSiteAppRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
+// UpdateSiteAppBuildStatus memperbarui status dan waktu build terakhir untuk Managed App.
+func (s *Store) UpdateSiteAppBuildStatus(domain, status string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if at.IsZero() {
+		at = time.Now()
+	}
+	clean := normalizeSiteAppDomain(domain)
+	_, err := s.db.Exec(
+		`UPDATE site_apps SET last_build_status = ?, last_build_at = ?, updated_at = ? WHERE lower(domain) = ?`,
+		strings.TrimSpace(status),
+		at.Format(time.RFC3339),
+		time.Now().Format(time.RFC3339),
+		clean,
+	)
+	return err
+}
+
+// DeleteSiteApp menghapus metadata Managed App dari SQLite.
+func (s *Store) DeleteSiteApp(domain string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clean := normalizeSiteAppDomain(domain)
+	_, err := s.db.Exec(`DELETE FROM site_apps WHERE lower(domain) = ?`, clean)
 	return err
 }
 
