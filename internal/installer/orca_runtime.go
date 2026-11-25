@@ -344,20 +344,7 @@ func launchOrcaDesktop(ctx context.Context, user, home string, args []string) in
 	}
 	_ = orcaUserSystemctl(ctx, nil, user, home, "stop", "orca.service")
 
-	extra := []string{}
-	sandbox := filepath.Join(orcaInstallDir(home), "chrome-sandbox")
-	needSandbox := false
-	if fi, err := os.Stat(sandbox); err == nil {
-		if fi.Mode().Perm() != 0o755 || fi.Sys().(*syscall.Stat_t).Uid != 0 {
-			needSandbox = true
-		}
-	}
-	if needSandbox {
-		if data, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil && strings.TrimSpace(string(data)) == "0" {
-			extra = append(extra, "--no-sandbox")
-		}
-	}
-
+	extra := orcaDesktopSandboxArgs(bin)
 	argv := append([]string{bin}, append(extra, args...)...)
 	if err := syscall.Exec(bin, argv, orcaEnv(home)); err != nil {
 		fmt.Fprintf(os.Stderr, "Gagal menjalankan Orca Desktop: %v\n", err)

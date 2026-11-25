@@ -345,6 +345,7 @@ func isOrcaDesktopCmdline(line string) bool {
 	for _, tok := range fields[1:] {
 		if tok == "serve" || tok == "pair" || tok == "status" || tok == "switch" || tok == "mode" || tok == "update" ||
 			tok == "--version" || tok == "-v" || tok == "--help" || tok == "-h" ||
+			strings.HasPrefix(tok, "--appimage-") ||
 			strings.Contains(tok, "serve-supervisor") ||
 			strings.Contains(tok, "out/cli/index.js") ||
 			strings.Contains(tok, "orcad-server.js") ||
@@ -748,12 +749,16 @@ func waitForOrcaDesktopExit(ctx context.Context, user string, timeout time.Durat
 }
 
 func forceQuitOrcaDesktopProcesses(ctx context.Context, cb LogCallback, user string) {
+	forceQuitOrcaDesktopProcessesForReason(ctx, cb, user, "==> Stopping Orca ADE Desktop GUI so Commit AI configuration saves permanently...")
+}
+
+func forceQuitOrcaDesktopProcessesForReason(ctx context.Context, cb LogCallback, user, reason string) {
 	pids := extractOrcaDesktopPIDs(listOrcaProcesses(ctx, user))
 	if len(pids) == 0 {
 		return
 	}
-	if cb != nil {
-		cb("==> Stopping Orca ADE Desktop GUI so Commit AI configuration saves permanently...")
+	if cb != nil && reason != "" {
+		cb(reason)
 	}
 	signalOrcaPIDs(pids, syscall.SIGTERM)
 	if waitForOrcaDesktopExit(ctx, user, 3*time.Second) {

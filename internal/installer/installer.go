@@ -1343,7 +1343,7 @@ func (inst *Installer) InstallOrca(ctx context.Context, cb LogCallback, mode str
 	}
 
 	cb("==> Memeriksa rilis terbaru Orca ADE dari GitHub...")
-	tag, assets, err := fetchGitHubLatestRelease(ctx, "stablyai/orca")
+	tag, assets, err := fetchOrcaReleaseFn(ctx, orcaGitHubRepo)
 	latest := ""
 	if err != nil {
 		cb(fmt.Sprintf("[WARN] GitHub API tidak tersedia (%v), menggunakan URL latest/download...", err))

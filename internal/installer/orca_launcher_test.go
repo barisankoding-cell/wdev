@@ -7,6 +7,7 @@ import (
 )
 
 func TestEnsureOrcaLauncherUsesSymlinks(t *testing.T) {
+	withIsolatedOrcaHost(t)
 	home := t.TempDir()
 	appDir := orcaInstallDir(home)
 	if err := os.MkdirAll(filepath.Join(appDir, "resources", "bin"), 0o755); err != nil {
