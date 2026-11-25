@@ -1,5 +1,20 @@
 # Changelog
 
+## [v2.10.0] - 2026-11-25
+
+### 🚀 Fitur Baru
+- feat: tambahkan pilihan user Linux untuk Managed App (24df047)
+- feat: tampilkan status layanan dan daemon Docker yang sedang memulai (3cab022)
+- feat: tambahkan fitur restart sistem dari panel (aa89f61)
+- feat: sederhanakan topbar dan rapikan badge framework webstack (238a306)
+- feat: tambahkan pengaturan pairing Orca ADE dengan QR code (9a95d33)
+- feat: tambahkan dukungan lokalisasi Inggris dan Indonesia (092a99f)
+- feat(cloudflare): buat nama profil otomatis dari identitas akun (5e24c76)
+
+### 🐛 Perbaikan Bug
+- fix(installer): pulihkan Orca Desktop setelah pembaruan (54daa11)
+- fix: dukung CSRF dan WebSocket di balik proxy tepercaya (86c05c9)
+
 ## [v2.9.0] - 2026-11-25
 
 ### 🚀 Fitur Baru
