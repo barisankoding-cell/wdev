@@ -130,6 +130,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/sites/ssl", s.handleSiteSSL)
 	s.mux.HandleFunc("/api/sites/inspect-dir", s.handleInspectSiteDir)
 	s.mux.HandleFunc("/api/sites/suggest-port", s.handleSuggestSitePort)
+	s.mux.HandleFunc("/api/sites/run-users", s.handleSiteRunUsers)
 	s.mux.HandleFunc("/api/sites/app/action", s.handleSiteAppAction)
 	s.mux.HandleFunc("/api/sites/app/build", s.handleSiteAppBuild)
 	s.mux.HandleFunc("/api/sites/app/env", s.handleSiteAppEnv)

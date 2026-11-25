@@ -134,6 +134,21 @@ export interface SiteAppInspectResult {
 	detected_port_hint?: number;
 	toolchain_installed: boolean;
 	toolchain_binary?: string;
+	owner_user?: string;
+}
+
+export interface SystemUserInfo {
+	username: string;
+	uid: number;
+	gid: number;
+	home_dir: string;
+	shell: string;
+	is_root: boolean;
+}
+
+export interface SiteRunUsersResponse {
+	users: SystemUserInfo[];
+	default_user: string;
 }
 
 export interface SiteAppEnvEntry {

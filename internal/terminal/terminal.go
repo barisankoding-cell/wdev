@@ -11,7 +11,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,14 +31,7 @@ const (
 )
 
 // TargetUser mendeskripsikan akun Linux yang dapat dipilih untuk menjalankan shell PTY.
-type TargetUser struct {
-	Username string `json:"username"`
-	UID      uint32 `json:"uid"`
-	GID      uint32 `json:"gid"`
-	HomeDir  string `json:"home_dir"`
-	Shell    string `json:"shell"`
-	IsRoot   bool   `json:"is_root"`
-}
+type TargetUser = config.SystemUser
 
 // Info merangkum metadata sistem, user target, shell, dan kebijakan keamanan terminal PTY.
 type Info struct {
@@ -149,60 +141,18 @@ func detectOSName() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
-type passwdEntry struct {
-	username string
-	uid      uint32
-	gid      uint32
-	homeDir  string
-	shell    string
-}
-
-func readPasswdEntries() []passwdEntry {
-	f, err := os.Open("/etc/passwd")
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	var entries []passwdEntry
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Split(line, ":")
-		if len(fields) < 7 {
-			continue
-		}
-		uid64, err1 := strconv.ParseUint(fields[2], 10, 32)
-		gid64, err2 := strconv.ParseUint(fields[3], 10, 32)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		entries = append(entries, passwdEntry{
-			username: fields[0],
-			uid:      uint32(uid64),
-			gid:      uint32(gid64),
-			homeDir:  fields[5],
-			shell:    fields[6],
-		})
-	}
-	return entries
-}
-
 func lookupCurrentProcessUser() TargetUser {
 	euid := uint32(os.Geteuid())
 	egid := uint32(os.Getegid())
-	for _, pe := range readPasswdEntries() {
-		if pe.uid == euid {
+	for _, pe := range config.ReadPasswdEntries("/etc/passwd") {
+		if pe.UID == euid {
 			return TargetUser{
-				Username: pe.username,
-				UID:      pe.uid,
-				GID:      pe.gid,
-				HomeDir:  pe.homeDir,
-				Shell:    pe.shell,
-				IsRoot:   pe.uid == 0,
+				Username: pe.Username,
+				UID:      pe.UID,
+				GID:      pe.GID,
+				HomeDir:  pe.HomeDir,
+				Shell:    pe.Shell,
+				IsRoot:   pe.UID == 0,
 			}
 		}
 	}
@@ -236,22 +186,6 @@ func lookupCurrentProcessUser() TargetUser {
 	}
 }
 
-func isUsableShell(p string) bool {
-	p = strings.TrimSpace(p)
-	if p == "" || !filepath.IsAbs(p) {
-		return false
-	}
-	base := strings.ToLower(filepath.Base(p))
-	if base == "nologin" || base == "false" || base == "true" || base == "halt" || base == "sync" || base == "shutdown" {
-		return false
-	}
-	info, err := os.Stat(p)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return info.Mode()&0111 != 0
-}
-
 // AvailableUsers mengembalikan daftar user Linux yang aman dipakai untuk PTY.
 // Ketika wdev berjalan sebagai root, user non-root interaktif diposisikan paling depan (default aman),
 // dan root diletakkan di akhir dengan penanda IsRoot=true.
@@ -261,74 +195,20 @@ func (m *Manager) AvailableUsers() []TargetUser {
 		return []TargetUser{current}
 	}
 
-	sudoUser := strings.TrimSpace(os.Getenv("SUDO_USER"))
-	var nonRoot []TargetUser
-	var rootEntry *TargetUser
-
-	for _, pe := range readPasswdEntries() {
-		if pe.uid == 0 {
-			if rootEntry == nil {
-				h := pe.homeDir
-				if h == "" {
-					h = "/root"
-				}
-				rootEntry = &TargetUser{
-					Username: pe.username,
-					UID:      pe.uid,
-					GID:      pe.gid,
-					HomeDir:  h,
-					Shell:    pe.shell,
-					IsRoot:   true,
-				}
-			}
-			continue
+	users := config.ListSystemUsers(true)
+	hasRoot := false
+	for _, u := range users {
+		if u.IsRoot {
+			hasRoot = true
+			break
 		}
-		// Abaikan akun sistem/nobody; ambil akun manusia interaktif (UID 1000..60000).
-		if pe.uid < 1000 || pe.uid > 60000 || pe.username == "nobody" {
-			continue
-		}
-		if !isUsableShell(pe.shell) {
-			continue
-		}
-		home := pe.homeDir
-		if home == "" {
-			home = "/"
-		}
-		if st, err := os.Stat(home); err != nil || !st.IsDir() {
-			continue
-		}
-		nonRoot = append(nonRoot, TargetUser{
-			Username: pe.username,
-			UID:      pe.uid,
-			GID:      pe.gid,
-			HomeDir:  home,
-			Shell:    pe.shell,
-			IsRoot:   false,
-		})
 	}
-
-	sort.SliceStable(nonRoot, func(i, j int) bool {
-		if sudoUser != "" {
-			if nonRoot[i].Username == sudoUser && nonRoot[j].Username != sudoUser {
-				return true
-			}
-			if nonRoot[j].Username == sudoUser && nonRoot[i].Username != sudoUser {
-				return false
-			}
-		}
-		return nonRoot[i].UID < nonRoot[j].UID
-	})
-
-	if rootEntry == nil {
+	if !hasRoot {
 		r := current
 		r.IsRoot = true
-		rootEntry = &r
+		users = append(users, r)
 	}
-
-	out := make([]TargetUser, 0, len(nonRoot)+1)
-	out = append(out, nonRoot...)
-	out = append(out, *rootEntry)
-	return out
+	return users
 }
 
 // ResolveTargetUser memvalidasi dan memilih user Linux target untuk sesi PTY.
@@ -375,7 +255,7 @@ func (m *Manager) AvailableShellsForUser(preferredShell string) []string {
 	var out []string
 	for _, cand := range candidates {
 		cand = strings.TrimSpace(cand)
-		if !isUsableShell(cand) {
+		if !config.IsUsableShell(cand) {
 			continue
 		}
 		realPath := cand

@@ -116,7 +116,29 @@ func TestSiteAppAPICreateInspectUpdateSwitchAndDelete(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(projDir, "package.json"), []byte(`{"name":"next-portal","scripts":{"start":"next start","dev":"next dev","build":"next build"}}`), 0644)
 	_ = os.WriteFile(filepath.Join(projDir, "pnpm-lock.yaml"), []byte("lockfileVersion: '9.0'\n"), 0644)
 
-	// 1. Inspect Dir
+	// 1. Inspect Dir & Run Users
+	reqUsers := httptest.NewRequest(http.MethodGet, "/api/sites/run-users", nil)
+	recUsers := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recUsers, reqUsers)
+	if recUsers.Code != http.StatusOK {
+		t.Fatalf("GET /api/sites/run-users status=%d body=%s", recUsers.Code, recUsers.Body.String())
+	}
+	var usersOut struct {
+		Users       []config.SystemUser `json:"users"`
+		DefaultUser string              `json:"default_user"`
+	}
+	if err := json.Unmarshal(recUsers.Body.Bytes(), &usersOut); err != nil {
+		t.Fatalf("invalid run-users JSON: %v", err)
+	}
+	if usersOut.DefaultUser == "" {
+		t.Fatalf("expected non-empty default_user in /api/sites/run-users: %s", recUsers.Body.String())
+	}
+	for _, u := range usersOut.Users {
+		if u.IsRoot || u.Username == "root" {
+			t.Fatalf("expected only non-root users in /api/sites/run-users, got %+v", u)
+		}
+	}
+
 	reqInspect := httptest.NewRequest(http.MethodPost, "/api/sites/inspect-dir", strings.NewReader(`{"path":"`+projDir+`"}`))
 	recInspect := httptest.NewRecorder()
 	srv.mux.ServeHTTP(recInspect, reqInspect)
@@ -124,11 +146,12 @@ func TestSiteAppAPICreateInspectUpdateSwitchAndDelete(t *testing.T) {
 		t.Fatalf("inspect-dir status=%d body=%s", recInspect.Code, recInspect.Body.String())
 	}
 	var inspOut struct {
-		Inspect       siteapp.InspectResult `json:"inspect"`
-		SuggestedPort int                   `json:"suggested_port"`
+		Inspect          siteapp.InspectResult `json:"inspect"`
+		SuggestedPort    int                   `json:"suggested_port"`
+		SuggestedRunUser string                `json:"suggested_run_user"`
 	}
 	_ = json.Unmarshal(recInspect.Body.Bytes(), &inspOut)
-	if inspOut.Inspect.Runtime != "nodejs" || inspOut.Inspect.PackageManager != "pnpm" || inspOut.SuggestedPort < siteapp.DefaultPortMin {
+	if inspOut.Inspect.Runtime != "nodejs" || inspOut.Inspect.PackageManager != "pnpm" || inspOut.SuggestedPort < siteapp.DefaultPortMin || inspOut.SuggestedRunUser == "" {
 		t.Fatalf("unexpected inspect output: %+v", inspOut)
 	}
 

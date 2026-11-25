@@ -70,6 +70,7 @@ import type {
 	SiteAppInspectResult,
 	SiteAppRuntimeStatus,
 	SiteRecord,
+	SiteRunUsersResponse,
 	SwitchersMap,
 	SystemStats,
 	TasksResponse,
@@ -259,11 +260,12 @@ export const api = {
 			body: JSON.stringify(payload)
 		}),
 	inspectSiteDir: (path: string) =>
-		apiFetch<{ inspect: SiteAppInspectResult; suggested_port: number; port_conflict_hint?: string }>('/api/sites/inspect-dir', {
+		apiFetch<{ inspect: SiteAppInspectResult; suggested_port: number; suggested_run_user?: string; port_conflict_hint?: string }>('/api/sites/inspect-dir', {
 			method: 'POST',
 			body: JSON.stringify({ path })
 		}),
 	suggestSitePort: () => apiFetch<{ port: number }>('/api/sites/suggest-port'),
+	getSiteRunUsers: () => apiFetch<SiteRunUsersResponse>('/api/sites/run-users'),
 	siteAppAction: (
 		domain: string,
 		action: 'start' | 'stop' | 'restart' | 'enable' | 'disable',

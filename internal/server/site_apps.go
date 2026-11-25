@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"wdev/internal/config"
 	"wdev/internal/serviceconfig"
 	"wdev/internal/site"
 	"wdev/internal/siteapp"
@@ -194,9 +195,14 @@ func (s *Server) handleInspectSiteDir(w http.ResponseWriter, r *http.Request) {
 			suggestedPort = freePort
 		}
 	}
+	suggestedRunUser := strings.TrimSpace(res.OwnerUser)
+	if suggestedRunUser == "" {
+		suggestedRunUser = s.ensureSiteAppManager().DefaultRunUser()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"inspect":            res,
 		"suggested_port":     suggestedPort,
+		"suggested_run_user": suggestedRunUser,
 		"port_conflict_hint": portConflictHint,
 	})
 }
@@ -212,6 +218,22 @@ func (s *Server) handleSuggestSitePort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"port": port})
+}
+
+func (s *Server) handleSiteRunUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	mgr := s.ensureSiteAppManager()
+	users := mgr.AvailableRunUsers()
+	if users == nil {
+		users = []config.SystemUser{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"users":        users,
+		"default_user": mgr.DefaultRunUser(),
+	})
 }
 
 func (s *Server) writeSudoRequiredIfNeeded(w http.ResponseWriter, err error, msg string) bool {

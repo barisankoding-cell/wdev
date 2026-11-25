@@ -140,13 +140,37 @@ func (m *Manager) SetExecForTest(execImpl sysExec) {
 	m.exec = execImpl
 }
 
+// AvailableRunUsers mengembalikan daftar akun Linux non-root yang tersedia untuk menjalankan Managed App.
+func (m *Manager) AvailableRunUsers() []config.SystemUser {
+	users := config.ListSystemUsers(false)
+	if len(users) > 0 {
+		return users
+	}
+	if os.Geteuid() != 0 {
+		if u, err := user.Current(); err == nil && strings.TrimSpace(u.Username) != "" && u.Username != "root" {
+			uid, _ := strconv.ParseUint(u.Uid, 10, 32)
+			gid, _ := strconv.ParseUint(u.Gid, 10, 32)
+			return []config.SystemUser{{
+				Username: u.Username,
+				UID:      uint32(uid),
+				GID:      uint32(gid),
+				HomeDir:  u.HomeDir,
+				IsRoot:   false,
+			}}
+		}
+	}
+	return []config.SystemUser{}
+}
+
 // DefaultRunUser mengembalikan user non-root standar pemilik proses aplikasi.
 func (m *Manager) DefaultRunUser() string {
-	u := strings.TrimSpace(config.CurrentUsername())
-	if u == "" {
-		return "root"
+	if users := m.AvailableRunUsers(); len(users) > 0 {
+		return users[0].Username
 	}
-	return u
+	if u := strings.TrimSpace(config.CurrentUsername()); u != "" && u != "root" {
+		return u
+	}
+	return "root"
 }
 
 // InspectProject memeriksa folder proyek dan memvalidasi keamanannya.
@@ -206,7 +230,11 @@ func (m *Manager) NormalizeAndValidate(rec store.SiteAppRecord) (store.SiteAppRe
 
 	runUser := strings.TrimSpace(rec.RunUser)
 	if runUser == "" {
-		runUser = m.DefaultRunUser()
+		if owner := config.DetectDirOwnerUser(cleanDir); owner != "" {
+			runUser = owner
+		} else {
+			runUser = m.DefaultRunUser()
+		}
 	}
 	if !unixUsernameRe.MatchString(runUser) {
 		return rec, fmt.Errorf("nama user sistem tidak valid: %q", runUser)

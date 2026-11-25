@@ -483,3 +483,31 @@ func TestReadProcTreeRSSBytesAndStatusMemoryFallback(t *testing.T) {
 		t.Fatalf("expected MemoryBytes=0 when inactive, got %d", st.MemoryBytes)
 	}
 }
+
+func TestAvailableRunUsersAndDefaultRunUser(t *testing.T) {
+	mgr := New(&config.Config{}, nil, nil)
+	users := mgr.AvailableRunUsers()
+	for _, u := range users {
+		if u.IsRoot || u.Username == "root" {
+			t.Fatalf("AvailableRunUsers must only return non-root users, got %+v", u)
+		}
+	}
+	def := mgr.DefaultRunUser()
+	if def == "" {
+		t.Fatal("DefaultRunUser must not return empty string")
+	}
+	if len(users) > 0 && def != users[0].Username {
+		t.Fatalf("DefaultRunUser() = %q, want %q", def, users[0].Username)
+	}
+
+	// InspectDirectory should also surface non-root folder owner when applicable.
+	projDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(projDir, "go.mod"), []byte("module demo\n\ngo 1.24\n"), 0644)
+	res, err := inspectDirectoryPath(projDir)
+	if err != nil {
+		t.Fatalf("inspectDirectoryPath failed: %v", err)
+	}
+	if os.Geteuid() != 0 && os.Getuid() >= 1000 && res.OwnerUser == "" {
+		t.Fatalf("expected non-root OwnerUser for %s, got empty", projDir)
+	}
+}

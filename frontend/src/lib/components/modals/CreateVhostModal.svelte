@@ -19,7 +19,7 @@
 	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
-	import type { FileRootInfo, SiteAppInspectResult, SiteRecord } from '#lib/types/api.js';
+	import type { FileRootInfo, SiteAppInspectResult, SiteRecord, SystemUserInfo } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
@@ -31,8 +31,10 @@
 	import NetworkIcon from '@lucide/svelte/icons/network';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SaveIcon from '@lucide/svelte/icons/save';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
+	import UserIcon from '@lucide/svelte/icons/user';
 
 	let {
 		open = $bindable(false),
@@ -78,9 +80,15 @@
 	let addLocalHosts = $state(false);
 
 	// Managed App (Node.js / Go / Rust via systemd) state
+	const CUSTOM_RUN_USER = '__custom__';
 	let buildCommand = $state('');
 	let startCommand = $state('');
 	let runUser = $state('');
+	let availableRunUsers = $state<SystemUserInfo[]>([]);
+	let defaultRunUser = $state('');
+	let runUsersLoading = $state(false);
+	let runUserTouched = $state(false);
+	let customRunUserMode = $state(false);
 	let autoStart = $state(true);
 	let runBuildNow = $state(true);
 	let useProjectEnv = $state(false);
@@ -90,6 +98,20 @@
 	let inspectLoading = $state(false);
 	let portSuggesting = $state(false);
 	let advancedAppOpen = $state(false);
+
+	const isRootRunUser = $derived(runUser.trim().toLowerCase() === 'root');
+	const selectedSystemUser = $derived(
+		availableRunUsers.find((u) => u.username === runUser.trim()) ?? null
+	);
+	const runUserSelectValue = $derived.by(() => {
+		if (customRunUserMode) return CUSTOM_RUN_USER;
+		const trimmed = runUser.trim();
+		if (trimmed && availableRunUsers.some((u) => u.username === trimmed)) {
+			return trimmed;
+		}
+		if (trimmed) return CUSTOM_RUN_USER;
+		return '';
+	});
 
 	const webFrameworks = $derived([
 		{ value: 'laravel', label: t('webstack.createModal.frameworks.laravel') },
@@ -244,6 +266,47 @@
 		runBuildNow = Boolean(buildCommand.trim());
 	}
 
+	async function loadRunUsers() {
+		runUsersLoading = true;
+		try {
+			const res = await api.getSiteRunUsers();
+			const users = res?.users ?? [];
+			const fallbackDefault = (res?.default_user || users[0]?.username || '').trim();
+			availableRunUsers = users;
+			defaultRunUser = fallbackDefault;
+
+			if (!runUserTouched && !runUser.trim() && fallbackDefault) {
+				runUser = fallbackDefault;
+			}
+
+			const current = runUser.trim();
+			if (users.length === 0) {
+				customRunUserMode = true;
+			} else if (current && !users.some((u) => u.username === current)) {
+				customRunUserMode = true;
+			} else if (!runUserTouched || (current && users.some((u) => u.username === current))) {
+				customRunUserMode = false;
+			}
+		} catch {
+			if (availableRunUsers.length === 0) {
+				customRunUserMode = true;
+			}
+		} finally {
+			runUsersLoading = false;
+		}
+	}
+
+	function onRunUserSelect(nextValue: string) {
+		if (!nextValue) return;
+		runUserTouched = true;
+		if (nextValue === CUSTOM_RUN_USER) {
+			customRunUserMode = true;
+			return;
+		}
+		customRunUserMode = false;
+		runUser = nextValue;
+	}
+
 	async function inspectFolder(dirPath: string, applyDetected = true) {
 		const target = dirPath.trim();
 		if (!target) return;
@@ -255,6 +318,13 @@
 			portConflictHint = res.port_conflict_hint || '';
 			if (!isEdit && res.suggested_port && (!portTouched || !proxyPortStr.trim() || proxyPortStr === '3000')) {
 				proxyPortStr = String(res.suggested_port);
+			}
+			const detectedOwner = (res.inspect?.owner_user || res.suggested_run_user || '').trim();
+			if (!isEdit && !runUserTouched && detectedOwner) {
+				runUser = detectedOwner;
+				if (availableRunUsers.length > 0) {
+					customRunUserMode = !availableRunUsers.some((u) => u.username === detectedOwner);
+				}
 			}
 			if (res.inspect?.has_dot_env) {
 				useProjectEnv = true;
@@ -286,6 +356,10 @@
 		formError = '';
 		if (nextFw === 'nodejs' || nextFw === 'go' || nextFw === 'rust') {
 			applyManagedAppDefaults(nextFw, true);
+			advancedAppOpen = true;
+			if (availableRunUsers.length === 0 && !runUsersLoading) {
+				void loadRunUsers();
+			}
 			if (!isEdit && (!proxyPortStr.trim() || proxyPortStr === '3000')) {
 				void fillSuggestedFreePort(true);
 			}
@@ -353,13 +427,15 @@
 					buildCommand = siteToEdit.app?.build_command || '';
 					startCommand = siteToEdit.app?.start_command || '';
 					runUser = siteToEdit.app?.run_user || '';
+					runUserTouched = Boolean(siteToEdit.app?.run_user);
+					customRunUserMode = false;
 					autoStart = siteToEdit.app?.auto_start ?? true;
 					runBuildNow = false;
 					useProjectEnv = Boolean(siteToEdit.app?.use_project_env);
 					portTouched = Boolean(siteToEdit.proxy_port);
 					portConflictHint = '';
 					inspectResult = null;
-					advancedAppOpen = Boolean(siteToEdit.app?.run_user);
+					advancedAppOpen = true;
 				} else {
 					domainMode = isEdge ? 'subdomain' : 'custom';
 					domain = '';
@@ -379,15 +455,18 @@
 					buildCommand = '';
 					startCommand = '';
 					runUser = '';
+					runUserTouched = false;
+					customRunUserMode = false;
 					autoStart = true;
 					runBuildNow = true;
 					useProjectEnv = false;
 					portTouched = false;
 					portConflictHint = '';
 					inspectResult = null;
-					advancedAppOpen = false;
+					advancedAppOpen = true;
 				}
 
+				void loadRunUsers();
 				void api
 					.getFileRoots()
 					.then((rootsRes) => {
@@ -1244,28 +1323,135 @@
 
 								<Collapsible.Root bind:open={advancedAppOpen} class="sm:col-span-2">
 									<Collapsible.Trigger class="flex w-full items-center justify-between rounded-md border bg-muted/20 px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground">
-										<span class="flex items-center gap-1.5">
-											<HammerIcon class="size-3.5" />
-											{t('webstack.createModal.advancedSystemd')}
+										<span class="flex min-w-0 items-center gap-1.5">
+											<HammerIcon class="size-3.5 shrink-0" />
+											<span class="truncate">{t('webstack.createModal.advancedSystemd')}</span>
+											{#if runUser.trim() || defaultRunUser}
+												<Badge
+													variant={isRootRunUser ? 'destructive' : 'secondary'}
+													class="ml-1 px-1.5 py-0 font-mono text-[10px] font-normal"
+												>
+													{runUser.trim() || defaultRunUser}
+												</Badge>
+											{/if}
 										</span>
-										<ChevronDownIcon class={advancedAppOpen ? 'size-4 rotate-180 transition-transform' : 'size-4 transition-transform'} />
+										<ChevronDownIcon class={advancedAppOpen ? 'size-4 shrink-0 rotate-180 transition-transform' : 'size-4 shrink-0 transition-transform'} />
 									</Collapsible.Trigger>
-									<Collapsible.Content class="pt-3">
+									<Collapsible.Content class="space-y-3 pt-3">
 										<Field.Field>
-											<Field.FieldLabel for="site-run-user">{t('webstack.createModal.runAsUserLabel')}</Field.FieldLabel>
-											<Input
-												id="site-run-user"
-												name="run_user"
-												class="h-10 font-mono text-base sm:h-9 sm:text-xs"
-												placeholder={t('webstack.createModal.runAsUserPlaceholder')}
-												autocorrect="off"
-												autocapitalize="none"
-												spellcheck={false}
-												bind:value={runUser}
-											/>
+											<Field.FieldLabel for="site-run-user-select">{t('webstack.createModal.runAsUserLabel')}</Field.FieldLabel>
+											<div class="flex items-center gap-2">
+												<Select.Root
+													type="single"
+													value={runUserSelectValue}
+													onValueChange={onRunUserSelect}
+												>
+													<Select.Trigger
+														id="site-run-user-select"
+														class="h-11 min-w-0 flex-1 text-base sm:h-9 sm:text-sm"
+													>
+														{#if runUsersLoading && availableRunUsers.length === 0}
+															<span class="flex items-center gap-2 text-muted-foreground">
+																<Spinner class="size-3.5" />
+																<span class="truncate">{t('webstack.createModal.runAsUserLoading')}</span>
+															</span>
+														{:else if customRunUserMode || (runUser.trim() && !selectedSystemUser)}
+															<span class="flex min-w-0 items-center gap-2">
+																<UserIcon class="size-3.5 shrink-0 text-muted-foreground" />
+																<span class="truncate font-mono text-xs">
+																	{runUser.trim() || t('webstack.createModal.runAsUserCustomOption')}
+																</span>
+															</span>
+														{:else if selectedSystemUser}
+															<span class="flex min-w-0 items-center gap-2">
+																<UserIcon class="size-3.5 shrink-0 text-muted-foreground" />
+																<span class="font-mono text-xs font-medium">{selectedSystemUser.username}</span>
+																<span class="truncate text-xs text-muted-foreground">
+																	UID {selectedSystemUser.uid} · {selectedSystemUser.home_dir}
+																</span>
+															</span>
+														{:else}
+															<span class="truncate text-muted-foreground">
+																{t('webstack.createModal.runAsUserSelectPlaceholder')}
+															</span>
+														{/if}
+													</Select.Trigger>
+													<Select.Content>
+														{#if availableRunUsers.length > 0}
+															<Select.Group>
+																<Select.GroupHeading>{t('webstack.createModal.runAsUserAvailableGroup')}</Select.GroupHeading>
+																{#each availableRunUsers as sysUser (sysUser.username)}
+																	<Select.Item value={sysUser.username} label={sysUser.username}>
+																		<UserIcon class="size-3.5 shrink-0 text-muted-foreground" />
+																		<span class="font-mono text-xs font-medium">{sysUser.username}</span>
+																		<span class="truncate text-xs text-muted-foreground">
+																			UID {sysUser.uid} · {sysUser.home_dir}
+																		</span>
+																		{#if inspectResult?.owner_user === sysUser.username}
+																			<Badge variant="outline" class="px-1.5 py-0 text-[10px] font-normal">
+																				{t('webstack.createModal.runAsUserOwnerTag')}
+																			</Badge>
+																		{/if}
+																		{#if defaultRunUser === sysUser.username}
+																			<Badge variant="secondary" class="px-1.5 py-0 text-[10px] font-normal">
+																				{t('webstack.createModal.runAsUserDefaultTag')}
+																			</Badge>
+																		{/if}
+																	</Select.Item>
+																{/each}
+															</Select.Group>
+															<Select.Separator />
+														{/if}
+														<Select.Item value={CUSTOM_RUN_USER} label={t('webstack.createModal.runAsUserCustomOption')}>
+															{t('webstack.createModal.runAsUserCustomOption')}
+														</Select.Item>
+													</Select.Content>
+												</Select.Root>
+
+												<Button
+													type="button"
+													variant="outline"
+													size="icon"
+													class="h-11 w-11 shrink-0 sm:h-9 sm:w-9"
+													onclick={() => void loadRunUsers()}
+													disabled={runUsersLoading}
+													aria-label={t('webstack.createModal.runAsUserRefresh')}
+													title={t('webstack.createModal.runAsUserRefresh')}
+												>
+													<RefreshCwIcon class={runUsersLoading ? 'size-4 animate-spin' : 'size-4'} />
+												</Button>
+											</div>
+
+											{#if availableRunUsers.length === 0 && !runUsersLoading}
+												<p class="mt-1.5 text-xs text-muted-foreground">
+													{t('webstack.createModal.runAsUserNoneAvailable')}
+												</p>
+											{/if}
+
+											{#if customRunUserMode || availableRunUsers.length === 0}
+												<Input
+													id="site-run-user"
+													name="run_user"
+													class="mt-2 h-10 font-mono text-base sm:h-9 sm:text-xs"
+													placeholder={t('webstack.createModal.runAsUserPlaceholder')}
+													autocorrect="off"
+													autocapitalize="none"
+													spellcheck={false}
+													bind:value={runUser}
+													oninput={() => (runUserTouched = true)}
+												/>
+											{/if}
+
 											<Field.FieldDescription>
 												{t('webstack.createModal.runAsUserDesc1')}<code>node_modules</code>{t('webstack.createModal.runAsUserDesc2')}<code>target</code>{t('webstack.createModal.runAsUserDesc3')}
 											</Field.FieldDescription>
+
+											{#if isRootRunUser}
+												<p class="mt-1 flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+													<AlertCircleIcon class="size-3.5 shrink-0" />
+													<span>{t('webstack.createModal.runAsUserRootWarning')}</span>
+												</p>
+											{/if}
 										</Field.Field>
 									</Collapsible.Content>
 								</Collapsible.Root>

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"wdev/internal/config"
 	"wdev/internal/site"
 )
 
@@ -43,6 +44,7 @@ type InspectResult struct {
 	DetectedPortHint   int               `json:"detected_port_hint,omitempty"`
 	ToolchainInstalled bool              `json:"toolchain_installed"`
 	ToolchainBinary    string            `json:"toolchain_binary,omitempty"`
+	OwnerUser          string            `json:"owner_user,omitempty"`
 }
 
 // canonicalToolDirs mencerminkan direktori instalasi toolchain resmi wdev.
@@ -92,6 +94,7 @@ func inspectDirectoryPath(cleanDir string) (*InspectResult, error) {
 
 	res := &InspectResult{
 		WorkingDir: cleanDir,
+		OwnerUser:  config.DetectDirOwnerUser(cleanDir),
 	}
 
 	projectEnvPath := filepath.Join(cleanDir, ".env")
