@@ -2211,7 +2211,7 @@ func TestHandleWorkspaceOrcaAIValidation(t *testing.T) {
 	if recGet.Code != http.StatusOK {
 		t.Fatalf("GET /api/workspace/orca-ai = %d, body=%s", recGet.Code, recGet.Body.String())
 	}
-	if !strings.Contains(recGet.Body.String(), `"available_agents"`) || !strings.Contains(recGet.Body.String(), `"template_presets"`) || !strings.Contains(recGet.Body.String(), `"cached_models_by_agent"`) {
+	if !strings.Contains(recGet.Body.String(), `"available_agents"`) || !strings.Contains(recGet.Body.String(), `"template_presets"`) || !strings.Contains(recGet.Body.String(), `"cached_models_by_agent"`) || !strings.Contains(recGet.Body.String(), `"agent_args"`) {
 		t.Fatalf("unexpected GET /api/workspace/orca-ai body: %s", recGet.Body.String())
 	}
 
@@ -2245,6 +2245,14 @@ func TestHandleWorkspaceOrcaAIValidation(t *testing.T) {
 	srv.mux.ServeHTTP(recBadCustom, reqBadCustom)
 	if recBadCustom.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty custom command, got %d body=%s", recBadCustom.Code, recBadCustom.Body.String())
+	}
+
+	// POST agent_args dengan tanda kutip tidak tertutup -> 400
+	reqBadArgs := httptest.NewRequest(http.MethodPost, "/api/workspace/orca-ai", strings.NewReader(`{"enabled":true,"agent_id":"omp","agent_args":"--model \"unclosed"}`))
+	recBadArgs := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recBadArgs, reqBadArgs)
+	if recBadArgs.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unclosed agent_args quotes, got %d body=%s", recBadArgs.Code, recBadArgs.Body.String())
 	}
 
 	// Method DELETE -> 405

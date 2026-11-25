@@ -260,6 +260,7 @@ export interface OrcaCommitAISummary {
 	agent_label: string;
 	model_id?: string;
 	thinking_level?: string;
+	agent_args?: string;
 	has_custom_prompt: boolean;
 	repo_count: number;
 	repo_override_count: number;
@@ -293,6 +294,7 @@ export interface OrcaCommitAIConfig {
 	agent_label: string;
 	model_id: string;
 	thinking_level: string;
+	agent_args: string;
 	custom_agent_command: string;
 	custom_prompt: string;
 	command_input_template: string;
@@ -311,6 +313,7 @@ export interface OrcaCommitAISavePayload {
 	agent_id: string;
 	model_id: string;
 	thinking_level: string;
+	agent_args: string;
 	discovered_models?: OrcaCommitAIModel[];
 	custom_agent_command: string;
 	custom_prompt: string;
@@ -323,6 +326,7 @@ export interface OrcaCommitAISyncSide {
 	agent_id: string;
 	model_id: string;
 	thinking_level: string;
+	agent_args?: string;
 	custom_prompt: string;
 	custom_agent_command: string;
 	repo_override_count: number;

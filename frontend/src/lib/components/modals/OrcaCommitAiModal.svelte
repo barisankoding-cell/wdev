@@ -51,6 +51,9 @@
 	let modelsSupportsDiscovery = $state(false);
 	let modelsError = $state('');
 	let customAgentCommand = $state('');
+	let agentArgs = $state('');
+	let agentArgsAutoSync = $state(true);
+	let agentArgsInputRef = $state<HTMLInputElement | null>(null);
 	let customPrompt = $state('');
 	let updateDefaultTuiAgent = $state(true);
 	let clearRepoOverrides = $state(true);
@@ -63,6 +66,10 @@
 
 	const selectedModelObj = $derived(
 		models.find((m) => m.id === modelId) ?? null
+	);
+
+	const defaultModelArgs = $derived(
+		buildDefaultAgentArgs(agentId, modelId, thinkingLevel)
 	);
 
 	const syncBadge = $derived.by((): { label: string; variant: BadgeVariant } => {
@@ -114,6 +121,92 @@
 			: '';
 	});
 
+	function quoteCliArg(value: string): string {
+		if (/^[A-Za-z0-9_./:@#+=,-]+$/.test(value)) return value;
+		return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+	}
+
+	function buildDefaultAgentArgs(targetAgent: string, targetModel: string, targetThinking: string): string {
+		const model = targetModel.trim();
+		const thinking = targetThinking.trim();
+		if (!targetAgent || targetAgent === 'custom' || targetAgent === 'dsh') {
+			return '';
+		}
+		const parts: string[] = [];
+		if (targetAgent === 'opencode2') {
+			if (model && model !== 'default') {
+				parts.push('--model', quoteCliArg(thinking ? `${model}#${thinking}` : model));
+			}
+			return parts.join(' ');
+		}
+		const omitsDefaultModel =
+			targetAgent === 'omp' ||
+			targetAgent === 'opencode' ||
+			targetAgent === 'antigravity' ||
+			targetAgent === 'pi' ||
+			targetAgent === 'kimi' ||
+			targetAgent === 'jcode';
+		if (model && (!omitsDefaultModel || model !== 'default')) {
+			parts.push('--model', quoteCliArg(model));
+		}
+		if (thinking) {
+			switch (targetAgent) {
+				case 'omp':
+					parts.push('--thinking', quoteCliArg(thinking));
+					break;
+				case 'opencode':
+					parts.push('--variant', quoteCliArg(thinking));
+					break;
+				case 'antigravity':
+					parts.push('--effort', quoteCliArg(thinking));
+					break;
+			}
+		}
+		return parts.join(' ');
+	}
+
+	function hasBalancedAgentArgQuotes(value: string): boolean {
+		let quote: '"' | "'" | null = null;
+		for (let i = 0; i < value.length; i++) {
+			const ch = value[i];
+			if (quote) {
+				if (ch === '\\' && quote === '"' && i + 1 < value.length) {
+					i++;
+					continue;
+				}
+				if (ch === quote) {
+					quote = null;
+				}
+				continue;
+			}
+			if (ch === '"' || ch === "'") {
+				quote = ch;
+				continue;
+			}
+			if (ch === '\\' && i + 1 < value.length) {
+				i++;
+				continue;
+			}
+		}
+		return quote === null;
+	}
+
+	function syncAgentArgsIfAuto(
+		targetAgent = agentId,
+		targetModel = modelId,
+		targetThinking = thinkingLevel
+	) {
+		if (agentArgsAutoSync) {
+			agentArgs = buildDefaultAgentArgs(targetAgent, targetModel, targetThinking);
+		}
+	}
+
+	function resetAgentArgsToSelectedModel() {
+		agentArgs = buildDefaultAgentArgs(agentId, modelId, thinkingLevel);
+		agentArgsAutoSync = true;
+		formError = '';
+	}
+
 	function defaultThinkingForModel(mId: string, list: OrcaCommitAIModel[], savedThinkingMap: Record<string, string>): string {
 		const saved = savedThinkingMap[mId];
 		const found = list.find((m) => m.id === mId);
@@ -131,6 +224,7 @@
 			modelsError = '';
 			modelsLiveDiscovered = false;
 			modelsSupportsDiscovery = false;
+			syncAgentArgsIfAuto(targetAgent, '', '');
 			return;
 		}
 		modelsLoading = true;
@@ -148,9 +242,11 @@
 					? modelId
 					: res.selected_model || res.default_model_id || models[0]?.id || '';
 			modelId = currentChoice;
+			const savedThinking = currentChoice === res.selected_model ? res.thinking_level : '';
 			thinkingLevel =
-				res.thinking_level ||
+				savedThinking ||
 				defaultThinkingForModel(currentChoice, models, config?.selected_thinking_by_model ?? {});
+			syncAgentArgsIfAuto(targetAgent, modelId, thinkingLevel);
 		} catch (err) {
 			if (agentId !== targetAgent) return;
 			modelsError = err instanceof Error ? err.message : 'Gagal memuat daftar model agent';
@@ -169,6 +265,7 @@
 			modelsError = '';
 			modelsLiveDiscovered = false;
 			modelsSupportsDiscovery = false;
+			syncAgentArgsIfAuto('custom', '', '');
 			return;
 		}
 		const cachedList = config?.cached_models_by_agent?.[nextAgent] ?? [];
@@ -183,6 +280,7 @@
 		updateDefaultTuiAgent = Boolean(
 			config?.available_agents.find((a) => a.id === nextAgent)?.supports_tui
 		);
+		syncAgentArgsIfAuto(nextAgent, modelId, thinkingLevel);
 		void loadAgentModels(nextAgent, false);
 	}
 
@@ -192,6 +290,11 @@
 			models,
 			config?.selected_thinking_by_model ?? {}
 		);
+		syncAgentArgsIfAuto(agentId, nextModel, thinkingLevel);
+	}
+
+	function handleThinkingChange(nextThinking: string) {
+		syncAgentArgsIfAuto(agentId, modelId, nextThinking);
 	}
 
 	async function loadConfig() {
@@ -216,11 +319,17 @@
 				thinkingLevel =
 					res.thinking_level ||
 					defaultThinkingForModel(modelId, cachedList, res.selected_thinking_by_model ?? {});
+				const autoArgs = buildDefaultAgentArgs(agentId, modelId, thinkingLevel);
+				const savedArgs = (res.agent_args || '').trim();
+				agentArgs = savedArgs || autoArgs;
+				agentArgsAutoSync = savedArgs === '' || savedArgs === autoArgs;
 				void loadAgentModels(agentId, false);
 			} else {
 				models = [];
 				modelId = '';
 				thinkingLevel = '';
+				agentArgs = (res.agent_args || '').trim();
+				agentArgsAutoSync = agentArgs === '';
 			}
 		} catch (err) {
 			loadError = err instanceof Error ? err.message : 'Gagal memuat konfigurasi Orca Commit AI';
@@ -279,6 +388,11 @@
 			customCmdInputRef?.focus();
 			return;
 		}
+		if (!hasBalancedAgentArgQuotes(agentArgs.trim())) {
+			formError = 'Argumen CLI memiliki tanda kutip yang belum ditutup.';
+			agentArgsInputRef?.focus();
+			return;
+		}
 
 		saving = true;
 		try {
@@ -287,6 +401,7 @@
 				agent_id: agentId,
 				model_id: agentId === 'custom' ? '' : modelId,
 				thinking_level: agentId === 'custom' ? '' : thinkingLevel,
+				agent_args: agentArgs.trim(),
 				discovered_models:
 					agentId === 'custom' ? [] : models.filter((m) => m.source !== 'seed'),
 				custom_agent_command: customAgentCommand.trim(),
@@ -557,6 +672,7 @@
 										id="orca-ai-thinking"
 										name="thinking_level"
 										bind:value={thinkingLevel}
+										onchange={(e) => handleThinkingChange((e.currentTarget as HTMLSelectElement).value)}
 										class="w-full"
 										aria-describedby="orca-ai-thinking-help"
 									>
@@ -662,6 +778,55 @@
 							/>
 							<Field.FieldDescription id="orca-ai-prompt-help">
 								Tulis aturan commit (bahasa, format Conventional Commits, batas panjang judul), atau gunakan placeholder <code class="font-mono">&#123;basePrompt&#125;</code> untuk kontrol penuh.
+							</Field.FieldDescription>
+						</Field.Field>
+
+						<Field.Field>
+							<div class="flex items-center justify-between gap-2">
+								<Field.FieldLabel for="orca-ai-agent-args">
+									Argumen CLI (<code class="font-mono">agentArgs</code>)
+								</Field.FieldLabel>
+								{#if defaultModelArgs && agentArgs.trim() !== defaultModelArgs}
+									<Button
+										type="button"
+										variant="ghost"
+										size="xs"
+										disabled={saving}
+										onclick={resetAgentArgsToSelectedModel}
+									>
+										Gunakan Model Terpilih
+									</Button>
+								{/if}
+							</div>
+							<Input
+								id="orca-ai-agent-args"
+								name="agent_args"
+								bind:ref={agentArgsInputRef}
+								bind:value={agentArgs}
+								autocorrect="off"
+								autocapitalize="none"
+								spellcheck={false}
+								class="font-mono text-xs"
+								aria-describedby="orca-ai-agent-args-help"
+								placeholder={defaultModelArgs || 'contoh: --model <provider/model>'}
+								oninput={() => {
+									agentArgsAutoSync = false;
+									if (hasBalancedAgentArgQuotes(agentArgs.trim())) {
+										formError = '';
+									}
+								}}
+							/>
+							<Field.FieldDescription id="orca-ai-agent-args-help">
+								Argumen CLI yang disimpan ke <code class="font-mono">actions.commitMessage.agentArgs</code> Orca.
+								{#if defaultModelArgs}
+									Otomatis mengikuti model terpilih: <code class="font-mono">{defaultModelArgs}</code>.
+								{:else if agentId === 'dsh'}
+									Agent ini tidak menggunakan argumen <code class="font-mono">--model</code>.
+								{:else if agentId === 'custom'}
+									Opsional: tambahkan flag CLI tambahan untuk perintah custom agent.
+								{:else}
+									Kosongkan untuk memakai default konfigurasi CLI agent.
+								{/if}
 							</Field.FieldDescription>
 						</Field.Field>
 

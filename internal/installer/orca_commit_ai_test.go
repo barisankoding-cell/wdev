@@ -492,3 +492,103 @@ func TestOrcaProcessDetectionSeparatesHeadlessAndDesktop(t *testing.T) {
 		t.Fatalf("unexpected desktop PIDs extracted: %v", pids)
 	}
 }
+
+func TestOrcaCommitAIAgentArgsAndValidation(t *testing.T) {
+	home := t.TempDir()
+	dbPath := setupTestOrcaProfileDB(t, home, "local-default", 5, map[string]any{
+		"sourceControlAi": map[string]any{
+			"enabled": true,
+			"agentId": "omp",
+			"actions": map[string]any{
+				"commitMessage": map[string]any{
+					"agentId":              "omp",
+					"commandInputTemplate": "{basePrompt}",
+					"argumentChoices":      map[string]any{"syntaxAgent": "omp", "nodes": []any{}},
+				},
+			},
+		},
+	}, nil, nil)
+
+	origResolve := resolveOrcaCommitUserFn
+	origUserSvc := orcaUserSvcActiveFn
+	origSysSvc := orcaSysSvcActiveFn
+	origProc := orcaProcessActiveFn
+	origAnyProc := orcaAnyProcessActiveFn
+	t.Cleanup(func() {
+		resolveOrcaCommitUserFn = origResolve
+		orcaUserSvcActiveFn = origUserSvc
+		orcaSysSvcActiveFn = origSysSvc
+		orcaProcessActiveFn = origProc
+		orcaAnyProcessActiveFn = origAnyProc
+	})
+
+	resolveOrcaCommitUserFn = func() (string, string) { return "", home }
+	orcaUserSvcActiveFn = func(context.Context, string, string) bool { return false }
+	orcaSysSvcActiveFn = func(context.Context) bool { return false }
+	orcaProcessActiveFn = func(context.Context, string) bool { return false }
+	orcaAnyProcessActiveFn = func(context.Context, string) bool { return false }
+
+	ctx := context.Background()
+
+	// Kutip tidak tertutup harus ditolak
+	if _, err := SaveOrcaCommitAIConfig(ctx, nil, OrcaCommitAISaveInput{
+		Enabled:   true,
+		AgentID:   "omp",
+		ModelID:   "reikurouter/reiku/gpt-6-luna",
+		AgentArgs: `--model "unclosed`,
+	}); !errors.Is(err, ErrOrcaCommitAIValidation) {
+		t.Fatalf("expected validation error for unclosed quote in agent_args, got %v", err)
+	}
+
+	// Simpan agent_args bersama model dan thinking level
+	saved, err := SaveOrcaCommitAIConfig(ctx, nil, OrcaCommitAISaveInput{
+		Enabled:       true,
+		AgentID:       "omp",
+		ModelID:       "reikurouter/reiku/gpt-6-luna",
+		ThinkingLevel: "medium",
+		AgentArgs:     "--model reikurouter/reiku/gpt-6-luna --thinking medium",
+		CustomPrompt:  defaultIndonesianPrompt,
+	})
+	if err != nil {
+		t.Fatalf("SaveOrcaCommitAIConfig error: %v", err)
+	}
+	if saved.AgentArgs != "--model reikurouter/reiku/gpt-6-luna --thinking medium" {
+		t.Fatalf("unexpected AgentArgs: %q", saved.AgentArgs)
+	}
+
+	// Pastikan argumentChoices dibersihkan dan agentArgs tersimpan di DB
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var payload string
+	if err := db.QueryRow(`SELECT payload FROM profile_state_documents WHERE domain = 'settings'`).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal([]byte(payload), &parsed)
+	commitAct := getMap(getMap(getMap(parsed, "sourceControlAi"), "actions"), "commitMessage")
+	if commitAct["agentArgs"] != "--model reikurouter/reiku/gpt-6-luna --thinking medium" {
+		t.Fatalf("expected agentArgs in DB, got %v", commitAct["agentArgs"])
+	}
+	if _, hasChoices := commitAct["argumentChoices"]; hasChoices {
+		t.Fatalf("expected argumentChoices removed from commitMessage action")
+	}
+
+	// Mengosongkan agent_args dan thinking_level harus menghapus field di DB
+	cleared, err := SaveOrcaCommitAIConfig(ctx, nil, OrcaCommitAISaveInput{
+		Enabled:      true,
+		AgentID:      "omp",
+		ModelID:      "reikurouter/reiku/gpt-6-luna",
+		AgentArgs:    "",
+		CustomPrompt: defaultIndonesianPrompt,
+	})
+	if err != nil {
+		t.Fatalf("SaveOrcaCommitAIConfig clear error: %v", err)
+	}
+	if cleared.AgentArgs != "" || cleared.ThinkingLevel != "" {
+		t.Fatalf("expected cleared AgentArgs and ThinkingLevel, got args=%q thinking=%q", cleared.AgentArgs, cleared.ThinkingLevel)
+	}
+}

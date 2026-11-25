@@ -974,8 +974,12 @@ func applyModelSelectionToContainer(container map[string]any, agentID, modelID, 
 	}
 
 	thinkMap := ensureMap(container, "selectedThinkingByModel")
-	if modelID != "" && thinkingLevel != "" {
-		thinkMap[modelID] = thinkingLevel
+	if modelID != "" {
+		if thinkingLevel != "" {
+			thinkMap[modelID] = thinkingLevel
+		} else {
+			delete(thinkMap, modelID)
+		}
 	}
 }
 

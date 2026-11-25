@@ -103,6 +103,7 @@ type OrcaCommitAISummary struct {
 	AgentLabel        string `json:"agent_label"`
 	ModelID           string `json:"model_id,omitempty"`
 	ThinkingLevel     string `json:"thinking_level,omitempty"`
+	AgentArgs         string `json:"agent_args,omitempty"`
 	HasCustomPrompt   bool   `json:"has_custom_prompt"`
 	RepoCount         int    `json:"repo_count"`
 	RepoOverrideCount int    `json:"repo_override_count"`
@@ -121,6 +122,7 @@ type OrcaCommitAIConfig struct {
 	AgentLabel              string                         `json:"agent_label"`
 	ModelID                 string                         `json:"model_id"`
 	ThinkingLevel           string                         `json:"thinking_level"`
+	AgentArgs               string                         `json:"agent_args"`
 	CustomAgentCommand      string                         `json:"custom_agent_command"`
 	CustomPrompt            string                         `json:"custom_prompt"`
 	CommandInputTemplate    string                         `json:"command_input_template"`
@@ -140,6 +142,7 @@ type OrcaCommitAISaveInput struct {
 	AgentID               string              `json:"agent_id"`
 	ModelID               string              `json:"model_id"`
 	ThinkingLevel         string              `json:"thinking_level"`
+	AgentArgs             string              `json:"agent_args"`
 	DiscoveredModels      []OrcaCommitAIModel `json:"discovered_models,omitempty"`
 	CustomAgentCommand    string              `json:"custom_agent_command"`
 	CustomPrompt          string              `json:"custom_prompt"`
@@ -602,6 +605,8 @@ func GetOrcaCommitAIConfig(ctx context.Context) (*OrcaCommitAIConfig, error) {
 			}
 			cfg.CustomAgentCommand = customCmd
 
+			cfg.AgentArgs = strings.TrimSpace(getString(commitAction, "agentArgs"))
+
 			tpl := getString(commitAction, "commandInputTemplate")
 			instr := getString(instrMap, "commitMessage")
 			legacyPrompt := getString(legacy, "customPrompt")
@@ -668,6 +673,7 @@ func GetOrcaCommitAISummary(ctx context.Context) *OrcaCommitAISummary {
 		AgentLabel:        cfg.AgentLabel,
 		ModelID:           cfg.ModelID,
 		ThinkingLevel:     cfg.ThinkingLevel,
+		AgentArgs:         cfg.AgentArgs,
 		HasCustomPrompt:   strings.TrimSpace(cfg.CustomPrompt) != "",
 		RepoCount:         cfg.RepoCount,
 		RepoOverrideCount: cfg.RepoOverrideCount,
@@ -896,16 +902,55 @@ func SaveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommi
 	return saveOrcaCommitAIConfig(ctx, cb, input, false)
 }
 
-func saveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput, forceQuitDesktop bool) (*OrcaCommitAIConfig, error) {
+func hasBalancedAgentArgQuotes(s string) bool {
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if quote != 0 {
+			if ch == '\\' && quote == '"' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			quote = ch
+			continue
+		}
+		if ch == '\\' && i+1 < len(s) {
+			i++
+			continue
+		}
+	}
+	return quote == 0
+}
+
+func validateOrcaCommitAISaveInput(input OrcaCommitAISaveInput) (orcaAgentSpec, string, string, error) {
 	agentID := strings.TrimSpace(input.AgentID)
 	spec, ok := lookupOrcaAgentSpec(agentID)
 	if !ok {
-		return nil, fmt.Errorf("%w: agent AI tidak dikenal: %q", ErrOrcaCommitAIValidation, agentID)
+		return orcaAgentSpec{}, "", "", fmt.Errorf("%w: agent AI tidak dikenal: %q", ErrOrcaCommitAIValidation, agentID)
 	}
 	customCmd := strings.TrimSpace(input.CustomAgentCommand)
 	if agentID == "custom" && customCmd == "" {
-		return nil, fmt.Errorf("%w: perintah custom agent wajib diisi saat memilih Custom Agent Command", ErrOrcaCommitAIValidation)
+		return orcaAgentSpec{}, "", "", fmt.Errorf("%w: perintah custom agent wajib diisi saat memilih Custom Agent Command", ErrOrcaCommitAIValidation)
 	}
+	agentArgs := strings.TrimSpace(input.AgentArgs)
+	if !hasBalancedAgentArgQuotes(agentArgs) {
+		return orcaAgentSpec{}, "", "", fmt.Errorf("%w: argumen CLI memiliki tanda kutip yang belum ditutup", ErrOrcaCommitAIValidation)
+	}
+	return spec, customCmd, agentArgs, nil
+}
+
+func saveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput, forceQuitDesktop bool) (*OrcaCommitAIConfig, error) {
+	spec, customCmd, agentArgs, err := validateOrcaCommitAISaveInput(input)
+	if err != nil {
+		return nil, err
+	}
+	input.AgentArgs = agentArgs
 
 	user, home := resolveOrcaCommitUserFn()
 	if home == "" {
@@ -1088,6 +1133,13 @@ func applyOrcaCommitAIToDB(
 	}
 	commitAction["agentId"] = spec.ID
 	commitAction["commandInputTemplate"] = cmdTemplate
+	if agentArgs := strings.TrimSpace(input.AgentArgs); agentArgs != "" {
+		commitAction["agentArgs"] = agentArgs
+		// commitMessage adalah text action; jangan biarkan argumentChoices sisa launch action bertahan.
+		delete(commitAction, "argumentChoices")
+	} else {
+		delete(commitAction, "agentArgs")
+	}
 
 	// Simpan pilihan model, thinking level, dan hasil discovery model untuk agent aktif.
 	if spec.ID != "custom" {
@@ -1216,6 +1268,7 @@ func ConfigureDefaultOrcaCommitAI(ctx context.Context, cb LogCallback) error {
 		AgentID:               chosenAgent,
 		ModelID:               cur.ModelID,
 		ThinkingLevel:         cur.ThinkingLevel,
+		AgentArgs:             cur.AgentArgs,
 		CustomAgentCommand:    cur.CustomAgentCommand,
 		CustomPrompt:          prompt,
 		UpdateDefaultTUIAgent: chosenAgent != "custom",

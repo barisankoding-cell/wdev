@@ -43,6 +43,7 @@ type OrcaCommitAIDesiredState struct {
 	AgentID               string              `json:"agent_id"`
 	ModelID               string              `json:"model_id"`
 	ThinkingLevel         string              `json:"thinking_level"`
+	AgentArgs             string              `json:"agent_args"`
 	CustomAgentCommand    string              `json:"custom_agent_command"`
 	CustomPrompt          string              `json:"custom_prompt"`
 	UpdateDefaultTUIAgent bool                `json:"update_default_tui_agent"`
@@ -66,6 +67,7 @@ type OrcaCommitAISyncSide struct {
 	AgentID            string `json:"agent_id"`
 	ModelID            string `json:"model_id"`
 	ThinkingLevel      string `json:"thinking_level"`
+	AgentArgs          string `json:"agent_args"`
 	CustomPrompt       string `json:"custom_prompt"`
 	CustomAgentCommand string `json:"custom_agent_command"`
 	RepoOverrideCount  int    `json:"repo_override_count"`
@@ -96,6 +98,7 @@ type orcaCommitAIActualState struct {
 	AgentID            string
 	ModelID            string
 	ThinkingLevel      string
+	AgentArgs          string
 	CustomPrompt       string
 	CustomAgentCommand string
 	DefaultTUIAgent    string
@@ -188,6 +191,7 @@ func desiredFromSaveInput(input OrcaCommitAISaveInput, profileID string) OrcaCom
 		AgentID:               strings.TrimSpace(input.AgentID),
 		ModelID:               strings.TrimSpace(input.ModelID),
 		ThinkingLevel:         strings.TrimSpace(input.ThinkingLevel),
+		AgentArgs:             strings.TrimSpace(input.AgentArgs),
 		CustomAgentCommand:    strings.TrimSpace(input.CustomAgentCommand),
 		CustomPrompt:          strings.TrimSpace(input.CustomPrompt),
 		UpdateDefaultTUIAgent: input.UpdateDefaultTUIAgent,
@@ -202,6 +206,7 @@ func (d *OrcaCommitAIDesiredState) toSaveInput() OrcaCommitAISaveInput {
 		AgentID:               d.AgentID,
 		ModelID:               d.ModelID,
 		ThinkingLevel:         d.ThinkingLevel,
+		AgentArgs:             d.AgentArgs,
 		CustomAgentCommand:    d.CustomAgentCommand,
 		CustomPrompt:          d.CustomPrompt,
 		UpdateDefaultTUIAgent: d.UpdateDefaultTUIAgent,
@@ -216,6 +221,7 @@ func (d *OrcaCommitAIDesiredState) side() *OrcaCommitAISyncSide {
 		AgentID:            d.AgentID,
 		ModelID:            d.ModelID,
 		ThinkingLevel:      d.ThinkingLevel,
+		AgentArgs:          strings.TrimSpace(d.AgentArgs),
 		CustomPrompt:       strings.TrimSpace(d.CustomPrompt),
 		CustomAgentCommand: strings.TrimSpace(d.CustomAgentCommand),
 	}
@@ -227,6 +233,7 @@ func (a *orcaCommitAIActualState) side() *OrcaCommitAISyncSide {
 		AgentID:            a.AgentID,
 		ModelID:            a.ModelID,
 		ThinkingLevel:      a.ThinkingLevel,
+		AgentArgs:          strings.TrimSpace(a.AgentArgs),
 		CustomPrompt:       strings.TrimSpace(a.CustomPrompt),
 		CustomAgentCommand: strings.TrimSpace(a.CustomAgentCommand),
 		RepoOverrideCount:  a.RepoOverrideCount,
@@ -302,6 +309,7 @@ func readOrcaCommitAIActualState(ctx context.Context) (*orcaCommitAIActualState,
 		SettingsRevision:   rev,
 		SettingsUpdatedAt:  updatedAt,
 		DefaultTUIAgent:    getString(settings, "defaultTuiAgent"),
+		AgentArgs:          strings.TrimSpace(getString(commitAction, "agentArgs")),
 		CustomAgentCommand: getString(sc, "customAgentCommand"),
 	}
 	if sc == nil {
@@ -423,6 +431,9 @@ func compareOrcaCommitAIDesired(d *OrcaCommitAIDesiredState, a *orcaCommitAIActu
 			drift = append(drift, "thinking level")
 		}
 	}
+	if strings.TrimSpace(d.AgentArgs) != strings.TrimSpace(a.AgentArgs) {
+		drift = append(drift, "agent args")
+	}
 	if strings.TrimSpace(d.CustomPrompt) != strings.TrimSpace(a.CustomPrompt) {
 		drift = append(drift, "prompt")
 	}
@@ -506,12 +517,10 @@ func GetOrcaCommitAISyncStatus(ctx context.Context) (*OrcaCommitAISyncStatus, er
 func SetOrcaCommitAIDesiredState(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput) (*OrcaCommitAISyncStatus, error) {
 	// Validasi dulu: jangan sampai input buruk tersimpan sebagai desired state
 	// dan terus-menerus gagal disinkronkan oleh reconciler.
-	agentID := strings.TrimSpace(input.AgentID)
-	if _, ok := lookupOrcaAgentSpec(agentID); !ok {
-		return nil, fmt.Errorf("%w: agent AI tidak dikenal: %q", ErrOrcaCommitAIValidation, agentID)
-	}
-	if agentID == "custom" && strings.TrimSpace(input.CustomAgentCommand) == "" {
-		return nil, fmt.Errorf("%w: perintah custom agent wajib diisi saat memilih Custom Agent Command", ErrOrcaCommitAIValidation)
+	if _, _, agentArgs, err := validateOrcaCommitAISaveInput(input); err != nil {
+		return nil, err
+	} else {
+		input.AgentArgs = agentArgs
 	}
 
 	user, home := resolveOrcaCommitUserFn()

@@ -400,3 +400,67 @@ func TestOrcaCommitAISaveRemainsBlockedIfForceQuitFails(t *testing.T) {
 		t.Fatalf("expected blocked state when desktop remains open, got %+v", status)
 	}
 }
+
+func TestOrcaCommitAISyncDetectsAgentArgsDriftAndClearsThinking(t *testing.T) {
+	home := t.TempDir()
+	dbPath := setupTestOrcaProfileDB(t, home, "local-default", 10, testOrcaCommitAISettings(), nil, nil)
+	svcActive, procActive := false, false
+	stopCount, startCount := 0, 0
+	withOrcaCommitAISyncHooks(t, home, &svcActive, &procActive, &stopCount, &startCount)
+
+	ctx := context.Background()
+	status, err := SetOrcaCommitAIDesiredState(ctx, nil, OrcaCommitAISaveInput{
+		Enabled:            true,
+		AgentID:            "omp",
+		ModelID:            "reikurouter/reiku/gpt-6-luna",
+		ThinkingLevel:      "medium",
+		AgentArgs:          "--model reikurouter/reiku/gpt-6-luna --thinking medium",
+		CustomPrompt:       "Bahasa Indonesia",
+		ClearRepoOverrides: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.InSync || status.Desired == nil || status.Desired.AgentArgs != "--model reikurouter/reiku/gpt-6-luna --thinking medium" {
+		t.Fatalf("expected synced with agent_args, got %+v", status)
+	}
+
+	// Simulasikan agentArgs diubah langsung di DB Orca
+	mutateTestOrcaSettings(t, dbPath, func(settings map[string]any) {
+		sc := settings["sourceControlAi"].(map[string]any)
+		sc["actions"].(map[string]any)["commitMessage"].(map[string]any)["agentArgs"] = "--model other"
+	})
+
+	driftStatus, err := GetOrcaCommitAISyncStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driftStatus.InSync || driftStatus.State != orcaCommitAISyncStateDrift {
+		t.Fatalf("expected agent args drift, got %+v", driftStatus)
+	}
+
+	reconciled, err := ReconcileOrcaCommitAI(ctx, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reconciled.InSync || reconciled.Actual == nil || reconciled.Actual.AgentArgs != "--model reikurouter/reiku/gpt-6-luna --thinking medium" {
+		t.Fatalf("expected agent_args reconciled, got %+v", reconciled)
+	}
+
+	// Mengubah thinking_level ke default ("") tidak boleh meninggalkan drift
+	cleared, err := SetOrcaCommitAIDesiredState(ctx, nil, OrcaCommitAISaveInput{
+		Enabled:            true,
+		AgentID:            "omp",
+		ModelID:            "reikurouter/reiku/gpt-6-luna",
+		ThinkingLevel:      "",
+		AgentArgs:          "--model reikurouter/reiku/gpt-6-luna",
+		CustomPrompt:       "Bahasa Indonesia",
+		ClearRepoOverrides: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleared.InSync || cleared.Actual == nil || cleared.Actual.ThinkingLevel != "" {
+		t.Fatalf("expected empty thinking level synced without drift, got %+v", cleared)
+	}
+}
