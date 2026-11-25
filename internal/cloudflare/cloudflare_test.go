@@ -3,8 +3,11 @@ package cloudflare
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,5 +281,313 @@ func TestBrowserLoginSessionIsolation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "cloudflare", "accounts", "oauth-acct.cert")); err != nil {
 		t.Fatalf("expected oauth-acct.cert to be saved: %v", err)
+	}
+}
+
+func TestAPITokenZonesRemoteExposeUnexposeAndDelete(t *testing.T) {
+	mgr, dir := newTestCFManager(t)
+	tok := makeTestToken("acct-aaa", "11111111-1111-1111-1111-111111111111", "sec-a")
+
+	var remoteIngress []map[string]any
+	remoteIngress = []map[string]any{
+		{"hostname": "ssh.other.com", "service": "ssh://127.0.0.1:22"},
+		{"service": "http_status:404"},
+	}
+	dnsRecords := make(map[string]map[string]any)
+	var tunnelDeleted, connCleaned bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer cf-api-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_, _ = w.Write([]byte(`{
+				"success": true,
+				"result": [
+					{"id":"zone-other","name":"lain.org","status":"active","account":{"id":"acct-bbb","name":"Other"}},
+					{"id":"zone-erpo","name":"erposoft.my.id","status":"active","account":{"id":"acct-aaa","name":"Main"}}
+				],
+				"result_info": {"page":1,"per_page":50,"total_pages":1,"count":2,"total_count":2}
+			}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-aaa/cfd_tunnel/11111111-1111-1111-1111-111111111111/configurations":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"config": map[string]any{
+						"warp-routing": map[string]any{"enabled": true},
+						"ingress":      remoteIngress,
+					},
+				},
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acct-aaa/cfd_tunnel/11111111-1111-1111-1111-111111111111/configurations":
+			var body struct {
+				Config struct {
+					WarpRouting map[string]any   `json:"warp-routing"`
+					Ingress     []map[string]any `json:"ingress"`
+				} `json:"config"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode PUT config: %v", err)
+			}
+			if body.Config.WarpRouting["enabled"] != true {
+				t.Fatalf("expected warp-routing preserved, got %+v", body.Config.WarpRouting)
+			}
+			remoteIngress = body.Config.Ingress
+			_, _ = w.Write([]byte(`{"success":true,"result":{}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-erpo/dns_records":
+			nameFilter := r.URL.Query().Get("name")
+			var list []map[string]any
+			for _, rec := range dnsRecords {
+				if nameFilter == "" || rec["name"] == nameFilter {
+					list = append(list, rec)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": list})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-erpo/dns_records":
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			payload["id"] = "rec-1"
+			dnsRecords["rec-1"] = payload
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": payload})
+		case r.Method == http.MethodDelete && r.URL.Path == "/zones/zone-erpo/dns_records/rec-1":
+			delete(dnsRecords, "rec-1")
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"rec-1"}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/accounts/acct-aaa/cfd_tunnel/11111111-1111-1111-1111-111111111111/connections":
+			connCleaned = true
+			_, _ = w.Write([]byte(`{"success":true,"result":null}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/accounts/acct-aaa/cfd_tunnel/11111111-1111-1111-1111-111111111111":
+			tunnelDeleted = true
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"11111111-1111-1111-1111-111111111111"}}`))
+		default:
+			t.Fatalf("unexpected Cloudflare API call: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+	mgr.SetAPIBaseURL(srv.URL)
+
+	autoFalse := false
+	if _, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Name:      "kantor",
+		Token:     tok,
+		AutoStart: &autoFalse,
+	}); err != nil {
+		t.Fatalf("RegisterTokenProfile: %v", err)
+	}
+
+	updated, err := mgr.SetProfileAPIToken("kantor", "Bearer cf-api-secret")
+	if err != nil {
+		t.Fatalf("SetProfileAPIToken: %v", err)
+	}
+	if !updated.HasAPIToken {
+		t.Fatalf("expected HasAPIToken=true, got %+v", updated)
+	}
+
+	zones, err := mgr.ListProfileZones("kantor")
+	if err != nil {
+		t.Fatalf("ListProfileZones: %v", err)
+	}
+	if len(zones) != 2 || zones[0].Name != "erposoft.my.id" {
+		t.Fatalf("expected acct-aaa zone sorted first, got %+v", zones)
+	}
+
+	// Expose pada mode token + API Token harus berhasil update ingress remote & DNS CNAME
+	expRes, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "toko.test",
+		PublicHost:  "toko.erposoft.my.id",
+		Profile:     "kantor",
+	})
+	if err != nil {
+		t.Fatalf("ExposeWithOptions token+API: %v", err)
+	}
+	if expRes.DNSWarning != "" {
+		t.Fatalf("unexpected DNSWarning: %s", expRes.DNSWarning)
+	}
+	if len(remoteIngress) != 3 || remoteIngress[1]["hostname"] != "toko.erposoft.my.id" {
+		t.Fatalf("unexpected remoteIngress after expose: %+v", remoteIngress)
+	}
+	if rec, ok := dnsRecords["rec-1"]; !ok || rec["content"] != "11111111-1111-1111-1111-111111111111.cfargotunnel.com" {
+		t.Fatalf("expected DNS CNAME created, got %+v", dnsRecords)
+	}
+
+	// Unexpose harus membersihkan remote ingress & DNS CNAME
+	unRes, err := mgr.UnexposeWithResult("toko.test", "kantor")
+	if err != nil {
+		t.Fatalf("UnexposeWithResult: %v", err)
+	}
+	if !unRes.DNSDeleted || unRes.DNSWarning != "" {
+		t.Fatalf("expected DNSDeleted=true without warning, got %+v", unRes)
+	}
+	if len(remoteIngress) != 2 || len(dnsRecords) != 0 {
+		t.Fatalf("expected remoteIngress=2 and dnsRecords=0, got %+v / %+v", remoteIngress, dnsRecords)
+	}
+
+	// Re-expose lalu DeleteProfileWithOptions(DeleteRemote=true, DeleteDNS=true)
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "toko.test",
+		PublicHost:  "toko.erposoft.my.id",
+		Profile:     "kantor",
+	}); err != nil {
+		t.Fatalf("re-expose: %v", err)
+	}
+	delRes, err := mgr.DeleteProfileWithOptions("kantor", DeleteProfileOptions{
+		DeleteRemote: true,
+		DeleteDNS:    true,
+	})
+	if err != nil {
+		t.Fatalf("DeleteProfileWithOptions: %v", err)
+	}
+	if !delRes.RemoteDeleted || delRes.DNSDeletedCount != 1 || !connCleaned || !tunnelDeleted {
+		t.Fatalf("unexpected delete result: %+v (conn=%v, del=%v)", delRes, connCleaned, tunnelDeleted)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cloudflare", "tokens", "kantor.apitoken")); !os.IsNotExist(err) {
+		t.Fatalf("expected .apitoken removed, got err=%v", err)
+	}
+}
+
+func TestCertProfileDeleteRemoteViaCLI(t *testing.T) {
+	mgr, dir := newTestCFManager(t)
+
+	var recorded [][]string
+	failDelete := true
+	mgr.runCmdFn = func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+		recorded = append(recorded, append([]string{name}, args...))
+		for i, a := range args {
+			if a == "--cred-file" && i+1 < len(args) {
+				_ = os.WriteFile(args[i+1], []byte(`{"AccountTag":"acct-c","TunnelSecret":"c2Vj","TunnelID":"cccccccc-cccc-cccc-cccc-cccccccccccc"}`), 0600)
+			}
+			if a == "delete" && failDelete {
+				return []byte("simulated remote API error"), fmt.Errorf("exit 1")
+			}
+		}
+		return []byte("OK"), nil
+	}
+
+	sampleCert := "-----BEGIN ARGO TUNNEL TOKEN-----\nabc\n-----END ARGO TUNNEL TOKEN-----\n"
+	autoFalse := false
+	if _, err := mgr.RegisterCertProfile(CertProfileOptions{
+		Name:       "lokal-del",
+		CertPEM:    sampleCert,
+		TunnelName: "tun-lokal-del",
+		AutoStart:  &autoFalse,
+	}); err != nil {
+		t.Fatalf("RegisterCertProfile: %v", err)
+	}
+
+	// Jika delete remote gagal, file cert lokal tidak boleh terhapus
+	if _, err := mgr.DeleteProfileWithOptions("lokal-del", DeleteProfileOptions{DeleteRemote: true}); err == nil {
+		t.Fatal("expected error when remote delete fails")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cloudflare", "accounts", "lokal-del.cert")); err != nil {
+		t.Fatalf("expected local cert preserved on remote delete error: %v", err)
+	}
+
+	// Setelah delete remote berhasil, Tunnel di server dihapus dan file lokal dibersihkan
+	failDelete = false
+	res, err := mgr.DeleteProfileWithOptions("lokal-del", DeleteProfileOptions{DeleteRemote: true})
+	if err != nil {
+		t.Fatalf("DeleteProfileWithOptions retry: %v", err)
+	}
+	if !res.RemoteDeleted {
+		t.Fatalf("expected RemoteDeleted=true, got %+v", res)
+	}
+	foundDeleteCmd := false
+	for _, cmd := range recorded {
+		joined := strings.Join(cmd, " ")
+		if strings.Contains(joined, "delete -f cccccccc-cccc-cccc-cccc-cccccccccccc") && strings.Contains(joined, "lokal-del.cert") {
+			foundDeleteCmd = true
+			break
+		}
+	}
+	if !foundDeleteCmd {
+		t.Fatalf("expected cloudflared delete -f command with --origincert, got %v", recorded)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cloudflare", "accounts", "lokal-del.cert")); !os.IsNotExist(err) {
+		t.Fatalf("expected local cert deleted after success, err=%v", err)
+	}
+}
+
+func TestCertExposePrefersAPIDNSOverCLIRouteDNS(t *testing.T) {
+	mgr, _ := newTestCFManager(t)
+	cliRouteDNSCalled := false
+	mgr.runCmdFn = func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "create") {
+			for i, a := range args {
+				if a == "--cred-file" && i+1 < len(args) {
+					_ = os.WriteFile(args[i+1], []byte(`{"AccountTag":"acct-z","TunnelSecret":"c2Vj","TunnelID":"dddddddd-dddd-dddd-dddd-dddddddddddd"}`), 0600)
+				}
+			}
+			return []byte("OK"), nil
+		}
+		if strings.Contains(joined, "route dns") {
+			// Simulasikan bug cloudflared CLI yang sukses (exit 0) di zone salah saat cert.pem berbeda domain
+			cliRouteDNSCalled = true
+			return []byte("Added CNAME apps.softcuy.uk.domainlama.com"), nil
+		}
+		return []byte("OK"), nil
+	}
+
+	allowDNSCreate := true
+	var createdDNS bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"z-softcuy","name":"softcuy.uk","status":"active","account":{"id":"acct-z","name":"Main"}}],"result_info":{"page":1,"per_page":50,"total_pages":1,"count":1,"total_count":1}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/z-softcuy/dns_records":
+			_, _ = w.Write([]byte(`{"success":true,"result":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/z-softcuy/dns_records":
+			if !allowDNSCreate {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`))
+				return
+			}
+			createdDNS = true
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"rec-soft"}}`))
+		}
+	}))
+	defer srv.Close()
+	mgr.SetAPIBaseURL(srv.URL)
+
+	autoFalse := false
+	if _, err := mgr.RegisterCertProfile(CertProfileOptions{
+		Name:      "itmaster",
+		CertPEM:   "-----BEGIN ARGO TUNNEL TOKEN-----\nabc\n-----END ARGO TUNNEL TOKEN-----\n",
+		APIToken:  "tok-z",
+		AutoStart: &autoFalse,
+	}); err != nil {
+		t.Fatalf("RegisterCertProfile: %v", err)
+	}
+
+	// 1. Jika API DNS gagal, error API langsung tampil di DNSWarning tanpa memanggil CLI route dns
+	allowDNSCreate = false
+	resFail, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "apps.test",
+		PublicHost:  "apps.softcuy.uk",
+		Profile:     "itmaster",
+	})
+	if err != nil {
+		t.Fatalf("ExposeWithOptions fail case: %v", err)
+	}
+	if !strings.Contains(resFail.DNSWarning, "Authentication error") {
+		t.Fatalf("expected API error surfaced in DNSWarning, got: %q", resFail.DNSWarning)
+	}
+
+	// 2. Jika API DNS berhasil, CNAME dibuat di zone softcuy.uk dan CLI route dns tidak dipanggil
+	allowDNSCreate = true
+	resOK, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "apps.test",
+		PublicHost:  "apps.softcuy.uk",
+		Profile:     "itmaster",
+	})
+	if err != nil {
+		t.Fatalf("ExposeWithOptions success case: %v", err)
+	}
+	if resOK.DNSWarning != "" || !createdDNS || cliRouteDNSCalled {
+		t.Fatalf("expected clean DNSWarning, createdDNS=true, cliRouteDNSCalled=false; got warning=%q created=%v cliCalled=%v", resOK.DNSWarning, createdDNS, cliRouteDNSCalled)
 	}
 }

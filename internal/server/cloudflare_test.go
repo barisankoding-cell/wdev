@@ -88,7 +88,40 @@ func TestCloudflareMultiProfileAPIHandlers(t *testing.T) {
 		t.Fatalf("POST /api/cloudflare/profiles/cert = %d: %s", recCert.Code, recCert.Body.String())
 	}
 
-	// 5. Hapus profil token via POST /api/cloudflare/profiles/delete
+	// 5. Pasang API Token & cek GET /api/cloudflare/zones?profile=kantor
+	cfAPISrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/zones" {
+			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"z1","name":"example.com","status":"active","account":{"id":"acct-123","name":"Kantor"}}],"result_info":{"page":1,"per_page":50,"total_pages":1,"count":1,"total_count":1}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer cfAPISrv.Close()
+	cfMgr.SetAPIBaseURL(cfAPISrv.URL)
+
+	bodyApiTok, _ := json.Marshal(map[string]string{"name": "kantor", "api_token": "tok-api-123"})
+	reqApiTok := httptest.NewRequest(http.MethodPost, "/api/cloudflare/profiles/api-token", bytes.NewReader(bodyApiTok))
+	recApiTok := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recApiTok, reqApiTok)
+	if recApiTok.Code != http.StatusOK {
+		t.Fatalf("POST /api/cloudflare/profiles/api-token = %d: %s", recApiTok.Code, recApiTok.Body.String())
+	}
+
+	reqZones := httptest.NewRequest(http.MethodGet, "/api/cloudflare/zones?profile=kantor", nil)
+	recZones := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recZones, reqZones)
+	if recZones.Code != http.StatusOK {
+		t.Fatalf("GET /api/cloudflare/zones = %d: %s", recZones.Code, recZones.Body.String())
+	}
+	var zResp struct {
+		Zones []cloudflare.CloudflareZone `json:"zones"`
+	}
+	if err := json.Unmarshal(recZones.Body.Bytes(), &zResp); err != nil || len(zResp.Zones) != 1 || zResp.Zones[0].Name != "example.com" {
+		t.Fatalf("unexpected zones response: %v / %s", err, recZones.Body.String())
+	}
+
+	// 6. Hapus profil token via POST /api/cloudflare/profiles/delete
 	bodyDel, _ := json.Marshal(map[string]string{"name": "kantor"})
 	reqDel := httptest.NewRequest(http.MethodPost, "/api/cloudflare/profiles/delete", bytes.NewReader(bodyDel))
 	recDel := httptest.NewRecorder()

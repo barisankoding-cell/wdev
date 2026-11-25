@@ -399,12 +399,37 @@ export interface CFProfileInfo {
 	has_cert: boolean;
 	has_credentials: boolean;
 	has_token: boolean;
+	has_api_token: boolean;
 	active: boolean;
 	enabled: boolean;
 	service_unit: string;
 	config_path?: string;
 	route_count: number;
 	created_at?: string;
+}
+
+export interface CFZoneInfo {
+	id: string;
+	name: string;
+	status: string;
+	account_id?: string;
+	account_name?: string;
+	plan?: string;
+}
+
+export interface CFDeleteProfileResult {
+	status: string;
+	remote_deleted?: boolean;
+	dns_deleted_count?: number;
+	warnings?: string[];
+}
+
+export interface CFUnexposeResult {
+	status: string;
+	profile?: string;
+	public_host?: string;
+	dns_deleted?: boolean;
+	dns_warning?: string;
 }
 
 export interface TunnelStatus {

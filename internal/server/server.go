@@ -136,10 +136,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/switchers", s.handleSwitchers)
 	s.mux.HandleFunc("/api/switchers/", s.handleSwitchersAction)
 	s.mux.HandleFunc("/api/cloudflare/status", s.handleCFStatus)
+	s.mux.HandleFunc("/api/cloudflare/zones", s.handleCFProfileZones)
 	s.mux.HandleFunc("/api/cloudflare/expose", s.handleCFExpose)
 	s.mux.HandleFunc("/api/cloudflare/unexpose", s.handleCFUnexpose)
 	s.mux.HandleFunc("/api/cloudflare/profiles/token", s.handleCFRegisterToken)
 	s.mux.HandleFunc("/api/cloudflare/profiles/cert", s.handleCFRegisterCert)
+	s.mux.HandleFunc("/api/cloudflare/profiles/api-token", s.handleCFSetProfileAPIToken)
 	s.mux.HandleFunc("/api/cloudflare/profiles/login/start", s.handleCFLoginStart)
 	s.mux.HandleFunc("/api/cloudflare/profiles/login/status", s.handleCFLoginStatus)
 	s.mux.HandleFunc("/api/cloudflare/profiles/login/cancel", s.handleCFLoginCancel)
@@ -1948,11 +1950,53 @@ func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
-	if err := s.cfMgr.UnexposeWithProfile(payload.LocalDomain, payload.Profile); err != nil {
+	res, err := s.cfMgr.UnexposeWithResult(payload.LocalDomain, payload.Profile)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "unexposed"})
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleCFProfileZones(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	if profile == "" {
+		profile = "default"
+	}
+	zones, err := s.cfMgr.ListProfileZones(profile)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"profile": profile,
+		"zones":   zones,
+	})
+}
+
+func (s *Server) handleCFSetProfileAPIToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	var payload struct {
+		Name     string `json:"name"`
+		APIToken string `json:"api_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		return
+	}
+	info, err := s.cfMgr.SetProfileAPIToken(payload.Name, payload.APIToken)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "profile": info})
 }
 
 func (s *Server) handleCFRegisterToken(w http.ResponseWriter, r *http.Request) {
@@ -1999,12 +2043,13 @@ func (s *Server) handleCFLoginStart(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Name       string `json:"name"`
 		TunnelName string `json:"tunnel_name"`
+		APIToken   string `json:"api_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
-	sess, err := s.cfMgr.StartBrowserLogin(payload.Name, payload.TunnelName)
+	sess, err := s.cfMgr.StartBrowserLoginWithOptions(payload.Name, payload.TunnelName, payload.APIToken)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -2090,17 +2135,23 @@ func (s *Server) handleCFProfileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Name string `json:"name"`
+		Name         string `json:"name"`
+		DeleteRemote bool   `json:"delete_remote"`
+		DeleteDNS    bool   `json:"delete_dns"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Payload tidak valid")
 		return
 	}
-	if err := s.cfMgr.DeleteProfile(payload.Name); err != nil {
+	res, err := s.cfMgr.DeleteProfileWithOptions(payload.Name, cloudflare.DeleteProfileOptions{
+		DeleteRemote: payload.DeleteRemote,
+		DeleteDNS:    payload.DeleteDNS,
+	})
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {

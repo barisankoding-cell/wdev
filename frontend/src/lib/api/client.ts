@@ -3,9 +3,12 @@ import type {
 	AuthMeResponse,
 	BindPanelDomainPayload,
 	BindPanelDomainResponse,
+	CFDeleteProfileResult,
 	CFExposeResult,
 	CFLoginSession,
 	CFProfileInfo,
+	CFUnexposeResult,
+	CFZoneInfo,
 	ChangeCredentialsPayload,
 	ComposeActionPayload,
 	ComposeCreatePayload,
@@ -445,14 +448,19 @@ export const api = {
 			})
 		}),
 	unexposeCF: (local_domain: string, profile = '') =>
-		apiFetch<{ status: string }>('/api/cloudflare/unexpose', {
+		apiFetch<CFUnexposeResult>('/api/cloudflare/unexpose', {
 			method: 'POST',
 			body: JSON.stringify({ local_domain, ...(profile ? { profile } : {}) })
 		}),
+	listCFProfileZones: (profile: string) =>
+		apiFetch<{ profile: string; zones: CFZoneInfo[] }>(
+			`/api/cloudflare/zones?profile=${encodeURIComponent(profile)}`
+		),
 	registerCFTokenProfile: (payload: {
 		name: string;
 		token: string;
 		tunnel_name?: string;
+		api_token?: string;
 		auto_start?: boolean;
 	}) =>
 		apiFetch<{ status: string; profile: CFProfileInfo }>('/api/cloudflare/profiles/token', {
@@ -466,16 +474,26 @@ export const api = {
 		credentials_json?: string;
 		tunnel_name?: string;
 		tunnel_id?: string;
+		api_token?: string;
 		auto_start?: boolean;
 	}) =>
 		apiFetch<{ status: string; profile: CFProfileInfo }>('/api/cloudflare/profiles/cert', {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
-	startCFLogin: (name: string, tunnel_name = '') =>
+	setCFProfileAPIToken: (name: string, api_token: string) =>
+		apiFetch<{ status: string; profile: CFProfileInfo }>('/api/cloudflare/profiles/api-token', {
+			method: 'POST',
+			body: JSON.stringify({ name, api_token })
+		}),
+	startCFLogin: (name: string, tunnel_name = '', api_token = '') =>
 		apiFetch<CFLoginSession>('/api/cloudflare/profiles/login/start', {
 			method: 'POST',
-			body: JSON.stringify({ name, ...(tunnel_name ? { tunnel_name } : {}) })
+			body: JSON.stringify({
+				name,
+				...(tunnel_name ? { tunnel_name } : {}),
+				...(api_token ? { api_token } : {})
+			})
 		}),
 	getCFLoginStatus: (id: string) =>
 		apiFetch<CFLoginSession>(`/api/cloudflare/profiles/login/status?id=${encodeURIComponent(id)}`),
@@ -493,10 +511,14 @@ export const api = {
 		apiFetch<{ profile: string; logs: string }>(
 			`/api/cloudflare/profiles/logs?name=${encodeURIComponent(name)}&lines=${lines}`
 		),
-	deleteCFProfile: (name: string) =>
-		apiFetch<{ status: string }>('/api/cloudflare/profiles/delete', {
+	deleteCFProfile: (name: string, opts?: { delete_remote?: boolean; delete_dns?: boolean }) =>
+		apiFetch<CFDeleteProfileResult>('/api/cloudflare/profiles/delete', {
 			method: 'POST',
-			body: JSON.stringify({ name })
+			body: JSON.stringify({
+				name,
+				...(opts?.delete_remote ? { delete_remote: true } : {}),
+				...(opts?.delete_dns ? { delete_dns: true } : {})
+			})
 		}),
 
 	// PowerDNS & Edge

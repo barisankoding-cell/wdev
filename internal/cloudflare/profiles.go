@@ -34,6 +34,7 @@ type TokenProfileOptions struct {
 	Name       string `json:"name"`
 	Token      string `json:"token"`
 	TunnelName string `json:"tunnel_name,omitempty"`
+	APIToken   string `json:"api_token,omitempty"`
 	AutoStart  *bool  `json:"auto_start,omitempty"`
 }
 
@@ -45,7 +46,22 @@ type CertProfileOptions struct {
 	CredentialsJSON string `json:"credentials_json,omitempty"`
 	TunnelName      string `json:"tunnel_name,omitempty"`
 	TunnelID        string `json:"tunnel_id,omitempty"`
+	APIToken        string `json:"api_token,omitempty"`
 	AutoStart       *bool  `json:"auto_start,omitempty"`
+}
+
+// DeleteProfileOptions mengonfigurasi penghapusan profil termasuk penghapusan tunnel/DNS remote di Cloudflare.
+type DeleteProfileOptions struct {
+	DeleteRemote bool `json:"delete_remote,omitempty"`
+	DeleteDNS    bool `json:"delete_dns,omitempty"`
+}
+
+// DeleteProfileResult merangkum hasil penghapusan profil Cloudflare.
+type DeleteProfileResult struct {
+	Status          string   `json:"status"`
+	RemoteDeleted   bool     `json:"remote_deleted,omitempty"`
+	DNSDeletedCount int      `json:"dns_deleted_count,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
 }
 
 // LoginSession merepresentasikan sesi login browser Cloudflare OAuth yang terisolasi per profil.
@@ -60,8 +76,9 @@ type LoginSession struct {
 	Result     *ProfileInfo `json:"result,omitempty"`
 	ExpiresAt  string       `json:"expires_at"`
 
-	cancel context.CancelFunc
-	tmpDir string
+	cancel   context.CancelFunc
+	tmpDir   string
+	apiToken string
 }
 
 // ParseTunnelToken memvalidasi dan mengekstrak token base64 Cloudflare Zero Trust.
@@ -147,6 +164,9 @@ func (m *Manager) RegisterTokenProfile(opts TokenProfileOptions) (*ProfileInfo, 
 	if err != nil {
 		return nil, err
 	}
+	if _, err := normalizeAPIToken(opts.APIToken); err != nil {
+		return nil, err
+	}
 	if err := m.ensureDirs(); err != nil {
 		return nil, err
 	}
@@ -154,6 +174,11 @@ func (m *Manager) RegisterTokenProfile(opts TokenProfileOptions) (*ProfileInfo, 
 	tokenPath := m.tokenFilePath(name)
 	if err := m.writeConfigFile(tokenPath, []byte(parsed.RawToken+"\n"), 0600); err != nil {
 		return nil, fmt.Errorf("gagal menyimpan file token: %w", err)
+	}
+	if strings.TrimSpace(opts.APIToken) != "" {
+		if err := m.saveProfileAPIToken(name, opts.APIToken); err != nil {
+			return nil, fmt.Errorf("gagal menyimpan Cloudflare API Token: %w", err)
+		}
 	}
 
 	tunnelName := strings.TrimSpace(opts.TunnelName)
@@ -256,6 +281,9 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 	if !hasCert && credText == "" {
 		return nil, errors.New("minimal cert.pem atau credentials JSON tunnel wajib disediakan")
 	}
+	if _, err := normalizeAPIToken(opts.APIToken); err != nil {
+		return nil, err
+	}
 
 	if err := m.ensureDirs(); err != nil {
 		return nil, err
@@ -268,6 +296,11 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 	if hasCert {
 		if err := m.writeConfigFile(certPath, []byte(certText+"\n"), 0600); err != nil {
 			return nil, fmt.Errorf("gagal menyimpan %s: %w", certPath, err)
+		}
+	}
+	if strings.TrimSpace(opts.APIToken) != "" {
+		if err := m.saveProfileAPIToken(name, opts.APIToken); err != nil {
+			return nil, fmt.Errorf("gagal menyimpan Cloudflare API Token: %w", err)
 		}
 	}
 
@@ -407,11 +440,20 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 // StartBrowserLogin memulai proses `cloudflared tunnel login` terisolasi per profil
 // dan mengembalikan URL otorisasi Cloudflare untuk dibuka di browser pengguna.
 func (m *Manager) StartBrowserLogin(profile, tunnelName string) (*LoginSession, error) {
+	return m.StartBrowserLoginWithOptions(profile, tunnelName, "")
+}
+
+// StartBrowserLoginWithOptions memulai proses `cloudflared tunnel login` terisolasi per profil dengan API Token opsional.
+func (m *Manager) StartBrowserLoginWithOptions(profile, tunnelName, apiToken string) (*LoginSession, error) {
 	name := normalizeCFProfile(profile)
 	if name == "" {
 		name = "default"
 	}
 	if err := validateCFProfile(name); err != nil {
+		return nil, err
+	}
+	cleanAPITok, err := normalizeAPIToken(apiToken)
+	if err != nil {
 		return nil, err
 	}
 	bin, err := m.lookPathFn("cloudflared")
@@ -459,6 +501,7 @@ func (m *Manager) StartBrowserLogin(profile, tunnelName string) (*LoginSession, 
 		ExpiresAt:  time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
 		cancel:     cancel,
 		tmpDir:     tmpHome,
+		apiToken:   cleanAPITok,
 	}
 
 	m.loginMu.Lock()
@@ -536,6 +579,7 @@ func (m *Manager) StartBrowserLogin(profile, tunnelName string) (*LoginSession, 
 			Name:       name,
 			CertPEM:    string(certBytes),
 			TunnelName: sess.TunnelName,
+			APIToken:   sess.apiToken,
 		})
 
 		m.loginMu.Lock()
@@ -647,23 +691,78 @@ func (m *Manager) GetProfileLogs(profile string, lines int) (string, error) {
 	return out, nil
 }
 
-// DeleteProfile menghapus profil Cloudflare beserta token/cert/env/routes milik profil tersebut.
+// DeleteProfile menghapus profil Cloudflare beserta token/cert/env/routes lokal milik profil tersebut.
 func (m *Manager) DeleteProfile(profile string) error {
+	_, err := m.DeleteProfileWithOptions(profile, DeleteProfileOptions{})
+	return err
+}
+
+// DeleteProfileWithOptions menghapus profil Cloudflare lokal dan opsional menghapus tunnel/DNS CNAME di server Cloudflare.
+func (m *Manager) DeleteProfileWithOptions(profile string, opts DeleteProfileOptions) (*DeleteProfileResult, error) {
 	name := normalizeCFProfile(profile)
 	if err := validateCFProfile(name); err != nil {
-		return err
+		return nil, err
+	}
+
+	profiles := m.collectProfileMap()
+	profInfo, profExists := profiles[name]
+	apiToken := m.readProfileAPIToken(name)
+
+	var routes []store.CFRoute
+	if opts.DeleteDNS && m.store != nil {
+		if rList, err := m.store.ListCFRoutes(name); err == nil {
+			routes = rList
+		}
 	}
 
 	unit := profileServiceUnit(name)
 	_, _ = m.runPrivileged("systemctl", "disable", "--now", unit)
 
+	res := &DeleteProfileResult{Status: "deleted"}
+
+	if opts.DeleteRemote {
+		if !profExists {
+			return nil, fmt.Errorf("profil Cloudflare %q tidak ditemukan", name)
+		}
+		if err := m.deleteRemoteTunnelForProfile(profInfo, apiToken); err != nil {
+			return nil, err
+		}
+		res.RemoteDeleted = true
+	}
+
+	if opts.DeleteDNS && len(routes) > 0 {
+		if apiToken == "" {
+			res.Warnings = append(res.Warnings, "Record DNS CNAME tidak dapat dihapus otomatis karena profil belum memiliki Cloudflare API Token.")
+		} else {
+			targetCNAME := ""
+			if profInfo.TunnelID != "" {
+				targetCNAME = profInfo.TunnelID + ".cfargotunnel.com"
+			}
+			for _, r := range routes {
+				host := strings.TrimSpace(r.Hostname)
+				if host == "" {
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				deleted, dnsErr := m.deleteCFDNSRecordByHost(ctx, apiToken, host, targetCNAME)
+				cancel()
+				if dnsErr != nil {
+					res.Warnings = append(res.Warnings, fmt.Sprintf("Gagal menghapus DNS CNAME %s: %s", host, dnsErr.Error()))
+				} else if deleted {
+					res.DNSDeletedCount++
+				}
+			}
+		}
+	}
+
 	// Bersihkan file penanda exposure milik profil ini
 	if m.store != nil {
-		if routes, err := m.store.ListCFRoutes(name); err == nil {
-			for _, r := range routes {
-				if r.LocalDomain != "" {
-					_ = os.Remove(filepath.Join(m.exposuresDir(), r.LocalDomain))
-				}
+		if routes == nil {
+			routes, _ = m.store.ListCFRoutes(name)
+		}
+		for _, r := range routes {
+			if r.LocalDomain != "" {
+				_ = os.Remove(filepath.Join(m.exposuresDir(), r.LocalDomain))
 			}
 		}
 		_ = m.store.DeleteCFRoutesByProfile(name)
@@ -673,6 +772,7 @@ func (m *Manager) DeleteProfile(profile string) error {
 	for _, p := range []string{
 		m.profileEnvPath(name),
 		m.tokenFilePath(name),
+		m.apiTokenFilePath(name),
 		m.certFilePath(name),
 		m.credFilePath(name),
 		m.routeConfigPath(name),
@@ -684,7 +784,69 @@ func (m *Manager) DeleteProfile(profile string) error {
 		}
 	}
 
-	return nil
+	return res, nil
+}
+
+func (m *Manager) deleteRemoteTunnelForProfile(profInfo ProfileInfo, apiToken string) error {
+	tunnelTarget := strings.TrimSpace(profInfo.TunnelID)
+	if tunnelTarget == "" {
+		tunnelTarget = strings.TrimSpace(profInfo.TunnelName)
+	}
+
+	if profInfo.AuthMode != "token" {
+		certPath := m.certFilePath(profInfo.Name)
+		if fileExists(certPath) && tunnelTarget != "" {
+			bin, err := m.lookPathFn("cloudflared")
+			if err != nil || bin == "" {
+				if apiToken != "" && profInfo.AccountTag != "" && profInfo.TunnelID != "" {
+					ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+					defer cancel()
+					return m.deleteRemoteTunnelViaAPI(ctx, apiToken, profInfo.AccountTag, profInfo.TunnelID)
+				}
+				return errors.New("biner cloudflared belum terpasang untuk menghapus tunnel di server Cloudflare")
+			}
+			ctxClean, cancelClean := context.WithTimeout(context.Background(), 15*time.Second)
+			_, _ = m.runCmdFn(ctxClean, nil, bin, "tunnel", "--origincert", certPath, "cleanup", tunnelTarget)
+			cancelClean()
+
+			ctxDel, cancelDel := context.WithTimeout(context.Background(), 25*time.Second)
+			out, delErr := m.runCmdFn(ctxDel, nil, bin, "tunnel", "--origincert", certPath, "delete", "-f", tunnelTarget)
+			cancelDel()
+			if delErr == nil {
+				return nil
+			}
+			msg := strings.TrimSpace(string(out))
+			if strings.Contains(strings.ToLower(msg), "not found") {
+				return nil
+			}
+			if apiToken != "" && profInfo.AccountTag != "" && profInfo.TunnelID != "" {
+				ctxAPI, cancelAPI := context.WithTimeout(context.Background(), 25*time.Second)
+				apiErr := m.deleteRemoteTunnelViaAPI(ctxAPI, apiToken, profInfo.AccountTag, profInfo.TunnelID)
+				cancelAPI()
+				if apiErr == nil {
+					return nil
+				}
+			}
+			if msg == "" {
+				msg = delErr.Error()
+			}
+			return fmt.Errorf("gagal menghapus tunnel %q di server Cloudflare: %s", tunnelTarget, msg)
+		}
+	}
+
+	if apiToken != "" && profInfo.AccountTag != "" && profInfo.TunnelID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := m.deleteRemoteTunnelViaAPI(ctx, apiToken, profInfo.AccountTag, profInfo.TunnelID); err != nil {
+			return fmt.Errorf("gagal menghapus tunnel via Cloudflare API: %w", err)
+		}
+		return nil
+	}
+
+	if profInfo.AuthMode == "token" {
+		return fmt.Errorf("profil mode Token memerlukan Cloudflare API Token (izin Cloudflare Tunnel:Edit) untuk menghapus tunnel di server Cloudflare")
+	}
+	return fmt.Errorf("tidak dapat menghapus tunnel di server Cloudflare: cert.pem atau Cloudflare API Token tidak tersedia untuk profil %q", profInfo.Name)
 }
 
 // EnsureSystemdTemplate memasang unit template systemd `/etc/systemd/system/cloudflared@.service`.

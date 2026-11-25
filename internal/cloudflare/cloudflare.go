@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -60,6 +61,8 @@ type Manager struct {
 	sudoPassFn          func() string
 	systemdTemplatePath string
 	legacyConfigPath    string
+	apiBaseURL          string
+	httpClient          *http.Client
 
 	// Hook untuk unit testing
 	lookPathFn       func(string) (string, error)
@@ -105,6 +108,7 @@ type ProfileInfo struct {
 	HasCert        bool   `json:"has_cert"`
 	HasCredentials bool   `json:"has_credentials"`
 	HasToken       bool   `json:"has_token"`
+	HasAPIToken    bool   `json:"has_api_token"`
 	Active         bool   `json:"active"`
 	Enabled        bool   `json:"enabled"`
 	ServiceUnit    string `json:"service_unit"`
@@ -153,6 +157,15 @@ type ExposeResult struct {
 	DNSWarning string `json:"dns_warning,omitempty"`
 }
 
+// UnexposeResult merangkum hasil penghapusan exposure Cloudflare beserta status pembersihan DNS.
+type UnexposeResult struct {
+	Status     string `json:"status"`
+	Profile    string `json:"profile,omitempty"`
+	PublicHost string `json:"public_host,omitempty"`
+	DNSDeleted bool   `json:"dns_deleted,omitempty"`
+	DNSWarning string `json:"dns_warning,omitempty"`
+}
+
 // New menginisialisasi cloudflare.Manager dengan konfigurasi dan SQLite store.
 func New(cfg *config.Config, s *store.Store) *Manager {
 	m := &Manager{
@@ -160,6 +173,8 @@ func New(cfg *config.Config, s *store.Store) *Manager {
 		store:               s,
 		systemdTemplatePath: defaultSystemdTemplatePath,
 		legacyConfigPath:    defaultLegacyConfigPath,
+		apiBaseURL:          "https://api.cloudflare.com/client/v4",
+		httpClient:          &http.Client{Timeout: 20 * time.Second},
 		loginSessions:       make(map[string]*LoginSession),
 	}
 	m.lookPathFn = exec.LookPath
@@ -413,6 +428,11 @@ func (m *Manager) collectProfileMap() map[string]ProfileInfo {
 		}
 	}
 
+	for name, info := range out {
+		info.HasAPIToken = fileExists(m.apiTokenFilePath(name))
+		out[name] = info
+	}
+
 	return out
 }
 
@@ -493,6 +513,32 @@ func (m *Manager) Expose(localDomain, publicHost, profile string) error {
 	return err
 }
 
+func resolveExposeTarget(opts ExposeOptions, localDomain string) (serviceURL, httpHostHeader string, noTLSVerify bool, err error) {
+	serviceURL = strings.TrimSpace(opts.ServiceURL)
+	httpHostHeader = localDomain
+	if serviceURL == "" {
+		serviceURL = "http://127.0.0.1:80"
+		if fileExists(fmt.Sprintf("/etc/ssl/local-certs/%s.pem", localDomain)) {
+			serviceURL = "https://127.0.0.1:443"
+			noTLSVerify = true
+		}
+	} else {
+		parsed, pErr := url.Parse(serviceURL)
+		if pErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return "", "", false, fmt.Errorf("service_url tidak valid (harus http:// atau https://): %q", serviceURL)
+		}
+		if opts.NoTLSVerify != nil {
+			noTLSVerify = *opts.NoTLSVerify
+		} else if parsed.Scheme == "https" && (strings.HasPrefix(parsed.Host, "127.0.0.1") || strings.HasPrefix(parsed.Host, "localhost")) {
+			noTLSVerify = true
+		}
+	}
+	if opts.NoTLSVerify != nil {
+		noTLSVerify = *opts.NoTLSVerify
+	}
+	return serviceURL, httpHostHeader, noTLSVerify, nil
+}
+
 // ExposeWithOptions menambahkan atau memperbarui rute ingress Cloudflare Tunnel secara menyeluruh per profil.
 func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 	localDomain := strings.ToLower(strings.TrimSpace(opts.LocalDomain))
@@ -514,8 +560,10 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 
 	profilesMap := m.collectProfileMap()
 	profInfo, profExists := profilesMap[profile]
-	if profExists && profInfo.AuthMode == "token" {
-		return nil, fmt.Errorf("profil %q menggunakan mode Token (Remotely-Managed); kelola Public Hostname di Cloudflare Zero Trust Dashboard atau gunakan profil mode cert/config agar rute dikelola otomatis oleh wdev", profile)
+	apiToken := m.readProfileAPIToken(profile)
+
+	if profExists && profInfo.AuthMode == "token" && apiToken == "" {
+		return nil, fmt.Errorf("profil %q menggunakan mode Token (Remotely-Managed); kelola Public Hostname di Cloudflare Zero Trust Dashboard, pasang Cloudflare API Token (Zone:Read, DNS:Edit, Cloudflare Tunnel:Edit), atau gunakan profil mode cert", profile)
 	}
 
 	legacyExists := fileExists(m.legacyConfigPath)
@@ -527,29 +575,45 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 		return nil, fmt.Errorf("gagal menyiapkan direktori cloudflare: %w", err)
 	}
 
-	// Tentukan service URL dan OriginRequest agar Nginx vhost & SSL lokal kompatibel
-	serviceURL := strings.TrimSpace(opts.ServiceURL)
-	var noTLSVerify bool
-	httpHostHeader := localDomain
-	if serviceURL == "" {
-		serviceURL = "http://127.0.0.1:80"
-		if fileExists(fmt.Sprintf("/etc/ssl/local-certs/%s.pem", localDomain)) {
-			serviceURL = "https://127.0.0.1:443"
-			noTLSVerify = true
-		}
-	} else {
-		parsed, err := url.Parse(serviceURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-			return nil, fmt.Errorf("service_url tidak valid (harus http:// atau https://): %q", serviceURL)
-		}
-		if opts.NoTLSVerify != nil {
-			noTLSVerify = *opts.NoTLSVerify
-		} else if parsed.Scheme == "https" && (strings.HasPrefix(parsed.Host, "127.0.0.1") || strings.HasPrefix(parsed.Host, "localhost")) {
-			noTLSVerify = true
-		}
+	serviceURL, httpHostHeader, noTLSVerify, err := resolveExposeTarget(opts, localDomain)
+	if err != nil {
+		return nil, err
 	}
-	if opts.NoTLSVerify != nil {
-		noTLSVerify = *opts.NoTLSVerify
+
+	// Mode Token dengan Cloudflare API Token: kelola ingress remote & DNS langsung via Cloudflare REST API
+	if profExists && profInfo.AuthMode == "token" {
+		if profInfo.AccountTag == "" || profInfo.TunnelID == "" {
+			return nil, fmt.Errorf("profil token %q tidak memiliki metadata Account ID / Tunnel ID untuk pembaruan via API", profile)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := m.upsertRemoteTunnelIngress(ctx, apiToken, profInfo.AccountTag, profInfo.TunnelID, publicHost, serviceURL, httpHostHeader, noTLSVerify); err != nil {
+			return nil, fmt.Errorf("gagal memperbarui ingress tunnel via Cloudflare API: %w", err)
+		}
+
+		_ = os.WriteFile(filepath.Join(m.exposuresDir(), localDomain), []byte(publicHost+"\n"), 0644)
+		if m.store != nil {
+			_ = m.store.SaveCFRoute(store.CFRoute{
+				ProfileName:    profile,
+				LocalDomain:    localDomain,
+				Hostname:       publicHost,
+				ServiceURL:     serviceURL,
+				HTTPHostHeader: httpHostHeader,
+				NoTLSVerify:    noTLSVerify,
+			})
+		}
+
+		dnsWarning := ""
+		if dnsErr := m.upsertCFDNSRecord(ctx, apiToken, publicHost, profInfo.TunnelID+".cfargotunnel.com"); dnsErr != nil {
+			dnsWarning = fmt.Sprintf("Rute tunnel remote disimpan, namun sinkronisasi DNS CNAME via API gagal: %s", dnsErr.Error())
+		}
+		return &ExposeResult{
+			Status:     "exposed",
+			Profile:    profile,
+			PublicHost: publicHost,
+			ServiceURL: serviceURL,
+			DNSWarning: dnsWarning,
+		}, nil
 	}
 
 	targetConfig := m.legacyConfigPath
@@ -625,8 +689,17 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 	}
 
 	dnsWarning := ""
-	if bin, err := m.lookPathFn("cloudflared"); err == nil && bin != "" {
-		certPath := m.certFilePath(profile)
+	certPath := m.certFilePath(profile)
+	if apiToken != "" && profInfo.TunnelID != "" {
+		// Prioritaskan Cloudflare API Token agar domain lintas zone langsung masuk ke zone yang tepat
+		// (mencegah bug CLI `cloudflared route dns` yang menempelkan zone asal cert.pem ke domain lain).
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		apiErr := m.upsertCFDNSRecord(ctx, apiToken, publicHost, profInfo.TunnelID+".cfargotunnel.com")
+		cancel()
+		if apiErr != nil {
+			dnsWarning = fmt.Sprintf("Rute lokal disimpan, namun sinkronisasi DNS CNAME Cloudflare via API gagal: %s", apiErr.Error())
+		}
+	} else if bin, err := m.lookPathFn("cloudflared"); err == nil && bin != "" {
 		tunnelTarget := profInfo.TunnelID
 		if tunnelTarget == "" {
 			tunnelTarget = profInfo.TunnelName
@@ -684,9 +757,15 @@ func (m *Manager) Unexpose(localDomain string) error {
 
 // UnexposeWithProfile menghapus exposure berdasarkan domain lokal dan profil opsional.
 func (m *Manager) UnexposeWithProfile(localDomain, profile string) error {
+	_, err := m.UnexposeWithResult(localDomain, profile)
+	return err
+}
+
+// UnexposeWithResult menghapus exposure beserta aturan ingress lokal/remote dan opsional membersihkan DNS CNAME via API Token.
+func (m *Manager) UnexposeWithResult(localDomain, profile string) (*UnexposeResult, error) {
 	localDomain = strings.ToLower(strings.TrimSpace(localDomain))
 	if err := validateCFHost(localDomain, "local_domain"); err != nil {
-		return err
+		return nil, err
 	}
 	cleanProfile := normalizeCFProfile(profile)
 
@@ -699,7 +778,6 @@ func (m *Manager) UnexposeWithProfile(localDomain, profile string) error {
 				routeProfile = normalizeCFProfile(r.ProfileName)
 			}
 		}
-		_ = m.store.DeleteCFRouteByLocalDomain(localDomain)
 	}
 
 	expFile := filepath.Join(m.exposuresDir(), localDomain)
@@ -707,6 +785,27 @@ func (m *Manager) UnexposeWithProfile(localDomain, profile string) error {
 		if data, err := os.ReadFile(expFile); err == nil {
 			publicHost = strings.ToLower(strings.TrimSpace(string(data)))
 		}
+	}
+
+	profilesMap := m.collectProfileMap()
+	profInfo, profExists := profilesMap[routeProfile]
+	apiToken := ""
+	if routeProfile != "" {
+		apiToken = m.readProfileAPIToken(routeProfile)
+	}
+
+	// Jika profil mode token & punya API token, perbarui config ingress remote terlebih dahulu
+	if profExists && profInfo.AuthMode == "token" && apiToken != "" && profInfo.AccountTag != "" && profInfo.TunnelID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		remErr := m.removeRemoteTunnelIngress(ctx, apiToken, profInfo.AccountTag, profInfo.TunnelID, publicHost, localDomain)
+		cancel()
+		if remErr != nil {
+			return nil, fmt.Errorf("gagal menghapus rute ingress di Cloudflare API: %w", remErr)
+		}
+	}
+
+	if m.store != nil {
+		_ = m.store.DeleteCFRouteByLocalDomain(localDomain)
 	}
 	_ = os.Remove(expFile)
 
@@ -777,7 +876,26 @@ func (m *Manager) UnexposeWithProfile(localDomain, profile string) error {
 		_, _ = m.runPrivileged("systemctl", "restart", "cloudflared")
 	}
 
-	return nil
+	res := &UnexposeResult{
+		Status:     "unexposed",
+		Profile:    routeProfile,
+		PublicHost: publicHost,
+	}
+	if apiToken != "" && publicHost != "" {
+		targetCNAME := ""
+		if profExists && profInfo.TunnelID != "" {
+			targetCNAME = profInfo.TunnelID + ".cfargotunnel.com"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		deleted, dnsErr := m.deleteCFDNSRecordByHost(ctx, apiToken, publicHost, targetCNAME)
+		cancel()
+		res.DNSDeleted = deleted
+		if dnsErr != nil {
+			res.DNSWarning = fmt.Sprintf("Exposure dihapus, namun pembersihan DNS CNAME di Cloudflare gagal: %s", dnsErr.Error())
+		}
+	}
+
+	return res, nil
 }
 
 func (m *Manager) writeConfigFile(dst string, data []byte, mode os.FileMode) error {
