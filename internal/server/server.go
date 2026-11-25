@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -57,6 +58,7 @@ type Server struct {
 	siteAppMgr     *siteapp.Manager
 	termSec        *terminalSecurityState
 	sudoVerifyFn   func(string) error
+	rebootFn       func(context.Context) error
 	mux            *http.ServeMux
 	orcaSyncCancel context.CancelFunc
 	portDeps       *portProbeDeps
@@ -121,6 +123,7 @@ func New(
 func (s *Server) routes() {
 	// API routes
 	s.mux.HandleFunc("/api/status", s.handleStatus)
+	s.mux.HandleFunc("/api/system/restart", s.handleSystemRestart)
 	s.mux.HandleFunc("/api/service/", s.handleServiceControl)
 	s.mux.HandleFunc("/api/service-config/", s.handleServiceConfig)
 	s.mux.HandleFunc("/api/sites", s.handleSites)
@@ -741,6 +744,81 @@ func (s *Server) handleServiceControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	lang := i18n.FromRequest(r)
+
+	var payload struct {
+		SudoPass string `json:"sudo_pass"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+			writeErrorLocale(w, r, http.StatusBadRequest, "Invalid JSON payload", "Payload JSON tidak valid")
+			return
+		}
+	}
+
+	if payload.SudoPass != "" {
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, i18n.Pick(lang, "Invalid sudo password: ", "Password sudo tidak valid: ")) {
+			return
+		}
+	}
+
+	if s.installer != nil {
+		if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "sudo_required",
+				"message": i18n.Pick(lang, "Restarting the system requires administrator (sudo) privileges.", "Restart sistem memerlukan hak akses administrator (sudo)."),
+			})
+			return
+		}
+	} else if s.rebootFn == nil && os.Geteuid() != 0 {
+		writeErrorLocale(w, r, http.StatusServiceUnavailable, "Installer unavailable for privileged reboot", "Installer tidak tersedia untuk restart sistem")
+		return
+	}
+
+	if s.rebootFn != nil {
+		if err := s.rebootFn(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "restarting",
+			"message": i18n.Pick(lang, "System restart initiated. The server is rebooting...", "Perintah restart sistem dikirim. Server sedang dimulai ulang..."),
+		})
+		return
+	}
+
+	systemctlPath, err := exec.LookPath("systemctl")
+	if err != nil {
+		writeErrorLocale(w, r, http.StatusInternalServerError, "systemctl command not found on host", "Perintah systemctl tidak ditemukan di host")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "restarting",
+		"message": i18n.Pick(lang, "System restart initiated. The server is rebooting...", "Perintah restart sistem dikirim. Server sedang dimulai ulang..."),
+	})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	go func() {
+		// Beri jeda singkat agar respons HTTP 200 sempat diterima browser sebelum systemd mengirim SIGTERM.
+		time.Sleep(350 * time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if s.installer != nil {
+			_ = s.installer.RunCmd(ctx, func(string) {}, systemctlPath, "reboot", "--no-block")
+			return
+		}
+		_ = exec.CommandContext(ctx, systemctlPath, "reboot", "--no-block").Run()
+	}()
 }
 
 func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {

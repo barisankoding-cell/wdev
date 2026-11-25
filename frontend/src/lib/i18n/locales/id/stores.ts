@@ -47,6 +47,14 @@ export const storesId: WidenStrings<typeof storesEn> = {
 		syncEnvSudoPrompt: 'Sinkronisasi environment toolchain memerlukan hak akses administrator (sudo).',
 		syncEnvTaskLabel: 'Sinkronisasi Environment Toolchain (PATH)',
 		syncEnvFailed: 'Gagal menyinkronkan environment',
+		restartSystemConfirmTitle: 'Restart Sistem',
+		restartSystemConfirmDesc:
+			'Yakin ingin me-restart (reboot) server ini? Seluruh layanan aktif, situs web, dan koneksi panel akan terputus sementara hingga sistem selesai booting.',
+		restartSystemConfirmBtn: 'Restart Sistem',
+		restartSystemSudoPrompt: 'Restart sistem memerlukan hak akses administrator (sudo).',
+		restartSystemStarted: 'Perintah restart sistem dikirim. Menunggu server kembali online...',
+		restartSystemOnline: 'Server kembali online. Memuat ulang panel...',
+		restartSystemFailed: 'Gagal me-restart sistem',
 		components: {
 			rust: 'Rust Toolchain, Mold Linker & Sccache',
 			go: 'Golang (Go Language Toolchain)',

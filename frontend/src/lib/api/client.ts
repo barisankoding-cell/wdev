@@ -157,6 +157,12 @@ export const api = {
 			method: 'POST'
 		}),
 
+	restartSystem: (sudoPass?: string) =>
+		apiFetch<{ status: 'restarting' | 'sudo_required'; message?: string }>('/api/system/restart', {
+			method: 'POST',
+			body: JSON.stringify(sudoPass ? { sudo_pass: sudoPass } : {})
+		}),
+
 	// Sudo
 	verifySudo: (password: string) =>
 		apiFetch<{ status: string; message: string }>('/api/sudo/verify', {

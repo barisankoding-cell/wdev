@@ -40,7 +40,10 @@ export const layoutEn = {
 			changeModeAria: 'Change Server Mode',
 			modeLocalShort: 'Local',
 			modeVpsShort: 'VPS',
-			modeEdgeShort: 'Edge'
+			modeEdgeShort: 'Edge',
+			restartSystem: 'Restart System',
+			restartingSystem: 'Restarting...',
+			restartSystemAria: 'Restart server system'
 		}
 	},
 	topbar: {

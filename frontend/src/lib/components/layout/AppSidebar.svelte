@@ -6,9 +6,10 @@
 	import { t } from '#lib/i18n/index.svelte.js';
 	import { useSidebar } from '#lib/components/ui/sidebar/index.js';
 	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
+	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import ContainerIcon from '@lucide/svelte/icons/container';
-import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
+	import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 	import GlobeIcon from '@lucide/svelte/icons/globe';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import WrenchIcon from '@lucide/svelte/icons/wrench';
@@ -21,6 +22,7 @@ import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import LaptopIcon from '@lucide/svelte/icons/laptop';
+	import PowerIcon from '@lucide/svelte/icons/power';
 	import type { Component } from 'svelte';
 
 	interface NavItem {
@@ -140,7 +142,7 @@ import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 		{/each}
 	</Sidebar.Content>
 
-	<Sidebar.Footer class="border-t border-sidebar-border p-3 text-xs text-muted-foreground">
+	<Sidebar.Footer class="border-t border-sidebar-border p-3 group-data-[collapsible=icon]:p-2 text-xs text-muted-foreground">
 		<div class="flex items-center justify-between gap-2 group-data-[collapsible=icon]:hidden">
 			<div class="flex flex-col gap-0.5 truncate">
 				<span class="truncate font-medium text-sidebar-foreground">
@@ -169,6 +171,32 @@ import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 				{/if}
 			</button>
 		</div>
+		<Sidebar.Menu>
+			<Sidebar.MenuItem>
+				<Sidebar.MenuButton
+					variant="outline"
+					tooltipContent={t('layout.nav.footer.restartSystem')}
+					class="text-destructive hover:bg-destructive/10 hover:text-destructive dark:hover:bg-destructive/20"
+					aria-label={t('layout.nav.footer.restartSystemAria')}
+					onclick={() => {
+						if (sidebar.isMobile) sidebar.setOpenMobile(false);
+						void cp.restartSystem();
+					}}
+				>
+					{#snippet child({ props })}
+						<button type="button" disabled={cp.systemRestarting} {...props}>
+							{#if cp.systemRestarting}
+								<Spinner />
+								<span>{t('layout.nav.footer.restartingSystem')}</span>
+							{:else}
+								<PowerIcon />
+								<span>{t('layout.nav.footer.restartSystem')}</span>
+							{/if}
+						</button>
+					{/snippet}
+				</Sidebar.MenuButton>
+			</Sidebar.MenuItem>
+		</Sidebar.Menu>
 	</Sidebar.Footer>
 	<Sidebar.Rail />
 </Sidebar.Root>

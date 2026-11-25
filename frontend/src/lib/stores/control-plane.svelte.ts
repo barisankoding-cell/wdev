@@ -100,6 +100,8 @@ class ControlPlaneStore {
 	private pendingRestartReload = false;
 	private reloadTriggered = false;
 	private reloadFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+	private rebootPollTimer: ReturnType<typeof setTimeout> | null = null;
+	systemRestarting = $state(false);
 
 	constructor() {
 		this.restoreTerminalState();
@@ -231,6 +233,10 @@ class ControlPlaneStore {
 		if (this.reloadFallbackTimer) {
 			clearTimeout(this.reloadFallbackTimer);
 			this.reloadFallbackTimer = null;
+		}
+		if (this.rebootPollTimer) {
+			clearTimeout(this.rebootPollTimer);
+			this.rebootPollTimer = null;
 		}
 		if (this.eventSource) {
 			this.eventSource.close();
@@ -650,6 +656,65 @@ class ControlPlaneStore {
 		} finally {
 			this.isPrivilegedPending = false;
 		}
+	}
+
+	async restartSystem() {
+		if (this.isPrivilegedPending || this.systemRestarting) return;
+		this.isPrivilegedPending = true;
+		try {
+			const ok = await this.confirm({
+				title: t('stores.cp.restartSystemConfirmTitle'),
+				description: t('stores.cp.restartSystemConfirmDesc'),
+				confirmText: t('stores.cp.restartSystemConfirmBtn'),
+				destructive: true
+			});
+			if (!ok) return;
+
+			const res = await this.runWithSudoRetry(
+				t('stores.cp.restartSystemSudoPrompt'),
+				(sudoPass) => api.restartSystem(sudoPass)
+			);
+			if (!res || res.status !== 'restarting') return;
+
+			this.systemRestarting = true;
+			toast.warning(res.message || t('stores.cp.restartSystemStarted'));
+			this.scheduleRebootReconnect(0, false);
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : t('stores.cp.restartSystemFailed'));
+		} finally {
+			this.isPrivilegedPending = false;
+		}
+	}
+
+	private scheduleRebootReconnect(attempt: number, sawDisconnect: boolean) {
+		if (!this.systemRestarting || typeof window === 'undefined') return;
+		if (this.rebootPollTimer) {
+			clearTimeout(this.rebootPollTimer);
+		}
+		const delayMs = attempt === 0 ? 4000 : 2500;
+		this.rebootPollTimer = setTimeout(async () => {
+			if (!this.systemRestarting) return;
+			try {
+				await api.getStatus(false);
+				if (sawDisconnect || attempt >= 3) {
+					this.systemRestarting = false;
+					this.rebootPollTimer = null;
+					toast.success(t('stores.cp.restartSystemOnline'));
+					setTimeout(() => {
+						window.location.reload();
+					}, 600);
+					return;
+				}
+			} catch {
+				sawDisconnect = true;
+			}
+			if (attempt < 72) {
+				this.scheduleRebootReconnect(attempt + 1, sawDisconnect);
+			} else {
+				this.systemRestarting = false;
+				this.rebootPollTimer = null;
+			}
+		}, delayMs);
 	}
 }
 

@@ -43,7 +43,10 @@ export const layoutId: WidenStrings<typeof layoutEn> = {
 			changeModeAria: 'Ubah Mode Server',
 			modeLocalShort: 'Lokal',
 			modeVpsShort: 'VPS',
-			modeEdgeShort: 'Edge'
+			modeEdgeShort: 'Edge',
+			restartSystem: 'Restart Sistem',
+			restartingSystem: 'Me-restart...',
+			restartSystemAria: 'Restart sistem server'
 		}
 	},
 	topbar: {

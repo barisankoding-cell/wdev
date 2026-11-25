@@ -2974,3 +2974,120 @@ func TestWSOriginBehindCloudflared(t *testing.T) {
 		})
 	}
 }
+
+func TestSystemRestartEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "wdev.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: dir}
+	authMgr := auth.New(cfg, db)
+	_ = authMgr.SetPassword("StrongPass#2026")
+	inst := installer.New(cfg, db)
+
+	rebootCalls := 0
+	var rebootErr error
+	srv := &Server{
+		cfg:       cfg,
+		store:     db,
+		authMgr:   authMgr,
+		installer: inst,
+		mux:       http.NewServeMux(),
+		sudoVerifyFn: func(pass string) error {
+			if pass == "correct-sudo" {
+				return nil
+			}
+			return fmt.Errorf("autentikasi sudo gagal")
+		},
+		rebootFn: func(ctx context.Context) error {
+			rebootCalls++
+			return rebootErr
+		},
+	}
+	srv.routes()
+	handler := srv.wrapAuth(srv.wrapCSRF(srv.mux))
+
+	// 1. Unauthenticated request must fail with 401
+	reqUnauth := httptest.NewRequest(http.MethodPost, "/api/system/restart", strings.NewReader(`{}`))
+	reqUnauth.Host = "127.0.0.1:3200"
+	reqUnauth.Header.Set("Origin", "http://127.0.0.1:3200")
+	recUnauth := httptest.NewRecorder()
+	handler.ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated POST /api/system/restart = %d, want 401", recUnauth.Code)
+	}
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	doAuthReq := func(method, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/api/system/restart", strings.NewReader(body))
+		req.Host = "127.0.0.1:3200"
+		req.Header.Set("Origin", "http://127.0.0.1:3200")
+		req.AddCookie(sessCookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 2. Method not allowed on GET
+	if recGet := doAuthReq(http.MethodGet, ""); recGet.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /api/system/restart = %d, want 405", recGet.Code)
+	}
+
+	// 3. Invalid JSON returns 400
+	if recBadJSON := doAuthReq(http.MethodPost, "{bad"); recBadJSON.Code != http.StatusBadRequest {
+		t.Fatalf("invalid JSON POST /api/system/restart = %d, want 400", recBadJSON.Code)
+	}
+
+	// 4. Wrong sudo_pass returns 401 without calling reboot
+	if recBadSudo := doAuthReq(http.MethodPost, `{"sudo_pass":"wrong"}`); recBadSudo.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong sudo_pass = %d, want 401 (%s)", recBadSudo.Code, recBadSudo.Body.String())
+	}
+	if rebootCalls != 0 {
+		t.Fatalf("rebootFn must not run on invalid sudo_pass")
+	}
+
+	// 5. Non-root without sudo returns sudo_required
+	if reqSudo, _ := inst.CheckSudoRequired(); reqSudo {
+		recNeedSudo := doAuthReq(http.MethodPost, `{}`)
+		if recNeedSudo.Code != http.StatusOK || !strings.Contains(recNeedSudo.Body.String(), `"sudo_required"`) {
+			t.Fatalf("expected sudo_required when non-root, got %d (%s)", recNeedSudo.Code, recNeedSudo.Body.String())
+		}
+		if rebootCalls != 0 {
+			t.Fatalf("rebootFn must not run when sudo is required")
+		}
+	}
+
+	// 6. Authorized request with sudo_pass invokes rebootFn and returns restarting
+	srv.installer = nil
+	recOK := doAuthReq(http.MethodPost, `{"sudo_pass":"correct-sudo"}`)
+	if recOK.Code != http.StatusOK || !strings.Contains(recOK.Body.String(), `"restarting"`) {
+		t.Fatalf("authorized POST /api/system/restart = %d (%s), want 200 restarting", recOK.Code, recOK.Body.String())
+	}
+	if rebootCalls != 1 {
+		t.Fatalf("rebootCalls = %d, want 1", rebootCalls)
+	}
+
+	// 7. Empty body is also valid when authorized
+	recEmpty := doAuthReq(http.MethodPost, "")
+	if recEmpty.Code != http.StatusOK || !strings.Contains(recEmpty.Body.String(), `"restarting"`) {
+		t.Fatalf("empty body POST /api/system/restart = %d (%s), want 200 restarting", recEmpty.Code, recEmpty.Body.String())
+	}
+	if rebootCalls != 2 {
+		t.Fatalf("rebootCalls = %d, want 2", rebootCalls)
+	}
+
+	// 8. Error from rebootFn surfaces as 500
+	rebootErr = fmt.Errorf("mock reboot failure")
+	recErr := doAuthReq(http.MethodPost, `{}`)
+	if recErr.Code != http.StatusInternalServerError {
+		t.Fatalf("failed rebootFn = %d, want 500", recErr.Code)
+	}
+}

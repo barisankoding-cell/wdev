@@ -44,6 +44,14 @@ export const storesEn = {
 		syncEnvSudoPrompt: 'Syncing toolchain environment requires administrator (sudo) privileges.',
 		syncEnvTaskLabel: 'Sync Toolchain Environment (PATH)',
 		syncEnvFailed: 'Failed to sync environment',
+		restartSystemConfirmTitle: 'Restart System',
+		restartSystemConfirmDesc:
+			'Are you sure you want to reboot this server? All active services, websites, and panel connections will be temporarily interrupted until the system finishes booting.',
+		restartSystemConfirmBtn: 'Restart System',
+		restartSystemSudoPrompt: 'Restarting the system requires administrator (sudo) privileges.',
+		restartSystemStarted: 'System restart initiated. Waiting for the server to come back online...',
+		restartSystemOnline: 'Server is back online. Reloading panel...',
+		restartSystemFailed: 'Failed to restart system',
 		components: {
 			rust: 'Rust Toolchain, Mold Linker & Sccache',
 			go: 'Golang (Go Language Toolchain)',
