@@ -113,6 +113,7 @@ func RenderSystemdUnit(rec store.SiteAppRecord) string {
 	fmt.Fprintf(&b, "Environment=CARGO_HOME=/usr/local/cargo\n")
 	fmt.Fprintf(&b, "Environment=RUSTUP_HOME=/usr/local/rustup\n")
 	fmt.Fprintf(&b, "ExecStart=%s\n", escapeSystemdValue(execCmd))
+	fmt.Fprintf(&b, "MemoryAccounting=yes\n")
 	fmt.Fprintf(&b, "Restart=on-failure\n")
 	fmt.Fprintf(&b, "RestartSec=3\n")
 	fmt.Fprintf(&b, "StandardOutput=journal\n")

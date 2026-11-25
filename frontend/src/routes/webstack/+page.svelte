@@ -161,6 +161,18 @@
 		return 'Stopped';
 	}
 
+	function isAppRunning(site: SiteRecord): boolean {
+		const st = site.app_status?.active_state;
+		return st === 'active' || st === 'activating';
+	}
+
+	function formatMemoryBytes(bytes?: number): string {
+		if (!bytes || bytes <= 0) return '';
+		if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+	}
+
 	const filteredSites = $derived.by(() => {
 		const q = searchQuery.trim().toLowerCase();
 		return sites.filter((s) => {
@@ -191,8 +203,9 @@
 		sitePage = 1;
 	});
 
-	async function loadSites() {
-		loading = true;
+	async function loadSites(opts?: { silent?: boolean }) {
+		const silent = Boolean(opts?.silent);
+		if (!silent) loading = true;
 		try {
 			const [siteRes, zoneRes] = await Promise.allSettled([
 				api.listSites(),
@@ -200,7 +213,7 @@
 			]);
 			if (siteRes.status === 'fulfilled') {
 				sites = siteRes.value ?? [];
-			} else {
+			} else if (!silent) {
 				toast.error(
 					siteRes.reason instanceof Error
 						? siteRes.reason.message
@@ -213,11 +226,26 @@
 				zones = [];
 			}
 		} finally {
-			loading = false;
+			if (!silent) loading = false;
 		}
 	}
 
-	onMount(loadSites);
+	onMount(() => {
+		void loadSites();
+		const timer = setInterval(() => {
+			if (
+				typeof document !== 'undefined' &&
+				!document.hidden &&
+				!loading &&
+				!createOpen &&
+				!deleteOpen &&
+				sites.some((s) => isManagedApp(s) && isAppRunning(s))
+			) {
+				void loadSites({ silent: true });
+			}
+		}, 8000);
+		return () => clearInterval(timer);
+	});
 
 	$effect(() => {
 		if (cp.refreshTick > 0) loadSites();
@@ -668,6 +696,11 @@
 									</Badge>
 									{#if isManagedApp(site)}
 										<StatusBadge tone={appRuntimeTone(site)} label={appRuntimeLabel(site)} />
+										{#if isAppRunning(site) && (site.app_status?.memory_bytes ?? 0) > 0}
+											<Badge variant="outline" class="font-mono text-[11px] font-medium">
+												RAM {formatMemoryBytes(site.app_status?.memory_bytes)}
+											</Badge>
+										{/if}
 									{/if}
 								</div>
 							</Table.Cell>
@@ -677,7 +710,7 @@
 										<span>127.0.0.1:{site.proxy_port}</span>
 										{#if site.app?.service_name}
 											<span class="truncate text-[11px] text-muted-foreground" title={`${site.app.service_name}.service`}>
-												{site.app.service_name}
+												{site.app.service_name}{isAppRunning(site) && site.app_status?.main_pid ? ` · PID ${site.app_status.main_pid}` : ''}
 											</span>
 										{/if}
 									</div>

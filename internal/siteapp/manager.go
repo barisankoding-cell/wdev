@@ -571,7 +571,81 @@ func (m *Manager) Status(ctx context.Context, domain string) AppRuntimeStatus {
 			}
 		}
 	}
+	if st.ActiveState != "active" && st.ActiveState != "activating" {
+		st.MemoryBytes = 0
+	} else if st.MemoryBytes == 0 && st.MainPID > 0 {
+		st.MemoryBytes = readProcTreeRSSBytes("/proc", st.MainPID)
+	}
 	return st
+}
+
+// readProcTreeRSSBytes menjumlahkan VmRSS proses rootPID beserta seluruh child process-nya
+// dari procfs sebagai fallback ketika MemoryCurrent systemd belum tersedia.
+func readProcTreeRSSBytes(procRoot string, rootPID int) int64 {
+	if rootPID <= 0 {
+		return 0
+	}
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return 0
+	}
+
+	childrenMap := make(map[int][]int)
+	rssMap := make(map[int]int64)
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		pid, pErr := strconv.Atoi(e.Name())
+		if pErr != nil || pid <= 0 {
+			continue
+		}
+		data, rErr := os.ReadFile(filepath.Join(procRoot, e.Name(), "status"))
+		if rErr != nil {
+			continue
+		}
+		var ppid int
+		var rssBytes int64
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "PPid:") {
+				val := strings.TrimSpace(strings.TrimPrefix(line, "PPid:"))
+				if parsed, err := strconv.Atoi(val); err == nil {
+					ppid = parsed
+				}
+			} else if strings.HasPrefix(line, "VmRSS:") {
+				fields := strings.Fields(strings.TrimPrefix(line, "VmRSS:"))
+				if len(fields) >= 1 {
+					if kb, err := strconv.ParseInt(fields[0], 10, 64); err == nil && kb > 0 {
+						rssBytes = kb * 1024
+					}
+				}
+			}
+		}
+		rssMap[pid] = rssBytes
+		if ppid > 0 {
+			childrenMap[ppid] = append(childrenMap[ppid], pid)
+		}
+	}
+
+	var total int64
+	visited := make(map[int]bool)
+	queue := []int{rootPID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if visited[cur] {
+			continue
+		}
+		visited[cur] = true
+		total += rssMap[cur]
+		for _, child := range childrenMap[cur] {
+			if !visited[child] {
+				queue = append(queue, child)
+			}
+		}
+	}
+	return total
 }
 
 // BatchStatus mengambil status runtime live untuk banyak domain sekaligus.

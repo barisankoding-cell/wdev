@@ -164,6 +164,7 @@ func TestRenderSystemdUnitAndEnvSerialization(t *testing.T) {
 		"Environment=RUSTUP_HOME=/usr/local/rustup",
 		"/usr/local/lib/nodejs/current/bin",
 		"/bin/sh -lc 'pnpm run start -- --port 100%%ready'",
+		"MemoryAccounting=yes",
 		"SyslogIdentifier=wdev-app-app-test",
 	} {
 		if !strings.Contains(unit, want) {
@@ -440,5 +441,45 @@ func TestUseProjectEnvDirectlyPreservesCommentsAndNeverDeletesOnRemove(t *testin
 	}
 	if _, err := os.Stat(projectEnvPath); err != nil {
 		t.Fatalf("expected project .env NEVER deleted by RemoveApp, got err=%v", err)
+	}
+}
+
+func TestReadProcTreeRSSBytesAndStatusMemoryFallback(t *testing.T) {
+	procDir := t.TempDir()
+	// Tree: 100 (2000 kB) -> 101 (15000 kB) -> 102 (3000 kB); unrelated PID 999 (90000 kB)
+	for pid, body := range map[string]string{
+		"100": "Name:\tsh\nPPid:\t1\nVmRSS:\t2000 kB\n",
+		"101": "Name:\tnode\nPPid:\t100\nVmRSS:\t15000 kB\n",
+		"102": "Name:\tworker\nPPid:\t101\nVmRSS:\t3000 kB\n",
+		"999": "Name:\tother\nPPid:\t1\nVmRSS:\t90000 kB\n",
+	} {
+		if err := os.MkdirAll(filepath.Join(procDir, pid), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(procDir, pid, "status"), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := readProcTreeRSSBytes(procDir, 100)
+	want := int64((2000 + 15000 + 3000) * 1024)
+	if got != want {
+		t.Fatalf("readProcTreeRSSBytes = %d, want %d", got, want)
+	}
+
+	// Status harus membersihkan MemoryBytes bila service berhenti (inactive).
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "mem.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mgr := New(&config.Config{WdevEtc: filepath.Join(tmp, "etc")}, db, nil)
+	mgr.SetExecForTest(&mockSysExec{
+		showOut: "ActiveState=inactive\nSubState=dead\nMainPID=0\nMemoryCurrent=4096\n",
+	})
+	st := mgr.Status(context.Background(), "stopped.test")
+	if st.MemoryBytes != 0 {
+		t.Fatalf("expected MemoryBytes=0 when inactive, got %d", st.MemoryBytes)
 	}
 }
