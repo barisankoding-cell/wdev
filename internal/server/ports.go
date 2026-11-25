@@ -261,22 +261,7 @@ func (s *Server) collectPortDiagnostics(ctx context.Context, forceRefresh bool, 
 		}()
 	}
 
-	mode := "local"
-	var pdnsCfg pdns.EdgeConfig
-	vpnIP := ""
-	if s.pdnsMgr != nil {
-		mode = s.pdnsMgr.GetMode()
-		pdnsCfg = s.pdnsMgr.LoadConfig()
-		vpnIP = strings.TrimSpace(pdnsCfg.LocalNetbirdIP)
-		if vpnIP == "" {
-			vpnIP = strings.TrimSpace(s.pdnsMgr.GetLocalNetbirdIP())
-		}
-	}
-	if vpnIP == "" {
-		vpnIP = detectLocalCGNATFallback()
-	}
-
-	lanIP := strings.TrimSpace(pdns.DetectLocalLANIP())
+	mode, pdnsCfg, lanIP, vpnIP := s.detectHostNetworkIPs()
 	netbirdActive := vpnIP != "" || deps.isUnitActiveFn("netbird")
 
 	vpsVPNIP := ""

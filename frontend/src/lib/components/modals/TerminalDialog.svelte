@@ -6,7 +6,7 @@
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import { i18n, t } from '#lib/i18n/index.svelte.js';
-	import { cp } from '#lib/stores/control-plane.svelte.js';
+	import { cp, type TerminalLogEntry } from '#lib/stores/control-plane.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import { toast } from 'svelte-sonner';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
@@ -70,7 +70,70 @@
 			setTimeout(() => (copied = false), 1500);
 		}
 	}
+	const QR_LINE_RE = /^[█▀▄ ]{17,}$/;
+
+	function isQRBlockLine(line: string): boolean {
+		return QR_LINE_RE.test(line) && /[█▀▄]/.test(line);
+	}
+
+	type SegmentedBlock<T> =
+		| { kind: 'qr'; text: string; key: string }
+		| { kind: 'item'; item: T; key: string };
+
+	// Gabungkan baris QR UTF-8 yang berurutan menjadi satu blok putih-hitam tanpa jeda antarbaris agar mudah dipindai kamera HP.
+	function segmentQrBlocks<T>(
+		items: readonly T[],
+		getText: (item: T) => string,
+		getKey: (item: T, idx: number) => string
+	): SegmentedBlock<T>[] {
+		const out: SegmentedBlock<T>[] = [];
+		let i = 0;
+		while (i < items.length) {
+			if (isQRBlockLine(getText(items[i]))) {
+				let j = i;
+				while (j < items.length && isQRBlockLine(getText(items[j]))) {
+					j++;
+				}
+				if (j - i >= 5) {
+					const lines: string[] = [];
+					for (let k = i; k < j; k++) {
+						lines.push(getText(items[k]));
+					}
+					out.push({ kind: 'qr', text: lines.join('\n'), key: `qr-${getKey(items[i], i)}` });
+					i = j;
+					continue;
+				}
+			}
+			out.push({ kind: 'item', item: items[i], key: getKey(items[i], i) });
+			i++;
+		}
+		return out;
+	}
+
+	const liveBlocks = $derived(
+		segmentQrBlocks(
+			cp.terminalLogs,
+			(e) => e.message,
+			(e) => String(e.id)
+		)
+	);
+
+	const historyBlocks = $derived(
+		selectedTask?.log_output
+			? segmentQrBlocks(
+					selectedTask.log_output.split(/\r?\n/),
+					(line) => line,
+					(_line, idx) => String(idx)
+				)
+			: []
+	);
 </script>
+
+{#snippet qrCodeBlock(text: string)}
+	<div class="my-2 inline-block w-fit max-w-full overflow-x-auto rounded-lg border border-border/60 bg-white p-2.5 text-zinc-950 shadow-xs">
+		<pre class="m-0 font-mono text-[8px] leading-none tracking-normal whitespace-pre select-all sm:text-[10px]">{text}</pre>
+	</div>
+{/snippet}
 
 <Dialog.Root bind:open={cp.terminalOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-3 overflow-hidden sm:max-w-[min(calc(100vw-2rem),56rem)]">
@@ -213,17 +276,22 @@
 							{t('modals.terminalDialog.emptyLogs')}
 						</p>
 					{:else}
-						{#each cp.terminalLogs as entry (entry.id)}
-							<div
-								class={cn(
-									'whitespace-pre-wrap break-words py-0.5',
-									entry.type === 'start' && 'font-semibold text-info',
-									entry.type === 'finish' && entry.status === 'success' && 'font-semibold text-success',
-									entry.type === 'finish' && entry.status !== 'success' && 'font-semibold text-destructive'
-								)}
-							>
-								{entry.message}
-							</div>
+						{#each liveBlocks as block (block.key)}
+							{#if block.kind === 'qr'}
+								{@render qrCodeBlock(block.text)}
+							{:else}
+								{@const entry = block.item}
+								<div
+									class={cn(
+										'whitespace-pre-wrap break-words py-0.5',
+										entry.type === 'start' && 'font-semibold text-info',
+										entry.type === 'finish' && entry.status === 'success' && 'font-semibold text-success',
+										entry.type === 'finish' && entry.status !== 'success' && 'font-semibold text-destructive'
+									)}
+								>
+									{entry.message}
+								</div>
+							{/if}
 						{/each}
 					{/if}
 				</div>
@@ -268,9 +336,23 @@
 						{/each}
 					{/if}
 				</div>
-				<pre
-					class="min-h-36 flex-1 overflow-auto overscroll-contain rounded-lg border bg-terminal p-3 sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground whitespace-pre-wrap break-words md:h-[50dvh]"
-				>{selectedTask ? selectedTask.log_output || t('modals.terminalDialog.emptyTaskLog') : t('modals.terminalDialog.selectTaskPrompt')}</pre>
+				<div
+					class="min-h-36 flex-1 overflow-auto overscroll-contain rounded-lg border bg-terminal p-3 sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground md:h-[50dvh]"
+				>
+					{#if !selectedTask}
+						<p class="text-muted-foreground italic">{t('modals.terminalDialog.selectTaskPrompt')}</p>
+					{:else if !selectedTask.log_output}
+						<p class="text-muted-foreground italic">{t('modals.terminalDialog.emptyTaskLog')}</p>
+					{:else}
+						{#each historyBlocks as block (block.key)}
+							{#if block.kind === 'qr'}
+								{@render qrCodeBlock(block.text)}
+							{:else}
+								<div class="whitespace-pre-wrap break-words">{block.item || '\u00a0'}</div>
+							{/if}
+						{/each}
+					{/if}
+				</div>
 			</Tabs.Content>
 		</Tabs.Root>
 

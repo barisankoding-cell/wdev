@@ -350,6 +350,35 @@ export interface OrcaCommitAISyncStatus {
 	settings_updated_at_ms: number;
 }
 
+export type OrcaPairingAddressMode = 'auto' | 'local' | 'vpn' | 'custom';
+export type OrcaPairingRotateScope = 'all' | 'mobile' | 'runtime';
+
+export interface OrcaPairingSavePayload {
+	mode: OrcaPairingAddressMode;
+	custom_address?: string;
+	rotate?: boolean;
+	rotate_scope?: OrcaPairingRotateScope;
+}
+
+export interface OrcaPairingState {
+	status?: string;
+	active: boolean;
+	mode: OrcaPairingAddressMode;
+	custom_address: string;
+	target_address?: string;
+	local_ip?: string;
+	vpn_ip?: string;
+	pairing_url?: string;
+	web_client_url?: string;
+	endpoint?: string;
+	error?: string;
+	mobile_pairing_url?: string;
+	mobile_endpoint?: string;
+	mobile_connection_mode?: string;
+	mobile_error?: string;
+	message?: string;
+}
+
 export interface OrcaInfo {
 	installed: boolean;
 	active: boolean;
@@ -363,6 +392,16 @@ export interface OrcaInfo {
 	web_client_url?: string;
 	pairing_url?: string;
 	endpoint?: string;
+	pairing_address_mode?: OrcaPairingAddressMode;
+	pairing_custom_address?: string;
+	pairing_address?: string;
+	pairing_error?: string;
+	mobile_pairing_url?: string;
+	mobile_endpoint?: string;
+	mobile_connection_mode?: string;
+	mobile_error?: string;
+	local_ip?: string;
+	vpn_ip?: string;
 	commit_ai?: OrcaCommitAISummary;
 	sync_status?: OrcaCommitAISyncStatus;
 }

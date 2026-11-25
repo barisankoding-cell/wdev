@@ -179,6 +179,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/sudo/verify", s.handleSudoVerify)
 	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
 	s.mux.HandleFunc("/api/workspace/status", s.handleWorkspaceStatus)
+	s.mux.HandleFunc("/api/workspace/orca-pairing", s.handleWorkspaceOrcaPairing)
 	s.mux.HandleFunc("/api/workspace/orca-ai", s.handleWorkspaceOrcaAI)
 	s.mux.HandleFunc("/api/workspace/orca-ai/models", s.handleWorkspaceOrcaAIModels)
 	s.mux.HandleFunc("/api/workspace/orca-ai/sync", s.handleWorkspaceOrcaAISync)
@@ -3173,18 +3174,40 @@ func (s *Server) resolveInstallTask(component, reqVersion string) (taskName stri
 		fn = func(ctx context.Context, cb func(string)) error {
 			cb("=== INFO PAIRING ORCA ADE ===")
 			_, userHome := installer.ResolveOrcaUser()
-			pairing, web, endpoint := installer.OrcaPairInfo(ctx, userHome)
-			if pairing == "" {
+			mode, customAddr := s.loadOrcaPairingPrefs()
+			pairState := s.fetchOrcaPairingWithConfig(ctx, userHome, mode, customAddr, false, "", i18n.DefaultLocale)
+			if pairState.Error != "" && pairState.PairingURL == "" && pairState.MobilePairingURL == "" {
+				cb("Catatan: " + pairState.Error)
+			}
+			if pairState.PairingURL == "" && pairState.MobilePairingURL == "" {
 				cb("Catatan: pairing belum tersedia (server Orca mungkin belum aktif).")
 				cb("Tips: Pastikan Orca ADE Headless Server aktif.")
 				return nil
 			}
-			cb("Pairing URL : " + pairing)
-			if web != "" {
-				cb("Web Client  : " + web)
+			cb("Mode Alamat : " + pairState.Mode)
+			if pairState.Endpoint != "" {
+				cb("Endpoint    : " + pairState.Endpoint)
 			}
-			if endpoint != "" {
-				cb("Endpoint    : " + endpoint)
+			if pairState.MobilePairingURL != "" {
+				cb("")
+				cb("=== BARCODE QR ORCA MOBILE (--mobile) ===")
+				for _, line := range renderTerminalQRCode(pairState.MobilePairingURL) {
+					cb(line)
+				}
+				cb("Mobile URI  : " + pairState.MobilePairingURL)
+				cb("Tips: Scan barcode di atas lewat aplikasi Orca Mobile -> Pair.")
+			} else if pairState.MobileError != "" {
+				cb("Catatan Mobile : " + pairState.MobileError)
+			}
+			if pairState.WebClientURL != "" || pairState.PairingURL != "" {
+				cb("")
+				cb("=== WEB CLIENT & DESKTOP REMOTE ===")
+				if pairState.WebClientURL != "" {
+					cb("Web Client  : " + pairState.WebClientURL)
+				}
+				if pairState.PairingURL != "" {
+					cb("Pairing URI : " + pairState.PairingURL)
+				}
 			}
 			return nil
 		}
@@ -3735,20 +3758,30 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type OrcaInfo struct {
-		Installed     bool                              `json:"installed"`
-		Active        bool                              `json:"active"`
-		StatusText    string                            `json:"status_text"`
-		Mode          string                            `json:"mode"`
-		Version       string                            `json:"version"`
-		LatestVersion string                            `json:"latest_version,omitempty"`
-		HasUpdate     bool                              `json:"has_update"`
-		Port          int                               `json:"port,omitempty"`
-		PID           int                               `json:"pid,omitempty"`
-		WebClientURL  string                            `json:"web_client_url,omitempty"`
-		PairingURL    string                            `json:"pairing_url,omitempty"`
-		Endpoint      string                            `json:"endpoint,omitempty"`
-		CommitAI      *installer.OrcaCommitAISummary    `json:"commit_ai,omitempty"`
-		SyncStatus    *installer.OrcaCommitAISyncStatus `json:"sync_status,omitempty"`
+		Installed            bool                              `json:"installed"`
+		Active               bool                              `json:"active"`
+		StatusText           string                            `json:"status_text"`
+		Mode                 string                            `json:"mode"`
+		Version              string                            `json:"version"`
+		LatestVersion        string                            `json:"latest_version,omitempty"`
+		HasUpdate            bool                              `json:"has_update"`
+		Port                 int                               `json:"port,omitempty"`
+		PID                  int                               `json:"pid,omitempty"`
+		WebClientURL         string                            `json:"web_client_url,omitempty"`
+		PairingURL           string                            `json:"pairing_url,omitempty"`
+		Endpoint             string                            `json:"endpoint,omitempty"`
+		PairingAddressMode   string                            `json:"pairing_address_mode,omitempty"`
+		PairingCustomAddress string                            `json:"pairing_custom_address,omitempty"`
+		PairingAddress       string                            `json:"pairing_address,omitempty"`
+		PairingError         string                            `json:"pairing_error,omitempty"`
+		MobilePairingURL     string                            `json:"mobile_pairing_url,omitempty"`
+		MobileEndpoint       string                            `json:"mobile_endpoint,omitempty"`
+		MobileConnectionMode string                            `json:"mobile_connection_mode,omitempty"`
+		MobileError          string                            `json:"mobile_error,omitempty"`
+		LocalIP              string                            `json:"local_ip,omitempty"`
+		VPNIP                string                            `json:"vpn_ip,omitempty"`
+		CommitAI             *installer.OrcaCommitAISummary    `json:"commit_ai,omitempty"`
+		SyncStatus           *installer.OrcaCommitAISyncStatus `json:"sync_status,omitempty"`
 	}
 
 	type ShellInfo struct {
@@ -3772,12 +3805,7 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Orca info (mendukung .deb ekstrak, AppImage, RPM, maupun Headless Server)
 	data.Orca.Installed = installer.IsOrcaInstalled(userHome)
-
-	if installer.IsOrcaServiceActive(r.Context(), targetUser, userHome) {
-		data.Orca.Active = true
-	} else if monitor.IsSystemdServiceActive("orca") {
-		data.Orca.Active = true
-	}
+	data.Orca.Active = isOrcaActiveForUserFn(r.Context(), targetUser, userHome)
 
 	modeFile := filepath.Join(orcaConfigDir, ".mode")
 	if mBytes, err := os.ReadFile(modeFile); err == nil {
@@ -3812,6 +3840,16 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pairMode, pairCustom := s.loadOrcaPairingPrefs()
+	_, _, lanIP, vpnIP := s.detectHostNetworkIPs()
+	if lanIP == "" {
+		lanIP = "127.0.0.1"
+	}
+	data.Orca.PairingAddressMode = pairMode
+	data.Orca.PairingCustomAddress = pairCustom
+	data.Orca.LocalIP = lanIP
+	data.Orca.VPNIP = vpnIP
+
 	if data.Orca.Active {
 		rtFile := filepath.Join(orcaConfigDir, "orca-runtime.json")
 		if rtBytes, err := os.ReadFile(rtFile); err == nil {
@@ -3842,11 +3880,20 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 			data.Orca.Port = 6768
 		}
 
-		pairCtx, pairCancel := context.WithTimeout(r.Context(), 3*time.Second)
+		pairCtx, pairCancel := context.WithTimeout(r.Context(), 4*time.Second)
 		defer pairCancel()
-		pairing, web, _ := installer.OrcaPairInfo(pairCtx, userHome)
-		data.Orca.PairingURL = pairing
-		data.Orca.WebClientURL = web
+		pairState := s.fetchOrcaPairingWithConfig(pairCtx, userHome, pairMode, pairCustom, false, "", i18n.FromRequest(r))
+		data.Orca.PairingURL = pairState.PairingURL
+		data.Orca.WebClientURL = pairState.WebClientURL
+		data.Orca.PairingAddress = pairState.TargetAddress
+		data.Orca.PairingError = pairState.Error
+		data.Orca.MobilePairingURL = pairState.MobilePairingURL
+		data.Orca.MobileEndpoint = pairState.MobileEndpoint
+		data.Orca.MobileConnectionMode = pairState.MobileConnectionMode
+		data.Orca.MobileError = pairState.MobileError
+		if pairState.Endpoint != "" {
+			data.Orca.Endpoint = pairState.Endpoint
+		}
 	}
 	data.Orca.CommitAI = installer.GetOrcaCommitAISummary(r.Context())
 	if syncStatus, syncErr := installer.GetOrcaCommitAISyncStatus(r.Context()); syncErr == nil && syncStatus != nil && syncStatus.Managed {

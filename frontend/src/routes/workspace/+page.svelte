@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as Card from '#lib/components/ui/card/index.js';
-	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
-	import * as InputGroup from '#lib/components/ui/input-group/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import OrcaCommitAiModal from '#lib/components/modals/OrcaCommitAiModal.svelte';
+	import OrcaPairingModal from '#lib/components/modals/OrcaPairingModal.svelte';
 	import { api } from '#lib/api/client.js';
 	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
@@ -23,7 +23,6 @@
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import ArrowUpCircleIcon from '@lucide/svelte/icons/arrow-up-circle';
-	import CopyIcon from '@lucide/svelte/icons/copy';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
@@ -87,6 +86,23 @@
 		if (theme.includes('agnoster')) return 'zsh-agnoster';
 		if (theme.includes('robbyrussell')) return 'zsh-robbyrussell';
 		return '';
+	}
+
+	function pairingModeLabel(mode?: string): string {
+		switch (mode) {
+			case 'local':
+				return t('workspace.pairModal.addressModeLocal');
+			case 'vpn':
+				return t('workspace.pairModal.addressModeVpn');
+			case 'custom':
+				return t('workspace.pairModal.addressModeCustom');
+			default:
+				return t('workspace.pairModal.addressModeAuto');
+		}
+	}
+
+	function openPairModal() {
+		pairModalOpen = true;
 	}
 </script>
 
@@ -187,6 +203,18 @@
 								<span class="text-muted-foreground">{t('workspace.orca.wsPort')}</span>
 								<span class="font-mono font-semibold text-primary">{orca.port || 6768}</span>
 							</div>
+							{#if orca.endpoint}
+								<Separator />
+								<div class="flex items-center justify-between gap-2">
+									<span class="text-muted-foreground">{t('workspace.orca.pairingEndpoint')}</span>
+									<div class="flex min-w-0 items-center gap-1.5">
+										<Badge variant="outline" class="shrink-0">
+											{pairingModeLabel(orca.pairing_address_mode)}
+										</Badge>
+										<span class="truncate font-mono font-medium">{orca.endpoint}</span>
+									</div>
+								</div>
+							{/if}
 							{#if orca.pid}
 								<Separator />
 								<div class="flex items-center justify-between gap-2">
@@ -267,7 +295,7 @@
 								{t('workspace.orca.openWebClient')}
 							</Button>
 						{/if}
-						<Button variant="outline" size="sm" onclick={() => (pairModalOpen = true)}>
+						<Button variant="outline" size="sm" onclick={openPairModal}>
 							<QrCodeIcon data-icon="inline-start" />
 							{t('workspace.orca.infoPairingBtn')}
 						</Button>
@@ -424,105 +452,6 @@
 	{/if}
 </div>
 
-<!-- Orca Pair & Info Modal -->
-{#if workspace}
-	{@const orca = workspace.orca}
-	{@const fallbackWebUrl = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:${orca.port || 6768}`}
-	{@const webUrl = orca.web_client_url || fallbackWebUrl}
-	<Dialog.Root bind:open={pairModalOpen}>
-		<Dialog.Content class="sm:max-w-lg">
-			<Dialog.Header>
-				<Dialog.Title>{t('workspace.pairModal.title')}</Dialog.Title>
-				<Dialog.Description>
-					{t('workspace.pairModal.description')}
-				</Dialog.Description>
-			</Dialog.Header>
-
-			<Field.FieldGroup>
-				<Field.Field>
-					<Field.FieldLabel for="orca-modal-weburl">{t('workspace.pairModal.webUrlLabel')}</Field.FieldLabel>
-					<InputGroup.Root>
-						<InputGroup.Input id="orca-modal-weburl" value={webUrl} readonly class="font-mono text-xs" />
-						<InputGroup.Addon align="inline-end">
-							<Button type="button" variant="ghost" size="xs" onclick={() => copyText(webUrl, t('workspace.pairModal.webUrlCopyLabel'))}>
-								<CopyIcon data-icon="inline-start" />
-								{t('common.actions.copy')}
-							</Button>
-						</InputGroup.Addon>
-					</InputGroup.Root>
-				</Field.Field>
-
-				<Field.Field>
-					<Field.FieldLabel for="orca-modal-paircode">{t('workspace.pairModal.pairingUriLabel')}</Field.FieldLabel>
-					<InputGroup.Root>
-						<InputGroup.Input
-							id="orca-modal-paircode"
-							value={orca.pairing_url || '-'}
-							readonly
-							class="font-mono text-xs"
-						/>
-						<InputGroup.Addon align="inline-end">
-							<Button
-								type="button"
-								variant="ghost"
-								size="xs"
-								disabled={!orca.pairing_url}
-								onclick={() => copyText(orca.pairing_url || '', t('workspace.pairModal.pairingUriCopyLabel'))}
-							>
-								<CopyIcon data-icon="inline-start" />
-								{t('common.actions.copy')}
-							</Button>
-						</InputGroup.Addon>
-					</InputGroup.Root>
-					<Field.FieldDescription>
-						{t('workspace.pairModal.pairingDesc')}
-					</Field.FieldDescription>
-				</Field.Field>
-			</Field.FieldGroup>
-
-			<div class="flex flex-col gap-2 rounded-md border bg-muted/40 p-3 text-xs">
-				<div class="flex items-center justify-between gap-2">
-					<span class="text-muted-foreground">{t('workspace.pairModal.serviceMode')}</span>
-					<span class="font-semibold">{orca.mode === 'desktop' ? t('workspace.orca.modeDesktopLabel') : t('workspace.orca.modeShortHeadless')}</span>
-				</div>
-				<Separator />
-				<div class="flex items-center justify-between gap-2">
-					<span class="text-muted-foreground">{t('workspace.orca.wsPort')}</span>
-					<span class="font-mono font-semibold">{orca.port || 6768}</span>
-				</div>
-				<Separator />
-				<div class="flex items-center justify-between gap-2">
-					<span class="text-muted-foreground">{t('workspace.pairModal.processStatus')}</span>
-					<span class="font-semibold">{orca.active ? t('workspace.pairModal.statusRunning') : t('workspace.pairModal.statusStopped')}</span>
-				</div>
-			</div>
-
-			<Dialog.Footer class="sm:items-center sm:justify-between">
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onclick={() => {
-						pairModalOpen = false;
-						cp.triggerInstall('orca-pair');
-					}}
-				>
-					{t('workspace.pairModal.showQrBtn')}
-				</Button>
-				<div class="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
-					{#if orca.web_client_url}
-						<Button size="sm" href={orca.web_client_url} target="_blank" rel="noopener noreferrer">
-							<ExternalLinkIcon data-icon="inline-start" />
-							{t('workspace.orca.openWebClient')}
-						</Button>
-					{/if}
-					<Button type="button" variant="outline" size="sm" onclick={() => (pairModalOpen = false)}>
-						{t('common.actions.close')}
-					</Button>
-				</div>
-			</Dialog.Footer>
-		</Dialog.Content>
-	</Dialog.Root>
-{/if}
+<OrcaPairingModal bind:open={pairModalOpen} bind:workspace onCopy={copyText} />
 
 <OrcaCommitAiModal bind:open={commitAiModalOpen} onSaved={() => loadWorkspace(false)} />

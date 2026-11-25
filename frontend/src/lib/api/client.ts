@@ -39,6 +39,8 @@ import type {
 	OrcaCommitAIModelsResult,
 	OrcaCommitAISavePayload,
 	OrcaCommitAISyncStatus,
+	OrcaPairingSavePayload,
+	OrcaPairingState,
 	PanelDomainStatus,
 	PDNSExposePayload,
 	PHPConfig,
@@ -368,6 +370,11 @@ export const api = {
 	// Workspace
 	getWorkspaceStatus: (refresh = false) =>
 		apiFetch<WorkspaceStatus>(refresh ? '/api/workspace/status?refresh=1' : '/api/workspace/status'),
+	saveOrcaPairing: (payload: OrcaPairingSavePayload) =>
+		apiFetch<OrcaPairingState>('/api/workspace/orca-pairing', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
 	getOrcaCommitAI: () => apiFetch<OrcaCommitAIConfig>('/api/workspace/orca-ai'),
 	getOrcaCommitAIModels: (agent: string, refresh = false) => {
 		const params = new URLSearchParams({ agent });

@@ -2,8 +2,10 @@ package installer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,35 +16,115 @@ import (
 	"wdev/internal/config"
 )
 
-// OrcaPairInfo mengambil tautan pairing dari CLI resmi Orca (tanpa skrip Node/Bash).
-func OrcaPairInfo(ctx context.Context, home string) (pairingURL, webClientURL, endpoint string) {
+// OrcaPairOptions mengonfigurasi pembuatan link pairing Orca ADE.
+type OrcaPairOptions struct {
+	Address string
+	Rotate  bool
+	Mobile  bool
+}
+
+// OrcaPairResult merangkum respons terstruktur dari `orca pair --json`.
+type OrcaPairResult struct {
+	Available      bool   `json:"available"`
+	Scope          string `json:"scope,omitempty"`
+	PairingURL     string `json:"pairingUrl,omitempty"`
+	WebClientURL   string `json:"webClientUrl,omitempty"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	DeviceID       string `json:"deviceId,omitempty"`
+	ConnectionMode string `json:"connectionMode,omitempty"`
+	QR             string `json:"qr,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Guidance       string `json:"guidance,omitempty"`
+}
+
+var orcaPairExecFn = defaultOrcaPairExec
+
+// SetOrcaPairExecFn mengganti eksekutor CLI `orca pair` untuk pengujian dan mengembalikan fungsi pemulih.
+func SetOrcaPairExecFn(fn func(ctx context.Context, home string, args []string) ([]byte, error)) func() {
+	prev := orcaPairExecFn
+	orcaPairExecFn = fn
+	return func() {
+		orcaPairExecFn = prev
+	}
+}
+
+func defaultOrcaPairExec(ctx context.Context, home string, args []string) ([]byte, error) {
 	cli := orcaRealCLI(home)
 	if cli == "" {
-		return "", "", ""
+		return nil, errors.New("Orca ADE CLI not found")
 	}
-	cmd := exec.CommandContext(ctx, cli, "pair", "--json")
+	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Env = orcaEnv(home)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if err != nil {
-		return "", "", ""
+	if err != nil && len(bytes.TrimSpace(out)) == 0 && stderr.Len() > 0 {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
+	return out, err
+}
+
+// OrcaPairInfoWithOptions mengambil tautan pairing dari CLI resmi Orca dengan alamat/opsi opsional.
+func OrcaPairInfoWithOptions(ctx context.Context, home string, opts OrcaPairOptions) (*OrcaPairResult, error) {
+	args := []string{"pair", "--json"}
+	if opts.Mobile {
+		args = append(args, "--mobile")
+	}
+	if addr := strings.TrimSpace(opts.Address); addr != "" {
+		args = append(args, "--address", addr)
+	}
+	if opts.Rotate {
+		args = append(args, "--rotate")
+	}
+
+	out, execErr := orcaPairExecFn(ctx, home, args)
+	if len(bytes.TrimSpace(out)) == 0 {
+		if execErr != nil {
+			return nil, execErr
+		}
+		return nil, errors.New("empty response from orca pair")
+	}
+
 	var payload struct {
-		PairingURL   string `json:"pairingUrl"`
-		WebClientURL string `json:"webClientUrl"`
-		Endpoint     string `json:"endpoint"`
-		Result       *struct {
-			PairingURL   string `json:"pairingUrl"`
-			WebClientURL string `json:"webClientUrl"`
-			Endpoint     string `json:"endpoint"`
-		} `json:"result"`
+		OK     bool            `json:"ok"`
+		Result *OrcaPairResult `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		OrcaPairResult
 	}
 	if err := json.Unmarshal(out, &payload); err != nil {
+		if execErr != nil {
+			return nil, execErr
+		}
+		return nil, fmt.Errorf("invalid JSON from orca pair: %w", err)
+	}
+
+	var res OrcaPairResult
+	if payload.Result != nil {
+		res = *payload.Result
+	} else {
+		res = payload.OrcaPairResult
+		if res.PairingURL != "" || res.Endpoint != "" {
+			res.Available = true
+		}
+	}
+	if payload.Error != nil && strings.TrimSpace(payload.Error.Message) != "" && res.Guidance == "" {
+		res.Guidance = strings.TrimSpace(payload.Error.Message)
+	}
+	if execErr != nil && res.PairingURL == "" && res.Reason == "" && res.Guidance == "" {
+		return nil, execErr
+	}
+	return &res, nil
+}
+
+// OrcaPairInfo mengambil tautan pairing dari CLI resmi Orca (tanpa skrip Node/Bash).
+func OrcaPairInfo(ctx context.Context, home string) (pairingURL, webClientURL, endpoint string) {
+	res, err := OrcaPairInfoWithOptions(ctx, home, OrcaPairOptions{})
+	if err != nil || res == nil {
 		return "", "", ""
 	}
-	if payload.Result != nil {
-		return payload.Result.PairingURL, payload.Result.WebClientURL, payload.Result.Endpoint
-	}
-	return payload.PairingURL, payload.WebClientURL, payload.Endpoint
+	return res.PairingURL, res.WebClientURL, res.Endpoint
 }
 
 func orcaEnv(home string) []string {
