@@ -88,14 +88,23 @@ func TestCloudflareMultiProfileAPIHandlers(t *testing.T) {
 		t.Fatalf("POST /api/cloudflare/profiles/cert = %d: %s", recCert.Code, recCert.Body.String())
 	}
 
-	// 5. Pasang API Token & cek GET /api/cloudflare/zones?profile=kantor
+	// 5. Pasang API Token & cek GET /api/cloudflare/zones?profile=kantor + GET /api/cloudflare/check-host
 	cfAPISrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/zones" {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
 			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"z1","name":"example.com","status":"active","account":{"id":"acct-123","name":"Kantor"}}],"result_info":{"page":1,"per_page":50,"total_pages":1,"count":1,"total_count":1}}`))
-			return
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-123/cfd_tunnel/11111111-1111-1111-1111-111111111111/configurations":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"config":{"ingress":[{"service":"http_status:404"}]}}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/z1/dns_records":
+			if r.URL.Query().Get("name") == "busy.example.com" {
+				_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"rec-busy","type":"A","name":"busy.example.com","content":"198.51.100.42","proxied":false}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer cfAPISrv.Close()
 	cfMgr.SetAPIBaseURL(cfAPISrv.URL)
@@ -119,6 +128,34 @@ func TestCloudflareMultiProfileAPIHandlers(t *testing.T) {
 	}
 	if err := json.Unmarshal(recZones.Body.Bytes(), &zResp); err != nil || len(zResp.Zones) != 1 || zResp.Zones[0].Name != "example.com" {
 		t.Fatalf("unexpected zones response: %v / %s", err, recZones.Body.String())
+	}
+
+	reqBusy := httptest.NewRequest(http.MethodGet, "/api/cloudflare/check-host?profile=kantor&host=busy.example.com&local_domain=app.test", nil)
+	recBusy := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recBusy, reqBusy)
+	if recBusy.Code != http.StatusOK {
+		t.Fatalf("GET /api/cloudflare/check-host busy = %d: %s", recBusy.Code, recBusy.Body.String())
+	}
+	var busyRes cloudflare.CFHostCheckResult
+	if err := json.Unmarshal(recBusy.Body.Bytes(), &busyRes); err != nil {
+		t.Fatalf("unmarshal busy check-host: %v", err)
+	}
+	if busyRes.Available || busyRes.ConflictSource != "dns" {
+		t.Fatalf("expected busy.example.com conflict_source=dns, got: %+v", busyRes)
+	}
+
+	reqFree := httptest.NewRequest(http.MethodGet, "/api/cloudflare/check-host?profile=kantor&host=free.example.com&local_domain=app.test", nil)
+	recFree := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recFree, reqFree)
+	if recFree.Code != http.StatusOK {
+		t.Fatalf("GET /api/cloudflare/check-host free = %d: %s", recFree.Code, recFree.Body.String())
+	}
+	var freeRes cloudflare.CFHostCheckResult
+	if err := json.Unmarshal(recFree.Body.Bytes(), &freeRes); err != nil {
+		t.Fatalf("unmarshal free check-host: %v", err)
+	}
+	if !freeRes.Available || freeRes.ZoneName != "example.com" {
+		t.Fatalf("expected free.example.com available in zone example.com, got: %+v", freeRes)
 	}
 
 	// 6. Hapus profil token via POST /api/cloudflare/profiles/delete

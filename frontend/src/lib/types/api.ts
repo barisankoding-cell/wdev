@@ -432,6 +432,27 @@ export interface CFUnexposeResult {
 	dns_warning?: string;
 }
 
+export interface CFHostCheckRecord {
+	id?: string;
+	type: string;
+	name: string;
+	content: string;
+	proxied?: boolean;
+}
+
+export interface CFHostCheckResult {
+	profile: string;
+	public_host: string;
+	local_domain?: string;
+	available: boolean;
+	conflict_source?: '' | 'exposure' | 'local_ingress' | 'remote_ingress' | 'dns' | string;
+	existing_exposure?: Exposure;
+	zone_name?: string;
+	dns_records?: CFHostCheckRecord[];
+	message?: string;
+	check_error?: string;
+}
+
 export interface TunnelStatus {
 	installed: boolean;
 	binary: string;

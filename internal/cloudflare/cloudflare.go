@@ -146,6 +146,7 @@ type ExposeOptions struct {
 	Profile     string `json:"profile"`
 	ServiceURL  string `json:"service_url,omitempty"`
 	NoTLSVerify *bool  `json:"no_tls_verify,omitempty"`
+	Overwrite   bool   `json:"overwrite,omitempty"`
 }
 
 // ExposeResult merangkum hasil pembuatan exposure Cloudflare.
@@ -580,6 +581,30 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 		return nil, err
 	}
 
+	var staleSameProfLocals []string
+	if !opts.Overwrite {
+		if chk, chkErr := m.CheckPublicHost(profile, publicHost, localDomain); chkErr == nil && !chk.Available {
+			return nil, fmt.Errorf("%s Pilih subdomain lain atau aktifkan opsi timpa (overwrite)", chk.Message)
+		}
+	} else {
+		// Jika overwrite diaktifkan, bersihkan rute lama yang bentrok:
+		// - publicHost pada profil lain -> hapus dari tunnel profil lama;
+		// - publicHost pada profil sama & domain lokal berbeda -> ganti aturan in-place lalu hapus penanda lokal lama;
+		// - localDomain sebelumnya dipakai publicHost berbeda -> bersihkan rute lama agar tidak meninggalkan ingress yatim.
+		for _, exp := range m.collectExposures() {
+			sameHost := strings.EqualFold(exp.PublicHost, publicHost)
+			sameLocal := strings.EqualFold(exp.LocalDomain, localDomain)
+			sameProf := normalizeCFProfile(exp.Profile) == profile
+			if sameHost && !sameProf {
+				_ = m.clearLocalOrRemoteRouteOnly(exp.LocalDomain, exp.Profile, exp.PublicHost)
+			} else if sameHost && !sameLocal {
+				staleSameProfLocals = append(staleSameProfLocals, exp.LocalDomain)
+			} else if sameLocal && !sameHost {
+				_ = m.clearLocalOrRemoteRouteOnly(exp.LocalDomain, exp.Profile, exp.PublicHost)
+			}
+		}
+	}
+
 	// Mode Token dengan Cloudflare API Token: kelola ingress remote & DNS langsung via Cloudflare REST API
 	if profExists && profInfo.AuthMode == "token" {
 		if profInfo.AccountTag == "" || profInfo.TunnelID == "" {
@@ -602,6 +627,7 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 				NoTLSVerify:    noTLSVerify,
 			})
 		}
+		m.removeLocalExposureTrackers(staleSameProfLocals)
 
 		dnsWarning := ""
 		if dnsErr := m.upsertCFDNSRecord(ctx, apiToken, publicHost, profInfo.TunnelID+".cfargotunnel.com"); dnsErr != nil {
@@ -687,6 +713,7 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 			NoTLSVerify:    noTLSVerify,
 		})
 	}
+	m.removeLocalExposureTrackers(staleSameProfLocals)
 
 	dnsWarning := ""
 	certPath := m.certFilePath(profile)
@@ -896,6 +923,69 @@ func (m *Manager) UnexposeWithResult(localDomain, profile string) (*UnexposeResu
 	}
 
 	return res, nil
+}
+
+func (m *Manager) removeLocalExposureTrackers(locals []string) {
+	for _, ld := range locals {
+		clean := strings.ToLower(strings.TrimSpace(ld))
+		if clean == "" {
+			continue
+		}
+		if m.store != nil {
+			_ = m.store.DeleteCFRouteByLocalDomain(clean)
+		}
+		_ = os.Remove(filepath.Join(m.exposuresDir(), clean))
+	}
+}
+
+func (m *Manager) clearLocalOrRemoteRouteOnly(localDomain, profile, publicHost string) error {
+	cleanProfile := normalizeCFProfile(profile)
+	profilesMap := m.collectProfileMap()
+	if profInfo, ok := profilesMap[cleanProfile]; ok && profInfo.AuthMode == "token" {
+		if apiToken := m.readProfileAPIToken(cleanProfile); apiToken != "" && profInfo.AccountTag != "" && profInfo.TunnelID != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			_ = m.removeRemoteTunnelIngress(ctx, apiToken, profInfo.AccountTag, profInfo.TunnelID, publicHost, localDomain)
+			cancel()
+		}
+	}
+	if m.store != nil {
+		_ = m.store.DeleteCFRouteByLocalDomain(localDomain)
+	}
+	_ = os.Remove(filepath.Join(m.exposuresDir(), localDomain))
+
+	cfgFile := m.routeConfigPath(cleanProfile)
+	if data, err := os.ReadFile(cfgFile); err == nil {
+		var cfg CloudflaredConfig
+		if err := yaml.Unmarshal(data, &cfg); err == nil {
+			var newRules []IngressRule
+			changed := false
+			for _, r := range cfg.Ingress {
+				if (publicHost != "" && strings.EqualFold(r.Hostname, publicHost)) ||
+					(r.OriginRequest != nil && strings.EqualFold(r.OriginRequest.HTTPHostHeader, localDomain)) {
+					changed = true
+					continue
+				}
+				if r.Service == "http_status:404" {
+					continue
+				}
+				if strings.TrimSpace(r.Service) != "" {
+					newRules = append(newRules, r)
+				}
+			}
+			if changed {
+				newRules = append(newRules, IngressRule{Service: "http_status:404"})
+				cfg.Ingress = newRules
+				if outData, mErr := yaml.Marshal(&cfg); mErr == nil {
+					_ = m.writeConfigFile(cfgFile, outData, 0644)
+				}
+				unit := profileServiceUnit(cleanProfile)
+				if m.isServiceActiveFn(unit) {
+					_, _ = m.runPrivileged("systemctl", "restart", unit)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) writeConfigFile(dst string, data []byte, mode os.FileMode) error {

@@ -10,6 +10,7 @@
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import * as InputGroup from '#lib/components/ui/input-group/index.js';
+	import * as Tooltip from '#lib/components/ui/tooltip/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
@@ -22,7 +23,15 @@
 	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import { api, ApiError } from '#lib/api/client.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
-	import type { CFLoginSession, CFProfileInfo, CFZoneInfo, SiteRecord, TunnelStatus } from '#lib/types/api.js';
+	import type {
+		CFHostCheckResult,
+		CFLoginSession,
+		CFProfileInfo,
+		CFZoneInfo,
+		Exposure,
+		SiteRecord,
+		TunnelStatus
+	} from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import CloudUploadIcon from '@lucide/svelte/icons/cloud-upload';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
@@ -40,6 +49,7 @@
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 
 	let cfStatus = $state<TunnelStatus | null>(null);
 	let localSites = $state<SiteRecord[]>([]);
@@ -51,6 +61,15 @@
 	let submitting = $state(false);
 	let exposureDeleting = $state<Record<string, boolean>>({});
 	let profilePending = $state<Record<string, boolean>>({});
+
+	// Modal Edit Domain Lokal pada Daftar Domain Publik Aktif
+	let editExposureModalOpen = $state(false);
+	let editTargetExposure = $state<Exposure | null>(null);
+	let editLocalDomain = $state('');
+	let editLocalDomainMode = $state<'select' | 'custom'>('select');
+	let editServiceUrl = $state('');
+	let editShowAdvancedService = $state(false);
+	let savingExposureEdit = $state(false);
 
 	// Modal Tambah Profil Multi-Akun
 	let addModalOpen = $state(false);
@@ -95,19 +114,62 @@
 	let deleteDNS = $state(false);
 	let deletingProfile = $state(false);
 
-	// Auto-fetch Domain (Zones) Cloudflare per Profil
+	// Auto-fetch Domain (Zones) Cloudflare per Profil & Pre-Check Subdomain
 	let cfZones = $state<CFZoneInfo[]>([]);
 	let zonesLoading = $state(false);
 	let zonesError = $state('');
 	let selectedZoneName = $state('');
 	let zoneSubdomain = $state('');
+	let allowOverwrite = $state(false);
+	let hostCheck = $state<CFHostCheckResult | null>(null);
+	let hostChecking = $state(false);
 	let lastZoneKey = '';
+	let hostCheckTimer: ReturnType<typeof setTimeout> | null = null;
+	let hostCheckSeq = 0;
+
+	const dnsLabelRe = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+	function normalizeSubdomain(raw: string, zoneName: string): string {
+		let val = raw.trim().toLowerCase();
+		val = val.replace(/^https?:\/\//, '').split('/')[0] ?? '';
+		val = val.replace(/\s+/g, '').replace(/^\.+|\.+$/g, '');
+		const z = zoneName.trim().toLowerCase();
+		if (z) {
+			if (val === z) return '';
+			if (val.endsWith('.' + z)) {
+				val = val.slice(0, -(z.length + 1)).replace(/\.+$/g, '');
+			}
+		}
+		return val;
+	}
+
+	const normalizedSubdomain = $derived(normalizeSubdomain(zoneSubdomain, selectedZoneName));
+
+	const subdomainError = $derived.by(() => {
+		const raw = zoneSubdomain.trim();
+		if (!raw) return '';
+		const sub = normalizedSubdomain;
+		if (!sub) return '';
+		if (sub.includes('..')) {
+			return 'Subdomain tidak boleh mengandung titik ganda (..).';
+		}
+		const labels = sub.split('.');
+		for (const lbl of labels) {
+			if (!dnsLabelRe.test(lbl)) {
+				return 'Gunakan huruf kecil, angka, dan tanda hubung (-) per segmen subdomain.';
+			}
+		}
+		const z = selectedZoneName.trim().toLowerCase();
+		if (z && `${sub}.${z}`.length > 253) {
+			return 'Panjang hostname publik melebihi 253 karakter.';
+		}
+		return '';
+	});
 
 	const publicHost = $derived.by(() => {
 		const cleanZone = selectedZoneName.trim().toLowerCase();
-		const cleanSub = zoneSubdomain.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
-		if (!cleanZone) return '';
-		return cleanSub ? `${cleanSub}.${cleanZone}` : cleanZone;
+		if (!cleanZone || subdomainError) return '';
+		return normalizedSubdomain ? `${normalizedSubdomain}.${cleanZone}` : cleanZone;
 	});
 
 	// Modal Log Profil
@@ -143,6 +205,33 @@
 	const paginatedExposures = $derived(
 		allExposures.slice((exposurePage - 1) * PAGE_SIZE, exposurePage * PAGE_SIZE)
 	);
+	const exposureByLocalDomain = $derived.by(() => {
+		const map: Record<string, Exposure> = {};
+		for (const exp of allExposures) {
+			map[exp.local_domain.toLowerCase()] = exp;
+		}
+		return map;
+	});
+	const editProfileInfo = $derived(
+		editTargetExposure
+			? (profileDetails.find((p) => p.name === editTargetExposure?.profile) ?? null)
+			: null
+	);
+	const editMissingApiToken = $derived(
+		Boolean(editProfileInfo && editProfileInfo.auth_mode === 'token' && !editProfileInfo.has_api_token)
+	);
+	const editNormalizedLocal = $derived(editLocalDomain.trim().toLowerCase());
+	const editReassignedLocalConflict = $derived.by(() => {
+		if (!editTargetExposure || !editNormalizedLocal) return null;
+		const curHost = editTargetExposure.public_host.toLowerCase();
+		return (
+			allExposures.find(
+				(e) =>
+					e.local_domain.toLowerCase() === editNormalizedLocal &&
+					e.public_host.toLowerCase() !== curHost
+			) ?? null
+		);
+	});
 
 	$effect(() => {
 		if (allExposures.length === 0) {
@@ -181,7 +270,55 @@
 		}
 	}
 
-	onDestroy(stopLoginPoll);
+	onDestroy(() => {
+		stopLoginPoll();
+		if (hostCheckTimer) {
+			clearTimeout(hostCheckTimer);
+			hostCheckTimer = null;
+		}
+	});
+
+	$effect(() => {
+		const profName = selectedProfileInfo?.name ?? '';
+		const host = publicHost;
+		const local = localDomain.trim().toLowerCase();
+		const invalidSub = Boolean(subdomainError);
+
+		allowOverwrite = false;
+		if (hostCheckTimer) {
+			clearTimeout(hostCheckTimer);
+			hostCheckTimer = null;
+		}
+		if (!profName || !host || invalidSub) {
+			hostCheckSeq += 1;
+			hostCheck = null;
+			hostChecking = false;
+			return;
+		}
+
+		const seq = ++hostCheckSeq;
+		hostChecking = true;
+		hostCheckTimer = setTimeout(async () => {
+			try {
+				const res = await api.checkCFHost(profName, host, local);
+				if (seq !== hostCheckSeq) return;
+				hostCheck = res;
+			} catch (err) {
+				if (seq !== hostCheckSeq) return;
+				hostCheck = {
+					profile: profName,
+					public_host: host,
+					local_domain: local,
+					available: true,
+					check_error: err instanceof Error ? err.message : 'Gagal memeriksa status subdomain'
+				};
+			} finally {
+				if (seq === hostCheckSeq) {
+					hostChecking = false;
+				}
+			}
+		}, 300);
+	});
 
 	async function loadCloudflare() {
 		try {
@@ -506,8 +643,16 @@
 
 	async function submitExpose(e: SubmitEvent) {
 		e.preventDefault();
+		if (subdomainError) {
+			toast.warning(subdomainError);
+			return;
+		}
 		if (!localDomain.trim() || !publicHost.trim()) {
 			toast.warning('Domain lokal dan domain publik wajib diisi.');
+			return;
+		}
+		if (hostCheck && !hostCheck.available && !allowOverwrite) {
+			toast.warning(hostCheck.message || 'Subdomain sudah digunakan. Centang opsi timpa untuk melanjutkan.');
 			return;
 		}
 		submitting = true;
@@ -516,7 +661,9 @@
 				localDomain.trim(),
 				publicHost.trim(),
 				profile.trim(),
-				serviceUrl.trim()
+				serviceUrl.trim(),
+				undefined,
+				allowOverwrite
 			);
 			toast.success(`Eksposur berhasil: ${localDomain.trim()} -> https://${res.public_host}`, {
 				description: `Profil: ${res.profile} · Origin: ${res.service_url}`
@@ -527,6 +674,8 @@
 			localDomain = '';
 			localDomainMode = localSites.length > 0 ? 'select' : 'custom';
 			zoneSubdomain = '';
+			allowOverwrite = false;
+			hostCheck = null;
 			serviceUrl = '';
 			await loadCloudflare();
 		} catch (err) {
@@ -564,7 +713,110 @@
 			exposureDeleting = next;
 		}
 	}
+
+	function isDefaultNginxServiceUrl(url?: string): boolean {
+		const clean = (url || '').trim().toLowerCase();
+		return !clean || clean === 'http://127.0.0.1:80' || clean === 'https://127.0.0.1:443';
+	}
+
+	function openEditExposureModal(exp: Exposure) {
+		editTargetExposure = exp;
+		const hasInList = localSites.some(
+			(st) => st.domain.toLowerCase() === exp.local_domain.toLowerCase()
+		);
+		editLocalDomain = exp.local_domain;
+		editLocalDomainMode = localSites.length > 0 && hasInList ? 'select' : 'custom';
+		if (isDefaultNginxServiceUrl(exp.service_url)) {
+			editServiceUrl = '';
+			editShowAdvancedService = false;
+		} else {
+			editServiceUrl = exp.service_url || '';
+			editShowAdvancedService = true;
+		}
+		editExposureModalOpen = true;
+	}
+
+	async function submitExposureEdit(e: SubmitEvent) {
+		e.preventDefault();
+		if (!editTargetExposure) return;
+		const nextLocal = editLocalDomain.trim().toLowerCase();
+		if (!nextLocal) {
+			toast.warning('Pilih atau isi domain lokal tujuan.');
+			return;
+		}
+		if (editMissingApiToken) {
+			toast.warning('Profil mode Token ini memerlukan Cloudflare API Token terlebih dahulu.');
+			return;
+		}
+		savingExposureEdit = true;
+		try {
+			const res = await api.exposeCF(
+				nextLocal,
+				editTargetExposure.public_host,
+				editTargetExposure.profile,
+				editServiceUrl.trim(),
+				undefined,
+				true
+			);
+			toast.success(`Domain lokal untuk ${res.public_host} diperbarui ke ${nextLocal}`, {
+				description: `Profil: ${res.profile} · Origin: ${res.service_url}`
+			});
+			if (res.dns_warning) {
+				toast.warning('Catatan DNS Cloudflare', { description: res.dns_warning });
+			}
+			editExposureModalOpen = false;
+			editTargetExposure = null;
+			await loadCloudflare();
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : 'Gagal memperbarui domain lokal eksposur');
+		} finally {
+			savingExposureEdit = false;
+		}
+	}
 </script>
+
+{#snippet statusBadgeTooltip(
+	tone: 'warning' | 'success',
+	badgeLabel: string,
+	tooltipText: string,
+	records?: { id?: string; type: string; content: string }[]
+)}
+	<Tooltip.Root>
+		<Tooltip.Trigger>
+			{#snippet child({ props })}
+				<button
+					type="button"
+					{...props}
+					class="inline-flex cursor-help rounded-4xl focus-visible:outline-none"
+				>
+					<Badge
+						variant="outline"
+						class={tone === 'warning'
+							? 'border-warning/40 bg-warning/10 text-warning'
+							: 'border-success/40 bg-success/10 text-success'}
+					>
+						{#if tone === 'warning'}
+							<AlertCircleIcon data-icon="inline-start" />
+						{:else}
+							<ShieldCheckIcon data-icon="inline-start" />
+						{/if}
+						{badgeLabel}
+					</Badge>
+				</button>
+			{/snippet}
+		</Tooltip.Trigger>
+		<Tooltip.Content class="z-[60] max-w-xs">
+			<div class="flex flex-col gap-1 py-0.5 text-left leading-relaxed">
+				<p>{tooltipText}</p>
+				{#if records && records.length > 0}
+					<p class="font-mono text-[11px] opacity-85">
+						{records.map((r) => `${r.type} → ${r.content}`).join(' · ')}
+					</p>
+				{/if}
+			</div>
+		</Tooltip.Content>
+	</Tooltip.Root>
+{/snippet}
 
 <div class="flex flex-col gap-5 sm:gap-6">
 	<!-- Header -->
@@ -984,14 +1236,23 @@
 								</Select.Root>
 							</Field.Field>
 
-							<Field.Field>
+							<Field.Field data-invalid={subdomainError ? true : undefined}>
 								<Field.FieldLabel for="cf-zone-sub" class="text-xs">Subdomain (Opsional)</Field.FieldLabel>
 								<Input
 									id="cf-zone-sub"
 									placeholder="mis. apps (kosong = apex)"
 									class="font-mono text-xs"
-									bind:value={zoneSubdomain}
+									aria-invalid={subdomainError ? true : undefined}
+									value={zoneSubdomain}
+									oninput={(e) => {
+										const rawVal = (e.currentTarget as HTMLInputElement).value;
+										const norm = normalizeSubdomain(rawVal, selectedZoneName);
+										zoneSubdomain = norm !== rawVal.trim().toLowerCase() ? norm : rawVal;
+									}}
 								/>
+								{#if subdomainError}
+									<Field.FieldError>{subdomainError}</Field.FieldError>
+								{/if}
 							</Field.Field>
 
 							<Field.Field>
@@ -1012,6 +1273,48 @@
 								</InputGroup.Root>
 							</Field.Field>
 						</Field.FieldGroup>
+
+						{#if hostChecking}
+							<div class="flex items-center gap-2 text-xs text-muted-foreground">
+								<Spinner />
+								<span>Memeriksa ketersediaan subdomain...</span>
+							</div>
+						{:else if hostCheck && !hostCheck.available}
+							<div class="flex flex-wrap items-center justify-between gap-2.5">
+								{@render statusBadgeTooltip(
+									'warning',
+									hostCheck.conflict_source === 'dns'
+										? 'Warn: Record DNS sudah ada'
+										: 'Warn: Subdomain sudah dipakai',
+									hostCheck.message || 'Subdomain sudah digunakan.',
+									hostCheck.dns_records
+								)}
+								<Field.Field orientation="horizontal" class="w-auto">
+									<Checkbox id="cf-allow-overwrite" bind:checked={allowOverwrite} />
+									<Field.FieldLabel for="cf-allow-overwrite" class="text-xs font-normal text-foreground">
+										Timpa yang sudah ada
+									</Field.FieldLabel>
+								</Field.Field>
+							</div>
+						{:else if hostCheck && hostCheck.available}
+							<div class="flex flex-wrap items-center gap-2">
+								{@render statusBadgeTooltip(
+									'success',
+									hostCheck.dns_records && hostCheck.dns_records.length > 0
+										? 'Terhubung ke tunnel ini'
+										: 'Subdomain tersedia',
+									hostCheck.message || `Subdomain ${hostCheck.public_host} siap digunakan.`,
+									hostCheck.dns_records
+								)}
+								{#if hostCheck.check_error}
+									{@render statusBadgeTooltip(
+										'warning',
+										'Warn: Cek Cloudflare parsial',
+										hostCheck.check_error
+									)}
+								{/if}
+							</div>
+						{/if}
 					</div>
 
 					<div class="flex flex-wrap items-center justify-between gap-3">
@@ -1023,7 +1326,15 @@
 							{showAdvancedService ? 'Sembunyikan target service kustom' : 'Atur target service / port lokal kustom (opsional)'}
 						</button>
 
-						<Button type="submit" disabled={submitting || !selectedProfileInfo}>
+						<Button
+							type="submit"
+							disabled={submitting ||
+								!selectedProfileInfo ||
+								!publicHost ||
+								Boolean(subdomainError) ||
+								hostChecking ||
+								(hostCheck !== null && !hostCheck.available && !allowOverwrite)}
+						>
 							{#if submitting}
 								<Spinner data-icon="inline-start" />
 								Memproses...
@@ -1075,7 +1386,7 @@
 								</Table.Cell>
 							</Table.Row>
 						{:else}
-							{#each paginatedExposures as exp (exp.local_domain)}
+							{#each paginatedExposures as exp (`${exp.profile}:${exp.local_domain}:${exp.public_host}`)}
 								<Table.Row>
 									<Table.Cell data-label="Domain Lokal" class="font-mono text-xs">{exp.local_domain}</Table.Cell>
 									<Table.Cell data-label="Domain Publik">
@@ -1104,7 +1415,17 @@
 										{/if}
 									</Table.Cell>
 									<Table.Cell data-label="Aksi" class="text-right">
-										<div class="flex justify-end">
+										<div class="flex justify-end gap-1.5">
+											<Button
+												variant="outline"
+												size="icon-xs"
+												disabled={Boolean(exposureDeleting[exp.local_domain])}
+												onclick={() => openEditExposureModal(exp)}
+												title="Ganti domain lokal"
+												aria-label="Ganti domain lokal"
+											>
+												<PencilIcon />
+											</Button>
 											<DropdownMenu.Root>
 												<DropdownMenu.Trigger>
 													{#snippet child({ props })}
@@ -1137,6 +1458,13 @@
 																	<span>Buka URL Publik</span>
 																</a>
 															{/snippet}
+														</DropdownMenu.Item>
+														<DropdownMenu.Item
+															disabled={Boolean(exposureDeleting[exp.local_domain])}
+															onclick={() => openEditExposureModal(exp)}
+														>
+															<PencilIcon />
+															<span>Edit Domain Lokal</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Separator />
 														<DropdownMenu.Item
@@ -1605,5 +1933,194 @@
 				</Button>
 			</Dialog.Footer>
 		</form>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Modal Edit Domain Lokal Eksposur Aktif -->
+<Dialog.Root bind:open={editExposureModalOpen}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>Edit Domain Lokal Eksposur</Dialog.Title>
+			<Dialog.Description>
+				Ganti domain lokal yang diarahkan oleh <code class="font-mono font-semibold text-foreground">{editTargetExposure?.public_host}</code> tanpa menghapus record DNS Cloudflare.
+			</Dialog.Description>
+		</Dialog.Header>
+
+		{#if editTargetExposure}
+			<form onsubmit={submitExposureEdit} class="flex flex-col gap-4">
+				<div class="flex flex-col gap-2 rounded-md border bg-muted/25 p-3 text-xs">
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<span class="text-muted-foreground">Domain Publik</span>
+						<span class="font-mono font-semibold text-foreground">{editTargetExposure.public_host}</span>
+					</div>
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<span class="text-muted-foreground">Profil Tunnel</span>
+						<Badge variant="outline">{editTargetExposure.profile}</Badge>
+					</div>
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<span class="text-muted-foreground">Domain Lokal Sebelumnya</span>
+						<span class="font-mono text-muted-foreground">{editTargetExposure.local_domain}</span>
+					</div>
+				</div>
+
+				{#if editMissingApiToken && editProfileInfo}
+					<Alert.Root class="border-warning/40 bg-warning/10">
+						<AlertCircleIcon class="text-warning" />
+						<Alert.Title class="text-warning">Profil Memerlukan API Token</Alert.Title>
+						<Alert.Description class="flex flex-col gap-2 text-xs text-muted-foreground">
+							<p>
+								Profil <code class="font-mono">{editProfileInfo.name}</code> menggunakan mode Token tanpa Cloudflare API Token, sehingga rute ingress tidak bisa diperbarui otomatis.
+							</p>
+							<div>
+								<Button
+									type="button"
+									variant="outline"
+									size="xs"
+									onclick={() => {
+										const prof = editProfileInfo;
+										editExposureModalOpen = false;
+										if (prof) openApiTokenModal(prof);
+									}}
+								>
+									<KeyRoundIcon data-icon="inline-start" />
+									Pasang API Token ({editProfileInfo.name})
+								</Button>
+							</div>
+						</Alert.Description>
+					</Alert.Root>
+				{/if}
+
+				<Field.FieldGroup>
+					<Field.Field>
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<Field.FieldLabel for="cf-edit-local-domain">Domain Lokal Baru</Field.FieldLabel>
+							{#if editReassignedLocalConflict}
+								{@render statusBadgeTooltip(
+									'warning',
+									`Warn: Dipakai ${editReassignedLocalConflict.public_host}`,
+									`Domain ${editReassignedLocalConflict.local_domain} saat ini terhubung ke ${editReassignedLocalConflict.public_host} (profil ${editReassignedLocalConflict.profile}). Jika disimpan, rute lama tersebut akan digantikan.`
+								)}
+							{/if}
+						</div>
+						{#if localSites.length > 0 && editLocalDomainMode === 'select'}
+							<Select.Root
+								type="single"
+								value={editLocalDomain}
+								onValueChange={(val) => {
+									if (val === '__custom__') {
+										editLocalDomainMode = 'custom';
+										editLocalDomain = '';
+									} else {
+										editLocalDomain = val;
+									}
+								}}
+							>
+								<Select.Trigger id="cf-edit-local-domain" class="w-full font-mono text-xs">
+									<span class="truncate">{editLocalDomain || 'Pilih domain lokal'}</span>
+								</Select.Trigger>
+								<Select.Content>
+									<Select.Group>
+										<Select.Label>VHost Lokal Terdaftar</Select.Label>
+										{#each localSites as st (st.domain)}
+											{@const bound = exposureByLocalDomain[st.domain.toLowerCase()]}
+											<Select.Item value={st.domain} label={st.domain} class="font-mono text-xs">
+												<span class="truncate">{st.domain}</span>
+												{#if bound && bound.public_host.toLowerCase() === editTargetExposure.public_host.toLowerCase()}
+													<Badge variant="secondary" class="font-sans text-[10px]">Saat ini</Badge>
+												{:else if bound}
+													<Badge variant="outline" class="border-warning/40 bg-warning/10 font-sans text-[10px] text-warning">Warn</Badge>
+												{/if}
+											</Select.Item>
+										{/each}
+										<Select.Separator />
+										<Select.Item value="__custom__">
+											Ketik domain lokal kustom...
+										</Select.Item>
+									</Select.Group>
+								</Select.Content>
+							</Select.Root>
+						{:else}
+							<InputGroup.Root>
+								<InputGroup.Input
+									id="cf-edit-local-domain"
+									placeholder="myapp.test"
+									class="font-mono text-xs"
+									bind:value={editLocalDomain}
+									required
+								/>
+								{#if localSites.length > 0}
+									<InputGroup.Addon align="inline-end">
+										<InputGroup.Button
+											size="xs"
+											onclick={() => {
+												editLocalDomainMode = 'select';
+												editLocalDomain = localSites.some(
+													(st) => st.domain.toLowerCase() === editLocalDomain.trim().toLowerCase()
+												)
+													? editLocalDomain.trim()
+													: '';
+											}}
+										>
+											Pilih List
+										</InputGroup.Button>
+									</InputGroup.Addon>
+								{/if}
+							</InputGroup.Root>
+						{/if}
+					</Field.Field>
+
+					<div class="flex flex-col gap-2">
+						<button
+							type="button"
+							class="w-fit text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+							onclick={() => (editShowAdvancedService = !editShowAdvancedService)}
+						>
+							{editShowAdvancedService
+								? 'Sembunyikan target service kustom'
+								: 'Atur target service / port lokal kustom (opsional)'}
+						</button>
+
+						{#if editShowAdvancedService}
+							<Field.Field>
+								<Field.FieldLabel for="cf-edit-service-url">Target Service URL (Opsional)</Field.FieldLabel>
+								<Input
+									id="cf-edit-service-url"
+									class="font-mono text-xs"
+									placeholder="http://127.0.0.1:80 (kosongkan untuk auto Nginx HTTP/HTTPS)"
+									bind:value={editServiceUrl}
+								/>
+								<Field.FieldDescription class="text-xs">
+									Kosongkan agar otomatis mengikuti Nginx vhost domain lokal baru (:80 atau :443).
+								</Field.FieldDescription>
+							</Field.Field>
+						{/if}
+					</div>
+				</Field.FieldGroup>
+
+				<Dialog.Footer>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onclick={() => (editExposureModalOpen = false)}
+						disabled={savingExposureEdit}
+					>
+						Batal
+					</Button>
+					<Button
+						type="submit"
+						size="sm"
+						disabled={savingExposureEdit || !editNormalizedLocal || editMissingApiToken}
+					>
+						{#if savingExposureEdit}
+							<Spinner data-icon="inline-start" />
+							Menyimpan...
+						{:else}
+							Simpan Perubahan
+						{/if}
+					</Button>
+				</Dialog.Footer>
+			</form>
+		{/if}
 	</Dialog.Content>
 </Dialog.Root>

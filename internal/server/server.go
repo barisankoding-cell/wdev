@@ -137,6 +137,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/switchers/", s.handleSwitchersAction)
 	s.mux.HandleFunc("/api/cloudflare/status", s.handleCFStatus)
 	s.mux.HandleFunc("/api/cloudflare/zones", s.handleCFProfileZones)
+	s.mux.HandleFunc("/api/cloudflare/check-host", s.handleCFCheckHost)
 	s.mux.HandleFunc("/api/cloudflare/expose", s.handleCFExpose)
 	s.mux.HandleFunc("/api/cloudflare/unexpose", s.handleCFUnexpose)
 	s.mux.HandleFunc("/api/cloudflare/profiles/token", s.handleCFRegisterToken)
@@ -1976,6 +1977,22 @@ func (s *Server) handleCFProfileZones(w http.ResponseWriter, r *http.Request) {
 		"profile": profile,
 		"zones":   zones,
 	})
+}
+
+func (s *Server) handleCFCheckHost(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		return
+	}
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	host := strings.TrimSpace(r.URL.Query().Get("host"))
+	localDomain := strings.TrimSpace(r.URL.Query().Get("local_domain"))
+	res, err := s.cfMgr.CheckPublicHost(profile, host, localDomain)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleCFSetProfileAPIToken(w http.ResponseWriter, r *http.Request) {

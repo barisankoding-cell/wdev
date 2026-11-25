@@ -591,3 +591,291 @@ func TestCertExposePrefersAPIDNSOverCLIRouteDNS(t *testing.T) {
 		t.Fatalf("expected clean DNSWarning, createdDNS=true, cliRouteDNSCalled=false; got warning=%q created=%v cliCalled=%v", resOK.DNSWarning, createdDNS, cliRouteDNSCalled)
 	}
 }
+
+func TestCheckPublicHostAndOverwriteProtection(t *testing.T) {
+	mgr, _ := newTestCFManager(t)
+	mgr.runCmdFn = func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "create") {
+			tunnelID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+			if strings.Contains(joined, "beta") {
+				tunnelID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+			}
+			for i, a := range args {
+				if a == "--cred-file" && i+1 < len(args) {
+					cred := fmt.Sprintf(`{"AccountTag":"acct-chk","TunnelSecret":"c2Vj","TunnelID":%q}`, tunnelID)
+					_ = os.WriteFile(args[i+1], []byte(cred), 0600)
+				}
+			}
+		}
+		return []byte("OK"), nil
+	}
+
+	dnsRecords := map[string][]CFHostCheckRecord{
+		"taken.softcuy.uk": {
+			{ID: "rec-taken-a", Type: "A", Name: "taken.softcuy.uk", Content: "203.0.113.10", Proxied: false},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"z-softcuy","name":"softcuy.uk","status":"active","account":{"id":"acct-chk","name":"Main"}}],"result_info":{"page":1,"per_page":50,"total_pages":1,"count":1,"total_count":1}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/z-softcuy/dns_records":
+			name := strings.ToLower(r.URL.Query().Get("name"))
+			recs := dnsRecords[name]
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": recs})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/z-softcuy/dns_records":
+			var body struct {
+				Type    string `json:"type"`
+				Name    string `json:"name"`
+				Content string `json:"content"`
+				Proxied bool   `json:"proxied"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			key := strings.ToLower(body.Name)
+			dnsRecords[key] = []CFHostCheckRecord{
+				{ID: "rec-" + key, Type: body.Type, Name: key, Content: body.Content, Proxied: body.Proxied},
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"rec-created"}}`))
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/zones/z-softcuy/dns_records/"):
+			id := strings.TrimPrefix(r.URL.Path, "/zones/z-softcuy/dns_records/")
+			var body struct {
+				Type    string `json:"type"`
+				Name    string `json:"name"`
+				Content string `json:"content"`
+				Proxied bool   `json:"proxied"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			key := strings.ToLower(body.Name)
+			dnsRecords[key] = []CFHostCheckRecord{
+				{ID: id, Type: body.Type, Name: key, Content: body.Content, Proxied: body.Proxied},
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"rec-updated"}}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/zones/z-softcuy/dns_records/"):
+			id := strings.TrimPrefix(r.URL.Path, "/zones/z-softcuy/dns_records/")
+			for key, list := range dnsRecords {
+				var kept []CFHostCheckRecord
+				for _, rec := range list {
+					if rec.ID != id {
+						kept = append(kept, rec)
+					}
+				}
+				if len(kept) == 0 {
+					delete(dnsRecords, key)
+				} else {
+					dnsRecords[key] = kept
+				}
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"deleted"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	mgr.SetAPIBaseURL(srv.URL)
+
+	autoFalse := false
+	for _, pName := range []string{"alpha", "beta"} {
+		if _, err := mgr.RegisterCertProfile(CertProfileOptions{
+			Name:       pName,
+			TunnelName: "tun-" + pName,
+			CertPEM:    "-----BEGIN ARGO TUNNEL TOKEN-----\nabc\n-----END ARGO TUNNEL TOKEN-----\n",
+			APIToken:   "tok-" + pName,
+			AutoStart:  &autoFalse,
+		}); err != nil {
+			t.Fatalf("RegisterCertProfile %s: %v", pName, err)
+		}
+	}
+
+	// 1. Subdomain bersih harus available=true
+	chkClean, err := mgr.CheckPublicHost("alpha", "app1.softcuy.uk", "app1.test")
+	if err != nil {
+		t.Fatalf("CheckPublicHost clean: %v", err)
+	}
+	if !chkClean.Available || chkClean.ZoneName != "softcuy.uk" || chkClean.ConflictSource != "" {
+		t.Fatalf("expected clean host available, got: %+v", chkClean)
+	}
+
+	// 2. Expose pertama berhasil
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app1.test",
+		PublicHost:  "app1.softcuy.uk",
+		Profile:     "alpha",
+	}); err != nil {
+		t.Fatalf("initial ExposeWithOptions: %v", err)
+	}
+
+	// 3. Idempoten untuk (local_domain, public_host, profile) yang sama harus tetap diizinkan
+	chkSame, err := mgr.CheckPublicHost("alpha", "app1.softcuy.uk", "app1.test")
+	if err != nil {
+		t.Fatalf("CheckPublicHost same binding: %v", err)
+	}
+	if !chkSame.Available {
+		t.Fatalf("expected same binding to remain available, got: %+v", chkSame)
+	}
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app1.test",
+		PublicHost:  "app1.softcuy.uk",
+		Profile:     "alpha",
+	}); err != nil {
+		t.Fatalf("idempotent re-expose failed: %v", err)
+	}
+
+	// 4. Konflik domain lokal berbeda di profil sama harus ditolak
+	chkSameProf, err := mgr.CheckPublicHost("alpha", "app1.softcuy.uk", "app2.test")
+	if err != nil {
+		t.Fatalf("CheckPublicHost same profile conflict: %v", err)
+	}
+	if chkSameProf.Available || chkSameProf.ConflictSource != "exposure" {
+		t.Fatalf("expected exposure conflict on same profile, got: %+v", chkSameProf)
+	}
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app2.test",
+		PublicHost:  "app1.softcuy.uk",
+		Profile:     "alpha",
+	}); err == nil {
+		t.Fatal("expected error exposing duplicate publicHost from different local_domain")
+	}
+
+	// 5. Konflik lintas profil harus ditolak
+	chkCross, err := mgr.CheckPublicHost("beta", "app1.softcuy.uk", "app2.test")
+	if err != nil {
+		t.Fatalf("CheckPublicHost cross profile conflict: %v", err)
+	}
+	if chkCross.Available || chkCross.ConflictSource != "exposure" {
+		t.Fatalf("expected cross-profile exposure conflict, got: %+v", chkCross)
+	}
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app2.test",
+		PublicHost:  "app1.softcuy.uk",
+		Profile:     "beta",
+	}); err == nil {
+		t.Fatal("expected error exposing duplicate publicHost across profiles without Overwrite")
+	}
+
+	// 6. Konflik DNS record (A record sudah ada di Cloudflare) harus terdeteksi dan ditolak tanpa Overwrite
+	chkDNS, err := mgr.CheckPublicHost("alpha", "taken.softcuy.uk", "app3.test")
+	if err != nil {
+		t.Fatalf("CheckPublicHost dns conflict: %v", err)
+	}
+	if chkDNS.Available || chkDNS.ConflictSource != "dns" || len(chkDNS.DNSRecords) != 1 {
+		t.Fatalf("expected dns conflict with 1 record, got: %+v", chkDNS)
+	}
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app3.test",
+		PublicHost:  "taken.softcuy.uk",
+		Profile:     "alpha",
+	}); err == nil {
+		t.Fatal("expected error exposing over existing DNS A record without Overwrite")
+	}
+
+	// 7. Dengan Overwrite:true, A record lama ditimpa menjadi CNAME tunnel
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app3.test",
+		PublicHost:  "taken.softcuy.uk",
+		Profile:     "alpha",
+		Overwrite:   true,
+	}); err != nil {
+		t.Fatalf("ExposeWithOptions Overwrite over DNS A record failed: %v", err)
+	}
+	chkAfterDNS, err := mgr.CheckPublicHost("alpha", "taken.softcuy.uk", "app3.test")
+	if err != nil {
+		t.Fatalf("CheckPublicHost after DNS overwrite: %v", err)
+	}
+	if !chkAfterDNS.Available {
+		t.Fatalf("expected taken.softcuy.uk available for same binding after overwrite, got: %+v", chkAfterDNS)
+	}
+
+	// 8. Dengan Overwrite:true, memindahkan subdomain dari profil alpha ke beta membersihkan eksposur lama
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app2.test",
+		PublicHost:  "app1.softcuy.uk",
+		Profile:     "beta",
+		Overwrite:   true,
+	}); err != nil {
+		t.Fatalf("ExposeWithOptions Overwrite cross-profile failed: %v", err)
+	}
+	chkMoved, err := mgr.CheckPublicHost("beta", "app1.softcuy.uk", "app2.test")
+	if err != nil {
+		t.Fatalf("CheckPublicHost after cross-profile overwrite: %v", err)
+	}
+	if !chkMoved.Available {
+		t.Fatalf("expected app1.softcuy.uk bound cleanly to beta/app2.test after overwrite, got: %+v", chkMoved)
+	}
+	for _, exp := range mgr.collectExposures() {
+		if exp.PublicHost == "app1.softcuy.uk" && (exp.Profile != "beta" || exp.LocalDomain != "app2.test") {
+			t.Fatalf("expected stale exposure removed after overwrite, still found: %+v", exp)
+		}
+	}
+
+	// 9. Edit domain lokal pada publicHost & profil yang sama (swap app2.test -> app4.test pada beta)
+	resEdit, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app4.test",
+		PublicHost:  "app1.softcuy.uk",
+		Profile:     "beta",
+		ServiceURL:  "http://127.0.0.1:3000",
+		Overwrite:   true,
+	})
+	if err != nil {
+		t.Fatalf("ExposeWithOptions swap local_domain same profile failed: %v", err)
+	}
+	if resEdit.ServiceURL != "http://127.0.0.1:3000" {
+		t.Fatalf("expected updated ServiceURL, got %q", resEdit.ServiceURL)
+	}
+	for _, exp := range mgr.collectExposures() {
+		if exp.LocalDomain == "app2.test" {
+			t.Fatalf("expected old local_domain app2.test removed after swap, still found: %+v", exp)
+		}
+	}
+	betaRaw, err := os.ReadFile(mgr.routeConfigPath("beta"))
+	if err != nil {
+		t.Fatalf("read beta yaml: %v", err)
+	}
+	var betaCfg CloudflaredConfig
+	if err := yaml.Unmarshal(betaRaw, &betaCfg); err != nil {
+		t.Fatalf("unmarshal beta yaml: %v", err)
+	}
+	app1Rules := 0
+	for _, r := range betaCfg.Ingress {
+		if r.Hostname == "app1.softcuy.uk" {
+			app1Rules++
+			if r.OriginRequest == nil || r.OriginRequest.HTTPHostHeader != "app4.test" || r.Service != "http://127.0.0.1:3000" {
+				t.Fatalf("expected updated HTTPHostHeader app4.test and Service :3000, got %+v", r)
+			}
+		}
+	}
+	if app1Rules != 1 {
+		t.Fatalf("expected exactly 1 ingress rule for app1.softcuy.uk in beta.yml, got %d", app1Rules)
+	}
+
+	// 10. Memindahkan local_domain yang sebelumnya terikat (app4.test -> app1.softcuy.uk) ke publicHost lain membersihkan rute lamanya
+	if _, err := mgr.ExposeWithOptions(ExposeOptions{
+		LocalDomain: "app4.test",
+		PublicHost:  "taken.softcuy.uk",
+		Profile:     "alpha",
+		Overwrite:   true,
+	}); err != nil {
+		t.Fatalf("ExposeWithOptions move bound local_domain failed: %v", err)
+	}
+	betaAfterRaw, err := os.ReadFile(mgr.routeConfigPath("beta"))
+	if err != nil {
+		t.Fatalf("read beta yaml after move: %v", err)
+	}
+	var betaAfterCfg CloudflaredConfig
+	if err := yaml.Unmarshal(betaAfterRaw, &betaAfterCfg); err != nil {
+		t.Fatalf("unmarshal beta yaml after move: %v", err)
+	}
+	for _, r := range betaAfterCfg.Ingress {
+		if r.Hostname == "app1.softcuy.uk" {
+			t.Fatalf("expected orphaned rule app1.softcuy.uk removed from beta.yml when app4.test moved, found: %+v", r)
+		}
+	}
+}

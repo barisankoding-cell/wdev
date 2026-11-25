@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // CloudflareZone merepresentasikan zona domain yang diambil dari Cloudflare REST API (/zones).
@@ -24,6 +26,29 @@ type CloudflareZone struct {
 	AccountID   string `json:"account_id,omitempty"`
 	AccountName string `json:"account_name,omitempty"`
 	Plan        string `json:"plan,omitempty"`
+}
+
+// CFHostCheckRecord merangkum satu record DNS Cloudflare yang terdeteksi pada hostname publik.
+type CFHostCheckRecord struct {
+	ID      string `json:"id,omitempty"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Proxied bool   `json:"proxied,omitempty"`
+}
+
+// CFHostCheckResult merangkum hasil validasi ketersediaan subdomain/domain publik di wdev dan Cloudflare.
+type CFHostCheckResult struct {
+	Profile          string              `json:"profile"`
+	PublicHost       string              `json:"public_host"`
+	LocalDomain      string              `json:"local_domain,omitempty"`
+	Available        bool                `json:"available"`
+	ConflictSource   string              `json:"conflict_source,omitempty"` // "" | "exposure" | "local_ingress" | "remote_ingress" | "dns"
+	ExistingExposure *Exposure           `json:"existing_exposure,omitempty"`
+	ZoneName         string              `json:"zone_name,omitempty"`
+	DNSRecords       []CFHostCheckRecord `json:"dns_records,omitempty"`
+	Message          string              `json:"message,omitempty"`
+	CheckError       string              `json:"check_error,omitempty"`
 }
 
 type cfAPIError struct {
@@ -572,4 +597,186 @@ func (m *Manager) deleteRemoteTunnelViaAPI(ctx context.Context, apiToken, accoun
 		}
 	}
 	return err
+}
+
+func (m *Manager) listDNSRecordsForHost(ctx context.Context, apiToken, publicHost string) (*CloudflareZone, []CFHostCheckRecord, error) {
+	zone, err := m.findZoneForHost(ctx, apiToken, publicHost)
+	if err != nil {
+		return nil, nil, err
+	}
+	endpoint := fmt.Sprintf("/zones/%s/dns_records?name=%s", url.PathEscape(zone.ID), url.QueryEscape(publicHost))
+	var existing []cfDNSRecordRaw
+	if err := m.doCFAPI(ctx, apiToken, http.MethodGet, endpoint, nil, &existing, nil); err != nil {
+		return zone, nil, err
+	}
+	var out []CFHostCheckRecord
+	for _, rec := range existing {
+		if !strings.EqualFold(rec.Name, publicHost) {
+			continue
+		}
+		out = append(out, CFHostCheckRecord{
+			ID:      rec.ID,
+			Type:    strings.ToUpper(strings.TrimSpace(rec.Type)),
+			Name:    rec.Name,
+			Content: rec.Content,
+			Proxied: rec.Proxied,
+		})
+	}
+	return zone, out, nil
+}
+
+func (m *Manager) getRemoteIngressRuleByHost(ctx context.Context, apiToken, accountID, tunnelID, publicHost string) (bool, string, error) {
+	endpoint := fmt.Sprintf("/accounts/%s/cfd_tunnel/%s/configurations", url.PathEscape(accountID), url.PathEscape(tunnelID))
+	var current cfRemoteConfigEnvelope
+	if err := m.doCFAPI(ctx, apiToken, http.MethodGet, endpoint, nil, &current, nil); err != nil {
+		return false, "", err
+	}
+	if current.Config == nil {
+		return false, "", nil
+	}
+	for _, rule := range extractRemoteIngressSlice(current.Config) {
+		if isCatchAllRemoteRule(rule) {
+			continue
+		}
+		h, _ := rule["hostname"].(string)
+		p, _ := rule["path"].(string)
+		if strings.EqualFold(h, publicHost) && strings.TrimSpace(p) == "" {
+			return true, remoteRuleHostHeader(rule), nil
+		}
+	}
+	return false, "", nil
+}
+
+// CheckPublicHost memeriksa apakah domain/subdomain publik bentrok dengan eksposur wdev, ingress tunnel, atau record DNS di Cloudflare.
+func (m *Manager) CheckPublicHost(profile, publicHost, localDomain string) (*CFHostCheckResult, error) {
+	prof := normalizeCFProfile(profile)
+	if prof == "" {
+		prof = "default"
+	}
+	if err := validateCFProfile(prof); err != nil {
+		return nil, err
+	}
+	host := strings.ToLower(strings.TrimSpace(publicHost))
+	if err := validateCFHost(host, "public_host"); err != nil {
+		return nil, err
+	}
+	localDom := strings.ToLower(strings.TrimSpace(localDomain))
+	if localDom != "" {
+		if err := validateCFHost(localDom, "local_domain"); err != nil {
+			return nil, err
+		}
+	}
+
+	profilesMap := m.collectProfileMap()
+	profInfo, profExists := profilesMap[prof]
+	if !profExists && !fileExists(m.legacyConfigPath) {
+		return nil, fmt.Errorf("profil Cloudflare %q tidak ditemukan", prof)
+	}
+
+	res := &CFHostCheckResult{
+		Profile:     prof,
+		PublicHost:  host,
+		LocalDomain: localDom,
+		Available:   true,
+	}
+
+	// 1. Cek konflik terhadap eksposur wdev (termasuk lintas profil)
+	for _, exp := range m.collectExposures() {
+		if !strings.EqualFold(exp.PublicHost, host) {
+			continue
+		}
+		sameBinding := localDom != "" && strings.EqualFold(exp.LocalDomain, localDom) && normalizeCFProfile(exp.Profile) == prof
+		if !sameBinding {
+			cp := exp
+			res.Available = false
+			res.ConflictSource = "exposure"
+			res.ExistingExposure = &cp
+			res.Message = fmt.Sprintf("Subdomain %q sudah digunakan oleh eksposur %s (profil %s).", host, exp.LocalDomain, exp.Profile)
+			return res, nil
+		}
+	}
+
+	// 2. Cek konflik pada ingress YAML lokal (mode cert) atau remote tunnel config (mode token + API)
+	apiToken := m.readProfileAPIToken(prof)
+	if profExists && profInfo.AuthMode != "token" {
+		cfgPath := m.routeConfigPath(prof)
+		if data, err := os.ReadFile(cfgPath); err == nil {
+			var cfg CloudflaredConfig
+			if err := yaml.Unmarshal(data, &cfg); err == nil {
+				for _, r := range cfg.Ingress {
+					if !strings.EqualFold(r.Hostname, host) {
+						continue
+					}
+					hdr := ""
+					if r.OriginRequest != nil {
+						hdr = strings.TrimSpace(r.OriginRequest.HTTPHostHeader)
+					}
+					if localDom == "" || (hdr != "" && !strings.EqualFold(hdr, localDom)) {
+						res.Available = false
+						res.ConflictSource = "local_ingress"
+						if hdr != "" {
+							res.Message = fmt.Sprintf("Subdomain %q sudah ada di konfigurasi lokal profil %s (target Host: %s).", host, prof, hdr)
+						} else {
+							res.Message = fmt.Sprintf("Subdomain %q sudah ada di konfigurasi lokal profil %s.", host, prof)
+						}
+						return res, nil
+					}
+				}
+			}
+		}
+	} else if profExists && profInfo.AuthMode == "token" && apiToken != "" && profInfo.AccountTag != "" && profInfo.TunnelID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		found, hdr, remErr := m.getRemoteIngressRuleByHost(ctx, apiToken, profInfo.AccountTag, profInfo.TunnelID, host)
+		cancel()
+		if remErr != nil {
+			res.CheckError = remErr.Error()
+		} else if found && (localDom == "" || (hdr != "" && !strings.EqualFold(hdr, localDom))) {
+			res.Available = false
+			res.ConflictSource = "remote_ingress"
+			if hdr != "" {
+				res.Message = fmt.Sprintf("Subdomain %q sudah terdaftar pada tunnel Cloudflare %s (target Host: %s).", host, prof, hdr)
+			} else {
+				res.Message = fmt.Sprintf("Subdomain %q sudah terdaftar pada tunnel Cloudflare %s.", host, prof)
+			}
+			return res, nil
+		}
+	}
+
+	// 3. Cek live record DNS di Cloudflare jika API Token tersedia
+	if apiToken != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		zone, recs, dnsErr := m.listDNSRecordsForHost(ctx, apiToken, host)
+		cancel()
+		if zone != nil {
+			res.ZoneName = zone.Name
+		}
+		if dnsErr != nil {
+			res.CheckError = dnsErr.Error()
+			return res, nil
+		}
+		res.DNSRecords = recs
+		if len(recs) > 0 {
+			expectedTarget := ""
+			if profInfo.TunnelID != "" {
+				expectedTarget = profInfo.TunnelID + ".cfargotunnel.com"
+			}
+			isSameTunnelCNAME := len(recs) == 1 &&
+				recs[0].Type == "CNAME" &&
+				expectedTarget != "" &&
+				strings.EqualFold(recs[0].Content, expectedTarget)
+			if isSameTunnelCNAME {
+				res.Message = fmt.Sprintf("Subdomain %q sudah terhubung ke tunnel ini.", host)
+				return res, nil
+			}
+			res.Available = false
+			res.ConflictSource = "dns"
+			res.Message = fmt.Sprintf("Subdomain %q sudah memiliki record DNS di Cloudflare (%s → %s).", host, recs[0].Type, recs[0].Content)
+			return res, nil
+		}
+		res.Message = fmt.Sprintf("Subdomain %q tersedia (belum ada record DNS di Cloudflare).", host)
+		return res, nil
+	}
+
+	res.Message = fmt.Sprintf("Subdomain %q belum tercatat pada eksposur lokal.", host)
+	return res, nil
 }

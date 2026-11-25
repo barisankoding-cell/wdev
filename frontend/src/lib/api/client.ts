@@ -5,6 +5,7 @@ import type {
 	BindPanelDomainResponse,
 	CFDeleteProfileResult,
 	CFExposeResult,
+	CFHostCheckResult,
 	CFLoginSession,
 	CFProfileInfo,
 	CFUnexposeResult,
@@ -435,7 +436,8 @@ export const api = {
 		public_host: string,
 		profile = '',
 		service_url = '',
-		no_tls_verify?: boolean
+		no_tls_verify?: boolean,
+		overwrite = false
 	) =>
 		apiFetch<CFExposeResult>('/api/cloudflare/expose', {
 			method: 'POST',
@@ -444,9 +446,15 @@ export const api = {
 				public_host,
 				profile,
 				...(service_url ? { service_url } : {}),
-				...(no_tls_verify !== undefined ? { no_tls_verify } : {})
+				...(no_tls_verify !== undefined ? { no_tls_verify } : {}),
+				...(overwrite ? { overwrite: true } : {})
 			})
 		}),
+	checkCFHost: (profile: string, host: string, local_domain = '') => {
+		const params = new URLSearchParams({ profile, host });
+		if (local_domain) params.set('local_domain', local_domain);
+		return apiFetch<CFHostCheckResult>(`/api/cloudflare/check-host?${params.toString()}`);
+	},
 	unexposeCF: (local_domain: string, profile = '') =>
 		apiFetch<CFUnexposeResult>('/api/cloudflare/unexpose', {
 			method: 'POST',

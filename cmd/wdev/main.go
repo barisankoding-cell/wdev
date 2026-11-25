@@ -102,7 +102,7 @@ CLOUDFLARE TUNNEL (MULTI-PROFILE):
   wdev cf start|stop|restart <profil>
                             Kontrol layanan systemd cloudflared@<profil>
   wdev cf logs <profil>     Lihat log layanan cloudflared@<profil>
-  wdev cf expose <local> <public> [--profile <nama>] [--service <url>] [--no-tls-verify]
+  wdev cf expose <local> <public> [--profile <nama>] [--service <url>] [--no-tls-verify] [--overwrite]
                             Ekspos vhost lokal ke domain publik Cloudflare
   wdev cf unexpose <local> [--profile <nama>]
                             Hapus eksposur domain (& CNAME DNS jika API Token tersedia)
@@ -1019,7 +1019,7 @@ func main() {
 
 		case "expose":
 			if len(args) < 4 {
-				fmt.Println("Penggunaan: wdev cf expose <local_domain> <public_host> [--profile <nama>] [--service <url>] [--no-tls-verify]")
+				fmt.Println("Penggunaan: wdev cf expose <local_domain> <public_host> [--profile <nama>] [--service <url>] [--no-tls-verify] [--overwrite]")
 				os.Exit(1)
 			}
 			opts := cloudflare.ExposeOptions{
@@ -1041,6 +1041,8 @@ func main() {
 				case "--no-tls-verify":
 					v := true
 					opts.NoTLSVerify = &v
+				case "--overwrite", "-f":
+					opts.Overwrite = true
 				}
 			}
 			res, err := cfMgr.ExposeWithOptions(opts)
