@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -270,20 +269,14 @@ func (s *Server) wrapCSRF(next http.Handler) http.Handler {
 						return
 					}
 					origin := strings.TrimSpace(r.Header.Get("Origin"))
-					if origin != "" {
-						u, err := url.Parse(origin)
-						if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) || (u.Scheme != "http" && u.Scheme != "https") {
-							writeError(w, http.StatusForbidden, i18n.Pick(lang, "Origin not allowed (CSRF protection)", "Origin tidak diizinkan (CSRF protection)"))
-							return
-						}
+					if origin != "" && !s.isOriginAllowed(r, origin) {
+						writeError(w, http.StatusForbidden, i18n.Pick(lang, "Origin not allowed (CSRF protection)", "Origin tidak diizinkan (CSRF protection)"))
+						return
 					}
 					referer := strings.TrimSpace(r.Header.Get("Referer"))
-					if origin == "" && referer != "" {
-						u, err := url.Parse(referer)
-						if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) || (u.Scheme != "http" && u.Scheme != "https") {
-							writeError(w, http.StatusForbidden, i18n.Pick(lang, "Referer not allowed (CSRF protection)", "Referer tidak diizinkan (CSRF protection)"))
-							return
-						}
+					if origin == "" && referer != "" && !s.isOriginAllowed(r, referer) {
+						writeError(w, http.StatusForbidden, i18n.Pick(lang, "Referer not allowed (CSRF protection)", "Referer tidak diizinkan (CSRF protection)"))
+						return
 					}
 					if hasSessionCookie && origin == "" && referer == "" {
 						fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))

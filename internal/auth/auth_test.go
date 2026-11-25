@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -274,5 +275,77 @@ func TestIsTrustedProxyRequest(t *testing.T) {
 	}
 	if IsTrustedProxyRequest(nil) {
 		t.Fatal("IsTrustedProxyRequest(nil) must return false")
+	}
+}
+
+func TestIsHTTPS(t *testing.T) {
+	if IsHTTPS(nil) {
+		t.Fatal("IsHTTPS(nil) must return false")
+	}
+
+	reqTLS := httptest.NewRequest("GET", "/", nil)
+	reqTLS.TLS = &tls.ConnectionState{}
+	reqTLS.RemoteAddr = "198.51.100.10:1234"
+	if !IsHTTPS(reqTLS) {
+		t.Fatal("expected direct TLS request to be detected as HTTPS")
+	}
+
+	for _, tc := range []struct {
+		name       string
+		remoteAddr string
+		headers    map[string]string
+		want       bool
+	}{
+		{
+			name:       "trusted proxy X-Forwarded-Proto https",
+			remoteAddr: "127.0.0.1:45678",
+			headers:    map[string]string{"X-Forwarded-Proto": "https, http"},
+			want:       true,
+		},
+		{
+			name:       "trusted proxy X-Forwarded-Proto http overrides Cf-Visitor",
+			remoteAddr: "127.0.0.1:45678",
+			headers:    map[string]string{"X-Forwarded-Proto": "http", "Cf-Visitor": `{"scheme":"https"}`},
+			want:       false,
+		},
+		{
+			name:       "trusted proxy Cf-Visitor https",
+			remoteAddr: "127.0.0.1:45678",
+			headers:    map[string]string{"Cf-Visitor": `{"scheme":"https"}`},
+			want:       true,
+		},
+		{
+			name:       "trusted proxy Cf-Visitor http",
+			remoteAddr: "127.0.0.1:45678",
+			headers:    map[string]string{"Cf-Visitor": `{"scheme":"http"}`},
+			want:       false,
+		},
+		{
+			name:       "trusted proxy Forwarded proto https",
+			remoteAddr: "[::1]:45678",
+			headers:    map[string]string{"Forwarded": `for=203.0.113.9;proto="https"`},
+			want:       true,
+		},
+		{
+			name:       "untrusted peer spoofing proxy headers",
+			remoteAddr: "198.51.100.10:45678",
+			headers: map[string]string{
+				"X-Forwarded-Proto": "https",
+				"Cf-Visitor":        `{"scheme":"https"}`,
+				"Forwarded":         "proto=https",
+			},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			req.RemoteAddr = tc.remoteAddr
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			if got := IsHTTPS(req); got != tc.want {
+				t.Fatalf("IsHTTPS() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

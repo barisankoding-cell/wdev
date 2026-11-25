@@ -2674,3 +2674,303 @@ func TestHTTPAPIInternationalization(t *testing.T) {
 	authHandler.ServeHTTP(recCSRFID, reqCSRFID)
 	assertContains("csrf id", recCSRFID, http.StatusForbidden, "Origin tidak diizinkan (CSRF protection)")
 }
+
+func TestCSRFCloudflaredAndTrustedProxyOrigins(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "wdev.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: dir}
+	pdnsMgr := pdns.New(cfg, db)
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	if err := authMgr.SetAuthEnabled(true); err != nil {
+		t.Fatalf("SetAuthEnabled: %v", err)
+	}
+	if err := authMgr.SetPassword("StrongPass#2026"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if err := authMgr.SetSecurityEntrance(""); err != nil {
+		t.Fatalf("SetSecurityEntrance: %v", err)
+	}
+	if err := authMgr.SetBlockDirectIP(false); err != nil {
+		t.Fatalf("SetBlockDirectIP: %v", err)
+	}
+
+	srv := New(cfg, db, runner.New(db), inst, nil, nil, nil, pdnsMgr, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
+
+	loginBody := `{"username":"admin","password":"StrongPass#2026"}`
+
+	// 1. Login via cloudflared (Host rewritten to localhost:3200 without X-Forwarded-Host,
+	//    verified by loopback trusted proxy + Cloudflare headers + Sec-Fetch-Site: same-origin).
+	reqCF := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(loginBody))
+	reqCF.RemoteAddr = "127.0.0.1:45678"
+	reqCF.Host = "localhost:3200"
+	reqCF.Header.Set("Origin", "https://panel.rtzedu.uk")
+	reqCF.Header.Set("Sec-Fetch-Site", "same-origin")
+	reqCF.Header.Set("Cf-Ray", "901234567890abcd-SIN")
+	reqCF.Header.Set("Cf-Visitor", `{"scheme":"https"}`)
+	recCF := httptest.NewRecorder()
+	handler.ServeHTTP(recCF, reqCF)
+	if recCF.Code != http.StatusOK {
+		t.Fatalf("cloudflared login status = %d, want 200 (body=%s)", recCF.Code, recCF.Body.String())
+	}
+
+	var sessionCookie *http.Cookie
+	for _, c := range recCF.Result().Cookies() {
+		if c.Name == auth.CookieSessionName {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatalf("expected session cookie after cloudflared login")
+	}
+	if !sessionCookie.Secure {
+		t.Fatalf("expected Secure session cookie via Cloudflare Cf-Visitor https, got %+v", sessionCookie)
+	}
+
+	// 2. Authenticated mutating POST via Referer (when Origin is omitted) behind cloudflared.
+	reqRef := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"invalid-test"}`))
+	reqRef.RemoteAddr = "127.0.0.1:45678"
+	reqRef.Host = "localhost:3200"
+	reqRef.Header.Set("Referer", "https://panel.rtzedu.uk/settings")
+	reqRef.Header.Set("Sec-Fetch-Site", "same-origin")
+	reqRef.Header.Set("Cf-Ray", "901234567890abcd-SIN")
+	reqRef.AddCookie(sessionCookie)
+	recRef := httptest.NewRecorder()
+	handler.ServeHTTP(recRef, reqRef)
+	if recRef.Code != http.StatusBadRequest {
+		t.Fatalf("expected Referer behind cloudflared to pass CSRF (and fail mode validation with 400), got %d (%s)", recRef.Code, recRef.Body.String())
+	}
+
+	// 3. Trusted reverse proxy with X-Forwarded-Host (even without Sec-Fetch-Site) and RFC 7239 Forwarded.
+	for _, tc := range []struct {
+		name    string
+		host    string
+		headers map[string]string
+	}{
+		{
+			name: "X-Forwarded-Host match",
+			host: "127.0.0.1:3200",
+			headers: map[string]string{
+				"Origin":            "https://panel.rtzedu.uk",
+				"X-Forwarded-Host":  "panel.rtzedu.uk, internal.proxy",
+				"X-Forwarded-Proto": "https",
+			},
+		},
+		{
+			name: "RFC 7239 Forwarded host match",
+			host: "127.0.0.1:3200",
+			headers: map[string]string{
+				"Origin":    "https://panel.rtzedu.uk",
+				"Forwarded": `for=203.0.113.9;proto=https;host="panel.rtzedu.uk"`,
+			},
+		},
+		{
+			name: "Default HTTPS port normalized",
+			host: "panel.rtzedu.uk:443",
+			headers: map[string]string{
+				"Origin":            "https://panel.rtzedu.uk",
+				"X-Forwarded-Proto": "https",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(loginBody))
+			req.RemoteAddr = "127.0.0.1:45678"
+			req.Host = tc.host
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s: status = %d, want 200 (body=%s)", tc.name, rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// 4. Configured PanelDomain allows matching public Origin behind trusted proxy even without X-Forwarded-Host / Sec-Fetch-Site.
+	if err := authMgr.BindPanelDomain("panel.rtzedu.uk", true, false); err != nil {
+		t.Fatalf("BindPanelDomain: %v", err)
+	}
+	reqBound := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(loginBody))
+	reqBound.RemoteAddr = "[::1]:45678"
+	reqBound.Host = "localhost:3200"
+	reqBound.Header.Set("Origin", "https://panel.rtzedu.uk")
+	reqBound.Header.Set("X-Forwarded-Proto", "https")
+	recBound := httptest.NewRecorder()
+	handler.ServeHTTP(recBound, reqBound)
+	if recBound.Code != http.StatusOK {
+		t.Fatalf("bound panel domain login status = %d, want 200 (body=%s)", recBound.Code, recBound.Body.String())
+	}
+	_ = authMgr.UnbindPanelDomain()
+
+	// 5. Security checks: CSRF attacks MUST still be rejected with 403 Forbidden.
+	for _, tc := range []struct {
+		name       string
+		remoteAddr string
+		host       string
+		headers    map[string]string
+	}{
+		{
+			name:       "cross-site origin via cloudflared loopback",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "localhost:3200",
+			headers: map[string]string{
+				"Origin":         "https://evil.example.net",
+				"Sec-Fetch-Site": "cross-site",
+				"Cf-Ray":         "901234567890abcd-SIN",
+			},
+		},
+		{
+			name:       "same-site subdomain attack via cloudflared loopback",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "localhost:3200",
+			headers: map[string]string{
+				"Origin":         "https://evil.rtzedu.uk",
+				"Sec-Fetch-Site": "same-site",
+				"Cf-Ray":         "901234567890abcd-SIN",
+			},
+		},
+		{
+			name:       "mismatched Origin when X-Forwarded-Host explicitly names another host",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "localhost:3200",
+			headers: map[string]string{
+				"Origin":           "https://evil.example.net",
+				"X-Forwarded-Host": "panel.rtzedu.uk",
+				"Sec-Fetch-Site":   "same-origin",
+				"Cf-Ray":           "901234567890abcd-SIN",
+			},
+		},
+		{
+			name:       "Origin null via cloudflared loopback",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "localhost:3200",
+			headers: map[string]string{
+				"Origin":         "null",
+				"Sec-Fetch-Site": "same-origin",
+				"Cf-Ray":         "901234567890abcd-SIN",
+			},
+		},
+		{
+			name:       "Origin userinfo spoofing",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "panel.rtzedu.uk",
+			headers: map[string]string{
+				"Origin":         "https://evil.example.net@panel.rtzedu.uk",
+				"Sec-Fetch-Site": "same-origin",
+			},
+		},
+		{
+			name:       "untrusted remote peer spoofing proxy and Sec-Fetch-Site headers",
+			remoteAddr: "198.51.100.10:44444",
+			host:       "127.0.0.1:3200",
+			headers: map[string]string{
+				"Origin":           "https://spoofed.example.net",
+				"X-Forwarded-Host": "spoofed.example.net",
+				"Sec-Fetch-Site":   "same-origin",
+				"Cf-Ray":           "fake",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"vps"}`))
+			req.RemoteAddr = tc.remoteAddr
+			req.Host = tc.host
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			req.AddCookie(sessionCookie)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s: expected 403 Forbidden, got %d (%s)", tc.name, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestWSOriginBehindCloudflared(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "wdev.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: dir}
+	authMgr := auth.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), installer.New(cfg, db), nil, nil, nil, pdns.New(cfg, db), nil, authMgr)
+
+	for _, tc := range []struct {
+		name       string
+		remoteAddr string
+		host       string
+		headers    map[string]string
+		want       bool
+	}{
+		{
+			name:       "cloudflared same-origin WebSocket",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "localhost:3200",
+			headers: map[string]string{
+				"Origin":         "https://panel.rtzedu.uk",
+				"Sec-Fetch-Site": "same-origin",
+				"Cf-Ray":         "901234567890abcd-SIN",
+			},
+			want: true,
+		},
+		{
+			name:       "trusted proxy X-Forwarded-Host WebSocket",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "127.0.0.1:3200",
+			headers: map[string]string{
+				"Origin":           "https://panel.rtzedu.uk",
+				"X-Forwarded-Host": "panel.rtzedu.uk",
+			},
+			want: true,
+		},
+		{
+			name:       "evil CSWSH WebSocket via cloudflared",
+			remoteAddr: "127.0.0.1:45678",
+			host:       "localhost:3200",
+			headers: map[string]string{
+				"Origin":         "https://evil.example.net",
+				"Sec-Fetch-Site": "cross-site",
+				"Cf-Ray":         "901234567890abcd-SIN",
+			},
+			want: false,
+		},
+		{
+			name:       "untrusted peer spoofing proxy WebSocket headers",
+			remoteAddr: "198.51.100.10:12345",
+			host:       "127.0.0.1:3200",
+			headers: map[string]string{
+				"Origin":           "https://panel.rtzedu.uk",
+				"X-Forwarded-Host": "panel.rtzedu.uk",
+				"Sec-Fetch-Site":   "same-origin",
+				"Cf-Ray":           "fake",
+			},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/terminal/ws", nil)
+			req.RemoteAddr = tc.remoteAddr
+			req.Host = tc.host
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			if got := srv.checkWSOrigin(req); got != tc.want {
+				t.Fatalf("checkWSOrigin() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

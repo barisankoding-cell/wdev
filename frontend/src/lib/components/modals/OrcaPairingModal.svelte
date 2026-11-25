@@ -144,7 +144,9 @@
 	{@const mobileEndpoint = orca.mobile_endpoint || orca.endpoint || ''}
 
 	<Dialog.Root bind:open>
-		<Dialog.Content class="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-4 sm:max-w-lg sm:p-5">
+		<Dialog.Content
+			class="flex max-h-[90dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden p-4 sm:w-full sm:max-w-[min(calc(100vw-2rem),56rem)] sm:p-6"
+		>
 			<Dialog.Header class="shrink-0 border-b border-border/50 pb-3">
 				<div class="flex flex-wrap items-center gap-2 pr-7">
 					<Dialog.Title>{t('workspace.pairModal.title')}</Dialog.Title>
@@ -333,97 +335,106 @@
 								<Alert.Description>{orca.mobile_error}</Alert.Description>
 							</Alert.Root>
 						{:else if mobileUrl}
-							<!-- Kartu QR Code Barcode (latar putih wajib agar kamera HP mudah membaca meski tema gelap aktif) -->
-							<div
-								class="flex flex-col items-center gap-3 rounded-lg border bg-muted/30 p-4 text-center"
-							>
-								<button
-									type="button"
-									onclick={() => (qrEnlarged = !qrEnlarged)}
-									aria-label={qrEnlarged
-										? t('workspace.pairModal.zoomOutQr')
-										: t('workspace.pairModal.zoomInQr')}
-									class="group relative cursor-pointer rounded-xl border border-border bg-white p-3 text-zinc-950 shadow-xs transition-transform hover:scale-[1.01] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							<div class="grid gap-4 md:grid-cols-[auto_minmax(0,1fr)] md:items-stretch">
+								<!-- Kartu QR Code Barcode (latar putih wajib agar kamera HP mudah membaca meski tema gelap aktif) -->
+								<div
+									class="flex flex-col items-center justify-center gap-3 rounded-lg border bg-muted/30 p-4 text-center"
 								>
-									<QrCode
-										value={mobileUrl}
-										size={qrEnlarged ? 248 : 176}
-										label={t('workspace.pairModal.mobileQrAlt')}
-									/>
-								</button>
+									<button
+										type="button"
+										onclick={() => (qrEnlarged = !qrEnlarged)}
+										aria-label={qrEnlarged
+											? t('workspace.pairModal.zoomOutQr')
+											: t('workspace.pairModal.zoomInQr')}
+										class="group relative cursor-pointer rounded-xl border border-border bg-white p-3 text-zinc-950 shadow-xs transition-transform hover:scale-[1.01] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+									>
+										<QrCode
+											value={mobileUrl}
+											size={qrEnlarged ? 256 : 188}
+											label={t('workspace.pairModal.mobileQrAlt')}
+										/>
+									</button>
 
-								<div class="flex flex-col items-center gap-1">
-									<div class="flex flex-wrap items-center justify-center gap-1.5">
-										<span class="text-xs font-medium">{t('workspace.pairModal.mobileQrTitle')}</span>
-										{#if mobileEndpoint}
-											<Badge variant="secondary" class="font-mono text-[11px] font-normal">
-												{mobileEndpoint}
-											</Badge>
-										{/if}
-									</div>
-									<p class="max-w-xs text-xs text-muted-foreground">
-										{t('workspace.pairModal.mobileQrHint')}
-									</p>
-								</div>
-
-								<Button
-									type="button"
-									variant="ghost"
-									size="xs"
-									onclick={() => (qrEnlarged = !qrEnlarged)}
-								>
-									{#if qrEnlarged}
-										<ZoomOutIcon data-icon="inline-start" />
-										{t('workspace.pairModal.zoomOutQr')}
-									{:else}
-										<ZoomInIcon data-icon="inline-start" />
-										{t('workspace.pairModal.zoomInQr')}
-									{/if}
-								</Button>
-							</div>
-
-							<Field.Field>
-								<div class="flex items-center justify-between gap-2">
-									<Field.FieldLabel for="orca-modal-mobile-paircode">
-										{t('workspace.pairModal.mobileUriLabel')}
-									</Field.FieldLabel>
 									<Button
 										type="button"
 										variant="ghost"
 										size="xs"
-										disabled={pairSaving || pairRotating}
-										onclick={() => void applyOrcaPairing(pairAddressMode, true, 'mobile')}
+										onclick={() => (qrEnlarged = !qrEnlarged)}
 									>
-										{#if pairRotating}
-											<Spinner data-icon="inline-start" />
-											{t('workspace.pairModal.rotatingBtn')}
+										{#if qrEnlarged}
+											<ZoomOutIcon data-icon="inline-start" />
+											{t('workspace.pairModal.zoomOutQr')}
 										{:else}
-											<RotateCwIcon data-icon="inline-start" />
-											{t('workspace.pairModal.rotateBtn')}
+											<ZoomInIcon data-icon="inline-start" />
+											{t('workspace.pairModal.zoomInQr')}
 										{/if}
 									</Button>
 								</div>
-								<InputGroup.Root>
-									<InputGroup.Input
-										id="orca-modal-mobile-paircode"
-										value={mobileUrl}
-										readonly
-										class="font-mono text-xs"
-									/>
-									<InputGroup.Addon align="inline-end">
-										<InputGroup.Button
-											onclick={() =>
-												onCopy(mobileUrl, t('workspace.pairModal.mobileUriCopyLabel'))}
-										>
-											<CopyIcon data-icon="inline-start" />
-											{t('common.actions.copy')}
-										</InputGroup.Button>
-									</InputGroup.Addon>
-								</InputGroup.Root>
-								<Field.FieldDescription>
-									{t('workspace.pairModal.mobileUriDesc')}
-								</Field.FieldDescription>
-							</Field.Field>
+
+								<div class="flex min-w-0 flex-col justify-between gap-4 rounded-lg border bg-muted/20 p-4">
+									<div class="flex flex-col gap-1.5">
+										<div class="flex flex-wrap items-center gap-1.5">
+											<span class="text-sm font-medium">{t('workspace.pairModal.mobileQrTitle')}</span>
+											{#if mobileEndpoint}
+												<Badge
+													variant="secondary"
+													class="max-w-full truncate font-mono text-[11px] font-normal"
+												>
+													{mobileEndpoint}
+												</Badge>
+											{/if}
+										</div>
+										<p class="text-xs leading-relaxed text-muted-foreground">
+											{t('workspace.pairModal.mobileQrHint')}
+										</p>
+									</div>
+
+									<Separator />
+
+									<Field.Field>
+										<div class="flex items-center justify-between gap-2">
+											<Field.FieldLabel for="orca-modal-mobile-paircode">
+												{t('workspace.pairModal.mobileUriLabel')}
+											</Field.FieldLabel>
+											<Button
+												type="button"
+												variant="ghost"
+												size="xs"
+												disabled={pairSaving || pairRotating}
+												onclick={() => void applyOrcaPairing(pairAddressMode, true, 'mobile')}
+											>
+												{#if pairRotating}
+													<Spinner data-icon="inline-start" />
+													{t('workspace.pairModal.rotatingBtn')}
+												{:else}
+													<RotateCwIcon data-icon="inline-start" />
+													{t('workspace.pairModal.rotateBtn')}
+												{/if}
+											</Button>
+										</div>
+										<InputGroup.Root>
+											<InputGroup.Input
+												id="orca-modal-mobile-paircode"
+												value={mobileUrl}
+												readonly
+												class="font-mono text-xs"
+											/>
+											<InputGroup.Addon align="inline-end">
+												<InputGroup.Button
+													onclick={() =>
+														onCopy(mobileUrl, t('workspace.pairModal.mobileUriCopyLabel'))}
+												>
+													<CopyIcon data-icon="inline-start" />
+													{t('common.actions.copy')}
+												</InputGroup.Button>
+											</InputGroup.Addon>
+										</InputGroup.Root>
+										<Field.FieldDescription>
+											{t('workspace.pairModal.mobileUriDesc')}
+										</Field.FieldDescription>
+									</Field.Field>
+								</div>
+							</div>
 						{/if}
 					</Tabs.Content>
 

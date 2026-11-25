@@ -316,20 +316,7 @@ func (s *Server) handleTerminalAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, records)
 }
 
-func checkWSOrigin(r *http.Request) bool {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return true
-	}
-	u, err := url.Parse(origin)
-	return err == nil && strings.EqualFold(u.Host, r.Host)
-}
-
-var terminalUpgrader = websocket.Upgrader{
-	ReadBufferSize:  8192,
-	WriteBufferSize: 32768,
-	CheckOrigin:     checkWSOrigin,
-}
+// Origin WebSocket diverifikasi per request memakai helper s.checkWSOrigin.
 
 type wsClientControlMsg struct {
 	Type string `json:"type"`
@@ -404,7 +391,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, r)
 		return
 	}
-	if !checkWSOrigin(r) {
+	if !s.checkWSOrigin(r) {
 		writeError(w, http.StatusForbidden, "Origin WebSocket tidak diizinkan (CSWSH protection)")
 		return
 	}
@@ -425,7 +412,12 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := terminalUpgrader.Upgrade(w, r, nil)
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  8192,
+		WriteBufferSize: 32768,
+		CheckOrigin:     s.checkWSOrigin,
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}

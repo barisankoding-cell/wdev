@@ -125,8 +125,35 @@ func IsHTTPS(r *http.Request) bool {
 		return true
 	}
 	if isTrustedProxy(remoteHost(r.RemoteAddr)) {
-		firstProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
-		return strings.EqualFold(firstProto, "https")
+		if firstProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); firstProto != "" {
+			return strings.EqualFold(firstProto, "https")
+		}
+		// Fallback Cloudflare Zero Trust ketika X-Forwarded-Proto tidak diteruskan.
+		cfVisitor := strings.NewReplacer(" ", "", "\t", "").Replace(strings.ToLower(r.Header.Get("Cf-Visitor")))
+		if strings.Contains(cfVisitor, `"scheme":"https"`) {
+			return true
+		}
+		if hasForwardedProtoHTTPS(r.Header.Get("Forwarded")) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasForwardedProtoHTTPS(forwarded string) bool {
+	if forwarded == "" {
+		return false
+	}
+	firstElem := strings.Split(forwarded, ",")[0]
+	for _, param := range strings.Split(firstElem, ";") {
+		kv := strings.SplitN(strings.TrimSpace(param), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(kv[0]), "proto") {
+			val := strings.Trim(strings.TrimSpace(kv[1]), `"`)
+			return strings.EqualFold(val, "https")
+		}
 	}
 	return false
 }
