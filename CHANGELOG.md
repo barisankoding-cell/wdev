@@ -1,5 +1,15 @@
 # Changelog
 
+## [v2.9.0] - 2026-11-25
+
+### 🚀 Fitur Baru
+- feat(cloudflare): validasi host dan dukung timpa exposure (e6f74d2)
+- feat(cloudflare): kelola DNS dan tunnel lewat API Token (8b9a5b7)
+- feat(orca): dukung konfigurasi argumen CLI agent commit AI (cac8914)
+- feat(siteapp): tampilkan PID dan penggunaan RAM aplikasi terkelola (3b55e5c)
+- feat(site-app): gunakan .env proyek dan sinkronkan port VHost (a664df1)
+- feat: tambahkan pengelolaan Managed App untuk virtual host (03c580a)
+
 ## [v2.8.0] - 2026-11-24
 
 ### 🚀 Fitur Baru
