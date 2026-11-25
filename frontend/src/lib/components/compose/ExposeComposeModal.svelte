@@ -11,6 +11,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type { ComposeProject, ZoneInfo } from '#lib/types/api.js';
@@ -112,7 +113,7 @@
 		formError = '';
 		const dom = effectiveDomain;
 		if (!dom) {
-			formError = 'Nama domain wajib diisi.';
+			formError = t('compose.exposeModal.errDomainRequired');
 			return;
 		}
 
@@ -129,28 +130,28 @@
 			});
 
 			if (res.edge_error) {
-				toast.warning(`VHost ${dom} dibuat, tetapi ekspos Edge gagal: ${res.edge_error}`);
+				toast.warning(t('compose.exposeModal.edgeErrorToast', { domain: dom, error: res.edge_error }));
 			} else if (res.dns_synced && res.dns_message) {
 				toast.success(res.dns_message);
 			} else {
-				toast.success(`VHost reverse proxy ${dom} -> 127.0.0.1:${port} berhasil dibuat.`);
+				toast.success(t('compose.exposeModal.createdToast', { domain: dom, port }));
 			}
 
 			// Pada mode VPS dengan SSL aktif, terbitkan sertifikat Let's Encrypt
 			if (isVPS && sslEnabled) {
 				const sslRes = await cp.runWithSudoRetry(
-					`Penerbitan SSL Let's Encrypt untuk ${dom} memerlukan hak akses sudo.`,
+					t('compose.exposeModal.sslSudoPrompt', { domain: dom }),
 					(sudoPass) => api.enableSiteSSL(dom, '', sudoPass)
 				);
 				if (sslRes?.task_id) {
-					cp.openTerminal(`SSL Let's Encrypt: ${dom}`);
+					cp.openTerminal(t('compose.exposeModal.sslTerminalTitle', { domain: dom }));
 				}
 			}
 
 			open = false;
 			await onExposed?.();
 		} catch (err) {
-			formError = err instanceof Error ? err.message : 'Gagal membuat VHost reverse proxy';
+			formError = err instanceof Error ? err.message : t('compose.exposeModal.exposeFailed');
 		} finally {
 			submitting = false;
 		}
@@ -160,9 +161,9 @@
 <Dialog.Root bind:open>
 	<Dialog.Content class="flex max-h-[90dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-0 overflow-hidden p-4 sm:max-w-[min(calc(100vw-2rem),32rem)]">
 		<Dialog.Header class="shrink-0 border-b border-border/50 pb-3 pr-8">
-			<Dialog.Title class="leading-snug">Ekspos Port Container ke VHost Nginx</Dialog.Title>
+			<Dialog.Title class="leading-snug">{t('compose.exposeModal.title')}</Dialog.Title>
 			<Dialog.Description class="text-xs break-words sm:text-sm">
-				Arahkan domain ke container <code class="font-mono">{serviceName || project?.name}</code> pada target <code class="font-mono">http://127.0.0.1:{port}</code>.
+				{t('compose.exposeModal.desc1')}<code class="font-mono">{serviceName || project?.name}</code>{t('compose.exposeModal.desc2')}<code class="font-mono">http://127.0.0.1:{port}</code>{t('compose.exposeModal.desc3')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -171,7 +172,7 @@
 				{#if formError}
 					<Alert.Root variant="destructive">
 						<AlertCircleIcon />
-						<Alert.Title>Gagal Mengekspos Port</Alert.Title>
+						<Alert.Title>{t('compose.exposeModal.errorTitle')}</Alert.Title>
 						<Alert.Description class="break-words">{formError}</Alert.Description>
 					</Alert.Root>
 				{/if}
@@ -179,7 +180,7 @@
 				<Field.FieldGroup class="gap-4">
 					{#if supportsDNS && pdnsZones.length > 0}
 						<Field.Field class="min-w-0">
-							<Field.FieldTitle id="exp-domain-mode-label">Sumber Domain</Field.FieldTitle>
+							<Field.FieldTitle id="exp-domain-mode-label">{t('compose.exposeModal.domainSourceLabel')}</Field.FieldTitle>
 							<ToggleGroup.Root
 								type="single"
 								variant="outline"
@@ -195,13 +196,13 @@
 									value="subdomain"
 									class="h-auto min-h-10 py-1.5 text-center text-xs leading-tight whitespace-normal sm:min-h-8 sm:text-sm"
 								>
-									Subdomain PowerDNS
+									{t('compose.exposeModal.sourceSubdomain')}
 								</ToggleGroup.Item>
 								<ToggleGroup.Item
 									value="custom"
 									class="h-auto min-h-10 py-1.5 text-center text-xs leading-tight whitespace-normal sm:min-h-8 sm:text-sm"
 								>
-									Domain Kustom
+									{t('compose.exposeModal.sourceCustom')}
 								</ToggleGroup.Item>
 							</ToggleGroup.Root>
 						</Field.Field>
@@ -210,7 +211,7 @@
 					{#if domainMode === 'subdomain' && supportsDNS && pdnsZones.length > 0}
 						<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
 							<Field.Field class="min-w-0">
-								<Field.FieldLabel for="exp-prefix">Subdomain</Field.FieldLabel>
+								<Field.FieldLabel for="exp-prefix">{t('compose.exposeModal.subdomainLabel')}</Field.FieldLabel>
 								<Input
 									id="exp-prefix"
 									bind:value={subdomainPrefix}
@@ -223,7 +224,7 @@
 								/>
 							</Field.Field>
 							<Field.Field class="min-w-0">
-								<Field.FieldLabel for="exp-zone">Zona Domain</Field.FieldLabel>
+								<Field.FieldLabel for="exp-zone">{t('compose.exposeModal.zoneLabel')}</Field.FieldLabel>
 								<Select.Root
 									type="single"
 									value={parentDomain}
@@ -232,7 +233,7 @@
 									}}
 								>
 									<Select.Trigger id="exp-zone" class="h-10 w-full min-w-0 font-mono sm:h-8">
-										<span class="truncate">{parentDomain || 'Pilih zona domain'}</span>
+										<span class="truncate">{parentDomain || t('compose.exposeModal.selectZonePlaceholder')}</span>
 									</Select.Trigger>
 									<Select.Content>
 										<Select.Group>
@@ -246,11 +247,11 @@
 						</Field.FieldGroup>
 					{:else}
 						<Field.Field class="min-w-0">
-							<Field.FieldLabel for="exp-domain">Nama Domain</Field.FieldLabel>
+							<Field.FieldLabel for="exp-domain">{t('compose.exposeModal.domainNameLabel')}</Field.FieldLabel>
 							<Input
 								id="exp-domain"
 								bind:value={domain}
-								placeholder={isLocal ? 'myapp.test' : 'app.domainanda.com'}
+								placeholder={isLocal ? t('compose.exposeModal.domainPlaceholderLocal') : t('compose.exposeModal.domainPlaceholderPublic')}
 								class="h-10 font-mono sm:h-8"
 								autocorrect="off"
 								autocapitalize="none"
@@ -263,31 +264,31 @@
 					<Card.Root size="sm">
 						<Card.Content class="flex flex-col gap-2 font-mono text-xs">
 							<div class="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
-								<span class="shrink-0 text-muted-foreground">Domain Hasil:</span>
+								<span class="shrink-0 text-muted-foreground">{t('compose.exposeModal.previewDomain')}</span>
 								<span class="min-w-0 font-semibold break-all sm:truncate">{effectiveDomain || '-'}</span>
 							</div>
 							<div class="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
-								<span class="shrink-0 text-muted-foreground">Upstream Proxy:</span>
+								<span class="shrink-0 text-muted-foreground">{t('compose.exposeModal.previewUpstream')}</span>
 								<span class="break-all">http://127.0.0.1:{port}</span>
 							</div>
 						</Card.Content>
 					</Card.Root>
 
 					<Field.FieldSet>
-						<Field.FieldLegend variant="label">Opsi SSL &amp; Jaringan</Field.FieldLegend>
+						<Field.FieldLegend variant="label">{t('compose.exposeModal.sslLegend')}</Field.FieldLegend>
 						<Field.FieldGroup class="gap-3">
 							{#if isEdge}
 								<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 									<Checkbox id="exp-edge-toggle" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={exposeEdge} />
 									<Field.FieldLabel for="exp-edge-toggle" class="cursor-pointer text-xs leading-snug font-normal">
-										Ekspos publik lewat VPS Edge Gateway (NetBird)
+										{t('compose.exposeModal.exposeEdgeToggle')}
 									</Field.FieldLabel>
 								</Field.Field>
 								{#if exposeEdge}
 									<Field.Field orientation="horizontal" class="items-start gap-2.5 pl-6 sm:items-center">
 										<Checkbox id="exp-edge-ssl" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={edgeSSL} />
 										<Field.FieldLabel for="exp-edge-ssl" class="cursor-pointer text-xs leading-snug font-normal">
-											Aktifkan SSL Let's Encrypt di VPS Edge Gateway
+											{t('compose.exposeModal.edgeSslToggle')}
 										</Field.FieldLabel>
 									</Field.Field>
 								{/if}
@@ -296,8 +297,8 @@
 									<Checkbox id="exp-ssl-toggle" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={sslEnabled} />
 									<Field.FieldLabel for="exp-ssl-toggle" class="cursor-pointer text-xs leading-snug font-normal">
 										{isVPS
-											? "Terbitkan sertifikat SSL Let's Encrypt otomatis"
-											: 'Aktifkan HTTPS lokal (mkcert / self-signed)'}
+											? t('compose.exposeModal.sslToggleVps')
+											: t('compose.exposeModal.sslToggleLocal')}
 									</Field.FieldLabel>
 								</Field.Field>
 							{/if}
@@ -306,7 +307,7 @@
 								<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 									<Checkbox id="exp-add-hosts" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={addHosts} />
 									<Field.FieldLabel for="exp-add-hosts" class="cursor-pointer text-xs leading-snug font-normal">
-										<span>Tambahkan juga ke <code>/etc/hosts</code> lokal</span>
+										<span>{t('compose.exposeModal.addHosts1')}<code>/etc/hosts</code></span>
 									</Field.FieldLabel>
 								</Field.Field>
 							{/if}
@@ -318,15 +319,15 @@
 
 		<Dialog.Footer class="shrink-0 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
 			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (open = false)}>
-				Batal
+				{t('compose.exposeModal.cancel')}
 			</Button>
 			<Button type="submit" form="expose-compose-form" class="min-h-10 sm:min-h-0" disabled={submitting}>
 				{#if submitting}
 					<Spinner data-icon="inline-start" />
-					Menyimpan...
+					{t('compose.exposeModal.saving')}
 				{:else}
 					<GlobeIcon data-icon="inline-start" />
-					Buat VHost &amp; Ekspos
+					{t('compose.exposeModal.submit')}
 				{/if}
 			</Button>
 		</Dialog.Footer>

@@ -21,9 +21,10 @@
 	import { themeStore } from '#lib/stores/theme.svelte.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import {
-		DEFAULT_SEO_DESCRIPTION,
-		DEFAULT_SEO_TITLE,
+		getDefaultSeoDescription,
+		getDefaultSeoTitle,
 		getPageMeta,
 		syncMetaDescription
 	} from '#lib/page-meta.js';
@@ -34,14 +35,14 @@
 	const seoHead = $derived.by(() => {
 		if (!authStore.authChecked) {
 			return {
-				title: DEFAULT_SEO_TITLE,
-				description: DEFAULT_SEO_DESCRIPTION
+				title: getDefaultSeoTitle(),
+				description: getDefaultSeoDescription()
 			};
 		}
 		if (authStore.authEnabled && !authStore.isAuthenticated) {
 			return {
-				title: 'Masuk — wdev Control Plane',
-				description: 'Masuk ke panel kontrol server wdev untuk mengelola infrastruktur dan layanan Anda.'
+				title: t('layout.loginSeoTitle'),
+				description: t('layout.loginSeoDescription')
 			};
 		}
 		const meta = getPageMeta(page.url.pathname, modeStore.mode);
@@ -56,6 +57,7 @@
 	});
 
 	onMount(() => {
+		i18n.init();
 		themeStore.init();
 		authStore.checkAuth();
 
@@ -93,7 +95,7 @@
 			<WdevLogo class="size-12 shadow-sm" decorative={false} />
 			<div class="flex items-center gap-2 text-xs text-muted-foreground">
 				<Spinner class="size-3.5 text-primary" />
-				<span>Memuat panel wdev...</span>
+				<span>{t('layout.loadingPanel')}</span>
 			</div>
 		</div>
 	</div>
@@ -104,7 +106,7 @@
 		href="#main-content"
 		class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground"
 	>
-		Lompat ke konten utama
+		{t('layout.skipToMain')}
 	</a>
 
 	<Sidebar.Provider>

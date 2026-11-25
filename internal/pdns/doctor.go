@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"wdev/internal/i18n"
 )
 
 const (
@@ -77,14 +78,19 @@ func formatSet(set map[string]bool) string {
 	return strings.Join(list, ", ")
 }
 
-// DoctorZone memeriksa zone PowerDNS: record NS/SOA lokal, delegasi publik,
-// glue A, serial authoritative, dan keterjangkauan port 53.
+// DoctorZone memeriksa zone PowerDNS menggunakan locale default (English).
 func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
+	return m.DoctorZoneLocale(domain, i18n.DefaultLocale)
+}
+
+// DoctorZoneLocale memeriksa zone PowerDNS: record NS/SOA lokal, delegasi publik,
+// glue A, serial authoritative, dan keterjangkauan port 53 dengan output terlokalisasi.
+func (m *Manager) DoctorZoneLocale(domain, lang string) (ZoneDoctorReport, error) {
 	report := ZoneDoctorReport{OK: true}
 	zone, err := NormalizeZoneName(domain)
 	if err != nil {
 		report.OK = false
-		report.add("Nama zone", CheckFail, err.Error())
+		report.add(i18n.Pick(lang, "Zone name", "Nama zone"), CheckFail, err.Error())
 		return report, err
 	}
 	report.Zone = zone
@@ -94,9 +100,12 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 	conf := m.LoadConfig()
 	if !conf.Configured || conf.VPSNetbirdIP == "" {
 		report.OK = false
-		msg := "VPS Edge Gateway belum dikonfigurasi"
+		msg := i18n.Pick(lang, "VPS Edge Gateway is not configured", "VPS Edge Gateway belum dikonfigurasi")
 		if conf.Mode != "edge" {
-			msg = "PowerDNS lokal belum terpasang atau belum dikonfigurasi (jalankan: wdev install pdns)"
+			msg = i18n.Pick(lang,
+				"Local PowerDNS is not installed or configured (run: wdev install pdns)",
+				"PowerDNS lokal belum terpasang atau belum dikonfigurasi (jalankan: wdev install pdns)",
+			)
 		}
 		report.add("PowerDNS API", CheckFail, msg)
 		return report, fmt.Errorf("%s", msg)
@@ -105,10 +114,14 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 	info, err := m.GetZone(zone)
 	if err != nil {
 		report.OK = false
-		report.add("Zone di PowerDNS", CheckFail, err.Error())
-		return report, fmt.Errorf("zone %s tidak dapat dibaca: %w", zone, err)
+		report.add(i18n.Pick(lang, "Zone in PowerDNS", "Zone di PowerDNS"), CheckFail, err.Error())
+		return report, fmt.Errorf(i18n.Pick(lang, "cannot read zone %s: %w", "zone %s tidak dapat dibaca: %w"), zone, err)
 	}
-	report.add("Zone di PowerDNS", CheckOK, fmt.Sprintf("zone %s ditemukan", zone))
+	report.add(
+		i18n.Pick(lang, "Zone in PowerDNS", "Zone di PowerDNS"),
+		CheckOK,
+		fmt.Sprintf(i18n.Pick(lang, "zone %s found", "zone %s ditemukan"), zone),
+	)
 
 	var apiNS, apiGlue []string
 	var currentSOA soaInfo
@@ -134,15 +147,27 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 		}
 	}
 	if sameSet(nameserverSet(apiNS), expected) {
-		report.add("NS di zone", CheckOK, formatSet(nameserverSet(apiNS)))
+		report.add(i18n.Pick(lang, "Zone NS", "NS di zone"), CheckOK, formatSet(nameserverSet(apiNS)))
 	} else {
-		report.add("NS di zone", CheckFail, fmt.Sprintf("diharapkan %s, terbaca %s", formatSet(expected), formatSet(nameserverSet(apiNS))))
+		report.add(
+			i18n.Pick(lang, "Zone NS", "NS di zone"),
+			CheckFail,
+			fmt.Sprintf(i18n.Pick(lang, "expected %s, got %s", "diharapkan %s, terbaca %s"), formatSet(expected), formatSet(nameserverSet(apiNS))),
+		)
 	}
 
-	if broken, detail := report.soaBroken(currentSOA); broken {
-		report.add("SOA zone", CheckFail, detail+" (jalankan: wdev pdns zone repair "+zone+")")
+	if broken, detail := report.soaBrokenLocale(currentSOA, lang); broken {
+		report.add(
+			i18n.Pick(lang, "Zone SOA", "SOA zone"),
+			CheckFail,
+			detail+i18n.Pick(lang, " (run: wdev pdns zone repair "+zone+")", " (jalankan: wdev pdns zone repair "+zone+")"),
+		)
 	} else {
-		report.add("SOA zone", CheckOK, fmt.Sprintf("primary %s, serial %d", currentSOA.Primary, currentSOA.Serial))
+		report.add(
+			i18n.Pick(lang, "Zone SOA", "SOA zone"),
+			CheckOK,
+			fmt.Sprintf("primary %s, serial %d", currentSOA.Primary, currentSOA.Serial),
+		)
 	}
 
 	publicIP := strings.TrimSpace(conf.VPSPublicIP)
@@ -155,11 +180,14 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 		}
 	}
 	if publicIP == "" {
-		msg := "belum tercatat di edge.conf"
+		msg := i18n.Pick(lang, "not recorded in edge.conf yet", "belum tercatat di edge.conf")
 		if conf.Mode == "vps" {
-			msg = "IP publik VPS valid belum terdeteksi; pastikan VPS_PUBLIC_IP di edge-dns.conf terisi IP publik"
+			msg = i18n.Pick(lang,
+				"valid VPS public IP not detected; ensure VPS_PUBLIC_IP in edge-dns.conf is set to a public IP",
+				"IP publik VPS valid belum terdeteksi; pastikan VPS_PUBLIC_IP di edge-dns.conf terisi IP publik",
+			)
 		}
-		report.add("IP publik VPS", CheckWarn, msg)
+		report.add(i18n.Pick(lang, "VPS Public IP", "IP publik VPS"), CheckWarn, msg)
 	} else {
 		glueOK := true
 		for _, host := range report.Nameservers {
@@ -176,14 +204,25 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 			}
 		}
 		if glueOK {
-			report.add("Glue A (zone)", CheckOK, "ns1/ns2 mengarah ke "+publicIP)
+			report.add(i18n.Pick(lang, "Glue A (zone)", "Glue A (zone)"), CheckOK, i18n.Pick(lang, "ns1/ns2 point to ", "ns1/ns2 mengarah ke ")+publicIP)
 		} else {
-			report.add("Glue A (zone)", CheckFail, fmt.Sprintf("glue ns1/ns2 belum mengarah ke %s (terbaca: %s)", publicIP, strings.Join(apiGlue, ", ")))
+			report.add(
+				i18n.Pick(lang, "Glue A (zone)", "Glue A (zone)"),
+				CheckFail,
+				fmt.Sprintf(
+					i18n.Pick(lang, "ns1/ns2 glue does not point to %s (got: %s)", "glue ns1/ns2 belum mengarah ke %s (terbaca: %s)"),
+					publicIP, strings.Join(apiGlue, ", "),
+				),
+			)
 		}
 	}
 
 	if conf.Mode == "local" {
-		report.add("Delegasi publik (NS)", CheckOK, "mode lokal standalone: delegasi registrar publik tidak wajib")
+		report.add(
+			i18n.Pick(lang, "Public Delegation (NS)", "Delegasi publik (NS)"),
+			CheckOK,
+			i18n.Pick(lang, "local standalone mode: public registrar delegation is optional", "mode lokal standalone: delegasi registrar publik tidak wajib"),
+		)
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -191,27 +230,47 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 
 		publicNS, err := res.LookupNS(ctx, zone)
 		if err != nil {
-			report.add("Delegasi publik (NS)", CheckWarn, "belum terbaca dari 1.1.1.1: "+err.Error())
+			report.add(
+				i18n.Pick(lang, "Public Delegation (NS)", "Delegasi publik (NS)"),
+				CheckWarn,
+				i18n.Pick(lang, "not resolvable from 1.1.1.1 yet: ", "belum terbaca dari 1.1.1.1: ")+err.Error(),
+			)
 		} else {
 			got := make([]string, 0, len(publicNS))
 			for _, ns := range publicNS {
 				got = append(got, ns.Host)
 			}
 			if sameSet(nameserverSet(got), expected) {
-				report.add("Delegasi publik (NS)", CheckOK, "registrar sudah mengarah ke ns1/ns2")
+				report.add(
+					i18n.Pick(lang, "Public Delegation (NS)", "Delegasi publik (NS)"),
+					CheckOK,
+					i18n.Pick(lang, "registrar already points to ns1/ns2", "registrar sudah mengarah ke ns1/ns2"),
+				)
 			} else {
-				report.add("Delegasi publik (NS)", CheckWarn, fmt.Sprintf("diharapkan %s, terbaca %s (propagasi/registrar)", formatSet(expected), formatSet(nameserverSet(got))))
+				report.add(
+					i18n.Pick(lang, "Public Delegation (NS)", "Delegasi publik (NS)"),
+					CheckWarn,
+					fmt.Sprintf(
+						i18n.Pick(lang, "expected %s, got %s (propagation/registrar)", "diharapkan %s, terbaca %s (propagasi/registrar)"),
+						formatSet(expected), formatSet(nameserverSet(got)),
+					),
+				)
 			}
 		}
 
 		for _, host := range report.Nameservers {
+			label := i18n.Pick(lang, "Public glue ", "Glue publik ") + host
 			ips, err := res.LookupIP(ctx, "ip4", host)
 			if err != nil || len(ips) == 0 {
-				report.add("Glue publik "+host, CheckWarn, "belum resolve dari publik")
+				report.add(label, CheckWarn, i18n.Pick(lang, "not resolving publicly yet", "belum resolve dari publik"))
 				continue
 			}
 			if publicIP == "" {
-				report.add("Glue publik "+host, CheckWarn, fmt.Sprintf("terbaca %s (IP publik VPS belum terdeteksi untuk verifikasi)", ips[0]))
+				report.add(
+					label,
+					CheckWarn,
+					fmt.Sprintf(i18n.Pick(lang, "resolved %s (VPS public IP not detected for verification)", "terbaca %s (IP publik VPS belum terdeteksi untuk verifikasi)"), ips[0]),
+				)
 				continue
 			}
 			matched := false
@@ -222,9 +281,13 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 				}
 			}
 			if matched {
-				report.add("Glue publik "+host, CheckOK, publicIP)
+				report.add(label, CheckOK, publicIP)
 			} else {
-				report.add("Glue publik "+host, CheckWarn, fmt.Sprintf("terbaca %s, diharapkan %s", ips[0], publicIP))
+				report.add(
+					label,
+					CheckWarn,
+					fmt.Sprintf(i18n.Pick(lang, "resolved %s, expected %s", "terbaca %s, diharapkan %s"), ips[0], publicIP),
+				)
 			}
 		}
 	}
@@ -249,11 +312,19 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 		}
 	}
 	if lastErr != nil {
-		report.add("SOA authoritative", CheckWarn, "query SOA gagal dari mesin ini ("+lastErr.Error()+"); cek dari jaringan lain")
+		report.add(
+			i18n.Pick(lang, "Authoritative SOA", "SOA authoritative"),
+			CheckWarn,
+			fmt.Sprintf(i18n.Pick(lang, "SOA query failed from this machine (%s); check from another network", "query SOA gagal dari mesin ini (%s); cek dari jaringan lain"), lastErr.Error()),
+		)
 	} else if apiSerial > 0 && int64(serial) < apiSerial {
-		report.add("SOA authoritative", CheckWarn, fmt.Sprintf("serial DNS %d < PowerDNS %d; tunggu propagasi/notify", serial, apiSerial))
+		report.add(
+			i18n.Pick(lang, "Authoritative SOA", "SOA authoritative"),
+			CheckWarn,
+			fmt.Sprintf(i18n.Pick(lang, "DNS serial %d < PowerDNS %d; wait for propagation/notify", "serial DNS %d < PowerDNS %d; tunggu propagasi/notify"), serial, apiSerial),
+		)
 	} else {
-		report.add("SOA authoritative", CheckOK, fmt.Sprintf("serial %d", serial))
+		report.add(i18n.Pick(lang, "Authoritative SOA", "SOA authoritative"), CheckOK, fmt.Sprintf("serial %d", serial))
 	}
 
 	// Port 53 TCP.
@@ -263,10 +334,14 @@ func (m *Manager) DoctorZone(domain string) (ZoneDoctorReport, error) {
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(port53Target, "53"), 4*time.Second)
 	if err != nil {
-		report.add("Port 53", CheckWarn, "TCP 53 tidak terjangkau dari mesin ini: "+err.Error())
+		report.add(
+			"Port 53",
+			CheckWarn,
+			i18n.Pick(lang, "TCP 53 unreachable from this machine: ", "TCP 53 tidak terjangkau dari mesin ini: ")+err.Error(),
+		)
 	} else {
 		_ = conn.Close()
-		report.add("Port 53", CheckOK, "TCP 53 terjangkau")
+		report.add("Port 53", CheckOK, i18n.Pick(lang, "TCP 53 reachable", "TCP 53 terjangkau"))
 	}
 
 	return report, nil

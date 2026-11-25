@@ -22,6 +22,7 @@
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import { api, ApiError } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type {
 		CFHostCheckResult,
@@ -151,17 +152,17 @@
 		const sub = normalizedSubdomain;
 		if (!sub) return '';
 		if (sub.includes('..')) {
-			return 'Subdomain tidak boleh mengandung titik ganda (..).';
+			return t('cloudflare.validation.subDoubleDot');
 		}
 		const labels = sub.split('.');
 		for (const lbl of labels) {
 			if (!dnsLabelRe.test(lbl)) {
-				return 'Gunakan huruf kecil, angka, dan tanda hubung (-) per segmen subdomain.';
+				return t('cloudflare.validation.subInvalidChars');
 			}
 		}
 		const z = selectedZoneName.trim().toLowerCase();
 		if (z && `${sub}.${z}`.length > 253) {
-			return 'Panjang hostname publik melebihi 253 karakter.';
+			return t('cloudflare.validation.subTooLong');
 		}
 		return '';
 	});
@@ -310,7 +311,7 @@
 					public_host: host,
 					local_domain: local,
 					available: true,
-					check_error: err instanceof Error ? err.message : 'Gagal memeriksa status subdomain'
+					check_error: err instanceof Error ? err.message : t('cloudflare.validation.checkErrorFallback')
 				};
 			} finally {
 				if (seq === hostCheckSeq) {
@@ -332,7 +333,7 @@
 				localDomainMode = 'custom';
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat status Cloudflare Tunnel');
+			toast.error(err instanceof Error ? err.message : t('cloudflare.toasts.statusLoadError'));
 		}
 	}
 
@@ -361,7 +362,7 @@
 			if (selectedProfileInfo?.name !== profName) return;
 			cfZones = [];
 			selectedZoneName = '';
-			zonesError = err instanceof ApiError ? err.message : 'Gagal mengambil daftar domain Cloudflare';
+			zonesError = err instanceof ApiError ? err.message : t('cloudflare.toasts.zonesLoadError');
 		} finally {
 			zonesLoading = false;
 		}
@@ -389,20 +390,20 @@
 		e.preventDefault();
 		if (!apiTokenTargetProfile) return;
 		if (!apiTokenInput.trim()) {
-			toast.warning('Masukkan Cloudflare API Token terlebih dahulu.');
+			toast.warning(t('cloudflare.toasts.enterApiToken'));
 			return;
 		}
 		savingApiToken = true;
 		try {
 			const targetName = apiTokenTargetProfile.name;
 			await api.setCFProfileAPIToken(targetName, apiTokenInput.trim());
-			toast.success(`Cloudflare API Token untuk profil '${targetName}' berhasil disimpan.`);
+			toast.success(t('cloudflare.toasts.apiTokenSaved', { name: targetName }));
 			apiTokenModalOpen = false;
 			apiTokenInput = '';
 			lastZoneKey = '';
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof ApiError ? err.message : 'Gagal menyimpan Cloudflare API Token');
+			toast.error(err instanceof ApiError ? err.message : t('cloudflare.toasts.apiTokenSaveError'));
 		} finally {
 			savingApiToken = false;
 		}
@@ -414,13 +415,13 @@
 		try {
 			const targetName = apiTokenTargetProfile.name;
 			await api.setCFProfileAPIToken(targetName, '');
-			toast.success(`Cloudflare API Token untuk profil '${targetName}' dihapus.`);
+			toast.success(t('cloudflare.toasts.apiTokenCleared', { name: targetName }));
 			apiTokenModalOpen = false;
 			apiTokenInput = '';
 			lastZoneKey = '';
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof ApiError ? err.message : 'Gagal menghapus Cloudflare API Token');
+			toast.error(err instanceof ApiError ? err.message : t('cloudflare.toasts.apiTokenClearError'));
 		} finally {
 			savingApiToken = false;
 		}
@@ -430,16 +431,16 @@
 		if (!val) return;
 		try {
 			await navigator.clipboard.writeText(val);
-			toast.success(`${label} disalin ke clipboard.`);
+			toast.success(t('cloudflare.toasts.copied', { label }));
 		} catch {
-			toast.error(`Gagal menyalin ${label}`);
+			toast.error(t('cloudflare.toasts.copyFailed', { label }));
 		}
 	}
 
 	async function submitTokenProfile(e: SubmitEvent) {
 		e.preventDefault();
 		if (!tokenValue.trim()) {
-			toast.warning('Tunnel token wajib diisi.');
+			toast.warning(t('cloudflare.toasts.tunnelTokenRequired'));
 			return;
 		}
 		savingToken = true;
@@ -451,7 +452,7 @@
 				api_token: tokenApiToken.trim() || undefined,
 				auto_start: tokenAutoStart
 			});
-			toast.success(`Profil token '${res.profile.name}' berhasil didaftarkan.`);
+			toast.success(t('cloudflare.toasts.tokenRegistered', { name: res.profile.name }));
 			tokenName = '';
 			tokenValue = '';
 			tokenTunnelName = '';
@@ -461,7 +462,7 @@
 			lastZoneKey = '';
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof ApiError ? err.message : 'Gagal mendaftarkan profil token');
+			toast.error(err instanceof ApiError ? err.message : t('cloudflare.toasts.tokenRegisterError'));
 		} finally {
 			savingToken = false;
 		}
@@ -480,7 +481,7 @@
 			loginSession = sess;
 			if (sess.status === 'completed') {
 				const resolvedName = sess.result?.name || sess.profile;
-				toast.success(sess.message || `Profil '${resolvedName}' berhasil terdaftar.`);
+				toast.success(sess.message || t('cloudflare.toasts.profileRegistered', { name: resolvedName }));
 				profile = resolvedName;
 				addModalOpen = false;
 				loginSession = null;
@@ -501,7 +502,7 @@
 						if (cur.status === 'completed') {
 							stopLoginPoll();
 							const resolvedName = cur.result?.name || cur.profile;
-							toast.success(cur.message || `Profil '${resolvedName}' berhasil terdaftar.`);
+							toast.success(cur.message || t('cloudflare.toasts.profileRegistered', { name: resolvedName }));
 							profile = resolvedName;
 							addModalOpen = false;
 							loginSession = null;
@@ -519,7 +520,7 @@
 				}, 1800);
 			}
 		} catch (err) {
-			toast.error(err instanceof ApiError ? err.message : 'Gagal memulai login browser Cloudflare');
+			toast.error(err instanceof ApiError ? err.message : t('cloudflare.toasts.browserLoginError'));
 		} finally {
 			startingLogin = false;
 		}
@@ -536,7 +537,7 @@
 	async function submitCertProfile(e: SubmitEvent) {
 		e.preventDefault();
 		if (!certPEM.trim() && !selectedLocalCert && !certCredJSON.trim()) {
-			toast.warning('Isi cert.pem, pilih cert lokal yang terdeteksi, atau sertakan credentials JSON.');
+			toast.warning(t('cloudflare.toasts.certInputRequired'));
 			return;
 		}
 		savingCert = true;
@@ -550,7 +551,7 @@
 				api_token: certApiToken.trim() || undefined,
 				auto_start: certAutoStart
 			});
-			toast.success(`Profil cert '${res.profile.name}' berhasil didaftarkan.`);
+			toast.success(t('cloudflare.toasts.certRegistered', { name: res.profile.name }));
 			certName = '';
 			certPEM = '';
 			certCredJSON = '';
@@ -561,20 +562,30 @@
 			lastZoneKey = '';
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof ApiError ? err.message : 'Gagal mendaftarkan profil cert');
+			toast.error(err instanceof ApiError ? err.message : t('cloudflare.toasts.certRegisterError'));
 		} finally {
 			savingCert = false;
 		}
 	}
 
 	async function controlProfile(name: string, action: 'start' | 'stop' | 'restart') {
+		const successKeys = {
+			start: 'cloudflare.toasts.controlSuccess.start',
+			stop: 'cloudflare.toasts.controlSuccess.stop',
+			restart: 'cloudflare.toasts.controlSuccess.restart'
+		} as const;
+		const errorKeys = {
+			start: 'cloudflare.toasts.controlError.start',
+			stop: 'cloudflare.toasts.controlError.stop',
+			restart: 'cloudflare.toasts.controlError.restart'
+		} as const;
 		profilePending = { ...profilePending, [name]: true };
 		try {
 			await api.controlCFProfile(name, action);
-			toast.success(`Profil Cloudflare '${name}' berhasil di-${action}.`);
+			toast.success(t(successKeys[action], { name }));
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof ApiError ? err.message : `Gagal ${action} profil ${name}`);
+			toast.error(err instanceof ApiError ? err.message : t(errorKeys[action], { name }));
 		} finally {
 			const next = { ...profilePending };
 			delete next[name];
@@ -601,15 +612,15 @@
 				delete_dns: deleteDNS
 			});
 			const details: string[] = [];
-			if (res.remote_deleted) details.push('tunnel di Cloudflare ikut dihapus');
+			if (res.remote_deleted) details.push(t('cloudflare.toasts.remoteTunnelDeleted'));
 			if ((res.dns_deleted_count ?? 0) > 0) {
-				details.push(`${res.dns_deleted_count} record DNS CNAME dihapus`);
+				details.push(t('cloudflare.toasts.dnsRecordsDeleted', { count: res.dns_deleted_count ?? 0 }));
 			}
-			toast.success(`Profil '${name}' berhasil dihapus.`, {
+			toast.success(t('cloudflare.toasts.profileDeleted', { name }), {
 				description: details.length > 0 ? details.join(' · ') : undefined
 			});
 			if (res.warnings && res.warnings.length > 0) {
-				toast.warning('Catatan Penghapusan', { description: res.warnings.join(' | ') });
+				toast.warning(t('cloudflare.toasts.deleteWarnings'), { description: res.warnings.join(' | ') });
 			}
 			deleteModalOpen = false;
 			deleteTargetProfile = null;
@@ -619,7 +630,7 @@
 			}
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof ApiError ? err.message : `Gagal menghapus profil ${name}`);
+			toast.error(err instanceof ApiError ? err.message : t('cloudflare.toasts.deleteProfileError', { name }));
 		} finally {
 			deletingProfile = false;
 			const next = { ...profilePending };
@@ -640,9 +651,9 @@
 		logsLoading = true;
 		try {
 			const res = await api.getCFProfileLogs(logsProfileName, 60);
-			logsText = res.logs || '(Belum ada log journald untuk unit ini)';
+			logsText = res.logs || t('cloudflare.toasts.logsEmpty');
 		} catch (err) {
-			logsText = err instanceof ApiError ? err.message : 'Gagal membaca log layanan';
+			logsText = err instanceof ApiError ? err.message : t('cloudflare.toasts.logsError');
 		} finally {
 			logsLoading = false;
 		}
@@ -655,11 +666,11 @@
 			return;
 		}
 		if (!localDomain.trim() || !publicHost.trim()) {
-			toast.warning('Domain lokal dan domain publik wajib diisi.');
+			toast.warning(t('cloudflare.toasts.domainsRequired'));
 			return;
 		}
 		if (hostCheck && !hostCheck.available && !allowOverwrite) {
-			toast.warning(hostCheck.message || 'Subdomain sudah digunakan. Centang opsi timpa untuk melanjutkan.');
+			toast.warning(hostCheck.message || t('cloudflare.toasts.subdomainTaken'));
 			return;
 		}
 		submitting = true;
@@ -672,11 +683,17 @@
 				undefined,
 				allowOverwrite
 			);
-			toast.success(`Eksposur berhasil: ${localDomain.trim()} -> https://${res.public_host}`, {
-				description: `Profil: ${res.profile} · Origin: ${res.service_url}`
-			});
+			toast.success(
+				t('cloudflare.toasts.exposeSuccess', { local: localDomain.trim(), public: res.public_host }),
+				{
+					description: t('cloudflare.toasts.exposeSuccessDesc', {
+						profile: res.profile,
+						origin: res.service_url
+					})
+				}
+			);
 			if (res.dns_warning) {
-				toast.warning('Catatan DNS Cloudflare', { description: res.dns_warning });
+				toast.warning(t('cloudflare.toasts.cfDnsNote'), { description: res.dns_warning });
 			}
 			localDomain = '';
 			localDomainMode = localSites.length > 0 ? 'select' : 'custom';
@@ -686,7 +703,7 @@
 			serviceUrl = '';
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal mengekspos domain Cloudflare');
+			toast.error(err instanceof Error ? err.message : t('cloudflare.toasts.exposeError'));
 		} finally {
 			submitting = false;
 		}
@@ -694,26 +711,26 @@
 
 	async function unexpose(expProfile: string, domain: string) {
 		const ok = await cp.confirm({
-			title: 'Hapus Eksposur Cloudflare',
-			description: `Hapus exposure Cloudflare untuk ${domain} (profil ${expProfile})?`,
-			confirmText: 'Hapus',
+			title: t('cloudflare.confirm.unexposeTitle'),
+			description: t('cloudflare.confirm.unexposeDesc', { domain, profile: expProfile }),
+			confirmText: t('cloudflare.confirm.unexposeBtn'),
 			destructive: true
 		});
 		if (!ok) return;
 		exposureDeleting = { ...exposureDeleting, [domain]: true };
 		try {
 			const res = await api.unexposeCF(domain, expProfile);
-			toast.success(`Eksposur Cloudflare untuk ${domain} berhasil dihapus.`, {
+			toast.success(t('cloudflare.toasts.unexposeSuccess', { domain }), {
 				description: res.dns_deleted
-					? `Record DNS CNAME ${res.public_host || ''} di Cloudflare ikut dibersihkan.`
+					? t('cloudflare.toasts.unexposeDnsCleaned', { host: res.public_host || '' })
 					: undefined
 			});
 			if (res.dns_warning) {
-				toast.warning('Catatan DNS Cloudflare', { description: res.dns_warning });
+				toast.warning(t('cloudflare.toasts.cfDnsNote'), { description: res.dns_warning });
 			}
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menghapus eksposur');
+			toast.error(err instanceof Error ? err.message : t('cloudflare.toasts.unexposeError'));
 		} finally {
 			const next = { ...exposureDeleting };
 			delete next[domain];
@@ -748,11 +765,11 @@
 		if (!editTargetExposure) return;
 		const nextLocal = editLocalDomain.trim().toLowerCase();
 		if (!nextLocal) {
-			toast.warning('Pilih atau isi domain lokal tujuan.');
+			toast.warning(t('cloudflare.toasts.selectEditLocalRequired'));
 			return;
 		}
 		if (editMissingApiToken) {
-			toast.warning('Profil mode Token ini memerlukan Cloudflare API Token terlebih dahulu.');
+			toast.warning(t('cloudflare.toasts.editNeedsApiToken'));
 			return;
 		}
 		savingExposureEdit = true;
@@ -765,17 +782,20 @@
 				undefined,
 				true
 			);
-			toast.success(`Domain lokal untuk ${res.public_host} diperbarui ke ${nextLocal}`, {
-				description: `Profil: ${res.profile} · Origin: ${res.service_url}`
+			toast.success(t('cloudflare.toasts.editSuccess', { public: res.public_host, local: nextLocal }), {
+				description: t('cloudflare.toasts.exposeSuccessDesc', {
+					profile: res.profile,
+					origin: res.service_url
+				})
 			});
 			if (res.dns_warning) {
-				toast.warning('Catatan DNS Cloudflare', { description: res.dns_warning });
+				toast.warning(t('cloudflare.toasts.cfDnsNote'), { description: res.dns_warning });
 			}
 			editExposureModalOpen = false;
 			editTargetExposure = null;
 			await loadCloudflare();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memperbarui domain lokal eksposur');
+			toast.error(err instanceof Error ? err.message : t('cloudflare.toasts.editError'));
 		} finally {
 			savingExposureEdit = false;
 		}
@@ -829,30 +849,30 @@
 	<!-- Header -->
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
-			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Cloudflare Tunnel &amp; Multi-Profile Manager</h1>
+			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('cloudflare.title')}</h1>
 			<p class="text-sm text-muted-foreground">
-				Daftarkan beberapa akun/tunnel Cloudflare (via Token Zero Trust, Login Browser, atau <code class="font-mono">cert.pem</code>) dan ekspos vhost lokal ke domain publik.
+				{t('cloudflare.descPre')} <code class="font-mono">cert.pem</code>{t('cloudflare.descPost')}
 			</p>
 		</div>
 		<div class="flex flex-wrap items-center gap-2">
 			{#if cfStatus}
 				<StatusBadge
 					tone={cfStatus.active ? 'success' : 'neutral'}
-					label={cfStatus.active ? 'Tunnel Berjalan' : 'Tunnel Nonaktif'}
+					label={cfStatus.active ? t('cloudflare.badges.tunnelRunning') : t('cloudflare.badges.tunnelInactive')}
 				/>
 			{/if}
 			{#if cfStatus && !cfStatus.installed}
 				<Button variant="default" size="sm" onclick={() => cp.triggerInstall('cloudflare')}>
-					Pasang cloudflared
+					{t('cloudflare.buttons.installCloudflared')}
 				</Button>
 			{/if}
 			<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('cf-doctor')}>
 				<ActivityIcon data-icon="inline-start" />
-				Diagnostik Doctor
+				{t('cloudflare.buttons.doctorDiagnostics')}
 			</Button>
 			<Button size="sm" onclick={() => openAddProfileModal('token')}>
 				<PlusIcon data-icon="inline-start" />
-				Tambah Profil
+				{t('cloudflare.buttons.addProfile')}
 			</Button>
 		</div>
 	</div>
@@ -861,13 +881,13 @@
 	<Card.Root>
 		<Card.Header class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 			<div>
-				<Card.Title class="text-base">Profil Akun &amp; Tunnel Terdaftar ({profileDetails.length})</Card.Title>
+				<Card.Title class="text-base">{t('cloudflare.profilesCard.title', { count: profileDetails.length })}</Card.Title>
 				<Card.Description class="break-all">
 					{#if cfStatus?.binary}
-						Biner: <span class="font-mono">{cfStatus.binary}</span> · Systemd Template:
-						<span class="font-mono">{cfStatus.service_unit_ready ? 'Siap (cloudflared@.service)' : 'Belum terpasang'}</span>
+						{t('cloudflare.profilesCard.binaryLabel')} <span class="font-mono">{cfStatus.binary}</span> · {t('cloudflare.profilesCard.systemdTemplate')}
+						<span class="font-mono">{cfStatus.service_unit_ready ? t('cloudflare.profilesCard.systemdReady') : t('cloudflare.profilesCard.systemdNotInstalled')}</span>
 					{:else}
-						Belum ada biner cloudflared terdeteksi di PATH server.
+						{t('cloudflare.profilesCard.noBinary')}
 					{/if}
 				</Card.Description>
 			</div>
@@ -875,11 +895,11 @@
 				<div class="flex flex-wrap gap-1.5">
 					<Button variant="outline" size="xs" onclick={() => openAddProfileModal('token')}>
 						<KeyRoundIcon data-icon="inline-start" />
-						+ Token
+						{t('cloudflare.buttons.addTokenShort')}
 					</Button>
 					<Button variant="outline" size="xs" onclick={() => openAddProfileModal('login')}>
 						<GlobeIcon data-icon="inline-start" />
-						+ Login Browser
+						{t('cloudflare.buttons.addBrowserShort')}
 					</Button>
 				</div>
 			{/if}
@@ -891,96 +911,96 @@
 						<Empty.Media variant="icon">
 							<GlobeIcon />
 						</Empty.Media>
-						<Empty.Title>Belum Ada Profil Akun Cloudflare Terdaftar</Empty.Title>
+						<Empty.Title>{t('cloudflare.profilesCard.emptyTitle')}</Empty.Title>
 						<Empty.Description>
-							Daftarkan akun atau tunnel Cloudflare secara terpisah menggunakan Tunnel Token, Login Browser OAuth, atau sertifikat cert.pem.
+							{t('cloudflare.profilesCard.emptyDesc')}
 						</Empty.Description>
 					</Empty.Header>
 					<Empty.Content>
 						<div class="flex flex-wrap justify-center gap-2">
 							<Button size="sm" onclick={() => openAddProfileModal('token')}>
 								<KeyRoundIcon data-icon="inline-start" />
-								Daftar via Tunnel Token
+								{t('cloudflare.profilesCard.emptyBtnToken')}
 							</Button>
 							<Button variant="outline" size="sm" onclick={() => openAddProfileModal('login')}>
 								<GlobeIcon data-icon="inline-start" />
-								Login Browser Cloudflare
+								{t('cloudflare.profilesCard.emptyBtnBrowser')}
 							</Button>
 							<Button variant="outline" size="sm" onclick={() => openAddProfileModal('cert')}>
 								<ShieldCheckIcon data-icon="inline-start" />
-								Upload / Paste cert.pem
+								{t('cloudflare.profilesCard.emptyBtnCert')}
 							</Button>
 						</div>
 					</Empty.Content>
 				</Empty.Root>
 			{:else}
-				<ResponsiveTableWrapper label="Daftar Profil Multi-Tunnel Cloudflare" class="rounded-md border">
+				<ResponsiveTableWrapper label={t('cloudflare.profilesCard.tableAria')} class="rounded-md border">
 					<Table.Root>
 						<Table.Header>
 							<Table.Row>
-								<Table.Head>Profil</Table.Head>
-								<Table.Head>Mode Autentikasi</Table.Head>
-								<Table.Head>Tunnel ID / Nama</Table.Head>
-								<Table.Head>Status Service</Table.Head>
-								<Table.Head>Rute</Table.Head>
-								<Table.Head class="text-right">Kontrol</Table.Head>
+								<Table.Head>{t('cloudflare.profilesCard.colProfile')}</Table.Head>
+								<Table.Head>{t('cloudflare.profilesCard.colAuthMode')}</Table.Head>
+								<Table.Head>{t('cloudflare.profilesCard.colTunnelId')}</Table.Head>
+								<Table.Head>{t('cloudflare.profilesCard.colStatus')}</Table.Head>
+								<Table.Head>{t('cloudflare.profilesCard.colRoutes')}</Table.Head>
+								<Table.Head class="text-right">{t('cloudflare.profilesCard.colControls')}</Table.Head>
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
 							{#each profileDetails as prof (prof.name)}
 								<Table.Row>
-									<Table.Cell data-label="Profil" class="font-semibold">
+									<Table.Cell data-label={t('cloudflare.profilesCard.colProfile')} class="font-semibold">
 										<div class="font-mono text-sm">{prof.name}</div>
 										<div class="font-mono text-[11px] text-muted-foreground">{prof.service_unit}</div>
 									</Table.Cell>
-									<Table.Cell data-label="Mode">
+									<Table.Cell data-label={t('cloudflare.profilesCard.colModeLabel')}>
 										<div class="flex flex-wrap items-center gap-1.5">
 											{#if prof.auth_mode === 'token'}
 												<Badge variant="outline" class="border-info/40 bg-info/10 text-info">
-													Token Zero Trust
+													{t('cloudflare.badges.tokenZeroTrust')}
 												</Badge>
 											{:else}
 												<Badge variant="outline" class="border-primary/40 bg-primary/10 text-primary">
-													Cert &amp; Config Lokal
+													{t('cloudflare.badges.localCertConfig')}
 												</Badge>
 											{/if}
 											{#if prof.has_api_token}
 												<Badge variant="outline" class="border-success/40 bg-success/10 text-success">
-													API Token
+													{t('cloudflare.badges.apiToken')}
 												</Badge>
 											{/if}
 										</div>
 									</Table.Cell>
-									<Table.Cell data-label="Tunnel ID">
+									<Table.Cell data-label={t('cloudflare.profilesCard.colTunnelIdShort')}>
 										<div class="font-medium text-xs">{prof.tunnel_name || '-'}</div>
 										{#if prof.tunnel_id}
 											<button
 												type="button"
 												class="mt-0.5 inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground hover:text-foreground"
-												onclick={() => copyText(prof.tunnel_id || '', 'Tunnel ID')}
-												title="Salin Tunnel UUID"
+												onclick={() => copyText(prof.tunnel_id || '', t('cloudflare.copyLabels.tunnelId'))}
+												title={t('cloudflare.profilesCard.copyUuidTitle')}
 											>
 												<span class="truncate">{prof.tunnel_id}</span>
 												<CopyIcon class="size-3" />
 											</button>
 										{/if}
 									</Table.Cell>
-									<Table.Cell data-label="Status">
+									<Table.Cell data-label={t('cloudflare.profilesCard.colStatusShort')}>
 										<StatusBadge
 											tone={prof.active ? 'success' : 'neutral'}
-											label={prof.active ? 'Aktif (Running)' : 'Nonaktif'}
+											label={prof.active ? t('cloudflare.badges.activeRunning') : t('cloudflare.badges.inactive')}
 										/>
 									</Table.Cell>
-									<Table.Cell data-label="Rute" class="font-mono text-xs tabular-nums">
+									<Table.Cell data-label={t('cloudflare.profilesCard.colRoutes')} class="font-mono text-xs tabular-nums">
 										{#if prof.auth_mode === 'token' && !prof.has_api_token}
-											<span class="text-muted-foreground" title="Dikelola di Cloudflare Zero Trust Dashboard (atau pasang API Token)">Dashboard CF</span>
+											<span class="text-muted-foreground" title={t('cloudflare.profilesCard.dashboardCfTitle')}>{t('cloudflare.profilesCard.dashboardCf')}</span>
 										{:else if prof.auth_mode === 'token'}
-											<span>{prof.route_count} rute (API)</span>
+											<span>{t('cloudflare.profilesCard.routesApiCount', { count: prof.route_count })}</span>
 										{:else}
-											{prof.route_count} rute
+											{t('cloudflare.profilesCard.routesCount', { count: prof.route_count })}
 										{/if}
 									</Table.Cell>
-									<Table.Cell data-label="Kontrol" class="text-right">
+									<Table.Cell data-label={t('cloudflare.profilesCard.colControls')} class="text-right">
 										<div class="flex justify-end gap-1">
 											{#if prof.active}
 												<Button
@@ -988,8 +1008,8 @@
 													size="icon-xs"
 													disabled={Boolean(profilePending[prof.name])}
 													onclick={() => controlProfile(prof.name, 'restart')}
-													title="Restart service tunnel"
-													aria-label="Restart service tunnel"
+													title={t('cloudflare.profilesCard.restartTitle')}
+													aria-label={t('cloudflare.profilesCard.restartTitle')}
 												>
 													<RotateCwIcon />
 												</Button>
@@ -998,8 +1018,8 @@
 													size="icon-xs"
 													disabled={Boolean(profilePending[prof.name])}
 													onclick={() => controlProfile(prof.name, 'stop')}
-													title="Hentikan service tunnel"
-													aria-label="Hentikan service tunnel"
+													title={t('cloudflare.profilesCard.stopTitle')}
+													aria-label={t('cloudflare.profilesCard.stopTitle')}
 												>
 													<SquareIcon />
 												</Button>
@@ -1009,8 +1029,8 @@
 													size="icon-xs"
 													disabled={Boolean(profilePending[prof.name])}
 													onclick={() => controlProfile(prof.name, 'start')}
-													title="Jalankan service tunnel"
-													aria-label="Jalankan service tunnel"
+													title={t('cloudflare.profilesCard.startTitle')}
+													aria-label={t('cloudflare.profilesCard.startTitle')}
 												>
 													<PlayIcon class="text-success" />
 												</Button>
@@ -1019,8 +1039,8 @@
 												variant="outline"
 												size="icon-xs"
 												onclick={() => openApiTokenModal(prof)}
-												title={prof.has_api_token ? 'Kelola Cloudflare API Token (terpasang)' : 'Pasang Cloudflare API Token (Zone:Read / DNS:Edit / Tunnel:Edit)'}
-												aria-label="Kelola Cloudflare API Token"
+												title={prof.has_api_token ? t('cloudflare.profilesCard.apiTokenManageInstalled') : t('cloudflare.profilesCard.apiTokenManageAttach')}
+												aria-label={t('cloudflare.profilesCard.apiTokenManageAria')}
 											>
 												<KeyRoundIcon class={cn(prof.has_api_token && 'text-success')} />
 											</Button>
@@ -1028,8 +1048,8 @@
 												variant="outline"
 												size="icon-xs"
 												onclick={() => openProfileLogs(prof.name)}
-												title="Lihat log cloudflared"
-												aria-label="Lihat log cloudflared"
+												title={t('cloudflare.profilesCard.viewLogsTitle')}
+												aria-label={t('cloudflare.profilesCard.viewLogsTitle')}
 											>
 												<FileTextIcon />
 											</Button>
@@ -1038,8 +1058,8 @@
 												size="icon-xs"
 												disabled={Boolean(profilePending[prof.name])}
 												onclick={() => openDeleteProfileModal(prof)}
-												title="Hapus profil"
-												aria-label="Hapus profil"
+												title={t('cloudflare.profilesCard.deleteProfileTitle')}
+												aria-label={t('cloudflare.profilesCard.deleteProfileTitle')}
 											>
 												<Trash2Icon class="text-destructive" />
 											</Button>
@@ -1057,9 +1077,9 @@
 	<!-- Form Ekspos Vhost Lokal (Khusus Profil yang Memiliki Domain + Cloudflare API Token) -->
 	<Card.Root>
 		<Card.Header>
-			<Card.Title class="text-base">Ekspos Site Lokal ke Cloudflare (wdev cf expose)</Card.Title>
+			<Card.Title class="text-base">{t('cloudflare.exposeCard.title')}</Card.Title>
 			<Card.Description>
-				Pilih profil yang terhubung dengan Cloudflare API Token untuk mengambil daftar domain otomatis dan memetakan vhost lokal ke domain publik.
+				{t('cloudflare.exposeCard.desc')}
 			</Card.Description>
 		</Card.Header>
 		<Card.Content class="flex flex-col gap-4">
@@ -1067,24 +1087,24 @@
 				<Alert.Root class="border-warning/40 bg-warning/10">
 					<InfoIcon class="text-warning" />
 					<Alert.Title class="text-warning">
-						Belum Ada Profil dengan Cloudflare API Token
+						{t('cloudflare.exposeCard.noApiTitle')}
 					</Alert.Title>
 					<Alert.Description class="flex flex-col gap-2.5 text-xs leading-relaxed text-muted-foreground">
 						<p>
-							Bagian ekspos ini hanya menampilkan profil yang sudah memiliki <strong>Cloudflare API Token</strong> agar daftar domain/zone dapat diambil otomatis dari Cloudflare.
+							{t('cloudflare.exposeCard.noApiPre')} <strong>{t('cloudflare.exposeCard.noApiBold')}</strong> {t('cloudflare.exposeCard.noApiPost')}
 						</p>
 						<div class="flex flex-wrap gap-2">
 							{#if profileDetails.length > 0}
 								{#each profileDetails as p (p.name)}
 									<Button type="button" variant="outline" size="xs" onclick={() => openApiTokenModal(p)}>
 										<KeyRoundIcon data-icon="inline-start" />
-										Pasang API Token ({p.name})
+										{t('cloudflare.exposeCard.attachApiBtn', { name: p.name })}
 									</Button>
 								{/each}
 							{:else}
 								<Button type="button" size="xs" onclick={() => openAddProfileModal('login')}>
 									<PlusIcon data-icon="inline-start" />
-									Daftarkan Profil + API Token
+									{t('cloudflare.exposeCard.registerWithApiBtn')}
 								</Button>
 							{/if}
 						</div>
@@ -1094,9 +1114,9 @@
 				{#if selectedProfileInfo?.auth_mode === 'token'}
 					<Alert.Root class="border-info/35 bg-info/5">
 						<InfoIcon class="text-info" />
-						<Alert.Title class="text-info">Mode Token + Cloudflare API Aktif ({selectedProfileInfo.name})</Alert.Title>
+						<Alert.Title class="text-info">{t('cloudflare.exposeCard.tokenApiTitle', { name: selectedProfileInfo.name })}</Alert.Title>
 						<Alert.Description class="text-xs leading-relaxed text-muted-foreground">
-							Rute ingress diperbarui langsung ke tunnel via REST API (<code class="font-mono">cfd_tunnel/.../configurations</code>) beserta DNS CNAME otomatis (membutuhkan izin <code class="font-mono">Cloudflare Tunnel:Edit</code>, <code class="font-mono">Zone:Read</code>, dan <code class="font-mono">DNS:Edit</code>).
+							{t('cloudflare.exposeCard.tokenApiDescPre')}<code class="font-mono">cfd_tunnel/.../configurations</code>{t('cloudflare.exposeCard.tokenApiDescMid')} <code class="font-mono">Cloudflare Tunnel:Edit</code>, <code class="font-mono">Zone:Read</code>, {t('cloudflare.exposeCard.tokenApiDescAnd')} <code class="font-mono">DNS:Edit</code>{t('cloudflare.exposeCard.tokenApiDescEnd')}
 						</Alert.Description>
 					</Alert.Root>
 				{/if}
@@ -1104,21 +1124,21 @@
 				<form onsubmit={submitExpose} class="flex flex-col gap-4">
 					<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 						<Field.Field>
-							<Field.FieldLabel for="cf-profile-select">Profil Tunnel (Domain + API)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-profile-select">{t('cloudflare.exposeCard.profileLabel')}</Field.FieldLabel>
 							<Select.Root type="single" bind:value={profile}>
 								<Select.Trigger id="cf-profile-select" class="w-full">
 									<span class="truncate">
 										{selectedProfileInfo
-											? `${selectedProfileInfo.name} (${selectedProfileInfo.auth_mode === 'token' ? 'Token + API' : 'Cert + API'})`
-											: 'Pilih profil'}
+											? `${selectedProfileInfo.name} (${selectedProfileInfo.auth_mode === 'token' ? t('cloudflare.exposeCard.modeTokenApi') : t('cloudflare.exposeCard.modeCertApi')})`
+											: t('cloudflare.exposeCard.profilePlaceholder')}
 									</span>
 								</Select.Trigger>
 								<Select.Content>
 									<Select.Group>
-										<Select.Label>Profil dengan API Token</Select.Label>
+										<Select.Label>{t('cloudflare.exposeCard.profileGroupLabel')}</Select.Label>
 										{#each apiProfiles as p (p.name)}
 											<Select.Item value={p.name}>
-												{p.name} ({p.auth_mode === 'token' ? 'Token + API' : 'Cert + API'})
+												{p.name} ({p.auth_mode === 'token' ? t('cloudflare.exposeCard.modeTokenApi') : t('cloudflare.exposeCard.modeCertApi')})
 											</Select.Item>
 										{/each}
 									</Select.Group>
@@ -1127,7 +1147,7 @@
 						</Field.Field>
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-local-domain">Domain Lokal</Field.FieldLabel>
+							<Field.FieldLabel for="cf-local-domain">{t('cloudflare.exposeCard.localDomainLabel')}</Field.FieldLabel>
 							{#if localSites.length > 0 && localDomainMode === 'select'}
 								<Select.Root
 									type="single"
@@ -1142,11 +1162,11 @@
 									}}
 								>
 									<Select.Trigger id="cf-local-domain" class="w-full font-mono text-xs">
-										<span class="truncate">{localDomain || 'Pilih domain lokal'}</span>
+										<span class="truncate">{localDomain || t('cloudflare.exposeCard.localDomainPlaceholder')}</span>
 									</Select.Trigger>
 									<Select.Content>
 										<Select.Group>
-											<Select.Label>VHost Lokal Terdaftar</Select.Label>
+											<Select.Label>{t('cloudflare.exposeCard.localDomainGroupLabel')}</Select.Label>
 											{#each localSites as st (st.domain)}
 												<Select.Item value={st.domain} class="font-mono text-xs">
 													{st.domain}
@@ -1154,7 +1174,7 @@
 											{/each}
 											<Select.Separator />
 											<Select.Item value="__custom__">
-												Ketik domain lokal kustom...
+												{t('cloudflare.exposeCard.customLocalItem')}
 											</Select.Item>
 										</Select.Group>
 									</Select.Content>
@@ -1177,7 +1197,7 @@
 													localDomain = localSites.some((st) => st.domain === localDomain) ? localDomain : '';
 												}}
 											>
-												Pilih List
+												{t('cloudflare.exposeCard.selectListBtn')}
 											</InputGroup.Button>
 										</InputGroup.Addon>
 									{/if}
@@ -1189,7 +1209,7 @@
 					<div class="flex flex-col gap-3 rounded-md border bg-muted/25 p-3.5">
 						<div class="flex flex-wrap items-center justify-between gap-2">
 							<span class="text-xs font-medium">
-								Domain Publik Cloudflare ({selectedProfileInfo?.name || profile})
+								{t('cloudflare.exposeCard.publicDomainSection', { profile: selectedProfileInfo?.name || profile })}
 							</span>
 							{#if selectedProfileInfo}
 								<Button
@@ -1200,7 +1220,7 @@
 									onclick={() => loadProfileZones(selectedProfileInfo.name)}
 								>
 									<RotateCwIcon class={cn(zonesLoading && 'animate-spin')} data-icon="inline-start" />
-									{zonesLoading ? 'Memuat...' : 'Muat Ulang Zone'}
+									{zonesLoading ? t('cloudflare.exposeCard.loadingZonesShort') : t('cloudflare.exposeCard.reloadZones')}
 								</Button>
 							{/if}
 						</div>
@@ -1209,14 +1229,14 @@
 							<div class="flex flex-wrap items-center justify-between gap-2 text-xs text-destructive">
 								<span>{zonesError}</span>
 								<Button type="button" variant="outline" size="xs" onclick={() => openApiTokenModal(selectedProfileInfo)}>
-									Perbarui API Token
+									{t('cloudflare.exposeCard.updateApiToken')}
 								</Button>
 							</div>
 						{/if}
 
 						<Field.FieldGroup class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_180px_1fr]">
 							<Field.Field data-disabled={zonesLoading || cfZones.length === 0 ? true : undefined}>
-								<Field.FieldLabel for="cf-zone-select" class="text-xs">Pilih Zone Cloudflare</Field.FieldLabel>
+								<Field.FieldLabel for="cf-zone-select" class="text-xs">{t('cloudflare.exposeCard.selectZoneLabel')}</Field.FieldLabel>
 								<Select.Root
 									type="single"
 									value={selectedZoneName}
@@ -1227,12 +1247,12 @@
 								>
 									<Select.Trigger id="cf-zone-select" class="w-full font-mono text-xs">
 										<span class="truncate">
-											{selectedZoneName || (zonesLoading ? 'Memuat zone...' : '-- Tidak ada zone --')}
+											{selectedZoneName || (zonesLoading ? t('cloudflare.exposeCard.loadingZonesPlaceholder') : t('cloudflare.exposeCard.noZonesPlaceholder'))}
 										</span>
 									</Select.Trigger>
 									<Select.Content>
 										<Select.Group>
-											<Select.Label>Zone Cloudflare</Select.Label>
+											<Select.Label>{t('cloudflare.exposeCard.zoneGroupLabel')}</Select.Label>
 											{#each cfZones as z (z.id)}
 												<Select.Item value={z.name} class="font-mono text-xs">
 													{z.name} ({z.status})
@@ -1244,10 +1264,10 @@
 							</Field.Field>
 
 							<Field.Field data-invalid={subdomainError ? true : undefined}>
-								<Field.FieldLabel for="cf-zone-sub" class="text-xs">Subdomain (Opsional)</Field.FieldLabel>
+								<Field.FieldLabel for="cf-zone-sub" class="text-xs">{t('cloudflare.exposeCard.subdomainLabel')}</Field.FieldLabel>
 								<Input
 									id="cf-zone-sub"
-									placeholder="mis. apps (kosong = apex)"
+									placeholder={t('cloudflare.exposeCard.subdomainPlaceholder')}
 									class="font-mono text-xs"
 									aria-invalid={subdomainError ? true : undefined}
 									value={zoneSubdomain}
@@ -1263,7 +1283,7 @@
 							</Field.Field>
 
 							<Field.Field>
-								<Field.FieldLabel for="cf-public-host" class="text-xs">Preview Domain Publik</Field.FieldLabel>
+								<Field.FieldLabel for="cf-public-host" class="text-xs">{t('cloudflare.exposeCard.previewLabel')}</Field.FieldLabel>
 								<InputGroup.Root class="bg-muted/50">
 									<InputGroup.Addon>
 										<InputGroup.Text class="font-mono text-xs">https://</InputGroup.Text>
@@ -1274,7 +1294,7 @@
 										readonly
 										tabindex={-1}
 										aria-readonly="true"
-										placeholder="Pilih zone terlebih dahulu"
+										placeholder={t('cloudflare.exposeCard.previewPlaceholder')}
 										class="cursor-default font-mono text-xs text-muted-foreground"
 									/>
 								</InputGroup.Root>
@@ -1284,22 +1304,22 @@
 						{#if hostChecking}
 							<div class="flex items-center gap-2 text-xs text-muted-foreground">
 								<Spinner />
-								<span>Memeriksa ketersediaan subdomain...</span>
+								<span>{t('cloudflare.exposeCard.checkingSubdomain')}</span>
 							</div>
 						{:else if hostCheck && !hostCheck.available}
 							<div class="flex flex-wrap items-center justify-between gap-2.5">
 								{@render statusBadgeTooltip(
 									'warning',
 									hostCheck.conflict_source === 'dns'
-										? 'Warn: Record DNS sudah ada'
-										: 'Warn: Subdomain sudah dipakai',
-									hostCheck.message || 'Subdomain sudah digunakan.',
+										? t('cloudflare.exposeCard.warnDnsExists')
+										: t('cloudflare.exposeCard.warnSubTaken'),
+									hostCheck.message || t('cloudflare.exposeCard.subTakenFallback'),
 									hostCheck.dns_records
 								)}
 								<Field.Field orientation="horizontal" class="w-auto">
 									<Checkbox id="cf-allow-overwrite" bind:checked={allowOverwrite} />
 									<Field.FieldLabel for="cf-allow-overwrite" class="text-xs font-normal text-foreground">
-										Timpa yang sudah ada
+										{t('cloudflare.exposeCard.allowOverwriteLabel')}
 									</Field.FieldLabel>
 								</Field.Field>
 							</div>
@@ -1308,15 +1328,15 @@
 								{@render statusBadgeTooltip(
 									'success',
 									hostCheck.dns_records && hostCheck.dns_records.length > 0
-										? 'Terhubung ke tunnel ini'
-										: 'Subdomain tersedia',
-									hostCheck.message || `Subdomain ${hostCheck.public_host} siap digunakan.`,
+										? t('cloudflare.exposeCard.connectedToTunnel')
+										: t('cloudflare.exposeCard.subAvailable'),
+									hostCheck.message || t('cloudflare.exposeCard.subReadyFallback', { host: hostCheck.public_host }),
 									hostCheck.dns_records
 								)}
 								{#if hostCheck.check_error}
 									{@render statusBadgeTooltip(
 										'warning',
-										'Warn: Cek Cloudflare parsial',
+										t('cloudflare.exposeCard.warnPartialCheck'),
 										hostCheck.check_error
 									)}
 								{/if}
@@ -1330,7 +1350,7 @@
 							class="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
 							onclick={() => (showAdvancedService = !showAdvancedService)}
 						>
-							{showAdvancedService ? 'Sembunyikan target service kustom' : 'Atur target service / port lokal kustom (opsional)'}
+							{showAdvancedService ? t('cloudflare.exposeCard.hideCustomTarget') : t('cloudflare.exposeCard.showCustomTarget')}
 						</button>
 
 						<Button
@@ -1344,24 +1364,24 @@
 						>
 							{#if submitting}
 								<Spinner data-icon="inline-start" />
-								Memproses...
+								{t('cloudflare.exposeCard.submitting')}
 							{:else}
 								<CloudUploadIcon data-icon="inline-start" />
-								Ekspos Sekarang
+								{t('cloudflare.exposeCard.submit')}
 							{/if}
 						</Button>
 					</div>
 
 					{#if showAdvancedService}
 						<Field.Field class="max-w-md">
-							<Field.FieldLabel for="cf-service-url">Target Service URL (Opsional)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-service-url">{t('cloudflare.exposeCard.serviceUrlLabel')}</Field.FieldLabel>
 							<Input
 								id="cf-service-url"
-								placeholder="http://127.0.0.1:80 (kosongkan untuk auto Nginx HTTP/HTTPS)"
+								placeholder={t('cloudflare.exposeCard.serviceUrlPlaceholder')}
 								bind:value={serviceUrl}
 							/>
 							<Field.FieldDescription class="text-xs">
-								Kosongkan agar otomatis mengikuti Nginx vhost (HTTP :80 atau HTTPS :443 dengan <code class="font-mono">noTLSVerify</code>).
+								{t('cloudflare.exposeCard.serviceUrlHelpPre')} <code class="font-mono">noTLSVerify</code>{t('cloudflare.exposeCard.serviceUrlHelpPost')}
 							</Field.FieldDescription>
 						</Field.Field>
 					{/if}
@@ -1372,31 +1392,31 @@
 
 	<!-- Tabel Eksposur Aktif -->
 	<section class="flex flex-col gap-3">
-		<h2 class="text-lg font-semibold tracking-tight">Daftar Domain Publik Aktif</h2>
+		<h2 class="text-lg font-semibold tracking-tight">{t('cloudflare.exposuresTable.heading')}</h2>
 		<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
-			<ResponsiveTableWrapper label="Tabel Domain Publik Cloudflare" class="rounded-none border-0 bg-transparent">
+			<ResponsiveTableWrapper label={t('cloudflare.exposuresTable.tableAria')} class="rounded-none border-0 bg-transparent">
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
-							<Table.Head>Domain Lokal</Table.Head>
-							<Table.Head>Domain Publik</Table.Head>
-							<Table.Head>Profil</Table.Head>
-							<Table.Head>Target Service &amp; Origin</Table.Head>
-							<Table.Head class="text-right">Aksi</Table.Head>
+							<Table.Head>{t('cloudflare.exposuresTable.colLocalDomain')}</Table.Head>
+							<Table.Head>{t('cloudflare.exposuresTable.colPublicDomain')}</Table.Head>
+							<Table.Head>{t('cloudflare.exposuresTable.colProfile')}</Table.Head>
+							<Table.Head>{t('cloudflare.exposuresTable.colTarget')}</Table.Head>
+							<Table.Head class="text-right">{t('cloudflare.exposuresTable.colActions')}</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
 						{#if allExposures.length === 0}
 							<Table.Row>
 								<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-									Belum ada exposure Cloudflare Tunnel lokal yang tercatat.
+									{t('cloudflare.exposuresTable.empty')}
 								</Table.Cell>
 							</Table.Row>
 						{:else}
 							{#each paginatedExposures as exp (`${exp.profile}:${exp.local_domain}:${exp.public_host}`)}
 								<Table.Row>
-									<Table.Cell data-label="Domain Lokal" class="font-mono text-xs">{exp.local_domain}</Table.Cell>
-									<Table.Cell data-label="Domain Publik">
+									<Table.Cell data-label={t('cloudflare.exposuresTable.colLocalDomain')} class="font-mono text-xs">{exp.local_domain}</Table.Cell>
+									<Table.Cell data-label={t('cloudflare.exposuresTable.colPublicDomain')}>
 										<a
 											href={`https://${exp.public_host}`}
 											target="_blank"
@@ -1407,11 +1427,11 @@
 											<ExternalLinkIcon class="size-3.5 shrink-0" />
 										</a>
 									</Table.Cell>
-									<Table.Cell data-label="Profil">
+									<Table.Cell data-label={t('cloudflare.exposuresTable.colProfile')}>
 										<Badge variant="outline">{exp.profile}</Badge>
 									</Table.Cell>
-									<Table.Cell data-label="Target Service" class="text-xs text-muted-foreground">
-										<div class="font-mono">{exp.service_url || 'auto (Nginx :80/:443)'}</div>
+									<Table.Cell data-label={t('cloudflare.exposuresTable.colTargetShort')} class="text-xs text-muted-foreground">
+										<div class="font-mono">{exp.service_url || t('cloudflare.exposuresTable.autoTarget')}</div>
 										{#if exp.http_host_header}
 											<div class="mt-0.5 text-[11px]">
 												Host: <span class="font-mono">{exp.http_host_header}</span>
@@ -1421,15 +1441,15 @@
 											</div>
 										{/if}
 									</Table.Cell>
-									<Table.Cell data-label="Aksi" class="text-right">
+									<Table.Cell data-label={t('cloudflare.exposuresTable.colActions')} class="text-right">
 										<div class="flex justify-end gap-1.5">
 											<Button
 												variant="outline"
 												size="icon-xs"
 												disabled={Boolean(exposureDeleting[exp.local_domain])}
 												onclick={() => openEditExposureModal(exp)}
-												title="Ganti domain lokal"
-												aria-label="Ganti domain lokal"
+												title={t('cloudflare.exposuresTable.editLocalTitle')}
+												aria-label={t('cloudflare.exposuresTable.editLocalTitle')}
 											>
 												<PencilIcon />
 											</Button>
@@ -1444,9 +1464,9 @@
 														>
 															{#if exposureDeleting[exp.local_domain]}
 																<Spinner data-icon="inline-start" />
-																Menghapus...
+																{t('cloudflare.exposuresTable.deleting')}
 															{:else}
-																Aksi
+																{t('cloudflare.exposuresTable.colActions')}
 																<ChevronDownIcon data-icon="inline-end" />
 															{/if}
 														</Button>
@@ -1462,7 +1482,7 @@
 															{#snippet child({ props })}
 																<a href={`https://${exp.public_host}`} target="_blank" rel="noopener noreferrer" {...props}>
 																	<ExternalLinkIcon />
-																	<span>Buka URL Publik</span>
+																	<span>{t('cloudflare.exposuresTable.openPublicUrl')}</span>
 																</a>
 															{/snippet}
 														</DropdownMenu.Item>
@@ -1471,7 +1491,7 @@
 															onclick={() => openEditExposureModal(exp)}
 														>
 															<PencilIcon />
-															<span>Edit Domain Lokal</span>
+															<span>{t('cloudflare.exposuresTable.editLocalItem')}</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Separator />
 														<DropdownMenu.Item
@@ -1480,7 +1500,7 @@
 															onclick={() => unexpose(exp.profile, exp.local_domain)}
 														>
 															<Trash2Icon />
-															<span>Hapus Exposure</span>
+															<span>{t('cloudflare.exposuresTable.removeExposure')}</span>
 														</DropdownMenu.Item>
 													</DropdownMenu.Group>
 												</DropdownMenu.Content>
@@ -1497,7 +1517,7 @@
 				bind:page={exposurePage}
 				totalItems={allExposures.length}
 				pageSize={PAGE_SIZE}
-				itemLabel="domain publik"
+				itemLabel={t('cloudflare.exposuresTable.itemLabel')}
 				class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
 			/>
 		</div>
@@ -1513,17 +1533,17 @@
 >
 	<Dialog.Content class="max-h-[90vh] overflow-y-auto sm:max-w-xl">
 		<Dialog.Header>
-			<Dialog.Title>Daftarkan Profil Cloudflare Tunnel</Dialog.Title>
+			<Dialog.Title>{t('cloudflare.addModal.title')}</Dialog.Title>
 			<Dialog.Description>
-				Setiap profil terisolasi dengan kredensial, file konfigurasi, dan service systemd <code class="font-mono">cloudflared@&lt;profil&gt;</code> tersendiri.
+				{t('cloudflare.addModal.descPre')} <code class="font-mono">cloudflared@&lt;profil&gt;</code> {t('cloudflare.addModal.descPost')}
 			</Dialog.Description>
 		</Dialog.Header>
 
 		<Tabs.Root bind:value={addTab} class="mt-2 flex flex-col gap-4">
 			<Tabs.List class="grid w-full grid-cols-3">
-				<Tabs.Trigger value="token">Tunnel Token</Tabs.Trigger>
-				<Tabs.Trigger value="login">Login Browser</Tabs.Trigger>
-				<Tabs.Trigger value="cert">Paste cert.pem</Tabs.Trigger>
+				<Tabs.Trigger value="token">{t('cloudflare.addModal.tabToken')}</Tabs.Trigger>
+				<Tabs.Trigger value="login">{t('cloudflare.addModal.tabLogin')}</Tabs.Trigger>
+				<Tabs.Trigger value="cert">{t('cloudflare.addModal.tabCert')}</Tabs.Trigger>
 			</Tabs.List>
 
 			<!-- Tab 1: Tunnel Token -->
@@ -1531,64 +1551,64 @@
 				<form onsubmit={submitTokenProfile} class="flex flex-col gap-4">
 					<Field.FieldGroup>
 						<Field.Field>
-							<Field.FieldLabel for="cf-tok-name">Nama Profil (Opsional)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-tok-name">{t('cloudflare.addModal.profileNameLabel')}</Field.FieldLabel>
 							<Input
 								id="cf-tok-name"
-								placeholder="Otomatis dari email / nama akun jika dikosongkan"
+								placeholder={t('cloudflare.addModal.tokenNamePlaceholder')}
 								bind:value={tokenName}
 							/>
 							<Field.FieldDescription class="text-xs">
-								Kosongkan untuk menamai profil otomatis dari email atau nama akun Cloudflare (memerlukan API Token) maupun fallback otomatis. Karakter valid: huruf, angka, <code class="font-mono">-</code> atau <code class="font-mono">_</code>.
+								{t('cloudflare.addModal.tokenNameHelpPre')} <code class="font-mono">-</code> {t('cloudflare.addModal.tokenNameHelpOr')} <code class="font-mono">_</code>{t('cloudflare.addModal.tokenNameHelpPost')}
 							</Field.FieldDescription>
 						</Field.Field>
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-tok-val">Tunnel Token Cloudflare Zero Trust</Field.FieldLabel>
+							<Field.FieldLabel for="cf-tok-val">{t('cloudflare.addModal.tunnelTokenLabel')}</Field.FieldLabel>
 							<Textarea
 								id="cf-tok-val"
 								rows={3}
 								class="font-mono text-xs"
-								placeholder="eyJhIjoi... atau paste langsung perintah 'cloudflared service install eyJ...'"
+								placeholder={t('cloudflare.addModal.tunnelTokenPlaceholder')}
 								bind:value={tokenValue}
 								required
 							/>
 						</Field.Field>
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-tok-tunnel">Label Nama Tunnel (Opsional)</Field.FieldLabel>
-							<Input id="cf-tok-tunnel" placeholder="otomatis jika kosong" bind:value={tokenTunnelName} />
+							<Field.FieldLabel for="cf-tok-tunnel">{t('cloudflare.addModal.tunnelLabelLabel')}</Field.FieldLabel>
+							<Input id="cf-tok-tunnel" placeholder={t('cloudflare.addModal.tunnelLabelPlaceholder')} bind:value={tokenTunnelName} />
 						</Field.Field>
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-tok-api">Cloudflare API Token (Opsional)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-tok-api">{t('cloudflare.addModal.apiTokenOptLabel')}</Field.FieldLabel>
 							<Input
 								id="cf-tok-api"
 								type="password"
 								class="font-mono text-xs"
-								placeholder="API Token Cloudflare (izin Zone:Read, DNS:Edit, Cloudflare Tunnel:Edit)"
+								placeholder={t('cloudflare.addModal.tokenApiPlaceholder')}
 								bind:value={tokenApiToken}
 							/>
 							<Field.FieldDescription class="text-xs">
-								Jika diisi, <code class="font-mono">wdev</code> dapat mengambil daftar domain otomatis serta mengatur Public Hostname &amp; DNS CNAME profil Token langsung dari sini.
+								{t('cloudflare.addModal.tokenApiHelpPre')} <code class="font-mono">wdev</code> {t('cloudflare.addModal.tokenApiHelpPost')}
 							</Field.FieldDescription>
 						</Field.Field>
 
 						<Field.Field orientation="horizontal">
 							<Checkbox id="cf-tok-start" bind:checked={tokenAutoStart} />
 							<Field.FieldLabel for="cf-tok-start" class="font-normal">
-								Aktifkan &amp; jalankan service systemd otomatis setelah disimpan
+								{t('cloudflare.addModal.autoStartLabel')}
 							</Field.FieldLabel>
 						</Field.Field>
 					</Field.FieldGroup>
 
 					<Dialog.Footer>
-						<Button type="button" variant="outline" onclick={() => (addModalOpen = false)}>Batal</Button>
+						<Button type="button" variant="outline" onclick={() => (addModalOpen = false)}>{t('cloudflare.addModal.cancel')}</Button>
 						<Button type="submit" disabled={savingToken}>
 							{#if savingToken}
 								<Spinner data-icon="inline-start" />
-								Menyimpan...
+								{t('cloudflare.addModal.saving')}
 							{:else}
-								Simpan &amp; Aktifkan
+								{t('cloudflare.addModal.saveAndActivate')}
 							{/if}
 						</Button>
 					</Dialog.Footer>
@@ -1601,44 +1621,44 @@
 					<form onsubmit={startBrowserLoginFlow} class="flex flex-col gap-4">
 						<Field.FieldGroup>
 							<Field.Field>
-								<Field.FieldLabel for="cf-login-name">Nama Profil (Opsional)</Field.FieldLabel>
+								<Field.FieldLabel for="cf-login-name">{t('cloudflare.addModal.profileNameLabel')}</Field.FieldLabel>
 								<Input
 									id="cf-login-name"
-									placeholder="Otomatis dari email / nama akun setelah login"
+									placeholder={t('cloudflare.addModal.loginNamePlaceholder')}
 									bind:value={loginName}
 								/>
 								<Field.FieldDescription class="text-xs">
-									Kosongkan agar nama profil dibuat otomatis berdasarkan email atau nama akun Cloudflare setelah otorisasi browser selesai.
+									{t('cloudflare.addModal.loginNameHelp')}
 								</Field.FieldDescription>
 							</Field.Field>
 							<Field.Field>
-								<Field.FieldLabel for="cf-login-tunnel">Nama Tunnel Baru di Akun (Opsional)</Field.FieldLabel>
-								<Input id="cf-login-tunnel" placeholder="otomatis: hostname-profil" bind:value={loginTunnelName} />
+								<Field.FieldLabel for="cf-login-tunnel">{t('cloudflare.addModal.loginTunnelLabel')}</Field.FieldLabel>
+								<Input id="cf-login-tunnel" placeholder={t('cloudflare.addModal.loginTunnelPlaceholder')} bind:value={loginTunnelName} />
 								<Field.FieldDescription class="text-xs">
-									Setelah otorisasi browser selesai, <code class="font-mono">wdev</code> akan menyimpan <code class="font-mono">cert.pem</code> terisolasi dan otomatis menjalankan <code class="font-mono">cloudflared tunnel create</code>.
+									{t('cloudflare.addModal.loginTunnelHelpPre')} <code class="font-mono">wdev</code> {t('cloudflare.addModal.loginTunnelHelpMid')} <code class="font-mono">cert.pem</code> {t('cloudflare.addModal.loginTunnelHelpAnd')} <code class="font-mono">cloudflared tunnel create</code>{t('cloudflare.addModal.loginTunnelHelpPost')}
 								</Field.FieldDescription>
 							</Field.Field>
 							<Field.Field>
-								<Field.FieldLabel for="cf-login-api">Cloudflare API Token (Opsional)</Field.FieldLabel>
+								<Field.FieldLabel for="cf-login-api">{t('cloudflare.addModal.apiTokenOptLabel')}</Field.FieldLabel>
 								<Input
 									id="cf-login-api"
 									type="password"
 									class="font-mono text-xs"
-									placeholder="Opsional: izin Zone:Read & DNS:Edit untuk auto-list domain & cleanup DNS"
+									placeholder={t('cloudflare.addModal.loginApiPlaceholder')}
 									bind:value={loginApiToken}
 								/>
 							</Field.Field>
 						</Field.FieldGroup>
 
 						<Dialog.Footer>
-							<Button type="button" variant="outline" onclick={() => (addModalOpen = false)}>Batal</Button>
+							<Button type="button" variant="outline" onclick={() => (addModalOpen = false)}>{t('cloudflare.addModal.cancel')}</Button>
 							<Button type="submit" disabled={startingLogin}>
 								{#if startingLogin}
 									<Spinner data-icon="inline-start" />
-									Menyiapkan URL...
+									{t('cloudflare.addModal.preparingUrl')}
 								{:else}
 									<GlobeIcon data-icon="inline-start" />
-									Mulai Login Cloudflare
+									{t('cloudflare.addModal.startLoginBtn')}
 								{/if}
 							</Button>
 						</Dialog.Footer>
@@ -1647,7 +1667,7 @@
 					<div class="flex flex-col gap-4">
 						<Alert.Root>
 							<InfoIcon />
-							<Alert.Title>Menunggu Otorisasi Cloudflare ({loginSession.profile || 'Nama Profil Otomatis'})</Alert.Title>
+							<Alert.Title>{t('cloudflare.addModal.waitingAuthTitle', { profile: loginSession.profile || t('cloudflare.addModal.autoProfileFallback') })}</Alert.Title>
 							<Alert.Description class="flex flex-col gap-2 text-xs">
 								<p>{loginSession.message}</p>
 								{#if loginSession.auth_url}
@@ -1659,16 +1679,16 @@
 											size="sm"
 										>
 											<ExternalLinkIcon data-icon="inline-start" />
-											Buka Otorisasi Cloudflare
+											{t('cloudflare.addModal.openAuthBtn')}
 										</Button>
 										<Button
 											type="button"
 											variant="outline"
 											size="sm"
-											onclick={() => copyText(loginSession?.auth_url || '', 'URL Otorisasi')}
+											onclick={() => copyText(loginSession?.auth_url || '', t('cloudflare.copyLabels.authUrl'))}
 										>
 											<CopyIcon data-icon="inline-start" />
-											Salin URL
+											{t('cloudflare.addModal.copyUrlBtn')}
 										</Button>
 									</div>
 								{/if}
@@ -1678,7 +1698,7 @@
 						{#if loginSession.status === 'failed' || loginSession.status === 'cancelled'}
 							<Alert.Root variant="destructive">
 								<AlertCircleIcon />
-								<Alert.Title>Proses Login Terhenti</Alert.Title>
+								<Alert.Title>{t('cloudflare.addModal.loginStoppedTitle')}</Alert.Title>
 								<Alert.Description class="font-mono text-xs break-all">
 									{loginSession.error || loginSession.message}
 								</Alert.Description>
@@ -1686,13 +1706,13 @@
 						{:else}
 							<div class="flex items-center gap-2 text-xs text-muted-foreground">
 								<Spinner />
-								<span>Memantau penyelesaian otorisasi dari Cloudflare...</span>
+								<span>{t('cloudflare.addModal.pollingAuth')}</span>
 							</div>
 						{/if}
 
 						<Dialog.Footer>
 							<Button type="button" variant="outline" onclick={cancelLoginFlow}>
-								Tutup / Batalkan
+								{t('cloudflare.addModal.closeCancelBtn')}
 							</Button>
 						</Dialog.Footer>
 					</div>
@@ -1704,27 +1724,27 @@
 				<form onsubmit={submitCertProfile} class="flex flex-col gap-4">
 					<Field.FieldGroup>
 						<Field.Field>
-							<Field.FieldLabel for="cf-cert-name">Nama Profil (Opsional)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-cert-name">{t('cloudflare.addModal.profileNameLabel')}</Field.FieldLabel>
 							<Input
 								id="cf-cert-name"
-								placeholder="Otomatis dari email / nama akun jika dikosongkan"
+								placeholder={t('cloudflare.addModal.tokenNamePlaceholder')}
 								bind:value={certName}
 							/>
 							<Field.FieldDescription class="text-xs">
-								Kosongkan agar nama profil dibuat otomatis berdasarkan email atau nama akun Cloudflare dari <code class="font-mono">cert.pem</code> atau API Token.
+								{t('cloudflare.addModal.certNameHelpPre')} <code class="font-mono">cert.pem</code> {t('cloudflare.addModal.certNameHelpOr')}
 							</Field.FieldDescription>
 						</Field.Field>
 
 						{#if (cfStatus?.detected_local_certs?.length ?? 0) > 0}
 							<Field.Field>
-								<Field.FieldLabel for="cf-local-cert-pick">Import cert.pem Lokal Terdeteksi (Opsional)</Field.FieldLabel>
+								<Field.FieldLabel for="cf-local-cert-pick">{t('cloudflare.addModal.localCertLabel')}</Field.FieldLabel>
 								<Select.Root type="single" bind:value={selectedLocalCert}>
 									<Select.Trigger id="cf-local-cert-pick" class="w-full font-mono text-xs">
-										<span class="truncate">{selectedLocalCert || '-- Pilih file cert.pem lokal --'}</span>
+										<span class="truncate">{selectedLocalCert || t('cloudflare.addModal.localCertPlaceholder')}</span>
 									</Select.Trigger>
 									<Select.Content>
 										<Select.Group>
-											<Select.Label>File cert.pem Terdeteksi</Select.Label>
+											<Select.Label>{t('cloudflare.addModal.localCertGroupLabel')}</Select.Label>
 											{#each cfStatus?.detected_local_certs ?? [] as certPath (certPath)}
 												<Select.Item value={certPath} class="font-mono text-xs">{certPath}</Select.Item>
 											{/each}
@@ -1735,7 +1755,7 @@
 						{/if}
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-cert-pem">Isi File cert.pem (Kosongkan jika import lokal)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-cert-pem">{t('cloudflare.addModal.certPemLabel')}</Field.FieldLabel>
 							<Textarea
 								id="cf-cert-pem"
 								rows={4}
@@ -1746,12 +1766,12 @@
 						</Field.Field>
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-cert-tun">Nama Tunnel (Untuk auto-create jika Credentials JSON kosong)</Field.FieldLabel>
-							<Input id="cf-cert-tun" placeholder="otomatis: hostname-profil" bind:value={certTunnelName} />
+							<Field.FieldLabel for="cf-cert-tun">{t('cloudflare.addModal.certTunLabel')}</Field.FieldLabel>
+							<Input id="cf-cert-tun" placeholder={t('cloudflare.addModal.loginTunnelPlaceholder')} bind:value={certTunnelName} />
 						</Field.Field>
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-cert-cred">Credentials JSON (&lt;uuid&gt;.json — Opsional)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-cert-cred">{t('cloudflare.addModal.certCredLabel')}</Field.FieldLabel>
 							<Textarea
 								id="cf-cert-cred"
 								rows={3}
@@ -1762,12 +1782,12 @@
 						</Field.Field>
 
 						<Field.Field>
-							<Field.FieldLabel for="cf-cert-api">Cloudflare API Token (Opsional)</Field.FieldLabel>
+							<Field.FieldLabel for="cf-cert-api">{t('cloudflare.addModal.apiTokenOptLabel')}</Field.FieldLabel>
 							<Input
 								id="cf-cert-api"
 								type="password"
 								class="font-mono text-xs"
-								placeholder="Opsional: izin Zone:Read & DNS:Edit untuk auto-list domain & cleanup DNS"
+								placeholder={t('cloudflare.addModal.loginApiPlaceholder')}
 								bind:value={certApiToken}
 							/>
 						</Field.Field>
@@ -1775,19 +1795,19 @@
 						<Field.Field orientation="horizontal">
 							<Checkbox id="cf-cert-start" bind:checked={certAutoStart} />
 							<Field.FieldLabel for="cf-cert-start" class="font-normal">
-								Aktifkan &amp; jalankan service systemd otomatis setelah disimpan
+								{t('cloudflare.addModal.autoStartLabel')}
 							</Field.FieldLabel>
 						</Field.Field>
 					</Field.FieldGroup>
 
 					<Dialog.Footer>
-						<Button type="button" variant="outline" onclick={() => (addModalOpen = false)}>Batal</Button>
+						<Button type="button" variant="outline" onclick={() => (addModalOpen = false)}>{t('cloudflare.addModal.cancel')}</Button>
 						<Button type="submit" disabled={savingCert}>
 							{#if savingCert}
 								<Spinner data-icon="inline-start" />
-								Mendaftarkan...
+								{t('cloudflare.addModal.registering')}
 							{:else}
-								Simpan Profil Cert
+								{t('cloudflare.addModal.saveCertBtn')}
 							{/if}
 						</Button>
 					</Dialog.Footer>
@@ -1801,14 +1821,14 @@
 <Dialog.Root bind:open={logsModalOpen}>
 	<Dialog.Content class="max-h-[85vh] sm:max-w-2xl">
 		<Dialog.Header>
-			<Dialog.Title>Log Layanan cloudflared@{logsProfileName}</Dialog.Title>
-			<Dialog.Description>Catatan eksekusi terakhir dari systemd journald.</Dialog.Description>
+			<Dialog.Title>{t('cloudflare.logsModal.title', { name: logsProfileName })}</Dialog.Title>
+			<Dialog.Description>{t('cloudflare.logsModal.desc')}</Dialog.Description>
 		</Dialog.Header>
 		<div class="max-h-[55vh] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap break-all">
 			{#if logsLoading}
 				<div class="flex items-center gap-2 text-muted-foreground">
 					<Spinner />
-					<span>Memuat log...</span>
+					<span>{t('cloudflare.logsModal.loading')}</span>
 				</div>
 			{:else}
 				{logsText}
@@ -1817,9 +1837,9 @@
 		<Dialog.Footer>
 			<Button type="button" variant="outline" size="sm" onclick={refreshProfileLogs} disabled={logsLoading}>
 				<RotateCwIcon data-icon="inline-start" />
-				Muat Ulang
+				{t('cloudflare.logsModal.reload')}
 			</Button>
-			<Button type="button" size="sm" onclick={() => (logsModalOpen = false)}>Tutup</Button>
+			<Button type="button" size="sm" onclick={() => (logsModalOpen = false)}>{t('cloudflare.logsModal.close')}</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
@@ -1828,27 +1848,27 @@
 <Dialog.Root bind:open={apiTokenModalOpen}>
 	<Dialog.Content class="sm:max-w-md">
 		<Dialog.Header>
-			<Dialog.Title>Cloudflare API Token ({apiTokenTargetProfile?.name})</Dialog.Title>
+			<Dialog.Title>{t('cloudflare.apiTokenModal.title', { name: apiTokenTargetProfile?.name ?? '' })}</Dialog.Title>
 			<Dialog.Description>
-				Disimpan terisolasi dengan izin <code class="font-mono">0600</code> di server untuk mengambil daftar domain otomatis, sinkronisasi &amp; pembersihan CNAME DNS, serta pengelolaan tunnel mode Token.
+				{t('cloudflare.apiTokenModal.descPre')} <code class="font-mono">0600</code> {t('cloudflare.apiTokenModal.descPost')}
 			</Dialog.Description>
 		</Dialog.Header>
 		<form onsubmit={submitProfileApiToken} class="flex flex-col gap-4">
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldLabel for="cf-modal-api-token">API Token Cloudflare</Field.FieldLabel>
+					<Field.FieldLabel for="cf-modal-api-token">{t('cloudflare.apiTokenModal.label')}</Field.FieldLabel>
 					<Input
 						id="cf-modal-api-token"
 						type="password"
 						class="font-mono text-xs"
-						placeholder={apiTokenTargetProfile?.has_api_token ? 'Masukkan API Token baru untuk mengganti...' : 'Paste Cloudflare API Token...'}
+						placeholder={apiTokenTargetProfile?.has_api_token ? t('cloudflare.apiTokenModal.replacePlaceholder') : t('cloudflare.apiTokenModal.pastePlaceholder')}
 						bind:value={apiTokenInput}
 					/>
 					<Field.FieldDescription class="text-xs leading-relaxed">
-						Izin yang disarankan di Cloudflare Dashboard → My Profile → API Tokens:
-						<code class="font-mono">Zone:Read</code> (list domain),
-						<code class="font-mono">DNS:Edit</code> (sync/hapus CNAME), dan
-						<code class="font-mono">Cloudflare Tunnel:Edit</code> (wajib untuk atur/hapus tunnel mode Token).
+						{t('cloudflare.apiTokenModal.helpPre')}
+						<code class="font-mono">Zone:Read</code> {t('cloudflare.apiTokenModal.permZoneRead')}
+						<code class="font-mono">DNS:Edit</code> {t('cloudflare.apiTokenModal.permDnsEdit')}
+						<code class="font-mono">Cloudflare Tunnel:Edit</code> {t('cloudflare.apiTokenModal.permTunnelEdit')}
 					</Field.FieldDescription>
 				</Field.Field>
 			</Field.FieldGroup>
@@ -1856,18 +1876,18 @@
 				<div>
 					{#if apiTokenTargetProfile?.has_api_token}
 						<Button type="button" variant="destructive" size="sm" disabled={savingApiToken} onclick={clearProfileApiToken}>
-							Hapus API Token
+							{t('cloudflare.apiTokenModal.removeBtn')}
 						</Button>
 					{/if}
 				</div>
 				<div class="flex gap-2">
-					<Button type="button" variant="outline" size="sm" onclick={() => (apiTokenModalOpen = false)}>Batal</Button>
+					<Button type="button" variant="outline" size="sm" onclick={() => (apiTokenModalOpen = false)}>{t('cloudflare.apiTokenModal.cancel')}</Button>
 					<Button type="submit" size="sm" disabled={savingApiToken}>
 						{#if savingApiToken}
 							<Spinner data-icon="inline-start" />
-							Menyimpan...
+							{t('cloudflare.apiTokenModal.saving')}
 						{:else}
-							Simpan Token
+							{t('cloudflare.apiTokenModal.saveBtn')}
 						{/if}
 					</Button>
 				</div>
@@ -1880,14 +1900,14 @@
 <Dialog.Root bind:open={deleteModalOpen}>
 	<Dialog.Content class="sm:max-w-md">
 		<Dialog.Header>
-			<Dialog.Title>Hapus Profil "{deleteTargetProfile?.name}"</Dialog.Title>
+			<Dialog.Title>{t('cloudflare.deleteModal.title', { name: deleteTargetProfile?.name ?? '' })}</Dialog.Title>
 			<Dialog.Description>
-				Menghentikan layanan <code class="font-mono">{deleteTargetProfile?.service_unit}</code> dan menghapus kredensial serta konfigurasi lokal profil ini.
+				{t('cloudflare.deleteModal.descPre')} <code class="font-mono">{deleteTargetProfile?.service_unit}</code> {t('cloudflare.deleteModal.descPost')}
 			</Dialog.Description>
 		</Dialog.Header>
 		<form onsubmit={confirmDeleteProfile} class="flex flex-col gap-4">
 			<Field.FieldSet class="rounded-md border bg-muted/25 p-3">
-				<Field.FieldLegend variant="label" class="sr-only">Opsi penghapusan jarak jauh</Field.FieldLegend>
+				<Field.FieldLegend variant="label" class="sr-only">{t('cloudflare.deleteModal.legend')}</Field.FieldLegend>
 				<Field.FieldGroup class="gap-3">
 					<Field.Field orientation="horizontal" data-disabled={!canDeleteRemote || deletingProfile ? true : undefined}>
 						<Checkbox
@@ -1897,19 +1917,19 @@
 						/>
 						<Field.FieldContent>
 							<Field.FieldLabel for="cf-del-remote" class="text-xs font-medium">
-								Hapus juga tunnel di server Cloudflare
+								{t('cloudflare.deleteModal.deleteRemoteLabel')}
 							</Field.FieldLabel>
 							<Field.FieldDescription class="text-xs leading-relaxed">
 								{#if canDeleteRemote}
 									{#if deleteTargetProfile?.auth_mode !== 'token' && deleteTargetProfile?.has_cert}
-										Menjalankan <code class="font-mono">cloudflared tunnel delete -f</code> sebelum menghapus <code class="font-mono">cert.pem</code> lokal.
+										{t('cloudflare.deleteModal.deleteRemoteCertDescPre')} <code class="font-mono">cloudflared tunnel delete -f</code> {t('cloudflare.deleteModal.deleteRemoteCertDescPost')} <code class="font-mono">cert.pem</code>.
 									{:else}
-										Menghapus tunnel langsung melalui Cloudflare REST API (<code class="font-mono">cfd_tunnel</code>).
+										{t('cloudflare.deleteModal.deleteRemoteApiDescPre')}<code class="font-mono">cfd_tunnel</code>{t('cloudflare.deleteModal.deleteRemoteApiDescPost')}
 									{/if}
 								{:else if deleteTargetProfile?.auth_mode === 'token'}
-									Tidak tersedia: profil mode Token memerlukan Cloudflare API Token (<code class="font-mono">Cloudflare Tunnel:Edit</code>).
+									{t('cloudflare.deleteModal.deleteRemoteTokenUnavailablePre')}<code class="font-mono">Cloudflare Tunnel:Edit</code>{t('cloudflare.deleteModal.deleteRemoteTokenUnavailablePost')}
 								{:else}
-									Tidak tersedia: <code class="font-mono">cert.pem</code> maupun Cloudflare API Token tidak ditemukan pada profil ini.
+									{t('cloudflare.deleteModal.deleteRemoteMissingUnavailablePre')} <code class="font-mono">cert.pem</code> {t('cloudflare.deleteModal.deleteRemoteMissingUnavailablePost')}
 								{/if}
 							</Field.FieldDescription>
 						</Field.FieldContent>
@@ -1923,15 +1943,15 @@
 						/>
 						<Field.FieldContent>
 							<Field.FieldLabel for="cf-del-dns" class="text-xs font-medium">
-								Hapus juga record DNS CNAME ({deleteTargetProfile?.route_count ?? 0} rute)
+								{t('cloudflare.deleteModal.deleteDnsLabel', { count: deleteTargetProfile?.route_count ?? 0 })}
 							</Field.FieldLabel>
 							<Field.FieldDescription class="text-xs leading-relaxed">
 								{#if canDeleteDNS}
-									Membersihkan record CNAME yang mengarah ke tunnel ini via Cloudflare API.
+									{t('cloudflare.deleteModal.deleteDnsAvailable')}
 								{:else if !deleteTargetProfile?.has_api_token}
-									Tidak tersedia: memerlukan Cloudflare API Token (<code class="font-mono">DNS:Edit</code>).
+									{t('cloudflare.deleteModal.deleteDnsNeedsTokenPre')}<code class="font-mono">DNS:Edit</code>{t('cloudflare.deleteModal.deleteDnsNeedsTokenPost')}
 								{:else}
-									Tidak ada rute aktif yang tercatat pada profil ini.
+									{t('cloudflare.deleteModal.deleteDnsNoRoutes')}
 								{/if}
 							</Field.FieldDescription>
 						</Field.FieldContent>
@@ -1941,14 +1961,14 @@
 
 			<Dialog.Footer>
 				<Button type="button" variant="outline" size="sm" onclick={() => (deleteModalOpen = false)} disabled={deletingProfile}>
-					Batal
+					{t('cloudflare.deleteModal.cancel')}
 				</Button>
 				<Button type="submit" variant="destructive" size="sm" disabled={deletingProfile}>
 					{#if deletingProfile}
 						<Spinner data-icon="inline-start" />
-						Menghapus...
+						{t('cloudflare.deleteModal.deleting')}
 					{:else}
-						Hapus Profil
+						{t('cloudflare.deleteModal.deleteBtn')}
 					{/if}
 				</Button>
 			</Dialog.Footer>
@@ -1960,9 +1980,9 @@
 <Dialog.Root bind:open={editExposureModalOpen}>
 	<Dialog.Content class="sm:max-w-md">
 		<Dialog.Header>
-			<Dialog.Title>Edit Domain Lokal Eksposur</Dialog.Title>
+			<Dialog.Title>{t('cloudflare.editModal.title')}</Dialog.Title>
 			<Dialog.Description>
-				Ganti domain lokal yang diarahkan oleh <code class="font-mono font-semibold text-foreground">{editTargetExposure?.public_host}</code> tanpa menghapus record DNS Cloudflare.
+				{t('cloudflare.editModal.descPre')} <code class="font-mono font-semibold text-foreground">{editTargetExposure?.public_host}</code> {t('cloudflare.editModal.descPost')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -1970,15 +1990,15 @@
 			<form onsubmit={submitExposureEdit} class="flex flex-col gap-4">
 				<div class="flex flex-col gap-2 rounded-md border bg-muted/25 p-3 text-xs">
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<span class="text-muted-foreground">Domain Publik</span>
+						<span class="text-muted-foreground">{t('cloudflare.editModal.publicDomainLabel')}</span>
 						<span class="font-mono font-semibold text-foreground">{editTargetExposure.public_host}</span>
 					</div>
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<span class="text-muted-foreground">Profil Tunnel</span>
+						<span class="text-muted-foreground">{t('cloudflare.editModal.tunnelProfileLabel')}</span>
 						<Badge variant="outline">{editTargetExposure.profile}</Badge>
 					</div>
 					<div class="flex flex-wrap items-center justify-between gap-2">
-						<span class="text-muted-foreground">Domain Lokal Sebelumnya</span>
+						<span class="text-muted-foreground">{t('cloudflare.editModal.previousLocalLabel')}</span>
 						<span class="font-mono text-muted-foreground">{editTargetExposure.local_domain}</span>
 					</div>
 				</div>
@@ -1986,10 +2006,10 @@
 				{#if editMissingApiToken && editProfileInfo}
 					<Alert.Root class="border-warning/40 bg-warning/10">
 						<AlertCircleIcon class="text-warning" />
-						<Alert.Title class="text-warning">Profil Memerlukan API Token</Alert.Title>
+						<Alert.Title class="text-warning">{t('cloudflare.editModal.missingTokenTitle')}</Alert.Title>
 						<Alert.Description class="flex flex-col gap-2 text-xs text-muted-foreground">
 							<p>
-								Profil <code class="font-mono">{editProfileInfo.name}</code> menggunakan mode Token tanpa Cloudflare API Token, sehingga rute ingress tidak bisa diperbarui otomatis.
+								{t('cloudflare.editModal.missingTokenPre')} <code class="font-mono">{editProfileInfo.name}</code> {t('cloudflare.editModal.missingTokenPost')}
 							</p>
 							<div>
 								<Button
@@ -2003,7 +2023,7 @@
 									}}
 								>
 									<KeyRoundIcon data-icon="inline-start" />
-									Pasang API Token ({editProfileInfo.name})
+									{t('cloudflare.editModal.attachTokenBtn', { name: editProfileInfo.name })}
 								</Button>
 							</div>
 						</Alert.Description>
@@ -2013,12 +2033,16 @@
 				<Field.FieldGroup>
 					<Field.Field>
 						<div class="flex flex-wrap items-center justify-between gap-2">
-							<Field.FieldLabel for="cf-edit-local-domain">Domain Lokal Baru</Field.FieldLabel>
+							<Field.FieldLabel for="cf-edit-local-domain">{t('cloudflare.editModal.newLocalDomainLabel')}</Field.FieldLabel>
 							{#if editReassignedLocalConflict}
 								{@render statusBadgeTooltip(
 									'warning',
-									`Warn: Dipakai ${editReassignedLocalConflict.public_host}`,
-									`Domain ${editReassignedLocalConflict.local_domain} saat ini terhubung ke ${editReassignedLocalConflict.public_host} (profil ${editReassignedLocalConflict.profile}). Jika disimpan, rute lama tersebut akan digantikan.`
+									t('cloudflare.editModal.reassignedBadge', { host: editReassignedLocalConflict.public_host }),
+									t('cloudflare.editModal.reassignedTooltip', {
+										local: editReassignedLocalConflict.local_domain,
+										host: editReassignedLocalConflict.public_host,
+										profile: editReassignedLocalConflict.profile
+									})
 								)}
 							{/if}
 						</div>
@@ -2036,25 +2060,25 @@
 								}}
 							>
 								<Select.Trigger id="cf-edit-local-domain" class="w-full font-mono text-xs">
-									<span class="truncate">{editLocalDomain || 'Pilih domain lokal'}</span>
+									<span class="truncate">{editLocalDomain || t('cloudflare.exposeCard.localDomainPlaceholder')}</span>
 								</Select.Trigger>
 								<Select.Content>
 									<Select.Group>
-										<Select.Label>VHost Lokal Terdaftar</Select.Label>
+										<Select.Label>{t('cloudflare.exposeCard.localDomainGroupLabel')}</Select.Label>
 										{#each localSites as st (st.domain)}
 											{@const bound = exposureByLocalDomain[st.domain.toLowerCase()]}
 											<Select.Item value={st.domain} label={st.domain} class="font-mono text-xs">
 												<span class="truncate">{st.domain}</span>
 												{#if bound && bound.public_host.toLowerCase() === editTargetExposure.public_host.toLowerCase()}
-													<Badge variant="secondary" class="font-sans text-[10px]">Saat ini</Badge>
+													<Badge variant="secondary" class="font-sans text-[10px]">{t('cloudflare.editModal.badgeCurrent')}</Badge>
 												{:else if bound}
-													<Badge variant="outline" class="border-warning/40 bg-warning/10 font-sans text-[10px] text-warning">Warn</Badge>
+													<Badge variant="outline" class="border-warning/40 bg-warning/10 font-sans text-[10px] text-warning">{t('cloudflare.editModal.badgeWarn')}</Badge>
 												{/if}
 											</Select.Item>
 										{/each}
 										<Select.Separator />
 										<Select.Item value="__custom__">
-											Ketik domain lokal kustom...
+											{t('cloudflare.exposeCard.customLocalItem')}
 										</Select.Item>
 									</Select.Group>
 								</Select.Content>
@@ -2081,7 +2105,7 @@
 													: '';
 											}}
 										>
-											Pilih List
+											{t('cloudflare.exposeCard.selectListBtn')}
 										</InputGroup.Button>
 									</InputGroup.Addon>
 								{/if}
@@ -2096,21 +2120,21 @@
 							onclick={() => (editShowAdvancedService = !editShowAdvancedService)}
 						>
 							{editShowAdvancedService
-								? 'Sembunyikan target service kustom'
-								: 'Atur target service / port lokal kustom (opsional)'}
+								? t('cloudflare.exposeCard.hideCustomTarget')
+								: t('cloudflare.exposeCard.showCustomTarget')}
 						</button>
 
 						{#if editShowAdvancedService}
 							<Field.Field>
-								<Field.FieldLabel for="cf-edit-service-url">Target Service URL (Opsional)</Field.FieldLabel>
+								<Field.FieldLabel for="cf-edit-service-url">{t('cloudflare.exposeCard.serviceUrlLabel')}</Field.FieldLabel>
 								<Input
 									id="cf-edit-service-url"
 									class="font-mono text-xs"
-									placeholder="http://127.0.0.1:80 (kosongkan untuk auto Nginx HTTP/HTTPS)"
+									placeholder={t('cloudflare.exposeCard.serviceUrlPlaceholder')}
 									bind:value={editServiceUrl}
 								/>
 								<Field.FieldDescription class="text-xs">
-									Kosongkan agar otomatis mengikuti Nginx vhost domain lokal baru (:80 atau :443).
+									{t('cloudflare.editModal.serviceUrlHelp')}
 								</Field.FieldDescription>
 							</Field.Field>
 						{/if}
@@ -2125,7 +2149,7 @@
 						onclick={() => (editExposureModalOpen = false)}
 						disabled={savingExposureEdit}
 					>
-						Batal
+						{t('cloudflare.editModal.cancel')}
 					</Button>
 					<Button
 						type="submit"
@@ -2134,9 +2158,9 @@
 					>
 						{#if savingExposureEdit}
 							<Spinner data-icon="inline-start" />
-							Menyimpan...
+							{t('cloudflare.editModal.saving')}
 						{:else}
-							Simpan Perubahan
+							{t('cloudflare.editModal.saveBtn')}
 						{/if}
 					</Button>
 				</Dialog.Footer>

@@ -1,0 +1,31 @@
+export const toolchainsEn = {
+	title: 'Toolchains, Compilers & SDKs',
+	subtitle: 'Installed version status, official upstream release checks, and system PATH consistency audit.',
+	checkingBtn: 'Checking...',
+	checkUpdatesBtn: 'Check Updates',
+	updateAllBtn: 'Update Toolchains',
+	refreshedToast: 'Official toolchain release info updated.',
+	loadFailed: 'Failed to load toolchains',
+	installedVersion: 'Installed Version',
+	notInstalledValue: 'Not installed',
+	detailLabel: 'Details',
+	latestRelease: 'Latest Official Release',
+	installNowBtn: 'Install Now',
+	updateToBtn: 'Update to {version}',
+	envTitle: 'Environment & Toolchain PATH Diagnostics',
+	envDesc: 'Single environment source in {path} and canonical symlink validation.',
+	auditBtn: 'Audit Duplicates',
+	fixBtn: 'Fix',
+	syncPathBtn: 'Sync PATH',
+	effectivePathOrder: 'Effective Login Shell PATH Order:',
+	descriptions: {
+		rust: 'Modern Rust compiler toolchain with blazing-fast Mold linker and Sccache compiler cache.',
+		go: 'Latest official Go language compiler and toolchain in /usr/local/go.',
+		node: 'Modern v8 LTS JavaScript runtime with npm package manager in /usr/local/lib/nodejs.',
+		java: 'Multi-version OpenJDK Java Development Kit (JDK 17, 21 LTS, and 25).',
+		flutter: 'Cross-platform UI framework for Android, Web, and Desktop in /usr/local/flutter.',
+		android: 'Command Line Tools, Platform Tools, and SDK Platform API in /usr/local/android-sdk.',
+		redis: 'High-speed local in-memory cache server on port 6379.',
+		base: 'Essential build tools, clang, cmake, ninja, curl, git, jq, and distro dev libraries.'
+	}
+};

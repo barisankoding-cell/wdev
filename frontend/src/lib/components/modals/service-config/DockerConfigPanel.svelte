@@ -59,6 +59,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 
@@ -85,12 +86,12 @@
 	let folderPickerOpen = $state(false);
 	let lastSyncedConfigRef: DockerConfig | null = null;
 
-	const logDriverLabels: Record<string, string> = {
-		'json-file': 'json-file (Standar)',
-		local: 'local (Kompresi hemat disk)',
+	const logDriverLabels = $derived<Record<string, string>>({
+		'json-file': t('modals.serviceConfig.docker.driverStandard'),
+		local: t('modals.serviceConfig.docker.driverLocal'),
 		journald: 'journald',
 		none: 'none'
-	};
+	});
 
 	$effect(() => {
 		if (config !== lastSyncedConfigRef) {
@@ -102,27 +103,27 @@
 		}
 	});
 
-	const activePreset = $derived.by((): { key: 'dev' | 'compact' | 'prod' | ''; label: string } => {
+	const activePreset = $derived.by((): 'dev' | 'compact' | 'prod' | 'custom' => {
 		const hasCustomNet =
 			config.data_root.trim() !== '' ||
 			(config.dns?.length ?? 0) > 0 ||
 			(config.registry_mirrors?.length ?? 0) > 0 ||
 			(config.default_address_pool_base ?? '').trim() !== '' ||
 			config.ipv6;
-		if (hasCustomNet) return { key: '', label: 'Custom' };
+		if (hasCustomNet) return 'custom';
 		const ld = (config.log_driver || '').trim().toLowerCase();
 		const ms = (config.log_max_size || '').trim().toLowerCase();
 		const mf = Number.parseInt(logMaxFileStr, 10) || config.log_max_file;
 		if (ld === 'json-file' && ms === '10m' && mf === 3 && config.live_restore && !config.no_new_privileges) {
-			return { key: 'dev', label: 'Dev Standar' };
+			return 'dev';
 		}
 		if ((ld === 'local' || ld === 'json-file') && ms === '10m' && mf === 2 && config.live_restore && !config.no_new_privileges) {
-			return { key: 'compact', label: 'Hemat Disk VPS' };
+			return 'compact';
 		}
 		if (ld === 'json-file' && ms === '50m' && mf === 5 && config.live_restore && config.no_new_privileges) {
-			return { key: 'prod', label: 'Production Hardened' };
+			return 'prod';
 		}
-		return { key: '', label: 'Custom' };
+		return 'custom';
 	});
 
 	function applyPreset(preset: 'dev' | 'compact' | 'prod') {
@@ -182,16 +183,16 @@
 	{#if formError}
 		<Alert.Root variant="destructive">
 			<AlertCircleIcon />
-			<Alert.Title>Penyimpanan Gagal</Alert.Title>
+			<Alert.Title>{t('modals.serviceConfig.common.validationSaveFailed')}</Alert.Title>
 			<Alert.Description>{formError}</Alert.Description>
 		</Alert.Root>
 	{/if}
 
 	{#if !config.installed}
 		<Alert.Root>
-			<Alert.Title>Mode Pra-Konfigurasi (Docker Belum Terpasang)</Alert.Title>
+			<Alert.Title>{t('modals.serviceConfig.docker.preConfigTitle')}</Alert.Title>
 			<Alert.Description class="text-xs">
-				Pengaturan akan disimpan ke <code>{config.config_path || '/etc/docker/daemon.json'}</code> dan otomatis digunakan saat Docker Engine &amp; Compose v5 dipasang.
+				{t('modals.serviceConfig.docker.preConfigDesc', { path: config.config_path || '/etc/docker/daemon.json' })}
 			</Alert.Description>
 		</Alert.Root>
 	{/if}
@@ -199,7 +200,7 @@
 	<Field.FieldSet>
 		<Field.FieldGroup>
 			<Field.Field orientation="responsive">
-				<Field.FieldTitle id="docker-preset-label">Preset Cepat</Field.FieldTitle>
+				<Field.FieldTitle id="docker-preset-label">{t('modals.serviceConfig.common.quickPresets')}</Field.FieldTitle>
 				<div class="flex flex-wrap items-center gap-2">
 					<ToggleGroup.Root
 						type="single"
@@ -207,7 +208,7 @@
 						size="sm"
 						spacing={2}
 						aria-labelledby="docker-preset-label"
-						value={activePreset.key}
+						value={activePreset === 'custom' ? '' : activePreset}
 						onValueChange={(v) => {
 							if (v === 'dev' || v === 'compact' || v === 'prod') {
 								applyPreset(v);
@@ -219,23 +220,23 @@
 							value="dev"
 							class="h-auto min-h-9 py-1.5 text-left text-xs leading-tight whitespace-normal sm:min-h-7 sm:py-0 sm:whitespace-nowrap"
 						>
-							Dev Standar (10m × 3)
+							{t('modals.serviceConfig.docker.presetDevBtn')}
 						</ToggleGroup.Item>
 						<ToggleGroup.Item
 							value="compact"
 							class="h-auto min-h-9 py-1.5 text-left text-xs leading-tight whitespace-normal sm:min-h-7 sm:py-0 sm:whitespace-nowrap"
 						>
-							Hemat Disk VPS (local 10m × 2)
+							{t('modals.serviceConfig.docker.presetCompactBtn')}
 						</ToggleGroup.Item>
 						<ToggleGroup.Item
 							value="prod"
 							class="h-auto min-h-9 py-1.5 text-left text-xs leading-tight whitespace-normal sm:min-h-7 sm:py-0 sm:whitespace-nowrap"
 						>
-							Production Hardened
+							{t('modals.serviceConfig.docker.presetProd')}
 						</ToggleGroup.Item>
 					</ToggleGroup.Root>
-					{#if activePreset.label === 'Custom'}
-						<Badge variant="outline">Custom</Badge>
+					{#if activePreset === 'custom'}
+						<Badge variant="outline">{t('modals.serviceConfig.common.customBadge')}</Badge>
 					{/if}
 				</div>
 			</Field.Field>
@@ -243,33 +244,33 @@
 	</Field.FieldSet>
 
 	<Field.FieldSet>
-		<Field.FieldLegend variant="label">Penyimpanan &amp; Rotasi Log Container</Field.FieldLegend>
+		<Field.FieldLegend variant="label">{t('modals.serviceConfig.docker.storageLegend')}</Field.FieldLegend>
 		<Field.FieldGroup class="gap-4">
 			<Field.Field class="min-w-0">
 				<Field.FieldLabel for="docker-cfg-data-root">
-					Data Root (opsional, default: /var/lib/docker)
+					{t('modals.serviceConfig.docker.dataRootLabel')}
 				</Field.FieldLabel>
 				<InputGroup.Root class="h-10 sm:h-8">
 					<InputGroup.Input
 						id="docker-cfg-data-root"
 						bind:value={config.data_root}
-						placeholder="/var/lib/docker atau /mnt/ssd/docker"
+						placeholder={t('modals.serviceConfig.docker.dataRootPlaceholder')}
 						class="font-mono"
 					/>
 					<InputGroup.Addon align="inline-end">
 						<InputGroup.Button
 							variant="outline"
-							aria-label="Pilih folder Data Root Docker"
+							aria-label={t('modals.serviceConfig.docker.dataRootAria')}
 							onclick={() => (folderPickerOpen = true)}
 						>
 							<FolderOpenIcon data-icon="inline-start" />
-							<span class="hidden sm:inline">Pilih Folder</span>
-							<span class="sm:hidden">Pilih</span>
+							<span class="hidden sm:inline">{t('modals.serviceConfig.docker.chooseFolder')}</span>
+							<span class="sm:hidden">{t('modals.serviceConfig.docker.chooseShort')}</span>
 						</InputGroup.Button>
 					</InputGroup.Addon>
 				</InputGroup.Root>
 				<Field.FieldDescription>
-					Kosongkan untuk jalur default sistem, atau arahkan ke drive eksternal <code>/mnt/...</code> untuk image &amp; volume besar.
+					{t('modals.serviceConfig.docker.dataRootDesc')}
 				</Field.FieldDescription>
 			</Field.Field>
 
@@ -290,8 +291,8 @@
 						</Select.Trigger>
 						<Select.Content>
 							<Select.Group>
-								<Select.Item value="json-file">json-file (Standar)</Select.Item>
-								<Select.Item value="local">local (Kompresi hemat disk)</Select.Item>
+								<Select.Item value="json-file">{t('modals.serviceConfig.docker.driverStandard')}</Select.Item>
+								<Select.Item value="local">{t('modals.serviceConfig.docker.driverLocal')}</Select.Item>
 								<Select.Item value="journald">journald</Select.Item>
 								<Select.Item value="none">none</Select.Item>
 							</Select.Group>
@@ -334,10 +335,10 @@
 	</Field.FieldSet>
 
 	<Field.FieldSet>
-		<Field.FieldLegend variant="label">Jaringan, DNS &amp; Registry</Field.FieldLegend>
+		<Field.FieldLegend variant="label">{t('modals.serviceConfig.docker.networkLegend')}</Field.FieldLegend>
 		<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 			<Field.Field class="min-w-0">
-				<Field.FieldLabel for="docker-cfg-dns">DNS Container (opsional)</Field.FieldLabel>
+				<Field.FieldLabel for="docker-cfg-dns">{t('modals.serviceConfig.docker.dnsLabel')}</Field.FieldLabel>
 				<Input
 					id="docker-cfg-dns"
 					bind:value={dnsText}
@@ -345,11 +346,11 @@
 					placeholder="1.1.1.1, 8.8.8.8"
 					class="h-10 font-mono sm:h-8"
 				/>
-				<Field.FieldDescription>Pisahkan dengan koma bila container butuh resolver kustom.</Field.FieldDescription>
+				<Field.FieldDescription>{t('modals.serviceConfig.docker.dnsDesc')}</Field.FieldDescription>
 			</Field.Field>
 
 			<Field.Field class="min-w-0">
-				<Field.FieldLabel for="docker-cfg-mirrors">Registry Mirrors (opsional)</Field.FieldLabel>
+				<Field.FieldLabel for="docker-cfg-mirrors">{t('modals.serviceConfig.docker.mirrorsLabel')}</Field.FieldLabel>
 				<Input
 					id="docker-cfg-mirrors"
 					bind:value={mirrorsText}
@@ -360,21 +361,21 @@
 			</Field.Field>
 
 			<Field.Field class="min-w-0">
-				<Field.FieldLabel for="docker-cfg-pool-base">Default Address Pool CIDR (opsional)</Field.FieldLabel>
+				<Field.FieldLabel for="docker-cfg-pool-base">{t('modals.serviceConfig.docker.poolBaseLabel')}</Field.FieldLabel>
 				<Input
 					id="docker-cfg-pool-base"
 					bind:value={config.default_address_pool_base}
 					placeholder="172.26.0.0/16"
 					class="h-10 font-mono sm:h-8"
 				/>
-				<Field.FieldDescription>Berguna agar subnet bridge Docker tidak bentrok dengan VPN/LAN.</Field.FieldDescription>
+				<Field.FieldDescription>{t('modals.serviceConfig.docker.poolBaseDesc')}</Field.FieldDescription>
 			</Field.Field>
 
 			<Field.Field
 				class="min-w-0"
 				data-disabled={!(config.default_address_pool_base ?? '').trim() ? 'true' : undefined}
 			>
-				<Field.FieldLabel for="docker-cfg-pool-size">Ukuran Subnet Pool (/prefix)</Field.FieldLabel>
+				<Field.FieldLabel for="docker-cfg-pool-size">{t('modals.serviceConfig.docker.poolSizeLabel')}</Field.FieldLabel>
 				<Input
 					id="docker-cfg-pool-size"
 					type="number"
@@ -390,37 +391,33 @@
 	</Field.FieldSet>
 
 	<Field.FieldSet>
-		<Field.FieldLegend variant="label">Keamanan, Daemon &amp; Akses User</Field.FieldLegend>
+		<Field.FieldLegend variant="label">{t('modals.serviceConfig.docker.securityLegend')}</Field.FieldLegend>
 		<Field.FieldGroup class="gap-3">
 			<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 				<Checkbox id="docker-cfg-live-restore" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={config.live_restore} />
 				<Field.FieldLabel for="docker-cfg-live-restore" class="cursor-pointer text-xs leading-snug font-normal">
-					<span>
-						Aktifkan <code>live-restore</code> (container tetap hidup saat daemon Docker restart/diperbarui)
-					</span>
+					<span>{t('modals.serviceConfig.docker.liveRestoreLabel')}</span>
 				</Field.FieldLabel>
 			</Field.Field>
 
 			<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 				<Checkbox id="docker-cfg-no-new-priv" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={config.no_new_privileges} />
 				<Field.FieldLabel for="docker-cfg-no-new-priv" class="cursor-pointer text-xs leading-snug font-normal">
-					<span>
-						Aktifkan <code>no-new-privileges</code> default pada container (hardening produksi)
-					</span>
+					<span>{t('modals.serviceConfig.docker.noNewPrivLabel')}</span>
 				</Field.FieldLabel>
 			</Field.Field>
 
 			<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 				<Checkbox id="docker-cfg-userland-proxy" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={config.userland_proxy} />
 				<Field.FieldLabel for="docker-cfg-userland-proxy" class="cursor-pointer text-xs leading-snug font-normal">
-					<span>Aktifkan <code>userland-proxy</code> untuk port forwarding Docker</span>
+					<span>{t('modals.serviceConfig.docker.userlandProxyLabel')}</span>
 				</Field.FieldLabel>
 			</Field.Field>
 
 			<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 				<Checkbox id="docker-cfg-ipv6" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={config.ipv6} />
 				<Field.FieldLabel for="docker-cfg-ipv6" class="cursor-pointer text-xs leading-snug font-normal">
-					<span>Aktifkan dukungan IPv6 pada daemon Docker</span>
+					<span>{t('modals.serviceConfig.docker.ipv6Label')}</span>
 				</Field.FieldLabel>
 			</Field.Field>
 
@@ -431,13 +428,13 @@
 					<Checkbox id="docker-cfg-group" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={config.add_user_to_docker_group} />
 					<Field.FieldLabel for="docker-cfg-group" class="cursor-pointer text-xs leading-snug font-normal">
 						<span>
-							Tambahkan user <code class="font-semibold">{config.docker_group_user || 'non-root'}</code> ke grup <code>docker</code>
+							{t('modals.serviceConfig.docker.addUserGroupLabel', { user: config.docker_group_user || 'non-root' })}
 						</span>
 					</Field.FieldLabel>
 				</Field.Field>
 				{#if (config.docker_group_members?.length ?? 0) > 0}
 					<div class="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-						<span>Anggota grup:</span>
+						<span>{t('modals.serviceConfig.docker.groupMembers')}</span>
 						{#each config.docker_group_members ?? [] as member (member)}
 							<Badge variant="secondary" class="font-mono">{member}</Badge>
 						{/each}
@@ -449,7 +446,7 @@
 				<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 					<Checkbox id="docker-cfg-restart" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={config.restart} />
 					<Field.FieldLabel for="docker-cfg-restart" class="cursor-pointer text-xs leading-snug font-medium">
-						<span>Restart <code>docker.service</code> setelah menyimpan konfigurasi</span>
+						<span>{t('modals.serviceConfig.docker.restartAfterSave')}</span>
 					</Field.FieldLabel>
 				</Field.Field>
 			{/if}
@@ -460,14 +457,14 @@
 		<Separator />
 		<div class="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
 			{#if onCancel}
-				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={onCancel}>Batal</Button>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={onCancel}>{t('common.actions.cancel')}</Button>
 			{/if}
 			<Button type="submit" class="min-h-10 sm:min-h-0" disabled={saving}>
 				{#if saving}
 					<Spinner data-icon="inline-start" />
-					Menyimpan...
+					{t('common.actions.saving')}
 				{:else}
-					{config.installed ? 'Simpan & Terapkan' : 'Simpan Pra-Konfigurasi'}
+					{config.installed ? t('modals.serviceConfig.docker.saveApplyBtn') : t('modals.serviceConfig.docker.savePreConfigBtn')}
 				{/if}
 			</Button>
 		</div>
@@ -477,8 +474,8 @@
 <FolderPickerDialog
 	bind:open={folderPickerOpen}
 	initialPath={config.data_root || '/mnt'}
-	title="Pilih Direktori Data Root Docker"
-	description="Pilih atau buat direktori penyimpanan image, volume, dan container Docker."
+	title={t('modals.serviceConfig.docker.pickerTitle')}
+	description={t('modals.serviceConfig.docker.pickerDesc')}
 	onSelect={(picked) => {
 		config.data_root = picked;
 	}}

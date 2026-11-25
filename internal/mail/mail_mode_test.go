@@ -80,8 +80,12 @@ func TestPreflightLocalModeStandaloneWithoutNetbirdOrPDNS(t *testing.T) {
 			t.Fatalf("local mode should not emit NetBird/Edge/Zone/Relay blockers, got %q", b)
 		}
 	}
-	if !containsSubstr(pf.Warnings, "Relay outbound belum disetel") {
+	if !containsSubstr(pf.Warnings, "Outbound relay is not configured yet") {
 		t.Fatalf("expected optional relay warning in local mode, got warnings=%v", pf.Warnings)
+	}
+	pfID := mgr.PreflightLocale("mailtest.local", "id")
+	if !containsSubstr(pfID.Warnings, "Relay outbound belum disetel") {
+		t.Fatalf("expected Indonesian relay warning for id locale, got warnings=%v", pfID.Warnings)
 	}
 }
 
@@ -101,7 +105,7 @@ func TestPreflightVPSModeStandaloneWithoutNetbirdOrRelay(t *testing.T) {
 	if containsSubstr(pf.Blockers, "relay") {
 		t.Fatalf("vps mode must allow setup without external SMTP relay, blockers=%v", pf.Blockers)
 	}
-	if !containsSubstr(pf.Warnings, "SMTP lokal Stalwart") {
+	if !containsSubstr(pf.Warnings, "local Stalwart SMTP") {
 		t.Fatalf("expected default local SMTP info warning in vps mode, warnings=%v", pf.Warnings)
 	}
 }
@@ -118,7 +122,7 @@ func TestPreflightEdgeModeRequiresNetbirdAndGatewayWithoutRelayBlocker(t *testin
 	if containsSubstr(pf.Blockers, "relay") {
 		t.Fatalf("edge mode must allow setup without external SMTP relay, blockers=%v", pf.Blockers)
 	}
-	if !containsSubstr(pf.Warnings, "SMTP lokal Stalwart") {
+	if !containsSubstr(pf.Warnings, "local Stalwart SMTP") {
 		t.Fatalf("expected default local SMTP info warning in edge mode, warnings=%v", pf.Warnings)
 	}
 }

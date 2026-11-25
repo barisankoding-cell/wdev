@@ -5,6 +5,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import { toast } from 'svelte-sonner';
@@ -56,7 +57,7 @@
 			toast.success(msg);
 			return true;
 		} catch {
-			toast.error('Gagal menyalin ke clipboard');
+			toast.error(t('common.clipboard.genericCopyFailed'));
 			return false;
 		}
 	}
@@ -64,7 +65,7 @@
 	async function copyLogs() {
 		const text = cp.terminalLogs.map((l) => l.message).join('\n');
 		if (!text) return;
-		if (await copyText(text, 'Log terminal disalin ke clipboard')) {
+		if (await copyText(text, t('modals.terminalDialog.logsCopiedToast'))) {
 			copied = true;
 			setTimeout(() => (copied = false), 1500);
 		}
@@ -78,7 +79,7 @@
 				<div class="flex min-w-0 items-center gap-2.5">
 					<TerminalIcon class="size-5 shrink-0 text-primary" />
 					<div class="min-w-0">
-						<Dialog.Title class="truncate">Live Terminal Console</Dialog.Title>
+						<Dialog.Title class="truncate">{t('modals.terminalDialog.title')}</Dialog.Title>
 						<Dialog.Description class="truncate font-mono text-xs">
 							{cp.currentTaskName}
 						</Dialog.Description>
@@ -86,13 +87,16 @@
 				</div>
 				<div class="flex items-center gap-2">
 					{#if cp.lastTaskStatus === 'running'}
-						<StatusBadge tone="info" label="Berjalan..." />
+						<StatusBadge tone="info" label={t('modals.terminalDialog.statusRunning')} />
 					{:else if cp.lastTaskStatus === 'success'}
-						<StatusBadge tone="success" label="Selesai" />
+						<StatusBadge tone="success" label={t('modals.terminalDialog.statusSuccess')} />
 					{:else if cp.lastTaskStatus === 'failed'}
-						<StatusBadge tone="destructive" label="Gagal" />
+						<StatusBadge tone="destructive" label={t('modals.terminalDialog.statusFailed')} />
 					{:else}
-						<StatusBadge tone="neutral" label={cp.sseConnected ? 'SSE Standby' : 'Menghubungkan...'} />
+						<StatusBadge
+							tone="neutral"
+							label={cp.sseConnected ? t('modals.terminalDialog.statusStandby') : t('modals.terminalDialog.statusConnecting')}
+						/>
 					{/if}
 				</div>
 			</div>
@@ -101,10 +105,10 @@
 		<Tabs.Root bind:value={activeTab} class="flex min-h-0 flex-1 flex-col gap-2">
 			<div class="flex shrink-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
 				<Tabs.List class="grid w-full grid-cols-2 sm:inline-flex sm:w-auto">
-					<Tabs.Trigger value="live">Live Stream (SSE)</Tabs.Trigger>
+					<Tabs.Trigger value="live">{t('modals.terminalDialog.tabLive')}</Tabs.Trigger>
 					<Tabs.Trigger value="history">
 						<HistoryIcon data-icon="inline-start" />
-						Riwayat ({cp.recentTasks.length})
+						{t('modals.terminalDialog.tabHistory', { count: cp.recentTasks.length })}
 					</Tabs.Trigger>
 				</Tabs.List>
 
@@ -119,10 +123,10 @@
 						>
 							{#if copied}
 								<CheckIcon data-icon="inline-start" />
-								Tersalin
+								{t('common.actions.copied')}
 							{:else}
 								<CopyIcon data-icon="inline-start" />
-								Salin Log
+								{t('modals.terminalDialog.copyLogBtn')}
 							{/if}
 						</Button>
 						<Button
@@ -133,7 +137,7 @@
 							onclick={() => cp.clearTerminal()}
 						>
 							<Trash2Icon data-icon="inline-start" />
-							Bersihkan
+							{t('common.actions.clear')}
 						</Button>
 					</div>
 				{/if}
@@ -158,13 +162,13 @@
 							)}
 						/>
 						<Alert.Title class="text-xs sm:text-sm font-semibold">
-							{cp.lastTaskStatus === 'success' ? 'URL Domain Panel Baru Siap' : 'Target URL Domain Panel Baru'}
+							{cp.lastTaskStatus === 'success' ? t('modals.terminalDialog.panelReadyTitle') : t('modals.terminalDialog.panelTargetTitle')}
 						</Alert.Title>
 						<Alert.Description class="mt-1 space-y-2 text-xs">
 							<p>
 								{cp.lastTaskStatus === 'success'
-									? 'Proses selesai. Akses panel melalui URL resmi berikut:'
-									: 'Setelah proses di Live Terminal selesai, panel dapat diakses melalui:'}
+									? t('modals.terminalDialog.panelReadyDesc')
+									: t('modals.terminalDialog.panelTargetDesc')}
 							</p>
 							<div class="flex flex-wrap items-center gap-2">
 								<code class="bg-background rounded border px-2 py-1 font-mono text-xs">{cp.pendingPanelDomainURL}</code>
@@ -172,10 +176,10 @@
 									size="sm"
 									variant="outline"
 									class="h-7 px-2 text-xs"
-									onclick={() => copyText(cp.pendingPanelDomainURL, 'URL panel disalin ke clipboard')}
+									onclick={() => copyText(cp.pendingPanelDomainURL, t('modals.panelDomain.urlCopied'))}
 								>
 									<CopyIcon class="size-3.5" />
-									Salin
+									{t('common.actions.copy')}
 								</Button>
 								{#if cp.lastTaskStatus === 'success'}
 									<Button
@@ -186,7 +190,7 @@
 										rel="noopener"
 									>
 										<ExternalLinkIcon class="size-3.5" />
-										Buka Panel Baru
+										{t('modals.panelDomain.openNewPanelBtn')}
 									</Button>
 								{/if}
 							</div>
@@ -200,13 +204,13 @@
 					bind:this={logContainer}
 					role="log"
 					aria-live="polite"
-					aria-label="Output Konsol Terminal"
+					aria-label={t('modals.terminalDialog.outputAriaLabel')}
 					tabindex="0"
 					class="min-h-36 flex-1 w-full overflow-auto overscroll-contain rounded-lg border bg-terminal p-3 sm:min-h-[45dvh] sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground"
 				>
 					{#if cp.terminalLogs.length === 0}
 						<p class="text-muted-foreground italic">
-							Menunggu perintah... Pilih aksi instalasi, pengalihan runtime, atau pemeliharaan untuk melihat streaming log di sini.
+							{t('modals.terminalDialog.emptyLogs')}
 						</p>
 					{:else}
 						{#each cp.terminalLogs as entry (entry.id)}
@@ -231,34 +235,34 @@
 			>
 				<div class="flex h-32 shrink-0 flex-col gap-1.5 overflow-y-auto overscroll-contain rounded-lg border p-2 md:h-[50dvh]">
 					{#if cp.recentTasks.length === 0}
-						<p class="p-3 text-center text-xs text-muted-foreground">Belum ada riwayat tugas tersimpan.</p>
+						<p class="p-3 text-center text-xs text-muted-foreground">{t('modals.terminalDialog.noHistory')}</p>
 					{:else}
-						{#each cp.recentTasks as t (t.id)}
+						{#each cp.recentTasks as task (task.id)}
 							<button
 								type="button"
-								onclick={() => (selectedHistoryId = t.id)}
+								onclick={() => (selectedHistoryId = task.id)}
 								class={cn(
 									'flex flex-col gap-1 rounded-md border p-2.5 text-left transition-colors',
-									selectedTask?.id === t.id
+									selectedTask?.id === task.id
 										? 'border-primary bg-accent text-accent-foreground'
 										: 'border-transparent hover:bg-muted/60'
 								)}
 							>
 								<div class="flex items-center justify-between gap-2">
-									<span class="truncate text-xs font-semibold">{t.command}</span>
+									<span class="truncate text-xs font-semibold">{task.command}</span>
 									<Badge
-										variant={t.status === 'success'
+										variant={task.status === 'success'
 											? 'secondary'
-											: t.status === 'failed'
+											: task.status === 'failed'
 												? 'destructive'
 												: 'outline'}
 										class="shrink-0 text-[10px]"
 									>
-										{t.status}
+										{task.status}
 									</Badge>
 								</div>
 								<span class="text-[11px] text-muted-foreground">
-									{new Date(t.started_at).toLocaleString('id-ID')}
+									{i18n.formatDateTime(task.started_at)}
 								</span>
 							</button>
 						{/each}
@@ -266,16 +270,16 @@
 				</div>
 				<pre
 					class="min-h-36 flex-1 overflow-auto overscroll-contain rounded-lg border bg-terminal p-3 sm:p-4 font-mono text-xs leading-relaxed text-terminal-foreground whitespace-pre-wrap break-words md:h-[50dvh]"
-				>{selectedTask ? selectedTask.log_output || '(Log kosong)' : 'Pilih tugas untuk melihat output log.'}</pre>
+				>{selectedTask ? selectedTask.log_output || t('modals.terminalDialog.emptyTaskLog') : t('modals.terminalDialog.selectTaskPrompt')}</pre>
 			</Tabs.Content>
 		</Tabs.Root>
 
 		<Dialog.Footer class="shrink-0 pb-[max(1rem,env(safe-area-inset-bottom,0px))] sm:items-center sm:justify-between">
 			<p class="text-xs text-muted-foreground">
-				Streaming log langsung (SSE). Menutup jendela tidak menghentikan proses di background.
+				{t('modals.terminalDialog.footerHint')}
 			</p>
 			<Button type="button" class="min-h-10 sm:min-h-0" onclick={() => (cp.terminalOpen = false)}>
-				Tutup / Minimalkan
+				{t('modals.terminalDialog.closeMinimizeBtn')}
 			</Button>
 		</Dialog.Footer>
 	</Dialog.Content>

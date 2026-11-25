@@ -17,14 +17,16 @@ import (
 	"syscall"
 	"time"
 
+	"wdev/internal/i18n"
+
 	_ "modernc.org/sqlite"
 )
 
 var (
 	// ErrOrcaCommitAIValidation menandakan input konfigurasi Orca Commit AI tidak valid.
-	ErrOrcaCommitAIValidation = errors.New("validasi konfigurasi orca commit ai gagal")
+	ErrOrcaCommitAIValidation = errors.New("orca commit ai configuration validation failed")
 	// ErrOrcaCommitAIConflict menandakan kondisi runtime/database Orca belum siap atau bentrok.
-	ErrOrcaCommitAIConflict = errors.New("kondisi runtime orca tidak memungkinkan penyimpanan")
+	ErrOrcaCommitAIConflict = errors.New("orca runtime state prevents saving")
 )
 
 const (
@@ -151,35 +153,39 @@ type OrcaCommitAISaveInput struct {
 }
 
 func orcaCommitTemplatePresets() []OrcaCommitTemplatePreset {
+	return orcaCommitTemplatePresetsLocale(i18n.DefaultLocale)
+}
+
+func orcaCommitTemplatePresetsLocale(lang string) []OrcaCommitTemplatePreset {
 	return []OrcaCommitTemplatePreset{
 		{
 			ID:          "conventional-id",
-			Label:       "Conventional Commits (Indonesia)",
-			Description: "Format Conventional Commits ringkas dalam Bahasa Indonesia (maks. 72 karakter).",
+			Label:       i18n.Pick(lang, "Conventional Commits (Indonesian)", "Conventional Commits (Indonesia)"),
+			Description: i18n.Pick(lang, "Concise Conventional Commits format in Indonesian (max 72 chars).", "Format Conventional Commits ringkas dalam Bahasa Indonesia (maks. 72 karakter)."),
 			Prompt:      defaultIndonesianPrompt,
 		},
 		{
 			ID:          "conventional-en",
 			Label:       "Conventional Commits (English)",
-			Description: "Standard Conventional Commits in concise English (under 72 chars).",
+			Description: i18n.Pick(lang, "Standard Conventional Commits in concise English (under 72 chars).", "Conventional Commits standar dalam bahasa Inggris ringkas (maks. 72 karakter)."),
 			Prompt:      defaultEnglishPrompt,
 		},
 		{
 			ID:          "detailed-id",
-			Label:       "Conventional + Ringkasan (Indonesia)",
-			Description: "Judul Conventional Commits + body bullet alasan dan dampak perubahan.",
+			Label:       i18n.Pick(lang, "Conventional + Summary (Indonesian)", "Conventional + Ringkasan (Indonesia)"),
+			Description: i18n.Pick(lang, "Conventional Commits title plus bullet body explaining why and impact.", "Judul Conventional Commits + body bullet alasan dan dampak perubahan."),
 			Prompt:      defaultDetailedIndoPrompt,
 		},
 		{
 			ID:          "gitmoji",
 			Label:       "Gitmoji + Conventional (English)",
-			Description: "Prefiks emoji relevan diikuti tipe Conventional Commits.",
+			Description: i18n.Pick(lang, "Relevant emoji prefix followed by Conventional Commits type.", "Prefiks emoji relevan diikuti tipe Conventional Commits."),
 			Prompt:      defaultGitmojiEnglishPromp,
 		},
 		{
 			ID:          "default",
-			Label:       "Bawaan Orca ({basePrompt} saja)",
-			Description: "Tanpa instruksi tambahan; memakai prompt dasar bawaan Orca.",
+			Label:       i18n.Pick(lang, "Orca Default ({basePrompt} only)", "Bawaan Orca ({basePrompt} saja)"),
+			Description: i18n.Pick(lang, "No extra instructions; uses Orca's built-in base prompt.", "Tanpa instruksi tambahan; memakai prompt dasar bawaan Orca."),
 			Prompt:      "",
 		},
 	}
@@ -512,12 +518,18 @@ func repoHasCommitMessageOverride(repo map[string]any) bool {
 	return false
 }
 
-// GetOrcaCommitAIConfig membaca konfigurasi Orca Commit AI saat ini beserta daftar agent lokal.
+// GetOrcaCommitAIConfig membaca konfigurasi Orca Commit AI saat ini beserta daftar agent lokal (default locale en).
 func GetOrcaCommitAIConfig(ctx context.Context) (*OrcaCommitAIConfig, error) {
+	return GetOrcaCommitAIConfigLocale(ctx, i18n.DefaultLocale)
+}
+
+// GetOrcaCommitAIConfigLocale reads current Orca Commit AI configuration and presets in the requested locale.
+func GetOrcaCommitAIConfigLocale(ctx context.Context, lang string) (*OrcaCommitAIConfig, error) {
+	lang = i18n.Normalize(lang)
 	user, home := resolveOrcaCommitUserFn()
 	profileID, dbPath := ResolveOrcaProfileDBPath(home)
 	agents := detectAvailableCommitAgents(home)
-	presets := orcaCommitTemplatePresets()
+	presets := orcaCommitTemplatePresetsLocale(lang)
 
 	userSvcActive := home != "" && orcaUserSvcActiveFn(ctx, user, home)
 	sysSvcActive := orcaSysSvcActiveFn(ctx)
@@ -741,7 +753,7 @@ func forceQuitOrcaDesktopProcesses(ctx context.Context, cb LogCallback, user str
 		return
 	}
 	if cb != nil {
-		cb("==> Menghentikan Orca ADE Desktop GUI agar konfigurasi Commit AI tersimpan permanen...")
+		cb("==> Stopping Orca ADE Desktop GUI so Commit AI configuration saves permanently...")
 	}
 	signalOrcaPIDs(pids, syscall.SIGTERM)
 	if waitForOrcaDesktopExit(ctx, user, 3*time.Second) {
@@ -897,9 +909,14 @@ func updateDomainJSONDocument(ctx context.Context, conn *sql.Conn, domain, paylo
 	return nil
 }
 
-// SaveOrcaCommitAIConfig menyimpan pengaturan AI Commit Message Generator ke profile-state.db Orca ADE.
+// SaveOrcaCommitAIConfig menyimpan pengaturan AI Commit Message Generator ke profile-state.db Orca ADE (default locale en).
 func SaveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput) (*OrcaCommitAIConfig, error) {
-	return saveOrcaCommitAIConfig(ctx, cb, input, false)
+	return SaveOrcaCommitAIConfigLocale(ctx, cb, input, i18n.DefaultLocale)
+}
+
+// SaveOrcaCommitAIConfigLocale saves AI Commit Message Generator settings using localized log/error messages.
+func SaveOrcaCommitAIConfigLocale(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput, lang string) (*OrcaCommitAIConfig, error) {
+	return saveOrcaCommitAIConfigLocale(ctx, cb, input, false, lang)
 }
 
 func hasBalancedAgentArgQuotes(s string) bool {
@@ -929,24 +946,34 @@ func hasBalancedAgentArgQuotes(s string) bool {
 }
 
 func validateOrcaCommitAISaveInput(input OrcaCommitAISaveInput) (orcaAgentSpec, string, string, error) {
+	return validateOrcaCommitAISaveInputLocale(input, i18n.DefaultLocale)
+}
+
+func validateOrcaCommitAISaveInputLocale(input OrcaCommitAISaveInput, lang string) (orcaAgentSpec, string, string, error) {
+	lang = i18n.Normalize(lang)
 	agentID := strings.TrimSpace(input.AgentID)
 	spec, ok := lookupOrcaAgentSpec(agentID)
 	if !ok {
-		return orcaAgentSpec{}, "", "", fmt.Errorf("%w: agent AI tidak dikenal: %q", ErrOrcaCommitAIValidation, agentID)
+		return orcaAgentSpec{}, "", "", fmt.Errorf(i18n.Pick(lang, "%w: unknown AI agent: %q", "%w: agent AI tidak dikenal: %q"), ErrOrcaCommitAIValidation, agentID)
 	}
 	customCmd := strings.TrimSpace(input.CustomAgentCommand)
 	if agentID == "custom" && customCmd == "" {
-		return orcaAgentSpec{}, "", "", fmt.Errorf("%w: perintah custom agent wajib diisi saat memilih Custom Agent Command", ErrOrcaCommitAIValidation)
+		return orcaAgentSpec{}, "", "", fmt.Errorf(i18n.Pick(lang, "%w: custom agent command is required when selecting Custom Agent Command", "%w: perintah custom agent wajib diisi saat memilih Custom Agent Command"), ErrOrcaCommitAIValidation)
 	}
 	agentArgs := strings.TrimSpace(input.AgentArgs)
 	if !hasBalancedAgentArgQuotes(agentArgs) {
-		return orcaAgentSpec{}, "", "", fmt.Errorf("%w: argumen CLI memiliki tanda kutip yang belum ditutup", ErrOrcaCommitAIValidation)
+		return orcaAgentSpec{}, "", "", fmt.Errorf(i18n.Pick(lang, "%w: CLI arguments have unclosed quotes", "%w: argumen CLI memiliki tanda kutip yang belum ditutup"), ErrOrcaCommitAIValidation)
 	}
 	return spec, customCmd, agentArgs, nil
 }
 
 func saveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput, forceQuitDesktop bool) (*OrcaCommitAIConfig, error) {
-	spec, customCmd, agentArgs, err := validateOrcaCommitAISaveInput(input)
+	return saveOrcaCommitAIConfigLocale(ctx, cb, input, forceQuitDesktop, i18n.DefaultLocale)
+}
+
+func saveOrcaCommitAIConfigLocale(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput, forceQuitDesktop bool, lang string) (*OrcaCommitAIConfig, error) {
+	lang = i18n.Normalize(lang)
+	spec, customCmd, agentArgs, err := validateOrcaCommitAISaveInputLocale(input, lang)
 	if err != nil {
 		return nil, err
 	}
@@ -954,11 +981,11 @@ func saveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommi
 
 	user, home := resolveOrcaCommitUserFn()
 	if home == "" {
-		return nil, fmt.Errorf("%w: direktori home user Orca tidak ditemukan", ErrOrcaCommitAIConflict)
+		return nil, fmt.Errorf(i18n.Pick(lang, "%w: Orca user home directory not found", "%w: direktori home user Orca tidak ditemukan"), ErrOrcaCommitAIConflict)
 	}
 	_, dbPath := ResolveOrcaProfileDBPath(home)
 	if fi, err := os.Stat(dbPath); err != nil || fi.IsDir() {
-		return nil, fmt.Errorf("%w: database profil Orca tidak ditemukan di %s; pastikan Orca ADE sudah terpasang dan pernah dijalankan", ErrOrcaCommitAIConflict, dbPath)
+		return nil, fmt.Errorf(i18n.Pick(lang, "%w: Orca profile database not found at %s; make sure Orca ADE is installed and has been run", "%w: database profil Orca tidak ditemukan di %s; pastikan Orca ADE sudah terpasang dan pernah dijalankan"), ErrOrcaCommitAIConflict, dbPath)
 	}
 
 	wasUserSvc := orcaUserSvcActiveFn(ctx, user, home)
@@ -969,25 +996,25 @@ func saveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommi
 			forceQuitOrcaDesktopForCommitAIFn(ctx, cb, user)
 		}
 		if orcaProcessActiveFn(ctx, user) {
-			return nil, fmt.Errorf("%w: aplikasi Orca ADE Desktop sedang berjalan; tutup Orca terlebih dahulu sebelum menyimpan agar konfigurasi tidak tertimpa", ErrOrcaCommitAIConflict)
+			return nil, fmt.Errorf(i18n.Pick(lang, "%w: Orca ADE Desktop application is running; close Orca first before saving so settings are not overwritten", "%w: aplikasi Orca ADE Desktop sedang berjalan; tutup Orca terlebih dahulu sebelum menyimpan agar konfigurasi tidak tertimpa"), ErrOrcaCommitAIConflict)
 		}
 	}
 
 	if wasSvcActive {
 		if cb != nil {
-			cb("==> Menghentikan layanan Orca sementara agar database tersimpan permanen...")
+			cb(i18n.Pick(lang, "==> Temporarily stopping Orca service so the database saves permanently...", "==> Menghentikan layanan Orca sementara agar database tersimpan permanen..."))
 		}
 		stopOrcaForCommitAIFn(ctx, cb, user, home)
 		waitForOrcaProcessExit(ctx, user, 8*time.Second)
 
 		defer func() {
 			if cb != nil {
-				cb("==> Menjalankan kembali layanan Orca Server...")
+				cb(i18n.Pick(lang, "==> Restarting Orca Server service...", "==> Menjalankan kembali layanan Orca Server..."))
 			}
 			restartCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if err := startOrcaForCommitAIFn(restartCtx, cb, user, home, wasUserSvc); err != nil && cb != nil {
-				cb(fmt.Sprintf("[WARN] Gagal memulai ulang layanan Orca: %v", err))
+				cb(fmt.Sprintf(i18n.Pick(lang, "[WARN] Failed to restart Orca service: %v", "[WARN] Gagal memulai ulang layanan Orca: %v"), err))
 			}
 		}()
 	}
@@ -1000,9 +1027,9 @@ func saveOrcaCommitAIConfig(ctx context.Context, cb LogCallback, input OrcaCommi
 	}
 
 	if cb != nil {
-		cb(fmt.Sprintf("✓ Konfigurasi Orca Commit AI (%s) berhasil disimpan permanen.", spec.Label))
+		cb(fmt.Sprintf(i18n.Pick(lang, "✓ Orca Commit AI configuration (%s) saved permanently.", "✓ Konfigurasi Orca Commit AI (%s) berhasil disimpan permanen."), spec.Label))
 	}
-	return GetOrcaCommitAIConfig(ctx)
+	return GetOrcaCommitAIConfigLocale(ctx, lang)
 }
 
 type sqlQueryContexter interface {
@@ -1230,14 +1257,14 @@ func applyOrcaCommitAIToDB(
 // menerapkan default AI Commit Generator berdasarkan agent CLI yang terpasang.
 func ConfigureDefaultOrcaCommitAI(ctx context.Context, cb LogCallback) error {
 	if cb != nil {
-		cb("==> Memeriksa konfigurasi dan agent AI lokal untuk Orca Commit AI...")
+		cb("==> Checking local AI configuration and agents for Orca Commit AI...")
 	}
 	cur, err := GetOrcaCommitAIConfig(ctx)
 	if err != nil {
 		return err
 	}
 	if !cur.DBExists {
-		return fmt.Errorf("database profil Orca tidak ditemukan di %s; jalankan Orca ADE terlebih dahulu", cur.DBPath)
+		return fmt.Errorf("Orca profile database not found at %s; run Orca ADE first", cur.DBPath)
 	}
 
 	chosenAgent := cur.AgentID

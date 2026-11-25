@@ -13,6 +13,7 @@
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { api } from '#lib/api/client.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import type {
 		OrcaCommitAIConfig,
 		OrcaCommitAIModel,
@@ -73,20 +74,20 @@
 	);
 
 	const syncBadge = $derived.by((): { label: string; variant: BadgeVariant } => {
-		if (!syncStatus?.managed) return { label: 'Belum dikelola', variant: 'outline' };
+		if (!syncStatus?.managed) return { label: t('workspace.commitAi.syncStates.unmanaged'), variant: 'outline' };
 		switch (syncStatus.state) {
 			case 'synced':
-				return { label: 'Sinkron', variant: 'secondary' };
+				return { label: t('workspace.commitAi.syncStates.synced'), variant: 'secondary' };
 			case 'drift':
-				return { label: 'Perlu Sinkron', variant: 'destructive' };
+				return { label: t('workspace.commitAi.syncStates.drift'), variant: 'destructive' };
 			case 'blocked':
-				return { label: 'Orca Aktif', variant: 'destructive' };
+				return { label: t('workspace.commitAi.syncStates.blocked'), variant: 'destructive' };
 			case 'conflict':
-				return { label: 'Konflik', variant: 'destructive' };
+				return { label: t('workspace.commitAi.syncStates.conflict'), variant: 'destructive' };
 			case 'error':
-				return { label: 'Error', variant: 'destructive' };
+				return { label: t('workspace.commitAi.syncStates.error'), variant: 'destructive' };
 			default:
-				return { label: 'Belum dikelola', variant: 'outline' };
+				return { label: t('workspace.commitAi.syncStates.unmanaged'), variant: 'outline' };
 		}
 	});
 
@@ -117,7 +118,7 @@
 	const customCmdError = $derived.by(() => {
 		if (agentId !== 'custom' || !customCmdTouched) return '';
 		return customAgentCommand.trim() === ''
-			? 'Perintah custom agent wajib diisi saat memilih Custom Agent Command.'
+			? t('workspace.commitAi.customCmdRequired')
 			: '';
 	});
 
@@ -249,7 +250,7 @@
 			syncAgentArgsIfAuto(targetAgent, modelId, thinkingLevel);
 		} catch (err) {
 			if (agentId !== targetAgent) return;
-			modelsError = err instanceof Error ? err.message : 'Gagal memuat daftar model agent';
+			modelsError = err instanceof Error ? err.message : t('workspace.commitAi.modelsLoadFailed');
 		} finally {
 			if (agentId === targetAgent) {
 				modelsLoading = false;
@@ -332,7 +333,7 @@
 				agentArgsAutoSync = agentArgs === '';
 			}
 		} catch (err) {
-			loadError = err instanceof Error ? err.message : 'Gagal memuat konfigurasi Orca Commit AI';
+			loadError = err instanceof Error ? err.message : t('workspace.commitAi.loadErrorFallback');
 		} finally {
 			loading = false;
 		}
@@ -342,7 +343,7 @@
 		try {
 			syncStatus = await api.getOrcaCommitAISync();
 		} catch {
-			// Status sinkron bersifat informatif; jangan mengganggu form utama.
+			// Sync status is informational only
 		}
 	}
 
@@ -357,12 +358,12 @@
 				onSaved?.(config);
 			}
 			if (syncStatus?.in_sync) {
-				toast.success(res.message || 'Orca Commit AI sudah sinkron.');
+				toast.success(res.message || t('workspace.commitAi.syncSuccessFallback'));
 			} else {
-				toast.error(res.message || 'Sinkronisasi belum berhasil.');
+				toast.error(res.message || t('workspace.commitAi.syncFailFallback'));
 			}
 		} catch (err) {
-			formError = err instanceof Error ? err.message : 'Gagal menerapkan sinkronisasi';
+			formError = err instanceof Error ? err.message : t('workspace.commitAi.syncErrorFallback');
 			toast.error(formError);
 		} finally {
 			syncing = false;
@@ -384,12 +385,12 @@
 
 		if (agentId === 'custom' && customAgentCommand.trim() === '') {
 			customCmdTouched = true;
-			formError = 'Perintah custom agent wajib diisi sebelum menyimpan.';
+			formError = t('workspace.commitAi.customCmdSaveRequired');
 			customCmdInputRef?.focus();
 			return;
 		}
 		if (!hasBalancedAgentArgQuotes(agentArgs.trim())) {
-			formError = 'Argumen CLI memiliki tanda kutip yang belum ditutup.';
+			formError = t('workspace.commitAi.unbalancedQuotes');
 			agentArgsInputRef?.focus();
 			return;
 		}
@@ -412,16 +413,16 @@
 			config = res.config;
 			syncStatus = res.sync ?? null;
 			if (syncStatus && !syncStatus.in_sync) {
-				formError = res.message || 'Konfigurasi disimpan, tetapi Orca belum sinkron.';
+				formError = res.message || t('workspace.commitAi.saveNotSynced');
 				toast.error(formError);
 				await loadConfig();
 				return;
 			}
-			toast.success(res.message || 'Konfigurasi Orca Commit AI berhasil disimpan dan disinkronkan.');
+			toast.success(res.message || t('workspace.commitAi.saveSuccess'));
 			onSaved?.(res.config);
 			open = false;
 		} catch (err) {
-			formError = err instanceof Error ? err.message : 'Gagal menyimpan konfigurasi Orca Commit AI';
+			formError = err instanceof Error ? err.message : t('workspace.commitAi.saveErrorFallback');
 		} finally {
 			saving = false;
 		}
@@ -434,7 +435,7 @@
 			<div class="flex items-center justify-between gap-2 pr-6">
 				<Dialog.Title id="orca-ai-dialog-title" class="flex items-center gap-2">
 					<SparklesIcon class="size-4 text-primary" />
-					Konfigurasi Orca Commit AI
+					{t('workspace.commitAi.title')}
 					<Badge variant={syncBadge.variant} class="text-[10px]">{syncBadge.label}</Badge>
 				</Dialog.Title>
 				<Button
@@ -443,13 +444,13 @@
 					size="icon-sm"
 					disabled={loading || saving}
 					onclick={() => loadConfig()}
-					aria-label="Muat ulang konfigurasi Commit AI"
+					aria-label={t('workspace.commitAi.reloadAria')}
 				>
 					<RefreshCwIcon class="size-4 {loading ? 'animate-spin' : ''}" />
 				</Button>
 			</div>
 			<Dialog.Description>
-				Pilih agent AI aktif dan template prompt Git Commit Generator yang disimpan langsung ke database profil Orca ADE.
+				{t('workspace.commitAi.description')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -463,13 +464,13 @@
 			<div class="py-4">
 				<Alert.Root variant="destructive" role="alert">
 					<AlertCircleIcon />
-					<Alert.Title>Gagal Memuat Konfigurasi</Alert.Title>
+					<Alert.Title>{t('workspace.commitAi.loadFailedTitle')}</Alert.Title>
 					<Alert.Description>{loadError}</Alert.Description>
 				</Alert.Root>
 			</div>
 			<Dialog.Footer class="shrink-0 border-t border-border/40 pt-3">
-				<Button type="button" variant="outline" onclick={() => loadConfig()}>Coba Lagi</Button>
-				<Button type="button" variant="ghost" onclick={() => (open = false)}>Tutup</Button>
+				<Button type="button" variant="outline" onclick={() => loadConfig()}>{t('workspace.commitAi.retryBtn')}</Button>
+				<Button type="button" variant="ghost" onclick={() => (open = false)}>{t('common.actions.close')}</Button>
 			</Dialog.Footer>
 		{:else if config}
 			<form
@@ -482,7 +483,7 @@
 				{#if formError}
 					<Alert.Root variant="destructive" role="alert">
 						<AlertCircleIcon />
-						<Alert.Title>Penyimpanan Gagal</Alert.Title>
+						<Alert.Title>{t('workspace.commitAi.saveFailedTitle')}</Alert.Title>
 						<Alert.Description>{formError}</Alert.Description>
 					</Alert.Root>
 				{/if}
@@ -491,7 +492,7 @@
 					<div class="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 text-sm">
 						<div class="flex flex-wrap items-center justify-between gap-2">
 							<div class="flex items-center gap-2">
-								<span class="font-medium">Status Sinkronisasi</span>
+								<span class="font-medium">{t('workspace.commitAi.syncStatusTitle')}</span>
 								<Badge variant={syncBadge.variant} class="text-[10px]">{syncBadge.label}</Badge>
 							</div>
 							<Button
@@ -503,29 +504,33 @@
 							>
 								{#if syncing}
 									<Spinner data-icon="inline-start" />
-									Menerapkan...
+									{t('common.actions.applying')}
 								{:else}
-									Terapkan Ulang
+									{t('workspace.commitAi.reapplyBtn')}
 								{/if}
 							</Button>
 						</div>
 						{#if syncStatus.last_applied_at_ms}
 							<p class="text-muted-foreground text-xs">
-								Terakhir diterapkan: {new Date(syncStatus.last_applied_at_ms).toLocaleString('id-ID')}
-								· revisi Orca #{syncStatus.settings_revision}
+								{t('workspace.commitAi.lastApplied', {
+									time: i18n.formatDateTime(syncStatus.last_applied_at_ms),
+									rev: syncStatus.settings_revision
+								})}
 							</p>
 						{/if}
 						{#if syncStatus.drift?.length}
-							<p class="text-destructive text-xs">Perbedaan: {syncStatus.drift.join(', ')}</p>
+							<p class="text-destructive text-xs">
+								{t('workspace.commitAi.driftDiff', { list: syncStatus.drift.join(', ') })}
+							</p>
 						{/if}
 						{#if syncStatus.orca_desktop_open}
 							<p class="text-warning text-xs">
-								Orca Desktop sedang terbuka. Saat menyimpan atau menerapkan ulang, Orca Desktop akan dipaksa keluar agar konfigurasi tidak tertimpa.
+								{t('workspace.commitAi.desktopOpenWarn')}
 							</p>
 						{/if}
 						{#if syncStatus.cloud_linked}
 							<p class="text-muted-foreground text-xs">
-								Profil Orca terhubung cloud — pengaturan dapat ditimpa saat sinkronisasi cloud. wdev akan menerapkan ulang otomatis setiap 30 detik.
+								{t('workspace.commitAi.cloudLinkedNote')}
 							</p>
 						{/if}
 						{#if syncStatus.last_error}
@@ -537,36 +542,36 @@
 				{#if !config.db_exists}
 					<Alert.Root variant="destructive" role="alert">
 						<AlertCircleIcon />
-						<Alert.Title>Database Profil Orca Belum Tersedia</Alert.Title>
+						<Alert.Title>{t('workspace.commitAi.dbMissingTitle')}</Alert.Title>
 						<Alert.Description>
-							File <code class="font-mono text-xs">{config.db_path}</code> belum dibuat. Jalankan layanan Orca ADE terlebih dahulu agar profil diinisialisasi.
+							{t('workspace.commitAi.dbMissingDesc', { path: config.db_path })}
 						</Alert.Description>
 					</Alert.Root>
 				{:else if config.orca_running}
 					<Alert.Root>
 						<InfoIcon />
-						<Alert.Title>Layanan Orca Sedang Aktif</Alert.Title>
+						<Alert.Title>{t('workspace.commitAi.orcaRunningTitle')}</Alert.Title>
 						<Alert.Description>
 							{#if config.orca_mode === 'headless'}
-								Saat menyimpan, layanan Orca Headless akan dihentikan sebentar lalu dimulai ulang secara otomatis agar pengaturan tidak tertimpa oleh cache memori.
+								{t('workspace.commitAi.orcaRunningHeadless')}
 								<span class="mt-1 block text-xs text-muted-foreground">
-									Catatan Web Client: Orca Web Client tidak memuat <code class="font-mono">sourceControlAi</code> dari server dan menyimpan salinannya di browser (<code class="font-mono">orca.web.settings.v1</code>). Jika memakai Web Client, pastikan agent/model/prompt yang sama juga dipilih di Settings Web Client agar tidak menimpa pengaturan server dengan nilai kosong.
+									{t('workspace.commitAi.orcaRunningWebClientNote')}
 								</span>
 							{:else}
-								Saat menyimpan, aplikasi Orca Desktop yang sedang terbuka akan dipaksa keluar agar konfigurasi tersimpan permanen ke database profil.
+								{t('workspace.commitAi.orcaRunningDesktop')}
 							{/if}
 						</Alert.Description>
 					</Alert.Root>
 				{/if}
 
-				<!-- Status aktif -->
+				<!-- Active switch -->
 				<div class="flex items-center justify-between gap-4 rounded-lg border bg-muted/30 p-3">
 					<div class="flex flex-col gap-0.5">
 						<Field.FieldLabel for="orca-ai-enabled" class="cursor-pointer font-medium">
-							Aktifkan AI Commit Message Generator
+							{t('workspace.commitAi.enableLabel')}
 						</Field.FieldLabel>
 						<p class="text-xs text-muted-foreground">
-							Profil aktif: <span class="font-mono font-medium">{config.profile_id}</span>
+							{t('workspace.commitAi.activeProfile')} <span class="font-mono font-medium">{config.profile_id}</span>
 						</p>
 					</div>
 					<Switch id="orca-ai-enabled" bind:checked={enabled} />
@@ -574,10 +579,10 @@
 
 				<!-- Agent Selection -->
 				<Field.FieldSet>
-					<Field.FieldLegend variant="label">Agent AI Aktif</Field.FieldLegend>
+					<Field.FieldLegend variant="label">{t('workspace.commitAi.agentLegend')}</Field.FieldLegend>
 					<Field.FieldGroup>
 						<Field.Field>
-							<Field.FieldLabel for="orca-ai-agent">Agent Generator Commit</Field.FieldLabel>
+							<Field.FieldLabel for="orca-ai-agent">{t('workspace.commitAi.agentLabel')}</Field.FieldLabel>
 							<NativeSelect.Root
 								id="orca-ai-agent"
 								name="agent_id"
@@ -589,23 +594,23 @@
 								{#each config.available_agents as agent (agent.id)}
 									<NativeSelect.Option value={agent.id}>
 										{agent.label} ({agent.id === 'custom'
-											? 'Perintah Kustom'
+											? t('workspace.commitAi.customCmdTag')
 											: agent.installed
-												? 'Terpasang'
-												: 'Belum terpasang'})
+												? t('common.status.installed')
+												: t('common.status.notInstalled')})
 									</NativeSelect.Option>
 								{/each}
 							</NativeSelect.Root>
 							<div id="orca-ai-agent-help" class="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
 								{#if selectedAgent}
 									{#if selectedAgent.id === 'custom'}
-										<Badge variant="outline">Mode Perintah Kustom</Badge>
+										<Badge variant="outline">{t('workspace.commitAi.customCmdModeBadge')}</Badge>
 									{:else if selectedAgent.installed}
-										<Badge variant="secondary">Terpasang</Badge>
+										<Badge variant="secondary">{t('common.status.installed')}</Badge>
 										<span class="truncate font-mono">{selectedAgent.path}</span>
 									{:else}
-										<Badge variant="destructive">Biner "{selectedAgent.binary}" tidak ditemukan</Badge>
-										<span>Pastikan CLI terpasang agar Orca dapat memanggilnya.</span>
+										<Badge variant="destructive">{t('workspace.commitAi.binaryMissingBadge', { binary: selectedAgent.binary ?? '' })}</Badge>
+										<span>{t('workspace.commitAi.binaryMissingHint')}</span>
 									{/if}
 								{/if}
 							</div>
@@ -614,7 +619,7 @@
 						{#if agentId !== 'custom'}
 							<Field.Field>
 								<div class="flex items-center justify-between gap-2">
-									<Field.FieldLabel for="orca-ai-model">Model AI</Field.FieldLabel>
+									<Field.FieldLabel for="orca-ai-model">{t('workspace.commitAi.aiModelLabel')}</Field.FieldLabel>
 									<Button
 										type="button"
 										variant="ghost"
@@ -623,7 +628,7 @@
 										onclick={() => loadAgentModels(agentId, true)}
 									>
 										<RefreshCwIcon class="size-3.5 {modelsLoading ? 'animate-spin' : ''}" data-icon="inline-start" />
-										{modelsLoading ? 'Memuat model...' : 'Muat Ulang Model'}
+										{modelsLoading ? t('workspace.commitAi.loadingModels') : t('workspace.commitAi.reloadModels')}
 									</Button>
 								</div>
 								<NativeSelect.Root
@@ -637,7 +642,7 @@
 								>
 									{#if hasMissingSelectedModel}
 										<NativeSelect.Option value={modelId}>
-											{modelId} (tersimpan)
+											{modelId} {t('workspace.commitAi.savedTag')}
 										</NativeSelect.Option>
 									{/if}
 									{#each models as m (m.id)}
@@ -648,18 +653,18 @@
 								</NativeSelect.Root>
 								<div id="orca-ai-model-help" class="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
 									{#if modelsLoading}
-										<Badge variant="outline">Mengambil daftar model dari CLI...</Badge>
+										<Badge variant="outline">{t('workspace.commitAi.fetchingCliModels')}</Badge>
 									{:else if modelsLiveDiscovered}
-										<Badge variant="secondary">Live CLI ({models.length} model)</Badge>
+										<Badge variant="secondary">{t('workspace.commitAi.liveCliBadge', { count: models.length })}</Badge>
 									{:else if models.length > 0}
-										<Badge variant="outline">{models.length} model tersedia</Badge>
+										<Badge variant="outline">{t('workspace.commitAi.availableModelsBadge', { count: models.length })}</Badge>
 									{/if}
 									{#if !modelsSupportsDiscovery && models.length > 0}
-										<span>Daftar model bawaan agent</span>
+										<span>{t('workspace.commitAi.builtinModelsNote')}</span>
 									{/if}
 									{#if modelsError}
 										<span class="text-amber-600 dark:text-amber-400">
-											Probe CLI: {modelsError} (menampilkan daftar fallback)
+											{t('workspace.commitAi.probeErrorNote', { error: modelsError })}
 										</span>
 									{/if}
 								</div>
@@ -667,7 +672,7 @@
 
 							{#if selectedModelObj?.thinkingLevels && selectedModelObj.thinkingLevels.length > 0}
 								<Field.Field>
-									<Field.FieldLabel for="orca-ai-thinking">Tingkat Reasoning / Thinking</Field.FieldLabel>
+									<Field.FieldLabel for="orca-ai-thinking">{t('workspace.commitAi.thinkingLabel')}</Field.FieldLabel>
 									<NativeSelect.Root
 										id="orca-ai-thinking"
 										name="thinking_level"
@@ -677,14 +682,16 @@
 										aria-describedby="orca-ai-thinking-help"
 									>
 										<NativeSelect.Option value="">
-											Bawaan model ({selectedModelObj.defaultThinkingLevel || 'default'})
+											{t('workspace.commitAi.thinkingDefaultOption', {
+												level: selectedModelObj.defaultThinkingLevel || 'default'
+											})}
 										</NativeSelect.Option>
 										{#each selectedModelObj.thinkingLevels as lvl (lvl.id)}
 											<NativeSelect.Option value={lvl.id}>{lvl.label}</NativeSelect.Option>
 										{/each}
 									</NativeSelect.Root>
 									<Field.FieldDescription id="orca-ai-thinking-help">
-										Mengatur effort / reasoning level yang dikirim ke agent saat membuat pesan commit.
+										{t('workspace.commitAi.thinkingHelp')}
 									</Field.FieldDescription>
 								</Field.Field>
 							{/if}
@@ -693,7 +700,7 @@
 						{#if agentId === 'custom'}
 							<Field.Field>
 								<Field.FieldLabel for="orca-ai-custom-cmd">
-									Perintah Custom Agent <span aria-hidden="true">*</span>
+									{t('workspace.commitAi.customCmdLabel')} <span aria-hidden="true">*</span>
 								</Field.FieldLabel>
 								<Input
 									id="orca-ai-custom-cmd"
@@ -704,7 +711,7 @@
 									autocorrect="off"
 									autocapitalize="none"
 									spellcheck={false}
-									placeholder="contoh: llm -m gpt-4o-mini"
+									placeholder={t('workspace.commitAi.customCmdPlaceholder')}
 									aria-invalid={customCmdError ? 'true' : undefined}
 									aria-describedby={customCmdError
 										? 'orca-ai-custom-cmd-help orca-ai-custom-cmd-err'
@@ -717,7 +724,7 @@
 									}}
 								/>
 								<Field.FieldDescription id="orca-ai-custom-cmd-help">
-									Perintah CLI yang membaca prompt dari stdin / argumen untuk menghasilkan pesan commit.
+									{t('workspace.commitAi.customCmdHelp')}
 								</Field.FieldDescription>
 								{#if customCmdError}
 									<Field.FieldError id="orca-ai-custom-cmd-err">
@@ -732,10 +739,10 @@
 								<Checkbox id="orca-ai-default-tui" bind:checked={updateDefaultTuiAgent} />
 								<div class="grid gap-0.5 leading-none">
 									<Field.FieldLabel for="orca-ai-default-tui" class="cursor-pointer font-normal">
-										Jadikan juga sebagai Default TUI Agent Orca
+										{t('workspace.commitAi.defaultTuiLabel')}
 									</Field.FieldLabel>
 									<p class="text-xs text-muted-foreground">
-										Default saat ini: <span class="font-mono">{config.default_tui_agent || '-'}</span>
+										{t('workspace.commitAi.currentDefaultTui')} <span class="font-mono">{config.default_tui_agent || '-'}</span>
 									</p>
 								</div>
 							</div>
@@ -745,12 +752,12 @@
 
 				<Separator />
 
-				<!-- Template Prompt -->
+				<!-- Prompt Template -->
 				<Field.FieldSet>
-					<Field.FieldLegend variant="label">Template Commit Message</Field.FieldLegend>
+					<Field.FieldLegend variant="label">{t('workspace.commitAi.templateLegend')}</Field.FieldLegend>
 					<Field.FieldGroup>
 						<div class="flex flex-wrap items-center gap-1.5">
-							<span class="mr-1 text-xs font-medium text-muted-foreground">Preset Cepat:</span>
+							<span class="mr-1 text-xs font-medium text-muted-foreground">{t('workspace.commitAi.quickPresets')}</span>
 							{#each config.template_presets as preset (preset.id)}
 								<Button
 									type="button"
@@ -762,29 +769,29 @@
 								</Button>
 							{/each}
 							{#if activePresetId === 'custom'}
-								<Badge variant="outline">Kustom</Badge>
+								<Badge variant="outline">{t('workspace.commitAi.customPresetBadge')}</Badge>
 							{/if}
 						</div>
 
 						<Field.Field>
-							<Field.FieldLabel for="orca-ai-prompt">Instruksi / Template Prompt</Field.FieldLabel>
+							<Field.FieldLabel for="orca-ai-prompt">{t('workspace.commitAi.promptLabel')}</Field.FieldLabel>
 							<Textarea
 								id="orca-ai-prompt"
 								name="custom_prompt"
 								rows={4}
 								bind:value={customPrompt}
 								aria-describedby="orca-ai-prompt-help"
-								placeholder={'Kosongkan untuk memakai prompt bawaan Orca ({basePrompt}), atau tulis aturan format commit...'}
+								placeholder={t('workspace.commitAi.promptPlaceholder', { basePrompt: '{basePrompt}' })}
 							/>
 							<Field.FieldDescription id="orca-ai-prompt-help">
-								Tulis aturan commit (bahasa, format Conventional Commits, batas panjang judul), atau gunakan placeholder <code class="font-mono">&#123;basePrompt&#125;</code> untuk kontrol penuh.
+								{t('workspace.commitAi.promptHelp', { basePrompt: '{basePrompt}' })}
 							</Field.FieldDescription>
 						</Field.Field>
 
 						<Field.Field>
 							<div class="flex items-center justify-between gap-2">
 								<Field.FieldLabel for="orca-ai-agent-args">
-									Argumen CLI (<code class="font-mono">agentArgs</code>)
+									{t('workspace.commitAi.agentArgsLabel')} (<code class="font-mono">agentArgs</code>)
 								</Field.FieldLabel>
 								{#if defaultModelArgs && agentArgs.trim() !== defaultModelArgs}
 									<Button
@@ -794,7 +801,7 @@
 										disabled={saving}
 										onclick={resetAgentArgsToSelectedModel}
 									>
-										Gunakan Model Terpilih
+										{t('workspace.commitAi.useSelectedModelBtn')}
 									</Button>
 								{/if}
 							</div>
@@ -808,7 +815,7 @@
 								spellcheck={false}
 								class="font-mono text-xs"
 								aria-describedby="orca-ai-agent-args-help"
-								placeholder={defaultModelArgs || 'contoh: --model <provider/model>'}
+								placeholder={defaultModelArgs || t('workspace.commitAi.agentArgsPlaceholder')}
 								oninput={() => {
 									agentArgsAutoSync = false;
 									if (hasBalancedAgentArgQuotes(agentArgs.trim())) {
@@ -817,22 +824,22 @@
 								}}
 							/>
 							<Field.FieldDescription id="orca-ai-agent-args-help">
-								Argumen CLI yang disimpan ke <code class="font-mono">actions.commitMessage.agentArgs</code> Orca.
+								{t('workspace.commitAi.agentArgsHelpPrefix')}
 								{#if defaultModelArgs}
-									Otomatis mengikuti model terpilih: <code class="font-mono">{defaultModelArgs}</code>.
+									{t('workspace.commitAi.agentArgsAutoFollow', { args: defaultModelArgs })}
 								{:else if agentId === 'dsh'}
-									Agent ini tidak menggunakan argumen <code class="font-mono">--model</code>.
+									{t('workspace.commitAi.agentArgsNoModel')}
 								{:else if agentId === 'custom'}
-									Opsional: tambahkan flag CLI tambahan untuk perintah custom agent.
+									{t('workspace.commitAi.agentArgsCustomHint')}
 								{:else}
-									Kosongkan untuk memakai default konfigurasi CLI agent.
+									{t('workspace.commitAi.agentArgsDefaultHint')}
 								{/if}
 							</Field.FieldDescription>
 						</Field.Field>
 
 						<div class="rounded-md border bg-muted/40 p-2.5 text-xs">
 							<div class="mb-1 font-medium text-muted-foreground">
-								Pratinjau <code class="font-mono">commandInputTemplate</code> yang disimpan ke Orca:
+								{t('workspace.commitAi.previewLabel')}
 							</div>
 							<pre class="max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground">{previewCommandTemplate}</pre>
 						</div>
@@ -846,13 +853,13 @@
 					<Checkbox id="orca-ai-clear-overrides" bind:checked={clearRepoOverrides} />
 					<div class="grid gap-1 leading-snug">
 						<Field.FieldLabel for="orca-ai-clear-overrides" class="cursor-pointer font-medium">
-							Terapkan ke semua repositori Orca ({config.repo_count} repositori)
+							{t('workspace.commitAi.applyAllReposLabel', { count: config.repo_count })}
 						</Field.FieldLabel>
 						<p class="text-xs text-muted-foreground">
-							Membersihkan override commit message lama per-repositori agar semua proyek langsung mewarisi pengaturan ini.
+							{t('workspace.commitAi.applyAllReposDesc')}
 							{#if config.repo_override_count > 0}
 								<span class="font-medium text-amber-600 dark:text-amber-400">
-									Terdeteksi {config.repo_override_count} repositori memiliki override lokal.
+									{t('workspace.commitAi.repoOverrideWarn', { count: config.repo_override_count })}
 								</span>
 							{/if}
 						</p>
@@ -862,14 +869,14 @@
 
 				<Dialog.Footer class="shrink-0 gap-2 border-t border-border/40 pt-3 pb-[env(safe-area-inset-bottom,0px)] sm:justify-end sm:pb-0">
 					<Button type="button" variant="outline" disabled={saving} onclick={() => (open = false)}>
-						Batal
+						{t('common.actions.cancel')}
 					</Button>
 					<Button type="submit" disabled={saving || !config.db_exists}>
 						{#if saving}
 							<Spinner data-icon="inline-start" />
-							Menyimpan ke Orca...
+							{t('workspace.commitAi.savingToOrca')}
 						{:else}
-							Simpan Konfigurasi
+							{t('workspace.commitAi.saveConfigBtn')}
 						{/if}
 					</Button>
 				</Dialog.Footer>

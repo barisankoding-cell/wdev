@@ -1,4 +1,5 @@
 import { api, ApiError } from '#lib/api/client.js';
+import { i18n, t } from '#lib/i18n/index.svelte.js';
 import type {
 	DockerInstallOptions,
 	ServiceConfigKey,
@@ -24,52 +25,18 @@ export interface ConfirmOptions {
 	destructive?: boolean;
 }
 
-export const COMPONENT_TITLES: Record<string, string> = {
-	rust: 'Rust Toolchain, Mold Linker & Sccache',
-	go: 'Golang (Go Language Toolchain)',
-	node: 'Node.js LTS & NPM',
-	java: 'OpenJDK Java JDK',
-	flutter: 'Flutter SDK Channel Stable',
-	android: 'Android SDK & CLI Tools',
-	redis: 'Redis / Valkey Cache Server',
-	base: 'Dependensi Dasar Sistem',
-	update: 'Perbarui Seluruh Toolchain & Paket Sistem',
-	'full-install': 'Instalasi Lengkap (Full Auto Setup)',
-	'check-updates': 'Pemeriksaan Ketersediaan Pembaruan',
-	'self-check': 'Validasi & Self-Check Sistem',
-	postgres: 'PostgreSQL Database Server',
-	nginx: 'Nginx Web Server',
-	php: 'PHP & PHP-FPM',
-	composer: 'Composer Package Manager',
-	ssl: 'Local SSL (mkcert)',
-	'php-stack': 'Full PHP Web Stack',
-	mail: 'Mail Server Stack (Stalwart + SnappyMail)',
-	'mail-stack': 'Mail Server Stack (Stalwart + SnappyMail)',
-	cloudflare: 'Cloudflare Tunnel (cloudflared)',
-	docker: 'Docker Engine & Compose v5',
-	compose: 'Docker Engine & Compose v5',
-	'docker-compose': 'Docker Engine & Compose v5',
-	netbird: 'NetBird Mesh VPN',
-	pdns: 'PowerDNS Authoritative Server',
-	powerdns: 'PowerDNS Authoritative Server',
-	zsh: 'Oh My Zsh Shell',
-	'zsh-p10k': 'Oh My Zsh (Tema Powerlevel10k)',
-	'zsh-agnoster': 'Oh My Zsh (Tema Agnoster)',
-	'zsh-robbyrussell': 'Oh My Zsh (Tema Robbyrussell)',
-	orca: 'Orca ADE Desktop GUI',
-	'orca-desktop': 'Orca ADE Desktop GUI',
-	'orca-headless': 'Orca ADE Headless Server',
-	'orca-update': 'Pembaruan Orca ADE',
-	'orca-switch-desktop': 'Alih Mode Orca ADE ke Desktop GUI',
-	'orca-switch-headless': 'Alih Mode Orca ADE ke Headless Server',
-	'orca-uninstall': 'Uninstall Orca ADE',
-	'orca-pair': 'Info Pairing Orca ADE',
-	'orca-ai': 'Konfigurasi Orca Commit AI',
-	audit: 'Audit Duplikat Path & Toolchain',
-	'audit-fix': 'Perbaikan Duplikat Path & Toolchain',
-	'sync-hosts': 'Sinkronisasi Hosts & SSL Lokal',
-	'cf-doctor': 'Diagnostik Cloudflare Tunnel'
-};
+export function getComponentTitle(component: string): string {
+	return i18n.tryTranslate(`stores.cp.components.${component}`) ?? component;
+}
+
+export const COMPONENT_TITLES: Record<string, string> = new Proxy(
+	{},
+	{
+		get(_target, prop) {
+			return typeof prop === 'string' ? getComponentTitle(prop) : undefined;
+		}
+	}
+);
 
 const TERMINAL_STORAGE_KEY = 'wdev:terminal:v1';
 const MAX_TERMINAL_LOGS = 1500;
@@ -107,10 +74,10 @@ class ControlPlaneStore {
 	// Confirm AlertDialog state
 	confirmOpen = $state(false);
 	confirmConfig = $state<ConfirmOptions>({
-		title: 'Konfirmasi Tindakan',
+		title: '',
 		description: '',
-		confirmText: 'Lanjutkan',
-		cancelText: 'Batal',
+		confirmText: '',
+		cancelText: '',
 		destructive: false
 	});
 	private confirmResolve: ((confirmed: boolean) => void) | null = null;
@@ -208,7 +175,7 @@ class ControlPlaneStore {
 			this.systemStatus = data;
 			this.statusError = null;
 		} catch (err) {
-			this.statusError = err instanceof Error ? err.message : 'Gagal memuat status sistem';
+			this.statusError = err instanceof Error ? err.message : t('stores.cp.loadStatusError');
 		} finally {
 			this.statusLoading = false;
 		}
@@ -311,7 +278,7 @@ class ControlPlaneStore {
 		this.isTaskRunning = false;
 		this.lastTaskStatus = 'success';
 		this.saveTerminalState();
-		toast.success('wdev berhasil diperbarui. Memuat ulang halaman...');
+		toast.success(t('stores.cp.selfUpdateReloading'));
 		setTimeout(() => {
 			window.location.reload();
 		}, 600);
@@ -324,6 +291,7 @@ class ControlPlaneStore {
 		const params = new URLSearchParams();
 		if (this.lastSeq > 0) params.set('last_seq', String(this.lastSeq));
 		if (this.instanceId) params.set('instance_id', this.instanceId);
+		params.set('lang', i18n.locale);
 		const qs = params.toString();
 		const es = new EventSource(qs ? `/api/tasks/events?${qs}` : '/api/tasks/events');
 		this.eventSource = es;
@@ -370,20 +338,20 @@ class ControlPlaneStore {
 		}
 
 		const timeStr = evt.timestamp
-			? new Date(evt.timestamp).toLocaleTimeString('id-ID')
-			: new Date().toLocaleTimeString('id-ID');
+			? i18n.formatTime(evt.timestamp)
+			: i18n.formatTime();
 
 		if (evt.type === 'start') {
 			this.isTaskRunning = true;
 			this.lastTaskStatus = 'running';
-			const cleanTask = (evt.message || '').replace(/^Memulai:\s*/, '').trim();
+			const cleanTask = (evt.message || '').replace(/^(?:Memulai|Starting):\s*/i, '').trim();
 			if (cleanTask) {
 				this.currentTaskName = cleanTask;
-				if (!evt.replay && !cleanTask.startsWith('Bind Domain Panel')) {
+				if (!evt.replay && !cleanTask.startsWith('Bind Domain Panel') && !cleanTask.startsWith('Bind Panel Domain')) {
 					this.pendingPanelDomainURL = '';
 				}
 			}
-			if (!evt.replay && cleanTask === 'Pembaruan Biner wdev') {
+			if (!evt.replay && (cleanTask === 'Pembaruan Biner wdev' || cleanTask === 'wdev Binary Update')) {
 				this.armSelfUpdateReload();
 			}
 			if (!evt.replay) {
@@ -412,16 +380,16 @@ class ControlPlaneStore {
 			if (!evt.replay) {
 				if (this.pendingRestartReload) {
 					if (ok) {
-						toast.info('Pembaruan biner selesai. Menunggu wdev restart untuk memuat ulang halaman...');
+						toast.info(t('stores.cp.selfUpdateWaitingRestart'));
 						this.scheduleSelfUpdateFallbackReload(0);
 					} else {
 						this.cancelSelfUpdateReload();
-						toast.error(`Tugas gagal: ${this.currentTaskName}`);
+						toast.error(t('stores.cp.taskFailed', { name: this.currentTaskName }));
 					}
 				} else if (ok) {
-					toast.success(`Tugas selesai: ${this.currentTaskName}`);
+					toast.success(t('stores.cp.taskSuccess', { name: this.currentTaskName }));
 				} else {
-					toast.error(`Tugas gagal: ${this.currentTaskName}`);
+					toast.error(t('stores.cp.taskFailed', { name: this.currentTaskName }));
 				}
 			}
 			setTimeout(() => {
@@ -474,10 +442,10 @@ class ControlPlaneStore {
 			this.confirmResolve = null;
 		}
 		this.confirmConfig = {
-			title: opts.title ?? 'Konfirmasi Tindakan',
+			title: opts.title ?? t('stores.cp.confirmDefaultTitle'),
 			description: opts.description,
-			confirmText: opts.confirmText ?? 'Lanjutkan',
-			cancelText: opts.cancelText ?? 'Batal',
+			confirmText: opts.confirmText ?? t('stores.cp.confirmDefaultContinue'),
+			cancelText: opts.cancelText ?? t('stores.cp.confirmDefaultCancel'),
 			destructive: opts.destructive ?? false
 		};
 		this.confirmOpen = true;
@@ -540,7 +508,7 @@ class ControlPlaneStore {
 				return res;
 			} catch (err) {
 				if (err instanceof ApiError && err.status === 401) {
-					errHint = 'Password sudo tidak valid. Silakan coba lagi.';
+					errHint = t('stores.cp.sudoInvalidPassword');
 					const entered = await this.requestSudo(sudoMessage, errHint);
 					if (!entered) return null;
 					sudoPass = entered;
@@ -560,43 +528,42 @@ class ControlPlaneStore {
 		this.isPrivilegedPending = true;
 		try {
 			const ok = await this.confirm({
-				title: 'Konfirmasi Instalasi / Pembaruan',
+				title: t('stores.cp.installConfirmTitle'),
 				description: confirmDescription,
-				confirmText: 'Lanjutkan'
+				confirmText: t('stores.cp.confirmDefaultContinue')
 			});
 			if (!ok) return;
 
-			const res = await this.runWithSudoRetry(
-				'Operasi pemeliharaan/instalasi ini memerlukan hak akses administrator (sudo).',
-				invoke
-			);
+			const res = await this.runWithSudoRetry(t('stores.cp.installSudoPrompt'), invoke);
 			if (res) {
 				this.openTerminal(terminalLabel);
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memulai tugas instalasi');
+			toast.error(err instanceof Error ? err.message : t('stores.cp.installStartFailed'));
 		} finally {
 			this.isPrivilegedPending = false;
 		}
 	}
 
 	async triggerInstall(component: string, version?: string) {
-		const friendly = COMPONENT_TITLES[component] ?? component;
+		const friendly = getComponentTitle(component);
 		const label = version ? `${friendly} (${version})` : friendly;
 		await this.runInstallWithConfirm(
 			label,
-			`Jalankan operasi instalasi / pembaruan untuk: ${label}?`,
+			t('stores.cp.installConfirmSingle', { label }),
 			(sudoPass) => api.triggerInstall(component, version, sudoPass)
 		);
 	}
 
 	async triggerDockerInstall(dockerOptions: DockerInstallOptions) {
-		const label = 'Docker Engine & Compose v5';
+		const label = getComponentTitle('docker');
 		const sourceLabel =
-			dockerOptions.source === 'distro' ? 'Repositori Distro' : 'Repositori Resmi Docker';
+			dockerOptions.source === 'distro'
+				? t('stores.cp.dockerRepoDistro')
+				: t('stores.cp.dockerRepoOfficial');
 		await this.runInstallWithConfirm(
 			label,
-			`Pasang / perbarui Docker Engine & Compose v5 (${sourceLabel}) dan terapkan konfigurasi /etc/docker/daemon.json?`,
+			t('stores.cp.dockerInstallConfirm', { source: sourceLabel }),
 			(sudoPass) => api.triggerInstall('docker', undefined, sudoPass, dockerOptions)
 		);
 	}
@@ -606,18 +573,18 @@ class ControlPlaneStore {
 		items: { component: string; version?: string }[]
 	) {
 		if (items.length === 0) {
-			toast.error('Pilih minimal satu komponen untuk dipasang.');
+			toast.error(t('stores.cp.batchSelectAtLeastOne'));
 			return;
 		}
 		const summary = items
 			.map((it) => {
-				const friendly = COMPONENT_TITLES[it.component] ?? it.component;
+				const friendly = getComponentTitle(it.component);
 				return it.version ? `${friendly} (${it.version})` : friendly;
 			})
 			.join(', ');
 		await this.runInstallWithConfirm(
 			label,
-			`Jalankan ${label} secara berurutan (${items.length} komponen): ${summary}?`,
+			t('stores.cp.batchInstallConfirm', { label, count: items.length, summary }),
 			(sudoPass) => api.triggerBatchInstall(items, label, sudoPass)
 		);
 	}
@@ -635,26 +602,26 @@ class ControlPlaneStore {
 
 		const confirmDescription =
 			type === 'pg'
-				? `Beralih ke PostgreSQL ${version}? Seluruh role dan database dari versi aktif akan dibackup dan dimigrasikan secara otomatis (cluster lama tetap disimpan aman).`
-				: `Beralih versi runtime ${label} ke versi ${version}?`;
+				? t('stores.cp.switchPgConfirm', { version })
+				: t('stores.cp.switchGenericConfirm', { label, version });
 
 		try {
 			const ok = await this.confirm({
-				title: 'Konfirmasi Pengalihan Runtime',
+				title: t('stores.cp.switchConfirmTitle'),
 				description: confirmDescription,
-				confirmText: 'Beralih Sekarang'
+				confirmText: t('stores.cp.switchNowBtn')
 			});
 			if (!ok) return;
 
 			const res = await this.runWithSudoRetry(
-				`Pengalihan runtime ${label} memerlukan hak akses administrator (sudo).`,
+				t('stores.cp.switchSudoPrompt', { label }),
 				(sudoPass) => api.switchRuntime(type, version, sudoPass)
 			);
 			if (res) {
 				this.openTerminal(`Switch ${label} -> ${version}`);
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal beralih runtime');
+			toast.error(err instanceof Error ? err.message : t('stores.cp.switchFailed'));
 		} finally {
 			this.isPrivilegedPending = false;
 		}
@@ -665,22 +632,21 @@ class ControlPlaneStore {
 		this.isPrivilegedPending = true;
 		try {
 			const ok = await this.confirm({
-				title: 'Sinkronkan Environment PATH',
-				description:
-					'Tulis ulang /etc/profile.d/wdev.sh, bersihkan profile duplikat, dan selaraskan symlink /usr/local/bin ke lokasi kanonik wdev?',
-				confirmText: 'Sinkronkan Sekarang'
+				title: t('stores.cp.syncEnvTitle'),
+				description: t('stores.cp.syncEnvConfirm'),
+				confirmText: t('stores.cp.syncEnvBtn')
 			});
 			if (!ok) return;
 
 			const res = await this.runWithSudoRetry(
-				'Sinkronisasi environment toolchain memerlukan hak akses administrator (sudo).',
+				t('stores.cp.syncEnvSudoPrompt'),
 				(sudoPass) => api.syncEnv(sudoPass)
 			);
 			if (res) {
-				this.openTerminal('Sinkronisasi Environment Toolchain (PATH)');
+				this.openTerminal(t('stores.cp.syncEnvTaskLabel'));
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menyinkronkan environment');
+			toast.error(err instanceof Error ? err.message : t('stores.cp.syncEnvFailed'));
 		} finally {
 			this.isPrivilegedPending = false;
 		}

@@ -23,6 +23,7 @@
 	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import { cn } from '#lib/utils.js';
@@ -258,9 +259,9 @@
 		if (!val || val === '-') return;
 		try {
 			await navigator.clipboard.writeText(val);
-			toast.success(`${label} (${val}) disalin.`);
+			toast.success(t('powerdns.toasts.copied', { label, value: val }));
 		} catch {
-			toast.error(`Gagal menyalin ${label}.`);
+			toast.error(t('powerdns.toasts.copyFailed', { label }));
 		}
 	}
 
@@ -287,7 +288,7 @@
 			if (st.pdns_port) connPDNSPort = st.pdns_port;
 			if (st.agent_port) connAgentPort = st.agent_port;
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat status PowerDNS');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.statusLoadError'));
 		}
 
 		await Promise.all([
@@ -306,7 +307,7 @@
 			zones = (await api.listPDNSZones()) ?? [];
 		} catch (err) {
 			zones = [];
-			zonesError = err instanceof Error ? err.message : 'Gagal memuat zone DNS';
+			zonesError = err instanceof Error ? err.message : t('powerdns.toasts.zonesLoadError');
 		}
 	}
 
@@ -317,7 +318,7 @@
 			exposures = (await api.listPDNSExposures()) ?? [];
 		} catch (err) {
 			exposures = [];
-			exposuresError = err instanceof Error ? err.message : 'Edge VPS tidak dapat dihubungi';
+			exposuresError = err instanceof Error ? err.message : t('powerdns.toasts.edgeUnreachable');
 		} finally {
 			refreshingExposures = false;
 		}
@@ -344,9 +345,9 @@
 		startingPDNS = true;
 		try {
 			await api.controlService('pdns', 'restart');
-			toast.success('Layanan PowerDNS dijalankan.');
+			toast.success(t('powerdns.toasts.pdnsStarted'));
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menjalankan PowerDNS');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.pdnsStartError'));
 		} finally {
 			startingPDNS = false;
 		}
@@ -431,32 +432,32 @@
 
 		if (exposeMode === 'site') {
 			if (!exposeSiteDomain) {
-				toast.warning('Pilih vhost lokal yang ingin diekspos.');
+				toast.warning(t('powerdns.toasts.selectVhost'));
 				return;
 			}
 			pubDomain = exposeSitePublic.trim();
 			if (!pubDomain) {
-				toast.warning('Domain publik VPS wajib diisi.');
+				toast.warning(t('powerdns.toasts.domainRequired'));
 				return;
 			}
 		} else {
 			pubDomain = exposePortPublic.trim();
 			targetPort = parseInt(exposePortTargetStr, 10) || 0;
 			if (!pubDomain) {
-				toast.warning('Domain publik VPS wajib diisi.');
+				toast.warning(t('powerdns.toasts.domainRequired'));
 				return;
 			}
 			if (targetPort < 1 || targetPort > 65535) {
-				toast.warning('Port target lokal tidak valid (1-65535).');
+				toast.warning(t('powerdns.toasts.invalidPort'));
 				return;
 			}
 		}
 
 		exposeOpen = false;
 		const ok = await cp.confirm({
-			title: 'Konfirmasi Ekspos VPS',
-			description: `Ekspos '${pubDomain}' ke internet via VPS Edge Gateway?`,
-			confirmText: 'Ekspos Sekarang'
+			title: t('powerdns.confirm.exposeTitle'),
+			description: t('powerdns.confirm.exposeDesc', { domain: pubDomain }),
+			confirmText: t('powerdns.confirm.exposeBtn')
 		});
 		if (!ok) {
 			exposeOpen = true;
@@ -473,10 +474,10 @@
 				use_ssl: exposeSSL,
 				websocket: exposeWS
 			});
-			toast.success(`Domain '${pubDomain}' berhasil diekspos ke internet!`);
+			toast.success(t('powerdns.toasts.exposeSuccess', { domain: pubDomain }));
 			await loadAll();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal ekspos ke VPS');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.exposeError'));
 			exposeOpen = true;
 		} finally {
 			exposing = false;
@@ -485,19 +486,19 @@
 
 	async function unexposeDomain(domain: string) {
 		const ok = await cp.confirm({
-			title: 'Hapus Eksposur VPS',
-			description: `Hapus ekspos domain '${domain}' dari VPS Edge Gateway? Konfigurasi proxy dan record DNS subdomain akan dibersihkan.`,
-			confirmText: 'Hapus Ekspos',
+			title: t('powerdns.confirm.unexposeTitle'),
+			description: t('powerdns.confirm.unexposeDesc', { domain }),
+			confirmText: t('powerdns.confirm.unexposeBtn'),
 			destructive: true
 		});
 		if (!ok) return;
 		unexposingPending = { ...unexposingPending, [domain]: true };
 		try {
 			await api.unexposePDNS(domain, false);
-			toast.success(`Ekspos untuk '${domain}' berhasil dihapus.`);
+			toast.success(t('powerdns.toasts.unexposeSuccess', { domain }));
 			await loadAll();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menghapus ekspos');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.unexposeError'));
 		} finally {
 			const next = { ...unexposingPending };
 			delete next[domain];
@@ -509,7 +510,7 @@
 		e.preventDefault();
 		const clean = newZoneName.trim().replace(/\.$/, '').toLowerCase();
 		if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(clean)) {
-			toast.warning('Nama zone tidak valid. Gunakan FQDN tanpa protokol, contoh: domainanda.com');
+			toast.warning(t('powerdns.toasts.invalidZoneName'));
 			return;
 		}
 		addingZone = true;
@@ -520,12 +521,15 @@
 			createDefaultVhost = true;
 			if (res.vhost_created) {
 				toast.success(
-					`Zone DNS ${clean} & vhost static HTML berhasil dibuat (${res.vhost_root || `/var/www/${clean}`})!`
+					t('powerdns.toasts.zoneAndVhostCreated', {
+						zone: clean,
+						root: res.vhost_root || `/var/www/${clean}`
+					})
 				);
 			} else if (res.vhost_status === 'exists') {
-				toast.success(`Zone DNS ${clean} ditambahkan (vhost yang sudah ada dipertahankan).`);
+				toast.success(t('powerdns.toasts.zoneCreatedExistingVhost', { zone: clean }));
 			} else {
-				toast.success(`Zone DNS ${clean} berhasil ditambahkan!`);
+				toast.success(t('powerdns.toasts.zoneCreated', { zone: clean }));
 				if (res.vhost_message && (res.vhost_status === 'error' || res.vhost_status === 'skipped')) {
 					toast.warning(res.vhost_message);
 				}
@@ -536,7 +540,7 @@
 				await loadZones();
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menambahkan zone');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.zoneAddError'));
 		} finally {
 			addingZone = false;
 		}
@@ -545,10 +549,10 @@
 	async function runZoneDoctor(zoneName: string) {
 		const reqId = ++reportRequestSeq;
 		zonePending = { ...zonePending, [zoneName]: 'doctor' };
-		reportTitle = `Doctor Zone — ${zoneName}`;
+		reportTitle = t('powerdns.report.doctorTitle', { zone: zoneName });
 		reportData = null;
 		reportError = '';
-		reportLoadingMessage = `Memeriksa NS, SOA, glue record, dan resolusi DNS untuk ${zoneName}...`;
+		reportLoadingMessage = t('powerdns.report.doctorLoading', { zone: zoneName });
 		reportLoading = true;
 		reportOpen = true;
 		try {
@@ -557,7 +561,7 @@
 			reportData = res;
 		} catch (err) {
 			if (reqId !== reportRequestSeq) return;
-			const msg = err instanceof Error ? err.message : 'Gagal menjalankan doctor zone';
+			const msg = err instanceof Error ? err.message : t('powerdns.toasts.zoneDoctorError');
 			reportError = msg;
 			toast.error(msg);
 		} finally {
@@ -572,17 +576,17 @@
 
 	async function runZoneRepair(zoneName: string) {
 		const ok = await cp.confirm({
-			title: 'Repair DNS Zone',
-			description: `Perbaiki zone ${zoneName}? Tindakan ini menulis ulang SOA/NS, glue ns1/ns2, dan mengaktifkan SOA-EDIT-API. Record lain tidak diubah.`,
-			confirmText: 'Repair Zone'
+			title: t('powerdns.confirm.repairTitle'),
+			description: t('powerdns.confirm.repairDesc', { zone: zoneName }),
+			confirmText: t('powerdns.confirm.repairBtn')
 		});
 		if (!ok) return;
 		const reqId = ++reportRequestSeq;
 		zonePending = { ...zonePending, [zoneName]: 'repair' };
-		reportTitle = `Repair Zone — ${zoneName}`;
+		reportTitle = t('powerdns.report.repairTitle', { zone: zoneName });
 		reportData = null;
 		reportError = '';
-		reportLoadingMessage = `Memperbaiki SOA/NS, glue ns1/ns2, dan konfigurasi zone ${zoneName}...`;
+		reportLoadingMessage = t('powerdns.report.repairLoading', { zone: zoneName });
 		reportLoading = true;
 		reportOpen = true;
 		try {
@@ -592,7 +596,7 @@
 			await loadZones();
 		} catch (err) {
 			if (reqId !== reportRequestSeq) return;
-			const msg = err instanceof Error ? err.message : 'Gagal memperbaiki zone';
+			const msg = err instanceof Error ? err.message : t('powerdns.toasts.zoneRepairError');
 			reportError = msg;
 			toast.error(msg);
 		} finally {
@@ -607,19 +611,19 @@
 
 	async function deleteZone(zoneName: string) {
 		const ok = await cp.confirm({
-			title: 'Hapus Authoritative Zone',
-			description: `Hapus authoritative zone '${zoneName}' beserta seluruh record di dalamnya dari PowerDNS VPS?`,
-			confirmText: 'Hapus Zone',
+			title: t('powerdns.confirm.deleteZoneTitle'),
+			description: t('powerdns.confirm.deleteZoneDesc', { zone: zoneName }),
+			confirmText: t('powerdns.confirm.deleteZoneBtn'),
 			destructive: true
 		});
 		if (!ok) return;
 		zonePending = { ...zonePending, [zoneName]: 'delete' };
 		try {
 			await api.deletePDNSZone(zoneName);
-			toast.success(`Zone DNS '${zoneName}' berhasil dihapus.`);
+			toast.success(t('powerdns.toasts.zoneDeleteSuccess', { zone: zoneName }));
 			await loadZones();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menghapus zone');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.zoneDeleteError'));
 		} finally {
 			const next = { ...zonePending };
 			delete next[zoneName];
@@ -644,7 +648,7 @@
 			rrsets = (await api.listPDNSRecords(zoneName)) ?? [];
 		} catch (err) {
 			rrsets = [];
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat record DNS');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.recordsLoadError'));
 		} finally {
 			recordsLoading = false;
 		}
@@ -653,7 +657,7 @@
 	async function submitAddRecord(e: SubmitEvent) {
 		e.preventDefault();
 		if (!recContent.trim()) {
-			toast.warning('Konten / nilai target record tidak boleh kosong.');
+			toast.warning(t('powerdns.toasts.recordContentRequired'));
 			return;
 		}
 		savingRecord = true;
@@ -667,10 +671,10 @@
 			);
 			recName = '';
 			recContent = '';
-			toast.success('Record DNS disimpan.');
+			toast.success(t('powerdns.toasts.recordSaved'));
 			await loadRecords(currentZone);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menambahkan record');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.recordAddError'));
 		} finally {
 			savingRecord = false;
 		}
@@ -679,9 +683,9 @@
 	async function deleteRecord(name: string, type: string) {
 		recordsOpen = false;
 		const ok = await cp.confirm({
-			title: 'Hapus Record DNS',
-			description: `Hapus record DNS ${type} untuk '${name}'?`,
-			confirmText: 'Hapus',
+			title: t('powerdns.confirm.deleteRecordTitle'),
+			description: t('powerdns.confirm.deleteRecordDesc', { type, name }),
+			confirmText: t('powerdns.confirm.deleteRecordBtn'),
 			destructive: true
 		});
 		recordsOpen = true;
@@ -690,10 +694,10 @@
 		recordPending = { ...recordPending, [key]: true };
 		try {
 			await api.deletePDNSRecord(currentZone, name, type);
-			toast.success(`Record ${type} untuk ${name} dihapus.`);
+			toast.success(t('powerdns.toasts.recordDeleteSuccess', { type, name }));
 			await loadRecords(currentZone);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menghapus record');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.recordDeleteError'));
 		} finally {
 			const next = { ...recordPending };
 			delete next[key];
@@ -704,20 +708,20 @@
 	async function submitDeployVPS(e: SubmitEvent) {
 		e.preventDefault();
 		if (!deployHost.trim()) {
-			toast.warning('Host / IP VPS wajib diisi.');
+			toast.warning(t('powerdns.toasts.deployHostRequired'));
 			return;
 		}
 		if (deployAuthMethod === 'password' && !deployPassword) {
-			toast.warning('Password SSH wajib diisi untuk login ke VPS.');
+			toast.warning(t('powerdns.toasts.deployPasswordRequired'));
 			return;
 		}
 		const port = parseInt(deployPortStr, 10) || 22;
 		const user = deployUser.trim() || 'root';
 		deployOpen = false;
 		const ok = await cp.confirm({
-			title: 'Konfirmasi Deploy VPS',
-			description: `Mulai deployment otomatis ke VPS ${user}@${deployHost.trim()}:${port}? Skrip instalasi PowerDNS, Nginx, dan Edge Gateway akan dijalankan di VPS via SSH.`,
-			confirmText: 'Mulai Deploy'
+			title: t('powerdns.confirm.deployTitle'),
+			description: t('powerdns.confirm.deployDesc', { user, host: deployHost.trim(), port }),
+			confirmText: t('powerdns.confirm.deployBtn')
 		});
 		if (!ok) {
 			deployOpen = true;
@@ -734,9 +738,9 @@
 				password: deployPassword,
 				key_path: deployKeyPath.trim()
 			});
-			cp.openTerminal('Deploy VPS Edge Gateway');
+			cp.openTerminal(t('powerdns.terminal.deployTitle'));
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memulai deploy VPS');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.deployError'));
 			deployOpen = true;
 		} finally {
 			deploying = false;
@@ -746,7 +750,7 @@
 	async function submitConnectVPS(e: SubmitEvent) {
 		e.preventDefault();
 		if (!connNetbirdIP.trim() || !connAPIKey.trim()) {
-			toast.warning('IP NetBird VPS dan PowerDNS API Key wajib diisi.');
+			toast.warning(t('powerdns.toasts.connectRequired'));
 			return;
 		}
 		connecting = true;
@@ -759,10 +763,10 @@
 				agent_port: connAgentPort.trim() || '8082'
 			});
 			connectOpen = false;
-			toast.success('Berhasil terhubung ke VPS Edge Gateway!');
+			toast.success(t('powerdns.toasts.connectSuccess'));
 			await loadAll();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menghubungkan ke VPS');
+			toast.error(err instanceof Error ? err.message : t('powerdns.toasts.connectError'));
 		} finally {
 			connecting = false;
 		}
@@ -774,19 +778,19 @@
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div class="min-w-0 max-w-2xl">
 			{#if isVPS}
-				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Domain &amp; DNS Manager</h1>
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('powerdns.title')}</h1>
 				<p class="text-sm text-muted-foreground">
-					Authoritative DNS server dan manajemen domain langsung di Cloud VPS.
+					{t('powerdns.descVps')}
 				</p>
 			{:else if isLocal}
-				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Domain &amp; DNS Manager (Lokal)</h1>
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('powerdns.titleLocal')}</h1>
 				<p class="text-sm text-muted-foreground">
-					PowerDNS Authoritative mandiri di 127.0.0.1:8081 &amp; port 53 tanpa NetBird maupun VPS Edge.
+					{t('powerdns.descLocal')}
 				</p>
 			{:else}
-				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">PowerDNS &amp; VPS Edge Gateway</h1>
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('powerdns.titleEdge')}</h1>
 				<p class="text-sm text-muted-foreground">
-					Authoritative DNS mandiri dan reverse-proxy SSL Let's Encrypt otomatis di VPS Edge via NetBird.
+					{t('powerdns.descEdge')}
 				</p>
 			{/if}
 		</div>
@@ -796,14 +800,14 @@
 				<StatusBadge
 					tone={edge?.reachable ? 'success' : edge?.has_local_pdns ? 'warning' : 'destructive'}
 					label={edge?.reachable
-						? 'PowerDNS Aktif'
+						? t('powerdns.badges.pdnsActive')
 						: edge?.has_local_pdns
-							? 'PowerDNS Nonaktif'
-							: 'Belum Terpasang'}
+							? t('powerdns.badges.pdnsInactive')
+							: t('powerdns.badges.pdnsNotInstalled')}
 				/>
 				{#if !edge?.reachable && !edge?.has_local_pdns}
 					<Button size="sm" onclick={() => cp.triggerInstall('pdns')}>
-						Install PowerDNS
+						{t('powerdns.buttons.installPdns')}
 					</Button>
 				{/if}
 				{#if isVPS}
@@ -814,27 +818,27 @@
 						onclick={() => (glueGuideOpen = !glueGuideOpen)}
 					>
 						<BookOpenIcon data-icon="inline-start" />
-						Panduan Nameserver
+						{t('powerdns.buttons.nameserverGuide')}
 					</Button>
 				{/if}
 				<Button size="sm" variant={edge?.reachable ? 'default' : 'outline'} onclick={() => (addZoneOpen = true)}>
 					<PlusIcon data-icon="inline-start" />
-					Tambah Zone
+					{t('powerdns.buttons.addZone')}
 				</Button>
 			{:else}
 				{#if edge}
 					<StatusBadge
 						tone={edge.reachable ? 'success' : 'destructive'}
-						label={edge.reachable ? 'Terhubung ke Edge VPS' : 'Edge VPS Terputus'}
+						label={edge.reachable ? t('powerdns.badges.edgeConnected') : t('powerdns.badges.edgeDisconnected')}
 					/>
 				{/if}
 				<Button variant={edge?.reachable ? 'outline' : 'default'} size="sm" onclick={() => (deployOpen = true)}>
 					<ServerIcon data-icon="inline-start" />
-					Deploy ke VPS
+					{t('powerdns.buttons.deployVps')}
 				</Button>
 				<Button variant="outline" size="sm" onclick={() => (connectOpen = true)}>
 					<LinkIcon data-icon="inline-start" />
-					Hubungkan Manual
+					{t('powerdns.buttons.connectManual')}
 				</Button>
 			{/if}
 		</div>
@@ -844,13 +848,13 @@
 	{#if isLocal}
 		<Alert.Root class="border-muted-foreground/30 bg-muted/40">
 			<InfoIcon />
-			<Alert.Title>Mode Lokal Standalone Aktif</Alert.Title>
+			<Alert.Title>{t('powerdns.alerts.localTitle')}</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<span>
-					Di mode <strong>Lokal Standalone</strong>, PowerDNS disembunyikan dari menu sidebar karena pengembangan lokal umumnya memakai <code>/etc/hosts</code>. Anda tetap dapat menggunakannya secara lokal atau beralih ke mode VPS / Edge Gateway.
+					{t('powerdns.alerts.localDescPre')} <strong>{t('powerdns.alerts.localDescMode')}</strong>{t('powerdns.alerts.localDescMid')} <code>/etc/hosts</code>{t('powerdns.alerts.localDescPost')}
 				</span>
 				<Button size="xs" variant="outline" class="shrink-0" onclick={() => modeStore.openModal()}>
-					Ganti Mode Server
+					{t('powerdns.alerts.switchMode')}
 				</Button>
 			</Alert.Description>
 		</Alert.Root>
@@ -861,28 +865,28 @@
 			<TriangleAlertIcon />
 			<Alert.Title>
 				{edge.has_local_pdns
-					? 'Layanan PowerDNS Lokal Belum Aktif'
-					: 'PowerDNS Authoritative Belum Terpasang'}
+					? t('powerdns.alerts.localInactiveTitle')
+					: t('powerdns.alerts.localNotInstalledTitle')}
 			</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<span>
 					{edge.has_local_pdns
-						? 'Konfigurasi /etc/powerdns/pdns.conf sudah tersedia tetapi API 127.0.0.1:8081 tidak merespons. Jalankan ulang instalasi atau nyalakan service pdns.'
-						: 'PowerDNS lokal di port 53 & port 8081 belum terpasang. Pasang PowerDNS standalone sekarang tanpa NetBird.'}
+						? t('powerdns.alerts.localInactiveDesc')
+						: t('powerdns.alerts.localNotInstalledDesc')}
 				</span>
 				<div class="flex flex-wrap gap-2">
 					{#if edge.has_local_pdns}
 						<Button size="xs" disabled={startingPDNS} onclick={startLocalPDNS}>
 							{#if startingPDNS}
 								<Spinner data-icon="inline-start" />
-								Menjalankan...
+								{t('powerdns.alerts.startingPdns')}
 							{:else}
-								Nyalakan PowerDNS
+								{t('powerdns.alerts.startLocalPdns')}
 							{/if}
 						</Button>
 					{/if}
 					<Button size="xs" variant={edge.has_local_pdns ? 'outline' : 'default'} onclick={() => cp.triggerInstall('pdns')}>
-						{edge.has_local_pdns ? 'Konfigurasi Ulang PowerDNS' : 'Install PowerDNS Sekarang'}
+						{edge.has_local_pdns ? t('powerdns.alerts.reconfigurePdns') : t('powerdns.alerts.installPdnsNow')}
 					</Button>
 				</div>
 			</Alert.Description>
@@ -890,14 +894,14 @@
 	{:else if isEdge && edge && !edge.reachable}
 		<Alert.Root variant="destructive">
 			<TriangleAlertIcon />
-			<Alert.Title>VPS Edge Gateway Belum Terhubung</Alert.Title>
+			<Alert.Title>{t('powerdns.alerts.edgeNotConnectedTitle')}</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<span>
-					Mesin lokal belum terhubung ke PowerDNS &amp; Nginx di VPS. Gunakan Deploy otomatis via SSH atau Hubungkan Manual.
+					{t('powerdns.alerts.edgeNotConnectedDesc')}
 				</span>
 				<div class="flex flex-wrap gap-2">
-					<Button size="xs" onclick={() => (deployOpen = true)}>Mulai Deploy ke VPS</Button>
-					<Button variant="outline" size="xs" onclick={() => (connectOpen = true)}>Hubungkan Manual</Button>
+					<Button size="xs" onclick={() => (deployOpen = true)}>{t('powerdns.alerts.startDeployVps')}</Button>
+					<Button variant="outline" size="xs" onclick={() => (connectOpen = true)}>{t('powerdns.buttons.connectManual')}</Button>
 				</div>
 			</Alert.Description>
 		</Alert.Root>
@@ -906,38 +910,38 @@
 	{#if isVPS && glueGuideOpen}
 		<Alert.Root class="border-primary/40 bg-primary/5">
 			<InfoIcon class="text-primary" />
-			<Alert.Title class="font-semibold text-primary">Petunjuk Integrasi Domain (Child Nameserver)</Alert.Title>
+			<Alert.Title class="font-semibold text-primary">{t('powerdns.guide.title')}</Alert.Title>
 			<Alert.Description class="mt-2 space-y-2 text-xs leading-relaxed text-muted-foreground">
 				<p>
-					Agar seluruh domain utama dan subdomain mengarah langsung ke VPS ini:
+					{t('powerdns.guide.intro')}
 				</p>
 				<ol class="list-inside list-decimal space-y-1.5">
-					<li>Buka panel registrar domain Anda (Niagahoster, Rumahweb, Namecheap, Cloudflare, dll).</li>
-					<li>Cari menu <strong>Child Nameserver / Host Records / Glue Records</strong> pada domain utama Anda.</li>
+					<li>{t('powerdns.guide.step1')}</li>
+					<li>{t('powerdns.guide.step2Pre')} <strong>{t('powerdns.guide.step2Bold')}</strong> {t('powerdns.guide.step2Post')}</li>
 					<li>
-						Daftarkan pasangan glue record berikut:
+						{t('powerdns.guide.step3')}
 						<div class="mt-1.5 flex flex-col gap-1.5 sm:flex-row sm:flex-wrap">
 							<span class="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 font-mono text-foreground">
-								ns1.{defaultZoneName} &rarr; {edge?.vps_public_ip || 'IP_PUBLIK_VPS'}
+								ns1.{defaultZoneName} &rarr; {edge?.vps_public_ip || t('powerdns.guide.vpsPublicIpPlaceholder')}
 								{#if edge?.vps_public_ip}
 									<Button
 										variant="ghost"
 										size="icon-xs"
-										aria-label="Salin ns1"
-										onclick={() => copyText(`ns1.${defaultZoneName}`, 'Nameserver 1')}
+										aria-label={t('powerdns.guide.copyNs1Aria')}
+										onclick={() => copyText(`ns1.${defaultZoneName}`, t('powerdns.copyLabels.ns1'))}
 									>
 										<CopyIcon />
 									</Button>
 								{/if}
 							</span>
 							<span class="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 font-mono text-foreground">
-								ns2.{defaultZoneName} &rarr; {edge?.vps_public_ip || 'IP_PUBLIK_VPS'}
+								ns2.{defaultZoneName} &rarr; {edge?.vps_public_ip || t('powerdns.guide.vpsPublicIpPlaceholder')}
 								{#if edge?.vps_public_ip}
 									<Button
 										variant="ghost"
 										size="icon-xs"
-										aria-label="Salin ns2"
-										onclick={() => copyText(`ns2.${defaultZoneName}`, 'Nameserver 2')}
+										aria-label={t('powerdns.guide.copyNs2Aria')}
+										onclick={() => copyText(`ns2.${defaultZoneName}`, t('powerdns.copyLabels.ns2'))}
 									>
 										<CopyIcon />
 									</Button>
@@ -945,8 +949,8 @@
 							</span>
 						</div>
 					</li>
-					<li>Ubah <strong>Nameserver (DNS)</strong> domain Anda menjadi <code class="font-mono">ns1.{defaultZoneName}</code> dan <code class="font-mono">ns2.{defaultZoneName}</code>.</li>
-					<li>Tambahkan zone domain di tabel di bawah. wdev akan mengelola seluruh record (A, CNAME, MX, TXT) secara otomatis.</li>
+					<li>{t('powerdns.guide.step4Pre')} <strong>{t('powerdns.guide.step4Bold')}</strong> {t('powerdns.guide.step4Mid')} <code class="font-mono">ns1.{defaultZoneName}</code> {t('powerdns.guide.step4And')} <code class="font-mono">ns2.{defaultZoneName}</code>{t('powerdns.guide.step4Suffix')}</li>
+					<li>{t('powerdns.guide.step5')}</li>
 				</ol>
 			</Alert.Description>
 		</Alert.Root>
@@ -957,16 +961,16 @@
 		<div class="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2.5">
 			<div class="flex items-center gap-2">
 				<NetworkIcon class="size-4 text-primary" aria-hidden="true" />
-				<span class="text-sm font-semibold">Topologi &amp; Endpoint Layanan</span>
+				<span class="text-sm font-semibold">{t('powerdns.topology.sectionTitle')}</span>
 				<Badge variant="outline" class="font-normal">
-					{isEdge ? 'Edge Gateway (NetBird)' : isVPS ? 'Full VPS Authoritative' : 'Lokal Standalone'}
+					{isEdge ? t('powerdns.topology.edgeMode') : isVPS ? t('powerdns.topology.fullVpsMode') : t('powerdns.topology.localMode')}
 				</Badge>
 			</div>
 			<div class="flex flex-wrap items-center gap-3 text-xs tabular-nums text-muted-foreground">
-				<span><strong class="font-semibold text-foreground">{zones.length}</strong> Zone DNS</span>
+				<span><strong class="font-semibold text-foreground">{zones.length}</strong> {t('powerdns.topology.dnsZones')}</span>
 				{#if isEdge}
-					<span><strong class="font-semibold text-foreground">{exposedSitesCount}/{sites.length}</strong> VHost Terekspos</span>
-					<span><strong class="font-semibold text-foreground">{exposures.length}</strong> Proxy Aktif</span>
+					<span><strong class="font-semibold text-foreground">{exposedSitesCount}/{sites.length}</strong> {t('powerdns.topology.vhostsExposed')}</span>
+					<span><strong class="font-semibold text-foreground">{exposures.length}</strong> {t('powerdns.topology.activeProxies')}</span>
 				{/if}
 			</div>
 		</div>
@@ -984,7 +988,7 @@
 		{:else if isVPS}
 			<div class="grid divide-y md:grid-cols-3 md:divide-x md:divide-y-0">
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">IP Publik VPS (Target Record A)</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.vpsPublicIpTitle')}</span>
 					<div class="flex items-center gap-1.5">
 						<span class="truncate font-mono text-base font-semibold tabular-nums">
 							{edge?.vps_public_ip || '-'}
@@ -993,26 +997,26 @@
 							<Button
 								variant="ghost"
 								size="icon-xs"
-								aria-label="Salin IP Publik VPS"
-								onclick={() => copyText(edge?.vps_public_ip || '', 'IP Publik VPS')}
+								aria-label={t('powerdns.topology.copyVpsPublicIpAria')}
+								onclick={() => copyText(edge?.vps_public_ip || '', t('powerdns.copyLabels.vpsPublicIp'))}
 							>
 								<CopyIcon />
 							</Button>
 						{/if}
 					</div>
-					<span class="text-xs text-muted-foreground">Alamat IP tujuan untuk domain &amp; glue record.</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.vpsPublicIpDesc')}</span>
 				</div>
 
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">Authoritative Nameserver</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.authNameserverTitle')}</span>
 					<div class="flex flex-col gap-1 font-mono text-xs sm:text-sm">
 						<div class="flex items-center gap-1.5">
 							<span class="truncate font-semibold">ns1.{defaultZoneName}</span>
 							<Button
 								variant="ghost"
 								size="icon-xs"
-								aria-label={`Salin ns1.${defaultZoneName}`}
-								onclick={() => copyText(`ns1.${defaultZoneName}`, 'NS1')}
+								aria-label={t('powerdns.topology.copyNsAria', { ns: `ns1.${defaultZoneName}` })}
+								onclick={() => copyText(`ns1.${defaultZoneName}`, t('powerdns.copyLabels.ns1Short'))}
 							>
 								<CopyIcon />
 							</Button>
@@ -1022,8 +1026,8 @@
 							<Button
 								variant="ghost"
 								size="icon-xs"
-								aria-label={`Salin ns2.${defaultZoneName}`}
-								onclick={() => copyText(`ns2.${defaultZoneName}`, 'NS2')}
+								aria-label={t('powerdns.topology.copyNsAria', { ns: `ns2.${defaultZoneName}` })}
+								onclick={() => copyText(`ns2.${defaultZoneName}`, t('powerdns.copyLabels.ns2Short'))}
 							>
 								<CopyIcon />
 							</Button>
@@ -1032,19 +1036,19 @@
 				</div>
 
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">Endpoint &amp; Port Engine</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.engineEndpointTitle')}</span>
 					<span class="font-mono text-base font-semibold tabular-nums">
 						127.0.0.1:{edge?.pdns_port || '8081'}
 					</span>
 					<span class="text-xs text-muted-foreground">
-						Port DNS publik 53 (UDP/TCP) dengan SOA-EDIT-API aktif.
+						{t('powerdns.topology.engineEndpointDesc')}
 					</span>
 				</div>
 			</div>
 		{:else if isLocal}
 			<div class="grid divide-y md:grid-cols-3 md:divide-x md:divide-y-0">
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">Endpoint PowerDNS API (Lokal)</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.localApiTitle')}</span>
 					<div class="flex items-center gap-1.5">
 						<span class="truncate font-mono text-base font-semibold tabular-nums">
 							{edge?.vps_netbird_ip || '127.0.0.1'}:{edge?.pdns_port || '8081'}
@@ -1052,21 +1056,21 @@
 						<Button
 							variant="ghost"
 							size="icon-xs"
-							aria-label="Salin endpoint PowerDNS lokal"
+							aria-label={t('powerdns.topology.copyLocalApiAria')}
 							onclick={() =>
 								copyText(
 									`${edge?.vps_netbird_ip || '127.0.0.1'}:${edge?.pdns_port || '8081'}`,
-									'Endpoint PowerDNS'
+									t('powerdns.copyLabels.pdnsEndpoint')
 								)}
 						>
 							<CopyIcon />
 						</Button>
 					</div>
-					<span class="text-xs text-muted-foreground">Authoritative DNS port 53 lokal.</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.localApiDesc')}</span>
 				</div>
 
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">IP Host / LAN (Target Record A)</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.localHostTitle')}</span>
 					<div class="flex items-center gap-1.5">
 						<span class="truncate font-mono text-base font-semibold tabular-nums">
 							{edge?.vps_public_ip || '127.0.0.1'}
@@ -1074,25 +1078,25 @@
 						<Button
 							variant="ghost"
 							size="icon-xs"
-							aria-label="Salin IP Target Record A"
-							onclick={() => copyText(edge?.vps_public_ip || '127.0.0.1', 'IP Host')}
+							aria-label={t('powerdns.topology.copyLocalHostAria')}
+							onclick={() => copyText(edge?.vps_public_ip || '127.0.0.1', t('powerdns.copyLabels.hostIp'))}
 						>
 							<CopyIcon />
 						</Button>
 					</div>
-					<span class="text-xs text-muted-foreground">Target default resolusi record A lokal.</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.localHostDesc')}</span>
 				</div>
 
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">Mode Operasional DNS</span>
-					<span class="text-base font-semibold">Lokal Standalone</span>
-					<span class="text-xs text-muted-foreground">Berjalan mandiri tanpa NetBird maupun Edge VPS.</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.localModeTitle')}</span>
+					<span class="text-base font-semibold">{t('powerdns.topology.localMode')}</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.localModeDesc')}</span>
 				</div>
 			</div>
 		{:else}
 			<div class="grid divide-y md:grid-cols-3 md:divide-x md:divide-y-0">
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">IP Publik Edge Gateway</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.edgePublicIpTitle')}</span>
 					<div class="flex items-center gap-1.5">
 						<span class="truncate font-mono text-base font-semibold tabular-nums">
 							{edge?.vps_public_ip || '-'}
@@ -1101,28 +1105,28 @@
 							<Button
 								variant="ghost"
 								size="icon-xs"
-								aria-label="Salin IP Publik Edge Gateway"
-								onclick={() => copyText(edge?.vps_public_ip || '', 'IP Publik Edge')}
+								aria-label={t('powerdns.topology.copyEdgeIpAria')}
+								onclick={() => copyText(edge?.vps_public_ip || '', t('powerdns.copyLabels.edgePublicIp'))}
 							>
 								<CopyIcon />
 							</Button>
 						{/if}
 					</div>
-					<span class="text-xs text-muted-foreground">IP tujuan untuk record DNS A &amp; trafik publik HTTPS.</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.edgePublicIpDesc')}</span>
 				</div>
 
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">Terowongan NetBird Mesh (wt0)</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.meshTitle')}</span>
 					<div class="flex flex-wrap items-center gap-1.5 font-mono text-sm font-semibold tabular-nums">
-						<span>{edge?.local_netbird_ip || 'Lokal wt0'}</span>
+						<span>{edge?.local_netbird_ip || t('powerdns.topology.localWt0')}</span>
 						<ArrowLeftRightIcon class="size-3.5 text-info" aria-hidden="true" />
 						<span>{edge?.vps_netbird_ip || '-'}</span>
 						{#if edge?.vps_netbird_ip}
 							<Button
 								variant="ghost"
 								size="icon-xs"
-								aria-label="Salin IP NetBird VPS"
-								onclick={() => copyText(edge?.vps_netbird_ip || '', 'IP NetBird VPS')}
+								aria-label={t('powerdns.topology.copyNetbirdIpAria')}
+								onclick={() => copyText(edge?.vps_netbird_ip || '', t('powerdns.copyLabels.vpsNetbirdIp'))}
 							>
 								<CopyIcon />
 							</Button>
@@ -1134,17 +1138,17 @@
 				</div>
 
 				<div class="flex flex-col gap-1 p-4">
-					<span class="text-xs text-muted-foreground">Ringkasan Eksposur Edge</span>
+					<span class="text-xs text-muted-foreground">{t('powerdns.topology.edgeSummaryTitle')}</span>
 					<div class="flex items-baseline gap-2">
 						<span class="text-base font-semibold tabular-nums">
-							{exposedSitesCount}/{sites.length} VHost
+							{exposedSitesCount}/{sites.length} {t('powerdns.topology.edgeSummaryVhosts')}
 						</span>
 						<span class="text-xs text-muted-foreground tabular-nums">
-							· {exposures.length} proxy aktif
+							· {t('powerdns.topology.edgeSummaryProxies', { count: exposures.length })}
 						</span>
 					</div>
 					<span class="text-xs text-muted-foreground">
-						Otomatisasi record DNS dan sertifikat SSL Let's Encrypt di Edge VPS.
+						{t('powerdns.topology.edgeSummaryDesc')}
 					</span>
 				</div>
 			</div>
@@ -1159,27 +1163,27 @@
 					<div>
 						{#if activeTab === 'zones'}
 							<div class="flex items-center gap-2">
-								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Zone Authoritative DNS</h2>
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">{t('powerdns.tabs.zonesHeading')}</h2>
 								<Badge variant="secondary" class="tabular-nums">{zones.length}</Badge>
 							</div>
 							<p class="text-xs text-muted-foreground">
-								Kelola domain authoritative, record DNS (A, CNAME, MX, TXT), serta diagnostik SOA/NS.
+								{t('powerdns.tabs.zonesSubtitle')}
 							</p>
 						{:else if activeTab === 'expose'}
 							<div class="flex items-center gap-2">
-								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Status Ekspos Virtual Host</h2>
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">{t('powerdns.tabs.exposeHeading')}</h2>
 								<Badge variant="secondary" class="tabular-nums">{exposedSitesCount}/{sites.length}</Badge>
 							</div>
 							<p class="text-xs text-muted-foreground">
-								Pantau pemetaan domain virtual host lokal dan status ekspos ke internet melalui VPS Edge.
+								{t('powerdns.tabs.exposeSubtitle')}
 							</p>
 						{:else}
 							<div class="flex items-center gap-2">
-								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Daftar Proxy VPS Edge</h2>
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">{t('powerdns.tabs.proxyHeading')}</h2>
 								<Badge variant="secondary" class="tabular-nums">{exposures.length}</Badge>
 							</div>
 							<p class="text-xs text-muted-foreground">
-								Kelola reverse-proxy aktif dan konfigurasi SSL yang terpasang di VPS Edge Gateway.
+								{t('powerdns.tabs.proxySubtitle')}
 							</p>
 						{/if}
 					</div>
@@ -1193,16 +1197,16 @@
 						>
 							{#if (activeTab === 'zones' && refreshingAll) || (activeTab !== 'zones' && refreshingExposures)}
 								<Spinner data-icon="inline-start" />
-								Menyegarkan...
+								{t('powerdns.buttons.refreshing')}
 							{:else}
 								<RefreshCwIcon data-icon="inline-start" />
-								Segarkan
+								{t('powerdns.buttons.refresh')}
 							{/if}
 						</Button>
 						{#if activeTab === 'zones'}
 							<Button size="sm" onclick={() => (addZoneOpen = true)}>
 								<PlusIcon data-icon="inline-start" />
-								Tambah Zone
+								{t('powerdns.buttons.addZone')}
 							</Button>
 						{:else}
 							<Button
@@ -1210,7 +1214,7 @@
 								onclick={() => openExposeModal(sites.length > 0 ? 'site' : 'port')}
 							>
 								<PlusIcon data-icon="inline-start" />
-								Tambah Ekspos
+								{t('powerdns.buttons.addExposure')}
 							</Button>
 						{/if}
 					</div>
@@ -1219,7 +1223,7 @@
 				<div class="px-4">
 					<Tabs.List
 						variant="line"
-						aria-label="Tab Pengelolaan PowerDNS"
+						aria-label={t('powerdns.tabs.ariaLabel')}
 						class="h-11 group-data-horizontal/tabs:h-11 w-full flex-nowrap items-stretch justify-start gap-1.5 overflow-x-auto overflow-y-hidden rounded-none bg-transparent p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-2"
 					>
 						<Tabs.Trigger
@@ -1228,7 +1232,7 @@
 							class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
 						>
 							<GlobeIcon aria-hidden="true" class="size-3.5" />
-							<span>Zone Authoritative</span>
+							<span>{t('powerdns.tabs.zones')}</span>
 							<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
 								{zones.length}
 							</span>
@@ -1241,7 +1245,7 @@
 								class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
 							>
 								<ArrowLeftRightIcon aria-hidden="true" class="size-3.5" />
-								<span>Status Ekspos</span>
+								<span>{t('powerdns.tabs.expose')}</span>
 								<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
 									{exposedSitesCount}/{sites.length}
 								</span>
@@ -1252,7 +1256,7 @@
 								class="h-full flex-none shrink-0 whitespace-nowrap rounded-none border-0 px-2.5 py-0 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2 focus-visible:ring-0 data-active:text-foreground group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0 after:border-b-2 after:border-primary after:bg-transparent sm:px-3"
 							>
 								<NetworkIcon aria-hidden="true" class="size-3.5" />
-								<span>Daftar Proxy</span>
+								<span>{t('powerdns.tabs.proxy')}</span>
 								<span class="rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none font-medium tabular-nums text-muted-foreground">
 									{exposures.length}
 								</span>
@@ -1273,8 +1277,8 @@
 								</InputGroup.Addon>
 								<InputGroup.Input
 									type="search"
-									placeholder="Cari zone..."
-									aria-label="Cari zone authoritative DNS"
+									placeholder={t('powerdns.zonesTab.searchPlaceholder')}
+									aria-label={t('powerdns.zonesTab.searchAria')}
 									bind:value={zoneSearch}
 								/>
 							</InputGroup.Root>
@@ -1282,7 +1286,7 @@
 
 						<div class="flex items-center gap-2">
 							<span class="text-xs text-muted-foreground">
-								{filteredZones.length} dari {zones.length} zone
+								{t('powerdns.zonesTab.countLabel', { shown: filteredZones.length, total: zones.length })}
 							</span>
 						</div>
 					</div>
@@ -1298,7 +1302,7 @@
 				<p class="text-sm text-muted-foreground">{zonesError}</p>
 				<Button variant="outline" size="sm" onclick={() => loadZones()}>
 					<RefreshCwIcon data-icon="inline-start" />
-					Coba Lagi
+					{t('powerdns.zonesTab.retry')}
 				</Button>
 			</div>
 		{:else if zones.length === 0}
@@ -1308,44 +1312,44 @@
 						<Empty.Media variant="icon">
 							<GlobeIcon />
 						</Empty.Media>
-						<Empty.Title>Belum ada zone DNS</Empty.Title>
+						<Empty.Title>{t('powerdns.zonesTab.emptyTitle')}</Empty.Title>
 						<Empty.Description>
-							Tambahkan domain authoritative pertama untuk mengelola record DNS dan subdomain secara otomatis.
+							{t('powerdns.zonesTab.emptyDesc')}
 						</Empty.Description>
 					</Empty.Header>
 					<Empty.Content>
 						<Button size="sm" onclick={() => (addZoneOpen = true)}>
 							<PlusIcon data-icon="inline-start" />
-							Tambah Zone Pertama
+							{t('powerdns.zonesTab.addFirstBtn')}
 						</Button>
 					</Empty.Content>
 				</Empty.Root>
 			</div>
 		{:else if filteredZones.length === 0}
 			<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
-				<p class="text-sm text-muted-foreground">Tidak ada zone yang cocok dengan "{zoneSearch}".</p>
+				<p class="text-sm text-muted-foreground">{t('powerdns.zonesTab.noMatch', { query: zoneSearch })}</p>
 				<Button variant="outline" size="xs" onclick={() => (zoneSearch = '')}>
-					Reset Pencarian
+					{t('powerdns.zonesTab.resetSearch')}
 				</Button>
 			</div>
 		{:else}
 			<div class="p-3 sm:p-0">
-				<ResponsiveTableWrapper label="Tabel Zone Authoritative DNS" class="rounded-none border-0 bg-transparent">
+				<ResponsiveTableWrapper label={t('powerdns.zonesTab.tableAria')} class="rounded-none border-0 bg-transparent">
 					<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
 						<Table.Header>
 							<Table.Row>
-								<Table.Head scope="col">Nama Zone</Table.Head>
-								<Table.Head scope="col">Tipe</Table.Head>
-								<Table.Head scope="col">Serial</Table.Head>
-								<Table.Head scope="col">Status</Table.Head>
-								<Table.Head scope="col" class="text-right">Aksi</Table.Head>
+								<Table.Head scope="col">{t('powerdns.zonesTab.colName')}</Table.Head>
+								<Table.Head scope="col">{t('powerdns.tables.type')}</Table.Head>
+								<Table.Head scope="col">{t('powerdns.tables.serial')}</Table.Head>
+								<Table.Head scope="col">{t('powerdns.tables.status')}</Table.Head>
+								<Table.Head scope="col" class="text-right">{t('powerdns.tables.actions')}</Table.Head>
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
 							{#each paginatedZones as z (z.name)}
 								{@const zPending = zonePending[z.name]}
 								<Table.Row>
-									<Table.Cell data-label="Zone">
+									<Table.Cell data-label={t('powerdns.tables.zone')}>
 										<button
 											type="button"
 											class="text-left font-semibold text-foreground hover:text-primary hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring"
@@ -1354,16 +1358,16 @@
 											{z.name}
 										</button>
 									</Table.Cell>
-									<Table.Cell data-label="Tipe">
+									<Table.Cell data-label={t('powerdns.tables.type')}>
 										<Badge variant="secondary">{z.kind}</Badge>
 									</Table.Cell>
-									<Table.Cell data-label="Serial" class="font-mono text-xs tabular-nums text-muted-foreground">
+									<Table.Cell data-label={t('powerdns.tables.serial')} class="font-mono text-xs tabular-nums text-muted-foreground">
 										{z.serial}
 									</Table.Cell>
-									<Table.Cell data-label="Status">
-										<StatusBadge tone="success" label="Aktif" />
+									<Table.Cell data-label={t('powerdns.tables.status')}>
+										<StatusBadge tone="success" label={t('powerdns.zonesTab.statusActive')} />
 									</Table.Cell>
-									<Table.Cell data-label="Aksi" class="text-right">
+									<Table.Cell data-label={t('powerdns.tables.actions')} class="text-right">
 										<div class="flex items-center justify-end gap-1.5">
 											<Button
 												variant="outline"
@@ -1372,7 +1376,7 @@
 												onclick={() => openRecordsModal(z.name)}
 											>
 												<ListIcon data-icon="inline-start" />
-												Record<span class="sr-only"> {z.name}</span>
+												{t('powerdns.tables.records')}<span class="sr-only"> {z.name}</span>
 											</Button>
 											<DropdownMenu.Root>
 												<DropdownMenu.Trigger>
@@ -1380,15 +1384,15 @@
 														<Button variant="outline" size="xs" disabled={Boolean(zPending)} {...props}>
 															{#if zPending === 'doctor'}
 																<Spinner data-icon="inline-start" />
-																Memeriksa...
+																{t('powerdns.zonesTab.checking')}
 															{:else if zPending === 'repair'}
 																<Spinner data-icon="inline-start" />
-																Memperbaiki...
+																{t('powerdns.zonesTab.repairing')}
 															{:else if zPending === 'delete'}
 																<Spinner data-icon="inline-start" />
-																Menghapus...
+																{t('powerdns.zonesTab.deleting')}
 															{:else}
-																Aksi<span class="sr-only"> untuk {z.name}</span>
+																{t('powerdns.tables.actions')}<span class="sr-only">{t('powerdns.zonesTab.actionsForSr', { name: z.name })}</span>
 																<ChevronDownIcon data-icon="inline-end" />
 															{/if}
 														</Button>
@@ -1402,15 +1406,15 @@
 														<DropdownMenu.Separator />
 														<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => openRecordsModal(z.name)}>
 															<ListIcon />
-															<span>Kelola Record</span>
+															<span>{t('powerdns.tables.manageRecords')}</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneDoctor(z.name)}>
 															<StethoscopeIcon />
-															<span>Doctor Zone</span>
+															<span>{t('powerdns.tables.zoneDoctor')}</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Item disabled={Boolean(zPending)} onclick={() => runZoneRepair(z.name)}>
 															<WrenchIcon />
-															<span>Repair Zone</span>
+															<span>{t('powerdns.tables.repairZone')}</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Separator />
 														<DropdownMenu.Item
@@ -1419,7 +1423,7 @@
 															onclick={() => deleteZone(z.name)}
 														>
 															<Trash2Icon />
-															<span>Hapus Zone</span>
+															<span>{t('powerdns.tables.deleteZone')}</span>
 														</DropdownMenu.Item>
 													</DropdownMenu.Group>
 												</DropdownMenu.Content>
@@ -1436,7 +1440,7 @@
 				bind:page={zonePage}
 				totalItems={filteredZones.length}
 				pageSize={PAGE_SIZE}
-				itemLabel="zone"
+				itemLabel={t('powerdns.tables.zoneItemLabel')}
 			/>
 		{/if}
 				</div>
@@ -1454,21 +1458,21 @@
 									</InputGroup.Addon>
 									<InputGroup.Input
 										type="search"
-										placeholder="Cari vhost lokal atau domain publik..."
-										aria-label="Cari status ekspos virtual host"
+										placeholder={t('powerdns.exposeTab.searchPlaceholder')}
+										aria-label={t('powerdns.exposeTab.searchAria')}
 										bind:value={exposeSearch}
 									/>
 								</InputGroup.Root>
 							</search>
 
-							<div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter status ekspos">
+							<div class="flex flex-wrap items-center gap-1.5" role="group" aria-label={t('powerdns.exposeTab.filterAria')}>
 								<Button
 									variant={exposeFilter === 'all' ? 'secondary' : 'ghost'}
 									size="xs"
 									aria-pressed={exposeFilter === 'all'}
 									onclick={() => (exposeFilter = 'all')}
 								>
-									Semua ({sites.length})
+									{t('powerdns.exposeTab.filterAll', { count: sites.length })}
 								</Button>
 								<Button
 									variant={exposeFilter === 'exposed' ? 'secondary' : 'ghost'}
@@ -1476,7 +1480,7 @@
 									aria-pressed={exposeFilter === 'exposed'}
 									onclick={() => (exposeFilter = 'exposed')}
 								>
-									Terekspos ({exposedSitesCount})
+									{t('powerdns.exposeTab.filterExposed', { count: exposedSitesCount })}
 								</Button>
 								<Button
 									variant={exposeFilter === 'local' ? 'secondary' : 'ghost'}
@@ -1484,7 +1488,7 @@
 									aria-pressed={exposeFilter === 'local'}
 									onclick={() => (exposeFilter = 'local')}
 								>
-									Hanya Lokal ({localOnlySitesCount})
+									{t('powerdns.exposeTab.filterLocal', { count: localOnlySitesCount })}
 								</Button>
 							</div>
 						</div>
@@ -1502,18 +1506,18 @@
 										<Empty.Media variant="icon">
 											<GlobeIcon />
 										</Empty.Media>
-										<Empty.Title>Belum ada virtual host lokal</Empty.Title>
+										<Empty.Title>{t('powerdns.exposeTab.emptyTitle')}</Empty.Title>
 										<Empty.Description>
-											Buat virtual host di menu Web Stack terlebih dahulu, atau langsung ekspos port aplikasi lokal ke VPS Edge.
+											{t('powerdns.exposeTab.emptyDesc')}
 										</Empty.Description>
 									</Empty.Header>
 									<Empty.Content class="flex flex-wrap justify-center gap-2">
 										<Button variant="outline" size="sm" href="/webstack">
-											Buka Web Stack
+											{t('powerdns.exposeTab.openWebstack')}
 										</Button>
 										<Button size="sm" onclick={() => openExposeModal('port')}>
 											<CloudUploadIcon data-icon="inline-start" />
-											Ekspos Port Aplikasi
+											{t('powerdns.exposeTab.exposePort')}
 										</Button>
 									</Empty.Content>
 								</Empty.Root>
@@ -1521,7 +1525,7 @@
 						{:else if filteredSites.length === 0}
 							<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
 								<p class="text-sm text-muted-foreground">
-									Tidak ada virtual host yang sesuai dengan filter atau pencarian saat ini.
+									{t('powerdns.exposeTab.noMatch')}
 								</p>
 								<Button
 									variant="outline"
@@ -1531,56 +1535,56 @@
 										exposeFilter = 'all';
 									}}
 								>
-									Reset Filter
+									{t('powerdns.exposeTab.resetFilter')}
 								</Button>
 							</div>
 						{:else}
 							<div class="p-3 sm:p-0">
 								<ResponsiveTableWrapper
-									label="Tabel Status Ekspos Virtual Host Lokal"
+									label={t('powerdns.exposeTab.tableAria')}
 									class="rounded-none border-0 bg-transparent"
 								>
 									<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
 										<Table.Header>
 											<Table.Row>
-												<Table.Head scope="col">Virtual Host Lokal</Table.Head>
-												<Table.Head scope="col">Framework</Table.Head>
-												<Table.Head scope="col">Status Ekspos</Table.Head>
-												<Table.Head scope="col">Domain Publik di VPS</Table.Head>
-												<Table.Head scope="col">Target NetBird</Table.Head>
-												<Table.Head scope="col" class="text-right">Aksi Cepat</Table.Head>
+												<Table.Head scope="col">{t('powerdns.exposeTab.colVhost')}</Table.Head>
+												<Table.Head scope="col">{t('powerdns.exposeTab.colFramework')}</Table.Head>
+												<Table.Head scope="col">{t('powerdns.exposeTab.colStatus')}</Table.Head>
+												<Table.Head scope="col">{t('powerdns.exposeTab.colPublicDomain')}</Table.Head>
+												<Table.Head scope="col">{t('powerdns.exposeTab.colTarget')}</Table.Head>
+												<Table.Head scope="col" class="text-right">{t('powerdns.exposeTab.colActions')}</Table.Head>
 											</Table.Row>
 										</Table.Header>
 										<Table.Body>
 											{#each paginatedSites as s (s.domain)}
 												{@const targetNB = edge?.local_netbird_ip
 													? `http://${edge.local_netbird_ip}:80`
-													: 'Port 80 (wt0)'}
+													: t('powerdns.exposeTab.portFallback')}
 												<Table.Row>
-													<Table.Cell data-label="VHost">
+													<Table.Cell data-label={t('powerdns.tables.vhost')}>
 														<div class="font-semibold">{s.domain}</div>
 														<div class="break-all font-mono text-xs text-muted-foreground sm:max-w-44 sm:truncate">
 															{s.root_path || '-'}
 														</div>
 													</Table.Cell>
-													<Table.Cell data-label="Framework">
+													<Table.Cell data-label={t('powerdns.tables.framework')}>
 														<Badge variant="secondary" class="uppercase">{s.framework || 'PHP'}</Badge>
 														<span class="ml-1 text-xs text-muted-foreground tabular-nums">
 															{s.framework === 'static'
-																? 'Static HTML'
+																? t('powerdns.exposeTab.staticHtml')
 																: s.framework === 'proxy'
 																	? `:${s.proxy_port}`
 																	: `PHP ${s.php_version || '8.4'}`}
 														</span>
 													</Table.Cell>
-													<Table.Cell data-label="Status">
+													<Table.Cell data-label={t('powerdns.tables.status')}>
 														{#if s.exposed_to}
-															<StatusBadge tone="success" label="Terekspos" />
+															<StatusBadge tone="success" label={t('powerdns.exposeTab.badgeExposed')} />
 														{:else}
-															<StatusBadge tone="neutral" label="Hanya Lokal" />
+															<StatusBadge tone="neutral" label={t('powerdns.exposeTab.badgeLocalOnly')} />
 														{/if}
 													</Table.Cell>
-													<Table.Cell data-label="Domain Publik">
+													<Table.Cell data-label={t('powerdns.tables.publicDomain')}>
 														{#if s.exposed_to}
 															<div class="flex items-center gap-1">
 																<a
@@ -1595,20 +1599,20 @@
 																<Button
 																	variant="ghost"
 																	size="icon-xs"
-																	aria-label={`Salin URL https://${s.exposed_to}`}
-																	onclick={() => copyText(`https://${s.exposed_to}`, 'URL Publik')}
+																	aria-label={t('powerdns.exposeTab.copyUrlAria', { domain: s.exposed_to })}
+																	onclick={() => copyText(`https://${s.exposed_to}`, t('powerdns.copyLabels.publicUrl'))}
 																>
 																	<CopyIcon />
 																</Button>
 															</div>
 														{:else}
-															<span class="text-xs text-muted-foreground">Belum diekspos</span>
+															<span class="text-xs text-muted-foreground">{t('powerdns.exposeTab.notExposed')}</span>
 														{/if}
 													</Table.Cell>
-													<Table.Cell data-label="Target NetBird" class="font-mono text-xs tabular-nums">
+													<Table.Cell data-label={t('powerdns.tables.netbirdTarget')} class="font-mono text-xs tabular-nums">
 														{targetNB}
 													</Table.Cell>
-													<Table.Cell data-label="Aksi" class="text-right">
+													<Table.Cell data-label={t('powerdns.tables.actions')} class="text-right">
 														<div class="flex items-center justify-end gap-1.5">
 															{#if !s.exposed_to}
 																<Button
@@ -1617,7 +1621,7 @@
 																	onclick={() => openExposeModal('site', s.domain)}
 																>
 																	<CloudUploadIcon data-icon="inline-start" />
-																	Ekspos<span class="sr-only"> {s.domain}</span>
+																	{t('powerdns.tables.expose')}<span class="sr-only"> {s.domain}</span>
 																</Button>
 															{:else}
 																<DropdownMenu.Root>
@@ -1631,9 +1635,9 @@
 																			>
 																				{#if s.exposed_to && unexposingPending[s.exposed_to]}
 																					<Spinner data-icon="inline-start" />
-																					Memutus...
+																					{t('powerdns.tables.disconnecting')}
 																				{:else}
-																					Aksi<span class="sr-only"> untuk {s.domain}</span>
+																					{t('powerdns.tables.actions')}<span class="sr-only">{t('powerdns.zonesTab.actionsForSr', { name: s.domain })}</span>
 																					<ChevronDownIcon data-icon="inline-end" />
 																				{/if}
 																			</Button>
@@ -1649,13 +1653,13 @@
 																				{#snippet child({ props })}
 																					<a href={`https://${s.exposed_to}`} target="_blank" rel="noopener noreferrer" {...props}>
 																						<ExternalLinkIcon />
-																						<span>Buka Domain</span>
+																						<span>{t('powerdns.tables.openDomain')}</span>
 																					</a>
 																				{/snippet}
 																			</DropdownMenu.Item>
 																			<DropdownMenu.Item onclick={() => openExposeModal('site', s.domain)}>
 																				<CloudUploadIcon />
-																				<span>Perbarui Ekspos</span>
+																				<span>{t('powerdns.tables.updateExpose')}</span>
 																			</DropdownMenu.Item>
 																			<DropdownMenu.Separator />
 																			<DropdownMenu.Item
@@ -1664,7 +1668,7 @@
 																				onclick={() => unexposeDomain(s.exposed_to)}
 																			>
 																				<UnplugIcon />
-																				<span>Putus Ekspos</span>
+																				<span>{t('powerdns.tables.disconnectExpose')}</span>
 																			</DropdownMenu.Item>
 																		</DropdownMenu.Group>
 																	</DropdownMenu.Content>
@@ -1682,7 +1686,7 @@
 								bind:page={exposePage}
 								totalItems={filteredSites.length}
 								pageSize={PAGE_SIZE}
-								itemLabel="virtual host"
+								itemLabel={t('powerdns.tables.vhostItemLabel')}
 							/>
 						{/if}
 					</div>
@@ -1699,21 +1703,21 @@
 									</InputGroup.Addon>
 									<InputGroup.Input
 										type="search"
-										placeholder="Cari domain proxy, target, atau file..."
-										aria-label="Cari daftar proxy VPS"
+										placeholder={t('powerdns.proxyTab.searchPlaceholder')}
+										aria-label={t('powerdns.proxyTab.searchAria')}
 										bind:value={proxySearch}
 									/>
 								</InputGroup.Root>
 							</search>
 
-							<div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter tipe proxy">
+							<div class="flex flex-wrap items-center gap-1.5" role="group" aria-label={t('powerdns.proxyTab.filterAria')}>
 								<Button
 									variant={proxyFilter === 'all' ? 'secondary' : 'ghost'}
 									size="xs"
 									aria-pressed={proxyFilter === 'all'}
 									onclick={() => (proxyFilter = 'all')}
 								>
-									Semua ({exposures.length})
+									{t('powerdns.proxyTab.filterAll', { count: exposures.length })}
 								</Button>
 								<Button
 									variant={proxyFilter === 'vhost' ? 'secondary' : 'ghost'}
@@ -1721,7 +1725,7 @@
 									aria-pressed={proxyFilter === 'vhost'}
 									onclick={() => (proxyFilter = 'vhost')}
 								>
-									VHost ({vhostExposuresCount})
+									{t('powerdns.proxyTab.filterVhost', { count: vhostExposuresCount })}
 								</Button>
 								<Button
 									variant={proxyFilter === 'service' ? 'secondary' : 'ghost'}
@@ -1729,7 +1733,7 @@
 									aria-pressed={proxyFilter === 'service'}
 									onclick={() => (proxyFilter = 'service')}
 								>
-									Service ({serviceExposuresCount})
+									{t('powerdns.proxyTab.filterService', { count: serviceExposuresCount })}
 								</Button>
 							</div>
 						</div>
@@ -1745,7 +1749,7 @@
 								<p class="text-sm text-muted-foreground">{exposuresError}</p>
 								<Button variant="outline" size="sm" onclick={() => loadExposures(true)}>
 									<RefreshCwIcon data-icon="inline-start" />
-									Coba Hubungkan Ulang
+									{t('powerdns.proxyTab.reconnect')}
 								</Button>
 							</div>
 						{:else if exposures.length === 0}
@@ -1755,15 +1759,15 @@
 										<Empty.Media variant="icon">
 											<NetworkIcon />
 										</Empty.Media>
-										<Empty.Title>Belum ada proxy aktif di VPS Edge</Empty.Title>
+										<Empty.Title>{t('powerdns.proxyTab.emptyTitle')}</Empty.Title>
 										<Empty.Description>
-											Ekspos virtual host lokal atau port service ke domain publik agar reverse-proxy dan SSL Let's Encrypt otomatis disiapkan di VPS.
+											{t('powerdns.proxyTab.emptyDesc')}
 										</Empty.Description>
 									</Empty.Header>
 									<Empty.Content>
 										<Button size="sm" onclick={() => openExposeModal(sites.length > 0 ? 'site' : 'port')}>
 											<PlusIcon data-icon="inline-start" />
-											Tambah Ekspos Pertama
+											{t('powerdns.proxyTab.addFirstBtn')}
 										</Button>
 									</Empty.Content>
 								</Empty.Root>
@@ -1771,7 +1775,7 @@
 						{:else if filteredExposures.length === 0}
 							<div class="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
 								<p class="text-sm text-muted-foreground">
-									Tidak ada proxy yang sesuai dengan filter atau pencarian saat ini.
+									{t('powerdns.proxyTab.noMatch')}
 								</p>
 								<Button
 									variant="outline"
@@ -1781,29 +1785,29 @@
 										proxyFilter = 'all';
 									}}
 								>
-									Reset Filter
+									{t('powerdns.proxyTab.resetFilter')}
 								</Button>
 							</div>
 						{:else}
 							<div class="p-3 sm:p-0">
 								<ResponsiveTableWrapper
-									label="Tabel Proxy Domain VPS"
+									label={t('powerdns.proxyTab.tableAria')}
 									class="rounded-none border-0 bg-transparent"
 								>
 									<Table.Root class="sm:[&_th:first-child]:pl-4 sm:[&_td:first-child]:pl-4 sm:[&_th:last-child]:pr-4 sm:[&_td:last-child]:pr-4">
 										<Table.Header>
 											<Table.Row>
-												<Table.Head scope="col">Domain Publik VPS</Table.Head>
-												<Table.Head scope="col">Tipe &amp; Rute Target</Table.Head>
-												<Table.Head scope="col">Status Proxy</Table.Head>
-												<Table.Head scope="col">File Konfigurasi</Table.Head>
-												<Table.Head scope="col" class="text-right">Aksi</Table.Head>
+												<Table.Head scope="col">{t('powerdns.proxyTab.colDomain')}</Table.Head>
+												<Table.Head scope="col">{t('powerdns.proxyTab.colTarget')}</Table.Head>
+												<Table.Head scope="col">{t('powerdns.proxyTab.colStatus')}</Table.Head>
+												<Table.Head scope="col">{t('powerdns.proxyTab.colConfig')}</Table.Head>
+												<Table.Head scope="col" class="text-right">{t('powerdns.tables.actions')}</Table.Head>
 											</Table.Row>
 										</Table.Header>
 										<Table.Body>
 											{#each paginatedExposures as exp (exp.domain)}
 												<Table.Row>
-													<Table.Cell data-label="Domain">
+													<Table.Cell data-label={t('powerdns.tables.domain')}>
 														<div class="flex items-center gap-1">
 															<a
 																href={`https://${exp.domain}`}
@@ -1817,34 +1821,34 @@
 															<Button
 																variant="ghost"
 																size="icon-xs"
-																aria-label={`Salin URL https://${exp.domain}`}
-																onclick={() => copyText(`https://${exp.domain}`, 'URL Proxy')}
+																aria-label={t('powerdns.exposeTab.copyUrlAria', { domain: exp.domain })}
+																onclick={() => copyText(`https://${exp.domain}`, t('powerdns.copyLabels.proxyUrl'))}
 															>
 																<CopyIcon />
 															</Button>
 														</div>
 													</Table.Cell>
-													<Table.Cell data-label="Target">
+													<Table.Cell data-label={t('powerdns.tables.target')}>
 														{#if exp.local_site}
-															<Badge variant="secondary" class="mr-1.5">VHost</Badge>
+															<Badge variant="secondary" class="mr-1.5">{t('powerdns.proxyTab.badgeVhost')}</Badge>
 															<span class="font-medium">{exp.local_site}</span>
 														{:else}
-															<Badge variant="outline" class="mr-1.5">Service</Badge>
-															<span class="font-mono text-xs">{exp.target || 'Proxy VPS'}</span>
+															<Badge variant="outline" class="mr-1.5">{t('powerdns.proxyTab.badgeService')}</Badge>
+															<span class="font-mono text-xs">{exp.target || t('powerdns.proxyTab.vpsProxyFallback')}</span>
 														{/if}
 													</Table.Cell>
-													<Table.Cell data-label="Status">
+													<Table.Cell data-label={t('powerdns.tables.status')}>
 														<StatusBadge
 															tone={exp.enabled ? 'success' : 'neutral'}
-															label={exp.enabled ? 'Aktif (HTTPS)' : 'Nonaktif'}
+															label={exp.enabled ? t('powerdns.tables.activeHttps') : t('powerdns.tables.inactive')}
 														/>
 													</Table.Cell>
-													<Table.Cell data-label="Konfigurasi" class="sm:max-w-52">
+													<Table.Cell data-label={t('powerdns.tables.config')} class="sm:max-w-52">
 														<code class="block break-all text-xs text-muted-foreground sm:truncate" title={exp.config_file || '-'}>
 															{exp.config_file || '-'}
 														</code>
 													</Table.Cell>
-													<Table.Cell data-label="Aksi" class="text-right">
+													<Table.Cell data-label={t('powerdns.tables.actions')} class="text-right">
 														<div class="flex justify-end">
 															<DropdownMenu.Root>
 																<DropdownMenu.Trigger>
@@ -1857,9 +1861,9 @@
 																		>
 																			{#if unexposingPending[exp.domain]}
 																				<Spinner data-icon="inline-start" />
-																				Menghapus...
+																				{t('powerdns.zonesTab.deleting')}
 																			{:else}
-																				Aksi<span class="sr-only"> untuk {exp.domain}</span>
+																				{t('powerdns.tables.actions')}<span class="sr-only">{t('powerdns.zonesTab.actionsForSr', { name: exp.domain })}</span>
 																				<ChevronDownIcon data-icon="inline-end" />
 																			{/if}
 																		</Button>
@@ -1875,13 +1879,13 @@
 																			{#snippet child({ props })}
 																				<a href={`https://${exp.domain}`} target="_blank" rel="noopener noreferrer" {...props}>
 																					<ExternalLinkIcon />
-																					<span>Buka Domain</span>
+																					<span>{t('powerdns.tables.openDomain')}</span>
 																				</a>
 																			{/snippet}
 																		</DropdownMenu.Item>
-																		<DropdownMenu.Item onclick={() => copyText(`https://${exp.domain}`, 'URL Proxy')}>
+																		<DropdownMenu.Item onclick={() => copyText(`https://${exp.domain}`, t('powerdns.copyLabels.proxyUrl'))}>
 																			<CopyIcon />
-																			<span>Salin URL Publik</span>
+																			<span>{t('powerdns.tables.copyPublicUrl')}</span>
 																		</DropdownMenu.Item>
 																		<DropdownMenu.Separator />
 																		<DropdownMenu.Item
@@ -1890,7 +1894,7 @@
 																			onclick={() => unexposeDomain(exp.domain)}
 																		>
 																			<Trash2Icon />
-																			<span>Hapus Ekspos</span>
+																			<span>{t('powerdns.tables.deleteExpose')}</span>
 																		</DropdownMenu.Item>
 																	</DropdownMenu.Group>
 																</DropdownMenu.Content>
@@ -1907,7 +1911,7 @@
 								bind:page={proxyPage}
 								totalItems={filteredExposures.length}
 								pageSize={PAGE_SIZE}
-								itemLabel="proxy"
+								itemLabel={t('powerdns.tables.proxyItemLabel')}
 							/>
 						{/if}
 					</div>
@@ -1921,18 +1925,18 @@
 <Dialog.Root bind:open={addZoneOpen}>
 	<Dialog.Content class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Tambah Authoritative DNS Zone</Dialog.Title>
+			<Dialog.Title>{t('powerdns.addZoneModal.title')}</Dialog.Title>
 			<Dialog.Description>
-				Masukkan nama domain FQDN tanpa protokol (contoh: domainanda.com). Record DNS (@, www, ns1, ns2) akan dibuat otomatis.
+				{t('powerdns.addZoneModal.desc')}
 			</Dialog.Description>
 		</Dialog.Header>
 		<form onsubmit={submitAddZone} class="flex flex-col gap-4">
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldLabel for="pdns-new-zone">Nama Zone Domain</Field.FieldLabel>
+					<Field.FieldLabel for="pdns-new-zone">{t('powerdns.addZoneModal.nameLabel')}</Field.FieldLabel>
 					<Input
 						id="pdns-new-zone"
-						placeholder="domainanda.com"
+						placeholder={t('powerdns.addZoneModal.placeholder')}
 						autocorrect="off"
 						autocapitalize="none"
 						spellcheck={false}
@@ -1943,18 +1947,18 @@
 				<Field.Field orientation="horizontal">
 					<Checkbox id="pdns-create-vhost" bind:checked={createDefaultVhost} />
 					<Field.FieldLabel for="pdns-create-vhost" class="font-normal leading-snug">
-						Buatkan virtual host Nginx &amp; template HTML statis default agar langsung dapat diakses
+						{t('powerdns.addZoneModal.createVhost')}
 					</Field.FieldLabel>
 				</Field.Field>
 			</Field.FieldGroup>
 			<Dialog.Footer>
-				<Button type="button" variant="outline" onclick={() => (addZoneOpen = false)}>Batal</Button>
+				<Button type="button" variant="outline" onclick={() => (addZoneOpen = false)}>{t('powerdns.addZoneModal.cancel')}</Button>
 				<Button type="submit" disabled={addingZone}>
 					{#if addingZone}
 						<Spinner data-icon="inline-start" />
-						Menambahkan...
+						{t('powerdns.addZoneModal.submitting')}
 					{:else}
-						Tambah Zone
+						{t('powerdns.addZoneModal.submit')}
 					{/if}
 				</Button>
 			</Dialog.Footer>
@@ -1981,7 +1985,7 @@
 				</div>
 				<div
 					role="progressbar"
-					aria-label="Memeriksa kesehatan zone DNS"
+					aria-label={t('powerdns.report.ariaChecking')}
 					aria-valuetext={reportLoadingMessage}
 					class="h-1.5 w-full overflow-hidden rounded-full bg-muted"
 				>
@@ -2020,7 +2024,7 @@
 			</div>
 		{/if}
 		<Dialog.Footer>
-			<Button type="button" onclick={() => (reportOpen = false)}>Tutup</Button>
+			<Button type="button" onclick={() => (reportOpen = false)}>{t('powerdns.report.close')}</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
@@ -2029,36 +2033,36 @@
 <Dialog.Root bind:open={recordsOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-4xl">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Record DNS — {currentZone}</Dialog.Title>
-			<Dialog.Description>Tambah atau hapus record DNS authoritative pada zone ini.</Dialog.Description>
+			<Dialog.Title>{t('powerdns.tables.recordsModalTitle', { zone: currentZone })}</Dialog.Title>
+			<Dialog.Description>{t('powerdns.recordsModal.desc')}</Dialog.Description>
 		</Dialog.Header>
 
 		<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
 			<form onsubmit={submitAddRecord} class="rounded-lg border p-3.5">
 				<Field.FieldGroup class="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(140px,1fr)_100px_minmax(220px,1.8fr)_85px_auto]">
 					<Field.Field>
-						<Field.FieldLabel for="pdns-rec-name">Nama / Host</Field.FieldLabel>
-						<Input id="pdns-rec-name" placeholder="@ atau sub" bind:value={recName} />
+						<Field.FieldLabel for="pdns-rec-name">{t('powerdns.recordsModal.nameLabel')}</Field.FieldLabel>
+						<Input id="pdns-rec-name" placeholder={t('powerdns.recordsModal.namePlaceholder')} bind:value={recName} />
 					</Field.Field>
 					<Field.Field>
-						<Field.FieldLabel for="pdns-rec-type">Tipe</Field.FieldLabel>
+						<Field.FieldLabel for="pdns-rec-type">{t('powerdns.recordsModal.typeLabel')}</Field.FieldLabel>
 						<Select.Root type="single" bind:value={recType}>
 							<Select.Trigger id="pdns-rec-type" class="w-full">{recType}</Select.Trigger>
 							<Select.Content>
 								<Select.Group>
-									{#each ['A', 'CNAME', 'TXT', 'MX', 'AAAA'] as t (t)}
-										<Select.Item value={t}>{t}</Select.Item>
+									{#each ['A', 'CNAME', 'TXT', 'MX', 'AAAA'] as recTypeOpt (recTypeOpt)}
+										<Select.Item value={recTypeOpt}>{recTypeOpt}</Select.Item>
 									{/each}
 								</Select.Group>
 							</Select.Content>
 						</Select.Root>
 					</Field.Field>
 					<Field.Field class="sm:col-span-2 lg:col-span-1">
-						<Field.FieldLabel for="pdns-rec-content">Konten / Target</Field.FieldLabel>
-						<Input id="pdns-rec-content" placeholder="1.2.3.4 atau target.com." bind:value={recContent} required />
+						<Field.FieldLabel for="pdns-rec-content">{t('powerdns.recordsModal.contentLabel')}</Field.FieldLabel>
+						<Input id="pdns-rec-content" placeholder={t('powerdns.recordsModal.contentPlaceholder')} bind:value={recContent} required />
 					</Field.Field>
 					<Field.Field>
-						<Field.FieldLabel for="pdns-rec-ttl">TTL</Field.FieldLabel>
+						<Field.FieldLabel for="pdns-rec-ttl">{t('powerdns.recordsModal.ttlLabel')}</Field.FieldLabel>
 						<Input id="pdns-rec-ttl" inputmode="numeric" pattern="[0-9]+" bind:value={recTTLStr} />
 					</Field.Field>
 					<div class="flex items-end">
@@ -2068,22 +2072,22 @@
 							{:else}
 								<PlusIcon data-icon="inline-start" />
 							{/if}
-							Simpan
+							{t('powerdns.recordsModal.save')}
 						</Button>
 					</div>
 				</Field.FieldGroup>
 			</form>
 
 			<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
-				<ResponsiveTableWrapper label="Tabel Record DNS PowerDNS" class="rounded-none border-0 bg-transparent">
+				<ResponsiveTableWrapper label={t('powerdns.recordsModal.tableAria')} class="rounded-none border-0 bg-transparent">
 					<Table.Root class="sm:table-fixed">
 						<Table.Header>
 							<Table.Row>
-								<Table.Head scope="col" class="sm:w-48 lg:w-52">Nama Record</Table.Head>
-								<Table.Head scope="col" class="sm:w-20">Tipe</Table.Head>
-								<Table.Head scope="col" class="sm:w-16">TTL</Table.Head>
-								<Table.Head scope="col">Konten</Table.Head>
-								<Table.Head scope="col" class="text-right sm:w-32">Aksi</Table.Head>
+								<Table.Head scope="col" class="sm:w-48 lg:w-52">{t('powerdns.recordsModal.colName')}</Table.Head>
+								<Table.Head scope="col" class="sm:w-20">{t('powerdns.tables.type')}</Table.Head>
+								<Table.Head scope="col" class="sm:w-16">{t('powerdns.tables.ttl')}</Table.Head>
+								<Table.Head scope="col">{t('powerdns.tables.content')}</Table.Head>
+								<Table.Head scope="col" class="text-right sm:w-32">{t('powerdns.tables.actions')}</Table.Head>
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
@@ -2092,14 +2096,14 @@
 									<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
 										<div class="inline-flex items-center justify-center gap-2">
 											<Spinner />
-											<span>Memuat record DNS...</span>
+											<span>{t('powerdns.recordsModal.loading')}</span>
 										</div>
 									</Table.Cell>
 								</Table.Row>
 							{:else if rrsets.length === 0}
 								<Table.Row>
 									<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-										Belum ada record pada zone ini.
+										{t('powerdns.recordsModal.empty')}
 									</Table.Cell>
 								</Table.Row>
 							{:else}
@@ -2109,29 +2113,29 @@
 									{@const isEdgeProxy = exposures.some((p) => p.domain === cleanName)}
 									{#each rr.records || [] as rec, idx (idx)}
 										<Table.Row>
-											<Table.Cell data-label="Nama" class="whitespace-normal wrap-anywhere font-semibold">
+											<Table.Cell data-label={t('powerdns.tables.name')} class="whitespace-normal wrap-anywhere font-semibold">
 												<div class="flex flex-wrap items-center gap-1.5">
 													<span>{rr.name}</span>
 													{#if isEdgeProxy}
-														<Badge variant="secondary" class="text-[10px]">Edge Proxy</Badge>
+														<Badge variant="secondary" class="text-[10px]">{t('powerdns.recordsModal.edgeProxyBadge')}</Badge>
 													{/if}
 												</div>
 											</Table.Cell>
-											<Table.Cell data-label="Tipe">
+											<Table.Cell data-label={t('powerdns.tables.type')}>
 												<Badge variant="outline">{rr.type}</Badge>
 											</Table.Cell>
-											<Table.Cell data-label="TTL" class="tabular-nums text-muted-foreground">
+											<Table.Cell data-label={t('powerdns.tables.ttl')} class="tabular-nums text-muted-foreground">
 												{rr.ttl}
 											</Table.Cell>
 											<Table.Cell
-												data-label="Konten"
+												data-label={t('powerdns.tables.content')}
 												class="whitespace-normal break-normal wrap-anywhere font-mono text-xs leading-relaxed"
 											>
 												{rec.content}
 											</Table.Cell>
-											<Table.Cell data-label="Aksi" class="text-right whitespace-nowrap">
+											<Table.Cell data-label={t('powerdns.tables.actions')} class="text-right whitespace-nowrap">
 												{#if isProtected}
-													<Badge variant="secondary" class="font-normal text-muted-foreground">Sistem</Badge>
+													<Badge variant="secondary" class="font-normal text-muted-foreground">{t('powerdns.tables.system')}</Badge>
 												{:else}
 													<div class="flex justify-end">
 														<DropdownMenu.Root>
@@ -2145,9 +2149,9 @@
 																	>
 																		{#if recordPending[`${rr.name}:${rr.type}`]}
 																			<Spinner data-icon="inline-start" />
-																			Menghapus...
+																			{t('powerdns.zonesTab.deleting')}
 																		{:else}
-																			Aksi<span class="sr-only"> {rr.type} {rr.name}</span>
+																			{t('powerdns.tables.actions')}<span class="sr-only"> {rr.type} {rr.name}</span>
 																			<ChevronDownIcon data-icon="inline-end" />
 																		{/if}
 																	</Button>
@@ -2161,7 +2165,7 @@
 																		onclick={() => deleteRecord(rr.name, rr.type)}
 																	>
 																		<Trash2Icon />
-																		<span>Hapus Record</span>
+																		<span>{t('powerdns.tables.deleteRecord')}</span>
 																	</DropdownMenu.Item>
 																</DropdownMenu.Group>
 															</DropdownMenu.Content>
@@ -2180,14 +2184,14 @@
 					bind:page={recordPage}
 					totalItems={rrsets.length}
 					pageSize={PAGE_SIZE}
-					itemLabel="record DNS"
+					itemLabel={t('powerdns.tables.recordItemLabel')}
 					class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
 				/>
 			</div>
 		</div>
 
 		<Dialog.Footer>
-			<Button type="button" variant="outline" onclick={() => (recordsOpen = false)}>Tutup</Button>
+			<Button type="button" variant="outline" onclick={() => (recordsOpen = false)}>{t('powerdns.recordsModal.close')}</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
@@ -2196,16 +2200,16 @@
 <Dialog.Root bind:open={exposeOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-lg">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Ekspos ke VPS Edge Gateway</Dialog.Title>
+			<Dialog.Title>{t('powerdns.exposeModal.title')}</Dialog.Title>
 			<Dialog.Description>
-				Ekspos vhost lokal atau port aplikasi lokal ke internet melalui VPS Edge Gateway dengan otomatisasi DNS &amp; SSL Let's Encrypt.
+				{t('powerdns.exposeModal.desc')}
 			</Dialog.Description>
 		</Dialog.Header>
 
 		<form id="pdns-expose-form" onsubmit={submitExpose} class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldTitle id="pdns-expose-mode-label">Mode Ekspos</Field.FieldTitle>
+					<Field.FieldTitle id="pdns-expose-mode-label">{t('powerdns.exposeModal.modeLabel')}</Field.FieldTitle>
 					<ToggleGroup.Root
 						type="single"
 						bind:value={exposeMode}
@@ -2217,8 +2221,8 @@
 							if (v === 'site' || v === 'port') exposeMode = v;
 						}}
 					>
-						<ToggleGroup.Item value="site" class="min-w-[8rem] flex-1">Virtual Host (VHost)</ToggleGroup.Item>
-						<ToggleGroup.Item value="port" class="min-w-[8rem] flex-1">Port Aplikasi</ToggleGroup.Item>
+						<ToggleGroup.Item value="site" class="min-w-[8rem] flex-1">{t('powerdns.exposeModal.modeSite')}</ToggleGroup.Item>
+						<ToggleGroup.Item value="port" class="min-w-[8rem] flex-1">{t('powerdns.exposeModal.modePort')}</ToggleGroup.Item>
 					</ToggleGroup.Root>
 				</Field.Field>
 			</Field.FieldGroup>
@@ -2226,7 +2230,7 @@
 			{#if exposeMode === 'site'}
 				<Field.FieldGroup>
 					<Field.Field>
-						<Field.FieldLabel for="pdns-expose-site-select">Pilih Virtual Host Lokal</Field.FieldLabel>
+						<Field.FieldLabel for="pdns-expose-site-select">{t('powerdns.exposeModal.selectSiteLabel')}</Field.FieldLabel>
 						<Select.Root
 							type="single"
 							value={exposeSiteDomain}
@@ -2238,13 +2242,13 @@
 							}}
 						>
 							<Select.Trigger id="pdns-expose-site-select" class="w-full">
-								{exposeSiteDomain || '(Belum ada vhost lokal dibuat)'}
+								{exposeSiteDomain || t('powerdns.exposeModal.noSitePlaceholder')}
 							</Select.Trigger>
 							<Select.Content>
 								<Select.Group>
 									{#each sites as s (s.domain)}
 										<Select.Item value={s.domain}>
-											{s.domain} {s.exposed_to ? `(Sudah -> ${s.exposed_to})` : '(Belum diekspos)'}
+											{s.domain} {s.exposed_to ? t('powerdns.exposeModal.siteAlreadyExposed', { domain: s.exposed_to }) : t('powerdns.exposeModal.siteNotExposed')}
 										</Select.Item>
 									{/each}
 								</Select.Group>
@@ -2253,7 +2257,7 @@
 					</Field.Field>
 
 					<Field.Field>
-						<Field.FieldLabel for="pdns-expose-site-pub">Domain Publik VPS</Field.FieldLabel>
+						<Field.FieldLabel for="pdns-expose-site-pub">{t('powerdns.exposeModal.pubDomainLabel')}</Field.FieldLabel>
 						<Input
 							id="pdns-expose-site-pub"
 							placeholder={`portal.${defaultZoneName}`}
@@ -2266,13 +2270,13 @@
 						<Alert.Root>
 							<InfoIcon />
 							<Alert.Title>
-								{selectedSiteObj.exposed_to ? 'Sudah Diekspos' : 'Rekomendasi Ekspos'}
+								{selectedSiteObj.exposed_to ? t('powerdns.exposeModal.alreadyExposedTitle') : t('powerdns.exposeModal.recommendationTitle')}
 							</Alert.Title>
 							<Alert.Description>
 								{#if selectedSiteObj.exposed_to}
-									Virtual host <strong>{selectedSiteObj.domain}</strong> sudah diekspos ke <strong>https://{selectedSiteObj.exposed_to}</strong>. Mengekspos ulang akan memperbarui konfigurasi Nginx dan SSL.
+									{t('powerdns.exposeModal.alreadyExposedPre')} <strong>{selectedSiteObj.domain}</strong> {t('powerdns.exposeModal.alreadyExposedMid')} <strong>https://{selectedSiteObj.exposed_to}</strong>{t('powerdns.exposeModal.alreadyExposedPost')}
 								{:else}
-									Rekomendasi domain publik: <code>{exposeSitePublic}</code>.
+									{t('powerdns.exposeModal.recommendedDomain')} <code>{exposeSitePublic}</code>.
 								{/if}
 							</Alert.Description>
 						</Alert.Root>
@@ -2281,7 +2285,7 @@
 			{:else}
 				<Field.FieldGroup>
 					<Field.Field>
-						<Field.FieldLabel for="pdns-expose-port-pub">Domain Publik VPS</Field.FieldLabel>
+						<Field.FieldLabel for="pdns-expose-port-pub">{t('powerdns.exposeModal.pubDomainLabel')}</Field.FieldLabel>
 						<Input
 							id="pdns-expose-port-pub"
 							placeholder={`api.${defaultZoneName}`}
@@ -2290,7 +2294,7 @@
 						/>
 					</Field.Field>
 					<Field.Field>
-						<Field.FieldLabel for="pdns-expose-port-target">Port Target Mesin Lokal</Field.FieldLabel>
+						<Field.FieldLabel for="pdns-expose-port-target">{t('powerdns.exposeModal.targetPortLabel')}</Field.FieldLabel>
 						<Input
 							id="pdns-expose-port-target"
 							inputmode="numeric"
@@ -2307,27 +2311,27 @@
 				<Field.Field orientation="horizontal">
 					<Checkbox id="pdns-expose-ssl" bind:checked={exposeSSL} />
 					<Field.FieldLabel for="pdns-expose-ssl" class="font-normal">
-						Otomatis Pasang SSL Let's Encrypt (HTTPS)
+						{t('powerdns.exposeModal.sslLabel')}
 					</Field.FieldLabel>
 				</Field.Field>
 				<Field.Field orientation="horizontal">
 					<Checkbox id="pdns-expose-ws" bind:checked={exposeWS} />
 					<Field.FieldLabel for="pdns-expose-ws" class="font-normal">
-						Dukungan WebSocket (WSS / Upgrade)
+						{t('powerdns.exposeModal.wsLabel')}
 					</Field.FieldLabel>
 				</Field.Field>
 			</Field.FieldGroup>
 		</form>
 
 		<Dialog.Footer>
-			<Button type="button" variant="outline" onclick={() => (exposeOpen = false)}>Batal</Button>
+			<Button type="button" variant="outline" onclick={() => (exposeOpen = false)}>{t('powerdns.exposeModal.cancel')}</Button>
 			<Button type="submit" form="pdns-expose-form" disabled={exposing}>
 				{#if exposing}
 					<Spinner data-icon="inline-start" />
-					Mengekspos...
+					{t('powerdns.exposeModal.submitting')}
 				{:else}
 					<CloudUploadIcon data-icon="inline-start" />
-					Ekspos Sekarang
+					{t('powerdns.exposeModal.submit')}
 				{/if}
 			</Button>
 		</Dialog.Footer>
@@ -2338,38 +2342,38 @@
 <Dialog.Root bind:open={deployOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] flex-col gap-4 sm:max-w-lg">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Deploy &amp; Install VPS Edge Gateway</Dialog.Title>
+			<Dialog.Title>{t('powerdns.deployModal.title')}</Dialog.Title>
 			<Dialog.Description>
-				Instalasi otomatis PowerDNS Authoritative, SQLite3, Nginx Reverse Proxy, dan Edge Agent ke VPS via SSH.
+				{t('powerdns.deployModal.desc')}
 			</Dialog.Description>
 		</Dialog.Header>
 
 		<form id="pdns-deploy-form" onsubmit={submitDeployVPS} class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldLabel for="vps-deploy-host">Host / IP VPS (NetBird atau Publik)</Field.FieldLabel>
+					<Field.FieldLabel for="vps-deploy-host">{t('powerdns.deployModal.hostLabel')}</Field.FieldLabel>
 					<Input
 						id="vps-deploy-host"
-						placeholder="100.68.66.249 atau 103.150.20.50"
+						placeholder={t('powerdns.deployModal.hostPlaceholder')}
 						bind:value={deployHost}
 						required
 					/>
-					<Field.FieldDescription>Disarankan menggunakan IP NetBird mesh.</Field.FieldDescription>
+					<Field.FieldDescription>{t('powerdns.deployModal.hostDesc')}</Field.FieldDescription>
 				</Field.Field>
 
 				<div class="grid gap-3 sm:grid-cols-2">
 					<Field.Field>
-						<Field.FieldLabel for="vps-deploy-user">Username SSH</Field.FieldLabel>
+						<Field.FieldLabel for="vps-deploy-user">{t('powerdns.deployModal.userLabel')}</Field.FieldLabel>
 						<Input id="vps-deploy-user" bind:value={deployUser} required />
 					</Field.Field>
 					<Field.Field>
-						<Field.FieldLabel for="vps-deploy-port">Port SSH</Field.FieldLabel>
+						<Field.FieldLabel for="vps-deploy-port">{t('powerdns.deployModal.portLabel')}</Field.FieldLabel>
 						<Input id="vps-deploy-port" inputmode="numeric" pattern="[0-9]+" bind:value={deployPortStr} required />
 					</Field.Field>
 				</div>
 
 				<Field.Field>
-					<Field.FieldTitle id="vps-auth-label">Metode Autentikasi SSH</Field.FieldTitle>
+					<Field.FieldTitle id="vps-auth-label">{t('powerdns.deployModal.authLabel')}</Field.FieldTitle>
 					<ToggleGroup.Root
 						type="single"
 						bind:value={deployAuthMethod}
@@ -2381,26 +2385,26 @@
 							if (v === 'password' || v === 'key') deployAuthMethod = v;
 						}}
 					>
-						<ToggleGroup.Item value="password" class="min-w-[8rem] flex-1">Password SSH</ToggleGroup.Item>
-						<ToggleGroup.Item value="key" class="min-w-[8rem] flex-1">SSH Private Key</ToggleGroup.Item>
+						<ToggleGroup.Item value="password" class="min-w-[8rem] flex-1">{t('powerdns.deployModal.authPassword')}</ToggleGroup.Item>
+						<ToggleGroup.Item value="key" class="min-w-[8rem] flex-1">{t('powerdns.deployModal.authKey')}</ToggleGroup.Item>
 					</ToggleGroup.Root>
 				</Field.Field>
 
 				{#if deployAuthMethod === 'password'}
 					<Field.Field>
-						<Field.FieldLabel for="vps-deploy-password">Password Login SSH</Field.FieldLabel>
+						<Field.FieldLabel for="vps-deploy-password">{t('powerdns.deployModal.passwordLabel')}</Field.FieldLabel>
 						<PasswordInput
 							id="vps-deploy-password"
 							canGenerate={false}
 							autocomplete="current-password"
-							placeholder="Masukkan password SSH user VPS"
+							placeholder={t('powerdns.deployModal.passwordPlaceholder')}
 							bind:value={deployPassword}
 							required
 						/>
 					</Field.Field>
 				{:else}
 					<Field.Field>
-						<Field.FieldLabel for="vps-deploy-keypath">Path Private Key SSH di Mesin Lokal</Field.FieldLabel>
+						<Field.FieldLabel for="vps-deploy-keypath">{t('powerdns.deployModal.keyPathLabel')}</Field.FieldLabel>
 						<Input
 							id="vps-deploy-keypath"
 							placeholder="~/.ssh/id_ed25519"
@@ -2412,13 +2416,13 @@
 		</form>
 
 		<Dialog.Footer>
-			<Button type="button" variant="outline" onclick={() => (deployOpen = false)}>Batal</Button>
+			<Button type="button" variant="outline" onclick={() => (deployOpen = false)}>{t('powerdns.deployModal.cancel')}</Button>
 			<Button type="submit" form="pdns-deploy-form" disabled={deploying}>
 				{#if deploying}
 					<Spinner data-icon="inline-start" />
-					Memulai...
+					{t('powerdns.deployModal.submitting')}
 				{:else}
-					Mulai Deploy &amp; Setup VPS
+					{t('powerdns.deployModal.submit')}
 				{/if}
 			</Button>
 		</Dialog.Footer>
@@ -2429,46 +2433,46 @@
 <Dialog.Root bind:open={connectOpen}>
 	<Dialog.Content class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-lg">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Hubungkan Manual ke VPS Edge</Dialog.Title>
+			<Dialog.Title>{t('powerdns.connectModal.title')}</Dialog.Title>
 			<Dialog.Description>
-				Masukkan kredensial dari <code>/etc/wdev-edge/edge.conf</code> di VPS jika PowerDNS &amp; Edge Agent sudah terpasang.
+				{t('powerdns.connectModal.descPre')} <code>/etc/wdev-edge/edge.conf</code> {t('powerdns.connectModal.descPost')}
 			</Dialog.Description>
 		</Dialog.Header>
 
 		<form onsubmit={submitConnectVPS} class="flex flex-col gap-4">
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldLabel for="vps-conn-netbird-ip">IP NetBird VPS (wt0)</Field.FieldLabel>
+					<Field.FieldLabel for="vps-conn-netbird-ip">{t('powerdns.connectModal.netbirdIpLabel')}</Field.FieldLabel>
 					<Input id="vps-conn-netbird-ip" placeholder="100.68.66.249" bind:value={connNetbirdIP} required />
 				</Field.Field>
 				<Field.Field>
-					<Field.FieldLabel for="vps-conn-public-ip">IP Publik Edge Gateway (Opsional)</Field.FieldLabel>
+					<Field.FieldLabel for="vps-conn-public-ip">{t('powerdns.connectModal.publicIpLabel')}</Field.FieldLabel>
 					<Input id="vps-conn-public-ip" placeholder="174.128.205.124" bind:value={connPublicIP} />
 				</Field.Field>
 				<Field.Field>
-					<Field.FieldLabel for="vps-conn-api-key">API Key PowerDNS</Field.FieldLabel>
-					<Input id="vps-conn-api-key" placeholder="API Key dari edge.conf" bind:value={connAPIKey} required />
+					<Field.FieldLabel for="vps-conn-api-key">{t('powerdns.connectModal.apiKeyLabel')}</Field.FieldLabel>
+					<Input id="vps-conn-api-key" placeholder={t('powerdns.connectModal.apiKeyPlaceholder')} bind:value={connAPIKey} required />
 				</Field.Field>
 				<div class="grid gap-3 sm:grid-cols-2">
 					<Field.Field>
-						<Field.FieldLabel for="vps-conn-pdns-port">Port PowerDNS API</Field.FieldLabel>
+						<Field.FieldLabel for="vps-conn-pdns-port">{t('powerdns.connectModal.pdnsPortLabel')}</Field.FieldLabel>
 						<Input id="vps-conn-pdns-port" inputmode="numeric" pattern="[0-9]+" bind:value={connPDNSPort} />
 					</Field.Field>
 					<Field.Field>
-						<Field.FieldLabel for="vps-conn-agent-port">Port Edge Agent</Field.FieldLabel>
+						<Field.FieldLabel for="vps-conn-agent-port">{t('powerdns.connectModal.agentPortLabel')}</Field.FieldLabel>
 						<Input id="vps-conn-agent-port" inputmode="numeric" pattern="[0-9]+" bind:value={connAgentPort} />
 					</Field.Field>
 				</div>
 			</Field.FieldGroup>
 
 			<Dialog.Footer>
-				<Button type="button" variant="outline" onclick={() => (connectOpen = false)}>Batal</Button>
+				<Button type="button" variant="outline" onclick={() => (connectOpen = false)}>{t('powerdns.connectModal.cancel')}</Button>
 				<Button type="submit" disabled={connecting}>
 					{#if connecting}
 						<Spinner data-icon="inline-start" />
-						Menyimpan...
+						{t('powerdns.connectModal.submitting')}
 					{:else}
-						Simpan &amp; Hubungkan
+						{t('powerdns.connectModal.submit')}
 					{/if}
 				</Button>
 			</Dialog.Footer>

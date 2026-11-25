@@ -51,7 +51,7 @@ func (s *Server) verifyComposeSudoIfNeeded(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleComposeStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	mgr := s.ensureComposeManager()
@@ -134,7 +134,7 @@ func (s *Server) handleComposeProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
@@ -182,7 +182,7 @@ func (s *Server) handleComposeProjectSub(w http.ResponseWriter, r *http.Request)
 				"message": "Proyek Compose " + projName + " dihapus dari daftar kelola wdev",
 			})
 		default:
-			writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+			writeMethodNotAllowed(w, r)
 		}
 		return
 	}
@@ -191,7 +191,7 @@ func (s *Server) handleComposeProjectSub(w http.ResponseWriter, r *http.Request)
 	switch sub {
 	case "action":
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+			writeMethodNotAllowed(w, r)
 			return
 		}
 		var payload struct {
@@ -264,12 +264,12 @@ func (s *Server) handleComposeProjectSub(w http.ResponseWriter, r *http.Request)
 				"files":  files,
 			})
 		default:
-			writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+			writeMethodNotAllowed(w, r)
 		}
 
 	case "config":
 		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+			writeMethodNotAllowed(w, r)
 			return
 		}
 		raw, err := mgr.RenderResolvedConfig(r.Context(), projName)
@@ -288,7 +288,7 @@ func (s *Server) handleComposeProjectSub(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+			writeMethodNotAllowed(w, r)
 			return
 		}
 		svc := strings.TrimSpace(r.URL.Query().Get("service"))
@@ -311,7 +311,7 @@ func (s *Server) handleComposeProjectSub(w http.ResponseWriter, r *http.Request)
 
 	case "expose":
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+			writeMethodNotAllowed(w, r)
 			return
 		}
 		if s.siteMgr == nil {
@@ -366,7 +366,7 @@ func (s *Server) handleComposeProjectSub(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleComposeLogsStream(w http.ResponseWriter, r *http.Request, projName string) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -430,7 +430,7 @@ func (s *Server) handleComposeLogsStream(w http.ResponseWriter, r *http.Request,
 
 func (s *Server) handleComposeSystemDF(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	df, err := s.ensureComposeManager().GetDiskUsage(r.Context())
@@ -443,7 +443,7 @@ func (s *Server) handleComposeSystemDF(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleComposeSystemPrune(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {

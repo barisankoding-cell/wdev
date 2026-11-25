@@ -2572,3 +2572,105 @@ func TestSudoRateLimitEnforcedAcrossAllEndpoints(t *testing.T) {
 		t.Fatalf("valid sudo verify from clean IP = %d, want 200", code)
 	}
 }
+
+func TestHTTPAPIInternationalization(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "i18n.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: dir}
+	authMgr := auth.New(cfg, db)
+	pdnsMgr := pdns.New(cfg, db)
+	mailMgr := mail.New(cfg, db, pdnsMgr)
+	inst := installer.New(cfg, db)
+	srv := New(cfg, db, runner.New(db), inst, nil, nil, nil, pdnsMgr, mailMgr, authMgr)
+	authHandler := srv.wrapAuth(srv.wrapCSRF(srv.mux))
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	sessionCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	doReq := func(h http.Handler, method, target, body, acceptLang string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		var rBody io.Reader
+		if body != "" {
+			rBody = strings.NewReader(body)
+		}
+		req := httptest.NewRequest(method, target, rBody)
+		req.Host = "panel.example.com:3200"
+		if acceptLang != "" {
+			req.Header.Set("Accept-Language", acceptLang)
+		}
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	assertContains := func(name string, rec *httptest.ResponseRecorder, wantCode int, wantSubstr string) {
+		t.Helper()
+		if rec.Code != wantCode {
+			t.Fatalf("%s: status = %d, want %d (body=%s)", name, rec.Code, wantCode, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), wantSubstr) {
+			t.Fatalf("%s: body = %q, expected to contain %q", name, rec.Body.String(), wantSubstr)
+		}
+	}
+
+	// 1. Default (en), Accept-Language: id, and ?lang=en override on 405 & 404
+	assertContains("tasks 405 en default", doReq(srv.mux, http.MethodPost, "/api/tasks", "", ""), http.StatusMethodNotAllowed, "Method not allowed")
+	assertContains("tasks 405 id header", doReq(srv.mux, http.MethodPost, "/api/tasks", "", "id-ID,id;q=0.9"), http.StatusMethodNotAllowed, "Method tidak diizinkan")
+	assertContains("tasks 405 query en override", doReq(srv.mux, http.MethodPost, "/api/tasks?lang=en", "", "id-ID,id;q=0.9"), http.StatusMethodNotAllowed, "Method not allowed")
+
+	assertContains("not found en default", doReq(srv.mux, http.MethodGet, "/api/does-not-exist", "", ""), http.StatusNotFound, "API endpoint not found")
+	assertContains("not found id query", doReq(srv.mux, http.MethodGet, "/api/does-not-exist?lang=id", "", ""), http.StatusNotFound, "Endpoint API tidak ditemukan")
+
+	// 2. PowerDNS zone doctor localization
+	assertContains("pdns missing zone en", doReq(srv.mux, http.MethodGet, "/api/pdns/zone/doctor", "", ""), http.StatusBadRequest, "Zone parameter is required")
+	assertContains("pdns missing zone id", doReq(srv.mux, http.MethodGet, "/api/pdns/zone/doctor", "", "id"), http.StatusBadRequest, "Parameter zone diperlukan")
+	assertContains("pdns bad zone en", doReq(srv.mux, http.MethodGet, "/api/pdns/zone/doctor?zone=bad%20zone!", "", ""), http.StatusOK, "Zone name")
+	assertContains("pdns bad zone id", doReq(srv.mux, http.MethodGet, "/api/pdns/zone/doctor?zone=bad%20zone!&lang=id", "", ""), http.StatusOK, "Nama zone")
+
+	// 3. Mail preflight localization (mode-independent invalid domain blocker)
+	assertContains("mail preflight invalid domain en", doReq(srv.mux, http.MethodGet, "/api/mail/preflight?domain=invalid..domain", "", ""), http.StatusOK, "invalid domain")
+	assertContains("mail preflight invalid domain id", doReq(srv.mux, http.MethodGet, "/api/mail/preflight?domain=invalid..domain&lang=id", "", ""), http.StatusOK, "domain tidak valid")
+
+	// 4. Toolchains localization
+	assertContains("toolchains en", doReq(srv.mux, http.MethodGet, "/api/toolchains", "", ""), http.StatusOK, "Modern Rust compiler toolchain")
+	assertContains("toolchains id", doReq(srv.mux, http.MethodGet, "/api/toolchains?lang=id", "", ""), http.StatusOK, "Toolchain compiler Rust modern")
+
+	// 5. Orca Commit AI presets, validation, and model endpoint localization
+	assertContains("orca-ai presets en", doReq(srv.mux, http.MethodGet, "/api/workspace/orca-ai", "", ""), http.StatusOK, "Concise Conventional Commits format in Indonesian")
+	assertContains("orca-ai presets id", doReq(srv.mux, http.MethodGet, "/api/workspace/orca-ai", "", "id"), http.StatusOK, "Format Conventional Commits ringkas dalam Bahasa Indonesia")
+	assertContains("orca-ai invalid agent en", doReq(srv.mux, http.MethodPost, "/api/workspace/orca-ai", `{"enabled":true,"agent_id":"invalid"}`, ""), http.StatusBadRequest, "unknown AI agent")
+	assertContains("orca-ai invalid agent id", doReq(srv.mux, http.MethodPost, "/api/workspace/orca-ai?lang=id", `{"enabled":true,"agent_id":"invalid"}`, ""), http.StatusBadRequest, "agent AI tidak dikenal")
+	assertContains("orca-ai models missing agent en", doReq(srv.mux, http.MethodGet, "/api/workspace/orca-ai/models", "", ""), http.StatusBadRequest, "Agent parameter is required")
+	assertContains("orca-ai models missing agent id", doReq(srv.mux, http.MethodGet, "/api/workspace/orca-ai/models", "", "id"), http.StatusBadRequest, "Parameter agent wajib diisi")
+
+	// 6. Auth & CSRF middlewares localization
+	assertContains("auth unauthenticated en", doReq(authHandler, http.MethodGet, "/api/tasks", "", ""), http.StatusUnauthorized, "Authentication required. Please sign in first.")
+	assertContains("auth unauthenticated id", doReq(authHandler, http.MethodGet, "/api/tasks", "", "id"), http.StatusUnauthorized, "Autentikasi diperlukan. Silakan login terlebih dahulu.")
+
+	reqCSRFEN := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"vps"}`))
+	reqCSRFEN.Host = "panel.example.com:3200"
+	reqCSRFEN.Header.Set("Origin", "https://evil.example.net")
+	reqCSRFEN.AddCookie(sessionCookie)
+	recCSRFEN := httptest.NewRecorder()
+	authHandler.ServeHTTP(recCSRFEN, reqCSRFEN)
+	assertContains("csrf en", recCSRFEN, http.StatusForbidden, "Origin not allowed (CSRF protection)")
+
+	reqCSRFID := httptest.NewRequest(http.MethodPost, "/api/mode", strings.NewReader(`{"mode":"vps"}`))
+	reqCSRFID.Host = "panel.example.com:3200"
+	reqCSRFID.Header.Set("Origin", "https://evil.example.net")
+	reqCSRFID.Header.Set("Accept-Language", "id")
+	reqCSRFID.AddCookie(sessionCookie)
+	recCSRFID := httptest.NewRecorder()
+	authHandler.ServeHTTP(recCSRFID, reqCSRFID)
+	assertContains("csrf id", recCSRFID, http.StatusForbidden, "Origin tidak diizinkan (CSRF protection)")
+}

@@ -10,6 +10,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import { api } from '#lib/api/client.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import { cn } from '#lib/utils.js';
@@ -49,7 +50,7 @@
 
 	const configurableServices = new Set<string>(['redis', 'postgresql', 'php-fpm', 'nginx', 'docker']);
 
-	/** Menggabungkan mount eksternal dan /mnt tanpa duplikasi mount_point. */
+	/** Merge external and /mnt mounts without duplicating mount_point. */
 	function mergeExtraMounts(other?: MountDriveInfo[], mnt?: MountDriveInfo[]): MountDriveInfo[] {
 		const byPath = new Map<string, MountDriveInfo>();
 		for (const d of other ?? []) {
@@ -76,30 +77,23 @@
 		return `${Math.round(bytes)} B`;
 	}
 
-	function formatUptimeClock(seconds: number | undefined, fallback: string): string {
-		if (seconds == null || seconds < 0) return fallback || 'N/A';
-		const total = Math.floor(seconds);
-		const days = Math.floor(total / 86400);
-		const hours = Math.floor((total % 86400) / 3600);
-		const mins = Math.floor((total % 3600) / 60);
-		const secs = total % 60;
-		const hms = [hours, mins, secs].map((n) => String(n).padStart(2, '0')).join(':');
-		return days > 0 ? `${days} hari ${hms}` : hms;
-	}
-
 	function getProgressToneClass(pct: number): string {
 		if (pct >= 90) return '[&>[data-slot=progress-indicator]]:bg-destructive';
 		if (pct >= 75) return '[&>[data-slot=progress-indicator]]:bg-warning';
 		return '';
 	}
 
+	function localizeServiceCategory(category: string): string {
+		return i18n.tryTranslate(`dashboard.services.categories.${category}`) ?? category;
+	}
+
 	async function copyAddress(val: string, label: string) {
 		if (!val || val === '-') return;
 		try {
 			await navigator.clipboard.writeText(val);
-			toast.success(`${label} (${val}) disalin.`);
+			toast.success(t('dashboard.copySuccess', { label, val }));
 		} catch {
-			toast.error(`Gagal menyalin ${label}.`);
+			toast.error(t('dashboard.copyFailed', { label }));
 		}
 	}
 
@@ -111,9 +105,9 @@
 		refreshingServices = true;
 		try {
 			await cp.loadStatus(true);
-			toast.success('Status pembaruan layanan diperbarui.');
+			toast.success(t('dashboard.servicesRefreshed'));
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memeriksa pembaruan');
+			toast.error(err instanceof Error ? err.message : t('dashboard.checkUpdatesFailed'));
 		} finally {
 			refreshingServices = false;
 		}
@@ -127,12 +121,12 @@
 			if (res.error) {
 				toast.info(res.error);
 			} else if (res.has_update) {
-				toast.info(`Pembaruan wdev tersedia: v${res.latest}`);
+				toast.info(t('dashboard.selfUpdateAvailable', { latest: res.latest ?? '' }));
 			} else {
-				toast.success(`wdev v${res.current} sudah versi terbaru.`);
+				toast.success(t('dashboard.selfUpdateLatest', { current: res.current }));
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memeriksa update wdev');
+			toast.error(err instanceof Error ? err.message : t('dashboard.selfUpdateCheckFailed'));
 		} finally {
 			checkingSelfUpdate = false;
 		}
@@ -140,28 +134,30 @@
 
 	async function applySelfUpdate() {
 		const changelogSnippet = updaterStatus?.changelog
-			? `\n\nCatatan Rilis (v${updaterStatus.latest}):\n${updaterStatus.changelog.trim().slice(0, 300)}${updaterStatus.changelog.trim().length > 300 ? '...' : ''}`
+			? `\n\n${t('dashboard.selfUpdateReleaseNotes', { latest: updaterStatus?.latest ?? '' })}\n${updaterStatus.changelog.trim().slice(0, 300)}${updaterStatus.changelog.trim().length > 300 ? '...' : ''}`
 			: '';
 		const ok = await cp.confirm({
-			title: `Perbarui Biner wdev ke v${updaterStatus?.latest || 'Terbaru'}`,
-			description: `Unduh dan pasang rilis wdev terbaru lalu restart layanan wdev?${changelogSnippet}`,
-			confirmText: 'Perbarui Sekarang'
+			title: t('dashboard.selfUpdateConfirmTitle', {
+				latest: updaterStatus?.latest || t('dashboard.selfUpdateConfirmLatest')
+			}),
+			description: t('dashboard.selfUpdateConfirmDesc', { notes: changelogSnippet }),
+			confirmText: t('dashboard.selfUpdateConfirmBtn')
 		});
 		if (!ok) return;
 		applyingUpdate = true;
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Pembaruan biner wdev memerlukan hak akses administrator (sudo).',
+				t('dashboard.selfUpdateSudoPrompt'),
 				(sudoPass) => api.applySelfUpdate('', sudoPass)
 			);
 			if (res) {
 				if (res.status === 'started') {
 					cp.armSelfUpdateReload();
 				}
-				cp.openTerminal('Pembaruan Biner wdev');
+				cp.openTerminal(t('dashboard.selfUpdateTerminalLabel'));
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memperbarui wdev');
+			toast.error(err instanceof Error ? err.message : t('dashboard.selfUpdateFailed'));
 		} finally {
 			applyingUpdate = false;
 		}
@@ -171,10 +167,19 @@
 		servicePending = { ...servicePending, [svc.name]: true };
 		try {
 			await api.controlService(svc.name, action);
-			toast.success(`Layanan ${svc.display_name} berhasil di-${action}.`);
+			toast.success(
+				t('dashboard.serviceActionSuccess', {
+					name: svc.display_name,
+					action: t(`dashboard.actionVerbs.${action}`)
+				})
+			);
 			await cp.loadStatus(false);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : `Gagal ${action} ${svc.display_name}`);
+			toast.error(
+				err instanceof Error
+					? err.message
+					: t('dashboard.serviceActionFailed', { action, name: svc.display_name })
+			);
 		} finally {
 			servicePending = { ...servicePending, [svc.name]: false };
 		}
@@ -184,36 +189,36 @@
 <div class="flex flex-col gap-5 sm:gap-6">
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
-			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Ringkasan Sistem</h1>
+			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('dashboard.title')}</h1>
 			<p class="text-sm text-muted-foreground">
-				Pantau kesehatan server Linux, runtime aktif, dan kendalikan daemon latar belakang.
+				{t('dashboard.subtitle')}
 			</p>
 		</div>
 		<div
 			class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center"
 			role="toolbar"
-			aria-label="Aksi Pemeliharaan Sistem"
+			aria-label={t('dashboard.toolbarAria')}
 		>
 			<Button size="sm" onclick={() => cp.triggerInstall('update')}>
 				<RefreshCwIcon data-icon="inline-start" />
-				Perbarui Semua
+				{t('dashboard.updateAllBtn')}
 			</Button>
 			<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('check-updates')}>
 				<SearchIcon data-icon="inline-start" />
-				Cek Pembaruan
+				{t('dashboard.checkUpdatesBtn')}
 			</Button>
 			<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('self-check')}>
 				<ShieldCheckIcon data-icon="inline-start" />
-				Self-Check
+				{t('dashboard.selfCheckBtn')}
 			</Button>
 			<Button variant="outline" size="sm" onclick={() => cp.openTerminal()}>
 				<TerminalIcon data-icon="inline-start" />
-				Live Terminal
+				{t('dashboard.liveTerminalBtn')}
 			</Button>
 		</div>
 	</div>
 
-	<!-- Notifikasi Rilis Pembaruan wdev Panel (aaPanel Style) -->
+	<!-- wdev Panel Update Banner -->
 	{#if updaterStatus?.has_update}
 		<div
 			class="relative flex flex-col gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-card-foreground shadow-sm dark:bg-amber-950/25 sm:flex-row sm:items-center sm:justify-between"
@@ -225,13 +230,13 @@
 				</div>
 				<div>
 					<div class="flex flex-wrap items-center gap-2">
-						<span class="font-semibold text-foreground">Pembaruan wdev Control Plane Tersedia!</span>
+						<span class="font-semibold text-foreground">{t('dashboard.updaterBannerTitle')}</span>
 						<Badge variant="default" class="bg-amber-600 font-mono text-xs text-white hover:bg-amber-700">
 							v{updaterStatus.latest}
 						</Badge>
 					</div>
 					<p class="mt-0.5 text-xs text-muted-foreground sm:text-sm">
-						Versi baru wdev siap dipasang (saat ini: v{updaterStatus.current}). Dapatkan fitur dan perbaikan terbaru dengan satu klik.
+						{t('dashboard.updaterBannerDesc', { current: updaterStatus.current })}
 					</p>
 				</div>
 			</div>
@@ -244,10 +249,10 @@
 				>
 					{#if applyingUpdate}
 						<Spinner data-icon="inline-start" />
-						Memperbarui...
+						{t('dashboard.updatingBtn')}
 					{:else}
 						<ArrowUpCircleIcon data-icon="inline-start" />
-						Perbarui Sekarang
+						{t('dashboard.updateNowBtn')}
 					{/if}
 				</Button>
 			</div>
@@ -257,7 +262,7 @@
 	{#if cp.statusError}
 		<Alert.Root variant="destructive">
 			<AlertCircleIcon />
-			<Alert.Title>Gagal Memuat Status Sistem</Alert.Title>
+			<Alert.Title>{t('dashboard.statusErrorTitle')}</Alert.Title>
 			<Alert.Description>{cp.statusError}</Alert.Description>
 		</Alert.Root>
 	{/if}
@@ -306,9 +311,13 @@
 		{@const swapUsedBytes = st.swap_used_bytes ?? 0}
 		{@const swapPct = st.swap_percent ?? 0}
 		{@const extraMounts = mergeExtraMounts(st.other_mounts, st.mount_drives)}
-		{@const uptimeLabel = formatUptimeClock(st.uptime_seconds, st.uptime_string)}
+		{@const uptimeLabel = i18n.formatDaysHMS(st.uptime_seconds, st.uptime_string)}
 		{@const cpuHardwareLabel = st.cpu_model
-			? `${cpuCores} x ${st.cpu_model} (${st.cpu_sockets || 1} Socket)`
+			? t('dashboard.hardware.cpuSocketLabel', {
+					cores: cpuCores,
+					model: st.cpu_model,
+					sockets: st.cpu_sockets || 1
+				})
 			: `${cpuCores} vCPU`}
 		{@const installedServices = (st.services || []).filter((s) => s.installed)}
 		{@const activeServicesCount = installedServices.filter((s) => s.active).length}
@@ -344,17 +353,21 @@
 						<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
 							<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
 								<CpuIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-								<span>CPU usage</span>
+								<span>{t('dashboard.metrics.cpuUsage')}</span>
 							</span>
 							<span class="font-mono text-xs tabular-nums text-foreground">
-								{cpuPct.toFixed(2)}% of {cpuCores} {cpuCores === 1 ? 'CPU' : 'CPUs'}
+								{t('dashboard.metrics.cpuOfTotal', {
+									pct: cpuPct.toFixed(2),
+									cores: cpuCores,
+									unit: cpuCores === 1 ? t('dashboard.metrics.cpuSingular') : t('dashboard.metrics.cpuPlural')
+								})}
 							</span>
 						</div>
 						<Progress
 							value={Math.min(cpuPct, 100)}
 							max={100}
 							class={cn('h-1.5', getProgressToneClass(cpuPct))}
-							aria-label="CPU usage"
+							aria-label={t('dashboard.metrics.cpuUsage')}
 						/>
 					</div>
 
@@ -363,7 +376,7 @@
 						<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
 							<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
 								<ActivityIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-								<span>Load average</span>
+								<span>{t('dashboard.metrics.loadAverage')}</span>
 							</span>
 							<span class="font-mono text-xs tabular-nums text-foreground">
 								{loadPct}% ({st.load_avg || '-'})
@@ -373,7 +386,7 @@
 							value={Math.min(loadPct, 100)}
 							max={100}
 							class={cn('h-1.5', getProgressToneClass(loadPct))}
-							aria-label="Load average"
+							aria-label={t('dashboard.metrics.loadAverage')}
 						/>
 					</div>
 
@@ -382,17 +395,20 @@
 						<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
 							<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
 								<MemoryStickIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-								<span>RAM usage</span>
+								<span>{t('dashboard.metrics.ramUsage')}</span>
 							</span>
 							<span class="font-mono text-xs tabular-nums text-foreground">
-								{memPctExact.toFixed(2)}% ({formatBinaryBytes(memUsedBytes)} of {formatBinaryBytes(memTotalBytes)})
+								{memPctExact.toFixed(2)}% ({t('dashboard.metrics.ofTotal', {
+									used: formatBinaryBytes(memUsedBytes),
+									total: formatBinaryBytes(memTotalBytes)
+								})})
 							</span>
 						</div>
 						<Progress
 							value={Math.min(memPctExact, 100)}
 							max={100}
 							class={cn('h-1.5', getProgressToneClass(memPctExact))}
-							aria-label="RAM usage"
+							aria-label={t('dashboard.metrics.ramUsage')}
 						/>
 					</div>
 
@@ -401,13 +417,16 @@
 						<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
 							<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
 								<RefreshCwIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-								<span>SWAP usage</span>
+								<span>{t('dashboard.metrics.swapUsage')}</span>
 							</span>
 							<span class="font-mono text-xs tabular-nums text-foreground">
 								{#if swapTotalBytes > 0}
-									{swapPct.toFixed(2)}% ({formatBinaryBytes(swapUsedBytes)} of {formatBinaryBytes(swapTotalBytes)})
+									{swapPct.toFixed(2)}% ({t('dashboard.metrics.ofTotal', {
+										used: formatBinaryBytes(swapUsedBytes),
+										total: formatBinaryBytes(swapTotalBytes)
+									})})
 								{:else}
-									0.00% (Tidak aktif)
+									{t('dashboard.metrics.swapInactive')}
 								{/if}
 							</span>
 						</div>
@@ -415,7 +434,7 @@
 							value={Math.min(swapPct, 100)}
 							max={100}
 							class={cn('h-1.5', getProgressToneClass(swapPct))}
-							aria-label="SWAP usage"
+							aria-label={t('dashboard.metrics.swapUsage')}
 						/>
 					</div>
 
@@ -424,31 +443,34 @@
 						<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
 							<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
 								<HardDriveIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-								<span>/ HD space</span>
+								<span>{t('dashboard.metrics.rootDisk')}</span>
 							</span>
 							<span class="font-mono text-xs tabular-nums text-foreground">
-								{diskPctExact.toFixed(2)}% ({formatBinaryBytes(diskUsedBytes)} of {formatBinaryBytes(diskTotalBytes)})
+								{diskPctExact.toFixed(2)}% ({t('dashboard.metrics.ofTotal', {
+									used: formatBinaryBytes(diskUsedBytes),
+									total: formatBinaryBytes(diskTotalBytes)
+								})})
 							</span>
 						</div>
 						<Progress
 							value={Math.min(diskPctExact, 100)}
 							max={100}
 							class={cn('h-1.5', getProgressToneClass(diskPctExact))}
-							aria-label="Penggunaan disk root"
+							aria-label={t('dashboard.metrics.rootDiskAria')}
 						/>
 					</div>
 
-					<!-- Disk Eksternal & Mount Lain -->
+					<!-- External Disks & Other Mounts -->
 					{#if extraMounts.length === 0}
 						<div class="flex min-w-0 flex-col gap-1.5">
 							<div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs sm:text-[13px]">
 								<span class="inline-flex items-center gap-1.5 font-medium text-foreground">
 									<HardDriveIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-									<span>Disk Eksternal / Mount</span>
+									<span>{t('dashboard.metrics.extraMounts')}</span>
 								</span>
-								<span class="font-mono text-xs text-muted-foreground">Tidak ada terdeteksi</span>
+								<span class="font-mono text-xs text-muted-foreground">{t('dashboard.metrics.noneDetected')}</span>
 							</div>
-							<Progress value={0} max={100} class="h-1.5" aria-label="Disk eksternal atau mount lain" />
+							<Progress value={0} max={100} class="h-1.5" aria-label={t('dashboard.metrics.extraMountsAria')} />
 						</div>
 					{:else}
 						{#each extraMounts as drv (drv.mount_point)}
@@ -465,14 +487,17 @@
 										{/if}
 									</span>
 									<span class="shrink-0 font-mono text-xs tabular-nums text-foreground">
-										{drvPct.toFixed(2)}% ({formatBinaryBytes(drv.used_bytes)} of {formatBinaryBytes(drv.total_bytes)})
+										{drvPct.toFixed(2)}% ({t('dashboard.metrics.ofTotal', {
+											used: formatBinaryBytes(drv.used_bytes),
+											total: formatBinaryBytes(drv.total_bytes)
+										})})
 									</span>
 								</div>
 								<Progress
 									value={Math.min(drvPct, 100)}
 									max={100}
 									class={cn('h-1.5', getProgressToneClass(drvPct))}
-									aria-label={`Penggunaan disk ${drv.mount_point}`}
+									aria-label={t('dashboard.metrics.mountUsageAria', { mount: drv.mount_point })}
 								/>
 							</div>
 						{/each}
@@ -484,35 +509,35 @@
 				<!-- Lower Hardware & Kernel Metadata Table -->
 				<dl class="flex flex-col divide-y divide-border/50 text-xs sm:text-[13px]">
 					<div class="flex flex-col gap-0.5 py-2 first:pt-0 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">CPU(s)</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.cpus')}</dt>
 						<dd class="min-w-0 font-mono text-xs break-words text-foreground sm:text-right">
 							{cpuHardwareLabel}
 						</dd>
 					</div>
 
 					<div class="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">Kernel Version</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.kernelVersion')}</dt>
 						<dd class="min-w-0 font-mono text-xs break-words text-foreground sm:text-right">
 							{st.kernel_full || (st.kernel ? `Linux ${st.kernel}` : '-')}
 						</dd>
 					</div>
 
 					<div class="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">Boot Mode</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.bootMode')}</dt>
 						<dd class="min-w-0 font-mono text-xs text-foreground sm:text-right">
 							{st.boot_mode || '-'}
 						</dd>
 					</div>
 
 					<div class="flex flex-col gap-1.5 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">Manager Version</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.managerVersion')}</dt>
 						<dd class="flex flex-wrap items-center gap-2 sm:justify-end">
 							<span class="font-mono text-xs text-foreground">
 								wdev/{st.wdev_version || updaterStatus?.current || '-'}
 							</span>
 							{#if updaterStatus?.has_update}
 								<Badge variant="outline" class="border-warning/50 bg-warning/15 font-mono text-[10px] text-foreground">
-									v{updaterStatus.latest} tersedia
+									{t('dashboard.hardware.versionAvailable', { version: updaterStatus.latest ?? '' })}
 								</Badge>
 							{/if}
 							<Button
@@ -523,9 +548,9 @@
 							>
 								{#if checkingSelfUpdate}
 									<Spinner data-icon="inline-start" />
-									Cek...
+									{t('dashboard.hardware.checkingBtn')}
 								{:else}
-									Cek Rilis
+									{t('dashboard.hardware.checkReleaseBtn')}
 								{/if}
 							</Button>
 							{#if updaterStatus?.has_update}
@@ -536,10 +561,10 @@
 								>
 									{#if applyingUpdate}
 										<Spinner data-icon="inline-start" />
-										Memperbarui...
+										{t('dashboard.updatingBtn')}
 									{:else}
 										<ArrowUpCircleIcon data-icon="inline-start" />
-										Update
+										{t('common.actions.update')}
 									{/if}
 								</Button>
 							{/if}
@@ -547,18 +572,18 @@
 					</div>
 
 					<div class="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">Uptime</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.uptime')}</dt>
 						<dd class="min-w-0 font-mono text-xs tabular-nums text-foreground sm:text-right">
 							{uptimeLabel}
 						</dd>
 					</div>
 
 					<div class="flex flex-col gap-1.5 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">Repository Status</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.repoStatus')}</dt>
 						<dd class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:justify-end">
 							<span class="inline-flex items-center gap-1.5 text-foreground">
 								<CircleCheckIcon class="size-3.5 shrink-0 text-success" aria-hidden="true" />
-								<span>{activeServicesCount}/{installedServices.length} layanan aktif</span>
+								<span>{t('dashboard.hardware.servicesActiveCount', { active: activeServicesCount, total: installedServices.length })}</span>
 							</span>
 							{#if totalPendingUpdates > 0}
 								<button
@@ -567,20 +592,20 @@
 									onclick={refreshServices}
 								>
 									<CircleAlertIcon class="size-3.5 shrink-0 text-warning" aria-hidden="true" />
-									<span>{totalPendingUpdates} pembaruan tersedia</span>
+									<span>{t('dashboard.hardware.updatesAvailableCount', { count: totalPendingUpdates })}</span>
 									<ChevronRightIcon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
 								</button>
 							{:else}
 								<span class="inline-flex items-center gap-1.5 text-foreground">
 									<CircleCheckIcon class="size-3.5 shrink-0 text-success" aria-hidden="true" />
-									<span>Semua paket mutakhir</span>
+									<span>{t('dashboard.hardware.allUpToDate')}</span>
 								</span>
 							{/if}
 						</dd>
 					</div>
 
 					<div class="flex flex-col gap-1 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">IP VPS</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.vpsIp')}</dt>
 						<dd class="flex min-w-0 items-center justify-between gap-2 sm:justify-end">
 							<span class={cn('truncate font-mono text-xs font-medium', vpsIP ? 'text-primary' : 'text-muted-foreground')}>
 								{vpsIP || '-'}
@@ -590,8 +615,8 @@
 									variant="ghost"
 									size="icon-xs"
 									class="fm-touch-btn shrink-0"
-									aria-label="Salin IP VPS"
-									onclick={() => copyAddress(vpsIP, 'IP VPS')}
+									aria-label={t('dashboard.hardware.copyVpsIpAria')}
+									onclick={() => copyAddress(vpsIP, t('dashboard.hardware.vpsIp'))}
 								>
 									<CopyIcon />
 								</Button>
@@ -600,7 +625,7 @@
 					</div>
 
 					<div class="flex flex-col gap-1 py-2 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-						<dt class="shrink-0 font-medium text-muted-foreground">IP Jaringan Lokal (LAN)</dt>
+						<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.lanIp')}</dt>
 						<dd class="flex min-w-0 items-center justify-between gap-2 sm:justify-end">
 							<span class={cn('truncate font-mono text-xs font-medium', lanIP ? 'text-success' : 'text-muted-foreground')}>
 								{lanIP || '-'}
@@ -610,8 +635,8 @@
 									variant="ghost"
 									size="icon-xs"
 									class="fm-touch-btn shrink-0"
-									aria-label="Salin IP LAN"
-									onclick={() => copyAddress(lanIP, 'IP LAN')}
+									aria-label={t('dashboard.hardware.copyLanIpAria')}
+									onclick={() => copyAddress(lanIP, 'LAN IP')}
 								>
 									<CopyIcon />
 								</Button>
@@ -621,7 +646,7 @@
 
 					{#if netbirdInstalled}
 						<div class="flex flex-col gap-1 py-2 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-							<dt class="shrink-0 font-medium text-muted-foreground">IP NetBird VPN (Mesh)</dt>
+							<dt class="shrink-0 font-medium text-muted-foreground">{t('dashboard.hardware.netbirdIp')}</dt>
 							<dd class="flex min-w-0 items-center justify-between gap-2 sm:justify-end">
 								<span class="truncate font-mono text-xs font-medium text-foreground">
 									{netbirdIP || '-'}
@@ -631,8 +656,8 @@
 										variant="ghost"
 										size="icon-xs"
 										class="fm-touch-btn shrink-0"
-										aria-label="Salin IP NetBird"
-										onclick={() => copyAddress(netbirdIP, 'IP NetBird')}
+										aria-label={t('dashboard.hardware.copyNetbirdIpAria')}
+										onclick={() => copyAddress(netbirdIP, 'NetBird IP')}
 									>
 										<CopyIcon />
 									</Button>
@@ -647,9 +672,9 @@
 		<!-- Active Runtimes -->
 		<section class="flex flex-col gap-3">
 			<div class="flex flex-wrap items-center justify-between gap-2">
-				<h2 class="text-base font-semibold tracking-tight sm:text-lg">Versi Runtime Aktif</h2>
+				<h2 class="text-base font-semibold tracking-tight sm:text-lg">{t('dashboard.runtimes.title')}</h2>
 				<Button variant="ghost" size="sm" href="/switchers">
-					Kelola Switchers
+					{t('dashboard.runtimes.manageBtn')}
 					<ChevronRightIcon data-icon="inline-end" />
 				</Button>
 			</div>
@@ -673,9 +698,9 @@
 		<section class="flex flex-col gap-4">
 			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<h2 class="text-base font-semibold tracking-tight sm:text-lg">Status Layanan Inti</h2>
+					<h2 class="text-base font-semibold tracking-tight sm:text-lg">{t('dashboard.services.title')}</h2>
 					<p class="text-xs text-muted-foreground">
-						Status daemon background, versi terpasang, dan ketersediaan pembaruan paket.
+						{t('dashboard.services.subtitle')}
 					</p>
 				</div>
 				<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
@@ -687,15 +712,15 @@
 					>
 						{#if refreshingServices}
 							<Spinner data-icon="inline-start" />
-							Memeriksa...
+							{t('dashboard.services.checkingUpdates')}
 						{:else}
 							<RefreshCwIcon data-icon="inline-start" />
-							Cek Pembaruan
+							{t('dashboard.checkUpdatesBtn')}
 						{/if}
 					</Button>
 					<Button size="sm" onclick={() => cp.triggerInstall('update')}>
 						<DownloadIcon data-icon="inline-start" />
-						Perbarui Layanan
+						{t('dashboard.services.updateServicesBtn')}
 					</Button>
 				</div>
 			</div>
@@ -709,22 +734,22 @@
 								<div class="min-w-0">
 									<Card.Title class="truncate text-base">{svc.display_name}</Card.Title>
 									<Card.Description>
-										{svc.category}{svc.port ? ` · ${svc.port}` : ''}
+										{localizeServiceCategory(svc.category)}{svc.port ? ` · ${svc.port}` : ''}
 									</Card.Description>
 								</div>
 								{#if !svc.installed}
-									<StatusBadge tone="neutral" label="Belum Terpasang" />
+									<StatusBadge tone="neutral" label={t('common.status.notInstalled')} />
 								{:else if svc.has_update}
-									<StatusBadge tone="warning" label="Update Tersedia" />
+									<StatusBadge tone="warning" label={t('common.status.updateAvailable')} />
 								{:else if svc.is_remote}
 									<StatusBadge
 										tone={svc.active ? 'success' : 'destructive'}
-										label={svc.active ? 'Online (Edge)' : 'Offline'}
+										label={svc.active ? t('dashboard.services.onlineEdge') : t('common.status.offline')}
 									/>
 								{:else}
 									<StatusBadge
 										tone={svc.active ? 'success' : 'neutral'}
-										label={svc.active ? 'Aktif' : 'Nonaktif'}
+										label={svc.active ? t('common.status.active') : t('common.status.inactive')}
 									/>
 								{/if}
 							</div>
@@ -733,14 +758,14 @@
 						<Card.Content>
 							<div class="flex flex-col gap-2 rounded-md border bg-muted/40 p-2.5 text-xs">
 								<div class="flex items-center justify-between gap-2">
-									<span class="text-muted-foreground">Versi Terpasang</span>
+									<span class="text-muted-foreground">{t('dashboard.services.installedVersion')}</span>
 									<span class="truncate font-mono font-semibold">
-										{svc.installed ? svc.version || 'Terpasang' : 'Belum terpasang'}
+										{svc.installed ? svc.version || t('common.status.installed') : t('common.status.notInstalled')}
 									</span>
 								</div>
 								<Separator />
 								<div class="flex items-center justify-between gap-2">
-									<span class="text-muted-foreground">Rilis Resmi</span>
+									<span class="text-muted-foreground">{t('dashboard.services.officialRelease')}</span>
 									<span class="truncate font-mono">
 										{svc.latest_version || svc.version || '-'}
 									</span>
@@ -748,7 +773,7 @@
 								{#if svc.installed && svc.config_preset}
 									<Separator />
 									<div class="flex items-center justify-between gap-2">
-										<span class="text-muted-foreground">Preset Konfigurasi</span>
+										<span class="text-muted-foreground">{t('dashboard.services.configPreset')}</span>
 										<Badge
 											variant={svc.config_preset === 'Custom' ? 'outline' : 'secondary'}
 											class="max-w-full truncate"
@@ -765,17 +790,17 @@
 								{#if svc.name === 'stalwart'}
 									<Button size="sm" href="/mail" class="w-full">
 										<DownloadIcon data-icon="inline-start" />
-										Setup Stalwart Mail
+										{t('dashboard.services.setupStalwart')}
 									</Button>
 								{:else if svc.name === 'pdns'}
 									<Button size="sm" href="/powerdns" class="w-full">
 										<DownloadIcon data-icon="inline-start" />
-										Setup PowerDNS / Edge
+										{t('dashboard.services.setupPowerdns')}
 									</Button>
 								{:else if svc.name === 'docker'}
 									<Button size="sm" href="/compose">
 										<DownloadIcon data-icon="inline-start" />
-										Pasang &amp; Kelola
+										{t('dashboard.services.installManageDocker')}
 									</Button>
 									<Button
 										variant="outline"
@@ -783,7 +808,7 @@
 										onclick={() => cp.openServiceConfig('docker')}
 									>
 										<SettingsIcon data-icon="inline-start" />
-										Pra-Konfigurasi
+										{t('dashboard.services.preConfigureDocker')}
 									</Button>
 								{:else}
 									<Button
@@ -792,11 +817,11 @@
 										onclick={() => cp.triggerInstall(svc.install_component || svc.name)}
 									>
 										<DownloadIcon data-icon="inline-start" />
-										Pasang {svc.display_name.split(' (')[0]}
+										{t('dashboard.services.installService', { name: svc.display_name.split(' (')[0] })}
 									</Button>
 								{/if}
 							{:else if svc.is_remote}
-								<Button size="sm" href="/powerdns">Kelola DNS</Button>
+								<Button size="sm" href="/powerdns">{t('dashboard.services.manageDns')}</Button>
 								<Button
 									variant="outline"
 									size="sm"
@@ -808,7 +833,7 @@
 									{:else}
 										<RotateCwIcon data-icon="inline-start" />
 									{/if}
-									Tes Koneksi
+									{t('dashboard.services.testConnection')}
 								</Button>
 							{:else}
 								{#if svc.has_update}
@@ -817,7 +842,7 @@
 										onclick={() => cp.triggerInstall(svc.install_component || svc.name)}
 									>
 										<ArrowUpCircleIcon data-icon="inline-start" />
-										Perbarui ke {svc.latest_version}
+										{t('dashboard.services.updateTo', { version: svc.latest_version ?? '' })}
 									</Button>
 								{/if}
 								{#if svc.active}
@@ -832,7 +857,7 @@
 										{:else}
 											<RotateCwIcon data-icon="inline-start" />
 										{/if}
-										Restart
+										{t('common.actions.restart')}
 									</Button>
 									<Button
 										variant="destructive"
@@ -845,7 +870,7 @@
 										{:else}
 											<SquareIcon data-icon="inline-start" />
 										{/if}
-										Stop
+										{t('common.actions.stop')}
 									</Button>
 								{:else}
 									<Button
@@ -858,7 +883,7 @@
 										{:else}
 											<PlayIcon data-icon="inline-start" />
 										{/if}
-										Jalankan
+										{t('common.actions.start')}
 									</Button>
 								{/if}
 
@@ -869,13 +894,13 @@
 										onclick={() => cp.openServiceConfig(svc.name as ServiceConfigKey)}
 									>
 										<SettingsIcon data-icon="inline-start" />
-										Konfigurasi
+										{t('common.actions.configure')}
 									</Button>
 								{/if}
 								{#if svc.name === 'docker'}
 									<Button variant="outline" size="sm" href="/compose">
 										<ChevronRightIcon data-icon="inline-start" />
-										Kelola Compose
+										{t('dashboard.services.manageCompose')}
 									</Button>
 								{/if}
 							{/if}

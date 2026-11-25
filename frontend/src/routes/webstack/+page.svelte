@@ -21,6 +21,7 @@
 	import CreateVhostModal from '#lib/components/modals/CreateVhostModal.svelte';
 	import ManageSiteAppModal from '#lib/components/modals/ManageSiteAppModal.svelte';
 	import { api } from '#lib/api/client.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type { SiteRecord, ZoneInfo } from '#lib/types/api.js';
@@ -155,10 +156,10 @@
 
 	function appRuntimeLabel(site: SiteRecord): string {
 		const st = site.app_status?.active_state || 'inactive';
-		if (st === 'active') return 'Running';
-		if (st === 'activating') return 'Starting';
-		if (st === 'failed') return 'Failed';
-		return 'Stopped';
+		if (st === 'active') return t('webstack.page.appStatus.running');
+		if (st === 'activating') return t('webstack.page.appStatus.starting');
+		if (st === 'failed') return t('webstack.page.appStatus.failed');
+		return t('webstack.page.appStatus.stopped');
 	}
 
 	function isAppRunning(site: SiteRecord): boolean {
@@ -217,7 +218,7 @@
 				toast.error(
 					siteRes.reason instanceof Error
 						? siteRes.reason.message
-						: 'Gagal memuat daftar virtual host'
+						: t('webstack.page.toast.loadFailed')
 				);
 			}
 			if (zoneRes.status === 'fulfilled') {
@@ -278,15 +279,20 @@
 		appActionPending = { ...appActionPending, [site.domain]: true };
 		try {
 			const res = await cp.runWithSudoRetry(
-				`Mengontrol service systemd untuk ${site.domain} memerlukan hak akses administrator (sudo).`,
+				t('webstack.page.sudo.appActionPrompt', { domain: site.domain }),
 				(sudoPass) => api.siteAppAction(site.domain, action, sudoPass)
 			);
 			if (!res) return;
-			const verb = action === 'start' ? 'dijalankan' : action === 'stop' ? 'dihentikan' : 'di-restart';
-			toast.success(`Service ${site.domain} berhasil ${verb}.`);
+			const verb =
+				action === 'start'
+					? t('webstack.page.toast.actionVerbStart')
+					: action === 'stop'
+						? t('webstack.page.toast.actionVerbStop')
+						: t('webstack.page.toast.actionVerbRestart');
+			toast.success(t('webstack.page.toast.appActionDone', { domain: site.domain, verb }));
 			await loadSites();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : `Gagal menjalankan ${action}`);
+			toast.error(err instanceof Error ? err.message : t('webstack.page.toast.appActionFailed', { action }));
 		} finally {
 			const next = { ...appActionPending };
 			delete next[site.domain];
@@ -298,13 +304,15 @@
 		appActionPending = { ...appActionPending, [site.domain]: true };
 		try {
 			const res = await cp.runWithSudoRetry(
-				`Menjalankan build & restart service ${site.domain} memerlukan hak akses administrator (sudo).`,
+				t('webstack.page.sudo.appBuildPrompt', { domain: site.domain }),
 				(sudoPass) => api.buildSiteApp(site.domain, true, sudoPass)
 			);
 			if (!res) return;
-			cp.openTerminal(`Build ${site.domain} (${frameworkBadgeLabel(site.framework)})`);
+			cp.openTerminal(
+				t('webstack.page.buildTerminalTitle', { domain: site.domain, runtime: frameworkBadgeLabel(site.framework) })
+			);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memulai proses build');
+			toast.error(err instanceof Error ? err.message : t('webstack.page.toast.buildFailed'));
 		} finally {
 			const next = { ...appActionPending };
 			delete next[site.domain];
@@ -315,14 +323,14 @@
 	async function triggerLetsEncrypt(siteDomain: string, skipConfirm = false) {
 		const clean = siteDomain.trim().replace(/\.$/, '').toLowerCase();
 		if (isLocalOnlyDomain(clean)) {
-			toast.warning(`Domain lokal (${clean}) tidak dapat diterbitkan sertifikat Let's Encrypt.`);
+			toast.warning(t('webstack.page.toast.localLeBlocked', { domain: clean }));
 			return;
 		}
 		if (!skipConfirm) {
 			const confirmed = await cp.confirm({
-				title: "Generate SSL Let's Encrypt",
-				description: `Terbitkan dan pasang sertifikat HTTPS Let's Encrypt (certbot) untuk ${clean}? Pastikan DNS domain sudah mengarah ke IP publik VPS dan port 80/443 terbuka.`,
-				confirmText: 'Generate SSL'
+				title: t('webstack.page.toast.leConfirmTitle'),
+				description: t('webstack.page.toast.leConfirmDesc', { domain: clean }),
+				confirmText: t('webstack.page.toast.leConfirmBtn')
 			});
 			if (!confirmed) return;
 		}
@@ -330,14 +338,14 @@
 		sslPending = { ...sslPending, [clean]: true };
 		try {
 			const res = await cp.runWithSudoRetry(
-				`Penerbitan sertifikat Let's Encrypt untuk ${clean} memerlukan hak akses administrator (sudo).`,
+				t('webstack.page.sudo.letsEncryptPrompt', { domain: clean }),
 				(sudoPass) => api.enableSiteSSL(clean, '', sudoPass)
 			);
 			if (res) {
-				cp.openTerminal(`SSL Let's Encrypt: ${clean}`);
+				cp.openTerminal(t('webstack.page.leTerminalTitle', { domain: clean }));
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : "Gagal memulai penerbitan SSL Let's Encrypt");
+			toast.error(err instanceof Error ? err.message : t('webstack.page.toast.leStartFailed'));
 		} finally {
 			const next = { ...sslPending };
 			delete next[clean];
@@ -369,7 +377,7 @@
 		const cleanLocal = localDomain.trim().replace(/\.$/, '').toLowerCase();
 		const cleanPub = publicDomain.trim().replace(/\.$/, '').toLowerCase();
 		if (!cleanPub || isLocalOnlyDomain(cleanPub)) {
-			toast.warning('Masukkan domain publik FQDN yang valid untuk VPS Edge.');
+			toast.warning(t('webstack.page.toast.invalidEdgeDomain'));
 			return false;
 		}
 		sslPending = { ...sslPending, [cleanLocal]: true };
@@ -383,13 +391,13 @@
 			});
 			toast.success(
 				useSSL
-					? `${cleanPub} terekspos via VPS Edge Tunnel dengan SSL Let's Encrypt.`
-					: `${cleanPub} berhasil diekspos via VPS Edge Tunnel.`
+					? t('webstack.page.toast.exposedWithSsl', { domain: cleanPub })
+					: t('webstack.page.toast.exposedNoSsl', { domain: cleanPub })
 			);
 			await loadSites();
 			return true;
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal mengekspos situs ke VPS Edge');
+			toast.error(err instanceof Error ? err.message : t('webstack.page.toast.exposeFailed'));
 			return false;
 		} finally {
 			const next = { ...sslPending };
@@ -422,12 +430,12 @@
 		sslPending = { ...sslPending, [target.domain]: true };
 		try {
 			await api.unexposePDNS(target.exposed_to, !unexposeDeleteDNS);
-			toast.success(`Eksposur tunnel untuk ${target.exposed_to} dicabut.`);
+			toast.success(t('webstack.page.toast.unexposed', { domain: target.exposed_to }));
 			unexposeOpen = false;
 			unexposeTarget = null;
 			await loadSites();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal mencabut eksposur tunnel');
+			toast.error(err instanceof Error ? err.message : t('webstack.page.toast.unexposeFailed'));
 		} finally {
 			unexposing = false;
 			const next = { ...sslPending };
@@ -452,22 +460,25 @@
 		if (!expiresAt) return null;
 		const dt = new Date(expiresAt);
 		if (Number.isNaN(dt.getTime())) return null;
-		const dateLabel = dt.toLocaleDateString('id-ID', {
+		const dateLabel = i18n.formatDate(dt, {
 			day: 'numeric',
 			month: 'short',
 			year: 'numeric'
 		});
-		const fullTitle = dt.toLocaleString('id-ID', {
+		const fullTitle = i18n.formatDateTime(dt, {
 			dateStyle: 'full',
 			timeStyle: 'short'
 		});
 		const expired = typeof daysLeft === 'number' ? daysLeft < 0 : dt.getTime() < Date.now();
 		const expiringSoon = !expired && typeof daysLeft === 'number' && daysLeft <= 14;
-		let text = `s/d ${dateLabel}`;
+		let text = t('webstack.page.validUntilPrefix', { date: dateLabel });
 		if (expired) {
-			text = `Kedaluwarsa ${dateLabel}`;
+			text = t('webstack.page.expiredPrefix', { date: dateLabel });
 		} else if (typeof daysLeft === 'number') {
-			text = daysLeft === 0 ? `s/d ${dateLabel} (<1 hari)` : `s/d ${dateLabel} (${daysLeft} hari)`;
+			text =
+				daysLeft === 0
+					? t('webstack.page.expiringLt1Day', { date: dateLabel })
+					: t('webstack.page.expiringDays', { date: dateLabel, days: daysLeft });
 		}
 		return { text, fullTitle, expired, expiringSoon };
 	}
@@ -479,7 +490,7 @@
 		siteDeleting = { ...siteDeleting, [siteDomain]: true };
 		try {
 			const res = await cp.runWithSudoRetry(
-				`Penghapusan konfigurasi Nginx untuk ${siteDomain} memerlukan hak akses administrator (sudo).`,
+				t('webstack.page.sudo.deleteSitePrompt', { domain: siteDomain }),
 				(sudoPass) =>
 					api.deleteSite(siteDomain, {
 						...opts,
@@ -489,22 +500,24 @@
 			if (!res) return;
 			if (res?.unexpose_error) {
 				toast.warning(
-					`Virtual host ${siteDomain} dihapus, tetapi pencabutan proxy VPS Edge gagal: ${res.unexpose_error}`
+					t('webstack.page.toast.deleteWarningUnexpose', { domain: siteDomain, error: res.unexpose_error })
 				);
 			} else if (res?.unexposed) {
 				toast.success(
-					`Virtual host ${siteDomain} & eksposur VPS Edge berhasil dihapus${res.dns_deleted ? ' beserta record DNS' : ''}.`
+					res.dns_deleted
+						? t('webstack.page.toast.deletedUnexposedAndDns', { domain: siteDomain })
+						: t('webstack.page.toast.deletedUnexposed', { domain: siteDomain })
 				);
 			} else if (res?.dns_deleted) {
-				toast.success(`Virtual host ${siteDomain} & record DNS A berhasil dihapus.`);
+				toast.success(t('webstack.page.toast.deletedWithDns', { domain: siteDomain }));
 			} else {
-				toast.success(`Virtual host ${siteDomain} berhasil dihapus (folder proyek tetap aman).`);
+				toast.success(t('webstack.page.toast.deletedSafe', { domain: siteDomain }));
 			}
 			deleteOpen = false;
 			deleteTarget = null;
 			await loadSites();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menghapus virtual host');
+			toast.error(err instanceof Error ? err.message : t('webstack.page.toast.deleteFailed'));
 		} finally {
 			const next = { ...siteDeleting };
 			delete next[siteDomain];
@@ -524,9 +537,12 @@
 		}
 
 		const confirmed = await cp.confirm({
-			title: 'Hapus Virtual Host',
-			description: `Hapus konfigurasi Nginx dan entri /etc/hosts untuk ${site.domain}? Berkas dan folder proyek di ${site.root_path || '/var/www/' + site.domain} tidak akan dihapus.`,
-			confirmText: 'Hapus VHost',
+			title: t('webstack.page.toast.deleteSimpleTitle'),
+			description: t('webstack.page.toast.deleteSimpleDesc', {
+				domain: site.domain,
+				path: site.root_path || '/var/www/' + site.domain
+			}),
+			confirmText: t('webstack.page.toast.deleteSimpleBtn'),
 			destructive: true
 		});
 		if (!confirmed) return;
@@ -539,15 +555,15 @@
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
 			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">
-				{isLocal ? 'Web Stack & Domain Lokal' : 'Web Stack & Virtual Host'}
+				{isLocal ? t('webstack.page.titleLocal') : t('webstack.page.titlePublic')}
 			</h1>
 			<p class="text-sm text-muted-foreground">
 				{#if isVPS}
-					Kelola virtual host Nginx (<code>wdev site</code>), sinkronisasi PowerDNS, dan sertifikat SSL Let's Encrypt langsung di VPS.
+					{t('webstack.page.subtitleVps1')}<code>wdev site</code>{t('webstack.page.subtitleVps2')}
 				{:else if isEdge}
-					Kelola virtual host Nginx publik seperti mode VPS, dengan trafik, DNS, dan Let's Encrypt dialirkan lewat tunnel NetBird ke VPS Edge Gateway.
+					{t('webstack.page.subtitleEdge')}
 				{:else}
-					Kelola virtual host Nginx (<code>wdev site</code>), entri <code>/etc/hosts</code>, dan sertifikat SSL lokal (<code>mkcert</code>).
+					{t('webstack.page.subtitleLocal1')}<code>wdev site</code>{t('webstack.page.subtitleLocal2')}<code>/etc/hosts</code>{t('webstack.page.subtitleLocal3')}<code>mkcert</code>{t('webstack.page.subtitleLocal4')}
 				{/if}
 			</p>
 		</div>
@@ -555,12 +571,12 @@
 			{#if !isVPS}
 				<Button variant="outline" size="sm" class="min-h-10 sm:min-h-0" onclick={() => cp.triggerInstall('sync-hosts')}>
 					<RefreshCwIcon data-icon="inline-start" />
-					Sync Hosts &amp; SSL
+					{t('webstack.page.syncHostsSsl')}
 				</Button>
 			{/if}
 			<Button size="sm" class={cn('min-h-10 sm:min-h-0', isVPS && 'col-span-2 sm:col-span-1')} onclick={openCreate}>
 				<PlusIcon data-icon="inline-start" />
-				Tambah VHost
+				{t('webstack.page.addVhostBtn')}
 			</Button>
 		</div>
 	</div>
@@ -568,14 +584,14 @@
 	{#if isEdge && !modeStore.reachable}
 		<Alert.Root variant="destructive">
 			<TriangleAlertIcon />
-			<Alert.Title>VPS Edge Gateway Belum Terhubung</Alert.Title>
+			<Alert.Title>{t('webstack.page.edgeOfflineTitle')}</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<span>
-					Tunnel ke VPS Edge belum terhubung. Anda tetap bisa membuat Virtual Host lokal, lalu mengeksposnya ke VPS beserta Let's Encrypt setelah terhubung di menu PowerDNS &amp; Edge.
+					{t('webstack.page.edgeOfflineDesc')}
 				</span>
 				<Button size="xs" variant="outline" href="/powerdns">
 					<NetworkIcon data-icon="inline-start" />
-					Buka PowerDNS &amp; Edge
+					{t('webstack.page.openPdnsEdge')}
 				</Button>
 			</Alert.Description>
 		</Alert.Root>
@@ -589,8 +605,8 @@
 				</InputGroup.Addon>
 				<InputGroup.Input
 					type="search"
-					placeholder="Cari domain, framework, unit, atau path..."
-					aria-label="Cari virtual host"
+					placeholder={t('webstack.page.searchPlaceholder')}
+					aria-label={t('webstack.page.searchAria')}
 					bind:value={searchQuery}
 				/>
 			</InputGroup.Root>
@@ -605,12 +621,12 @@
 			variant="outline"
 			spacing={1}
 			class="grid w-full grid-cols-2 sm:inline-flex sm:w-auto"
-			aria-label="Filter tipe virtual host"
+			aria-label={t('webstack.page.filterAria')}
 		>
-			<ToggleGroup.Item value="all" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Semua</ToggleGroup.Item>
-			<ToggleGroup.Item value="web" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Web / PHP</ToggleGroup.Item>
-			<ToggleGroup.Item value="app" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Managed App</ToggleGroup.Item>
-			<ToggleGroup.Item value="proxy" class="min-h-9 text-xs sm:min-h-8 sm:px-3">Proxy</ToggleGroup.Item>
+			<ToggleGroup.Item value="all" class="min-h-9 text-xs sm:min-h-8 sm:px-3">{t('webstack.page.filterAll')}</ToggleGroup.Item>
+			<ToggleGroup.Item value="web" class="min-h-9 text-xs sm:min-h-8 sm:px-3">{t('webstack.page.filterWebPhp')}</ToggleGroup.Item>
+			<ToggleGroup.Item value="app" class="min-h-9 text-xs sm:min-h-8 sm:px-3">{t('webstack.page.filterManagedApp')}</ToggleGroup.Item>
+			<ToggleGroup.Item value="proxy" class="min-h-9 text-xs sm:min-h-8 sm:px-3">{t('webstack.page.filterProxy')}</ToggleGroup.Item>
 		</ToggleGroup.Root>
 	</div>
 
@@ -627,40 +643,40 @@
 					<GlobeIcon />
 				</Empty.Media>
 				<Empty.Title>
-					{sites.length === 0 ? 'Belum ada virtual host' : 'Tidak ada virtual host yang cocok'}
+					{sites.length === 0 ? t('webstack.page.emptyTitleNone') : t('webstack.page.emptyTitleNoMatch')}
 				</Empty.Title>
 				<Empty.Description>
 					{sites.length === 0
-						? 'Buat virtual host pertama untuk situs statis, Laravel, WordPress, atau reverse proxy.'
-						: 'Ubah kata kunci pencarian untuk menampilkan virtual host lainnya.'}
+						? t('webstack.page.emptyDescNone')
+						: t('webstack.page.emptyDescNoMatch')}
 				</Empty.Description>
 			</Empty.Header>
 			{#if sites.length === 0}
 				<Empty.Content>
 					<Button onclick={openCreate}>
 						<PlusIcon data-icon="inline-start" />
-						Tambah Virtual Host
+						{t('webstack.page.addVirtualHostBtn')}
 					</Button>
 				</Empty.Content>
 			{/if}
 		</Empty.Root>
 	{:else}
 		<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
-			<ResponsiveTableWrapper label="Daftar Virtual Host" class="rounded-none border-0 bg-transparent">
+			<ResponsiveTableWrapper label={t('webstack.page.tableAria')} class="rounded-none border-0 bg-transparent">
 				<Table.Root class="sm:[&_th]:px-3 sm:[&_td]:px-3 sm:[&_td]:py-3">
 					<Table.Header>
 						<Table.Row>
 							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">
-								{isLocal ? 'Domain Lokal' : 'Domain'}
+								{isLocal ? t('webstack.page.colDomainLocal') : t('webstack.page.colDomain')}
 							</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Framework</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Target Runtime</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Document Root</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">SSL</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colFramework')}</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colTargetRuntime')}</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colDocRoot')}</Table.Head>
+							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colSsl')}</Table.Head>
 							{#if isEdge}
-								<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">Tunnel VPS Edge</Table.Head>
+								<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colEdgeTunnel')}</Table.Head>
 							{/if}
-							<Table.Head scope="col" class="text-right text-xs font-semibold text-muted-foreground">Aksi</Table.Head>
+							<Table.Head scope="col" class="text-right text-xs font-semibold text-muted-foreground">{t('webstack.page.colActions')}</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
@@ -673,7 +689,7 @@
 								? `https://${site.exposed_to}`
 								: `${proto}${site.domain}`}
 						<Table.Row>
-							<Table.Cell data-label="Domain">
+							<Table.Cell data-label={t('webstack.page.dataDomain')}>
 								<a
 									href={primaryHref}
 									target="_blank"
@@ -685,11 +701,11 @@
 								</a>
 								{#if isEdge && site.exposed_to && site.exposed_to !== site.domain}
 									<div class="text-xs text-muted-foreground">
-										Publik: <span class="font-mono">{site.exposed_to}</span>
+										{t('webstack.page.publicLabel')} <span class="font-mono">{site.exposed_to}</span>
 									</div>
 								{/if}
 							</Table.Cell>
-							<Table.Cell data-label="Framework">
+							<Table.Cell data-label={t('webstack.page.dataFramework')}>
 								<div class="flex flex-wrap items-center gap-1.5">
 									<Badge variant={isManagedApp(site) ? 'default' : 'secondary'} class="uppercase">
 										{frameworkBadgeLabel(site.framework)}
@@ -698,35 +714,35 @@
 										<StatusBadge tone={appRuntimeTone(site)} label={appRuntimeLabel(site)} />
 										{#if isAppRunning(site) && (site.app_status?.memory_bytes ?? 0) > 0}
 											<Badge variant="outline" class="font-mono text-[11px] font-medium">
-												RAM {formatMemoryBytes(site.app_status?.memory_bytes)}
+												{t('webstack.page.ramBadge', { ram: formatMemoryBytes(site.app_status?.memory_bytes) })}
 											</Badge>
 										{/if}
 									{/if}
 								</div>
 							</Table.Cell>
-							<Table.Cell data-label="Target" class="font-mono text-xs">
+							<Table.Cell data-label={t('webstack.page.dataTarget')} class="font-mono text-xs">
 								{#if isManagedApp(site)}
 									<div class="flex flex-col gap-0.5">
 										<span>127.0.0.1:{site.proxy_port}</span>
 										{#if site.app?.service_name}
 											<span class="truncate text-[11px] text-muted-foreground" title={`${site.app.service_name}.service`}>
-												{site.app.service_name}{isAppRunning(site) && site.app_status?.main_pid ? ` · PID ${site.app_status.main_pid}` : ''}
+												{site.app.service_name}{isAppRunning(site) && site.app_status?.main_pid ? ` · ${t('webstack.page.pidPrefix', { pid: site.app_status.main_pid })}` : ''}
 											</span>
 										{/if}
 									</div>
 								{:else if site.framework === 'proxy'}
-									Forward :{site.proxy_port}
+									{t('webstack.page.forwardPrefix', { port: site.proxy_port })}
 								{:else if site.framework === 'static'}
-									Static HTML
+									{t('webstack.page.staticHtml')}
 								{:else}
 									PHP {site.php_version || '8.4'}
 								{/if}
 							</Table.Cell>
-							<Table.Cell data-label="Root">
+							<Table.Cell data-label={t('webstack.page.dataRoot')}>
 								{#if site.root_path && site.framework !== 'proxy'}
 									<a
 										href={`/files?path=${encodeURIComponent(site.root_path)}`}
-										title={`Buka ${site.root_path} di File Manager`}
+										title={t('webstack.page.openInFilesTitle', { path: site.root_path })}
 										class="inline-flex max-w-full sm:max-w-72 items-center gap-1.5 font-mono text-xs text-primary hover:underline"
 									>
 										<FolderOpenIcon class="size-3.5 shrink-0" />
@@ -738,12 +754,12 @@
 									</code>
 								{/if}
 							</Table.Cell>
-							<Table.Cell data-label="SSL">
+							<Table.Cell data-label={t('webstack.page.dataSsl')}>
 								{#if isEdge && site.exposed_to}
 									<div class="flex flex-col items-start gap-1">
-										<StatusBadge tone="success" label="VPS Edge HTTPS" />
+										<StatusBadge tone="success" label={t('webstack.page.edgeHttpsBadge')} />
 										<span class="text-[11px] leading-tight text-muted-foreground">
-											Terminasi SSL di VPS Gateway
+											{t('webstack.page.sslTerminatedVps')}
 										</span>
 									</div>
 								{:else if site.ssl_enabled}
@@ -755,7 +771,7 @@
 										{:else if site.ssl_provider === 'letsencrypt'}
 											<StatusBadge tone="success" label="Let's Encrypt" />
 										{:else if isVPS && site.ssl_provider === 'local'}
-											<StatusBadge tone="warning" label="SSL Lokal" />
+											<StatusBadge tone="warning" label={t('webstack.page.sslLocalBadge')} />
 										{:else}
 											<StatusBadge tone="success" label="HTTPS" />
 										{/if}
@@ -766,7 +782,7 @@
 													: sslExpiry.expiringSoon
 														? 'font-medium text-warning'
 														: 'text-muted-foreground'}"
-												title={`Berakhir pada ${sslExpiry.fullTitle}`}
+												title={t('webstack.page.expiresTitle', { date: sslExpiry.fullTitle })}
 											>
 												{sslExpiry.text}
 											</span>
@@ -775,13 +791,13 @@
 								{:else}
 									<StatusBadge
 										tone="neutral"
-										label={isEdge ? 'HTTP Internal' : 'HTTP'}
+										label={isEdge ? t('webstack.page.httpInternal') : t('webstack.page.httpLabel')}
 										showIcon={false}
 									/>
 								{/if}
 							</Table.Cell>
 							{#if isEdge}
-								<Table.Cell data-label="Tunnel VPS Edge">
+								<Table.Cell data-label={t('webstack.page.dataEdgeTunnel')}>
 									{#if site.exposed_to}
 										<div class="flex flex-col items-start gap-1">
 											<a
@@ -804,12 +820,12 @@
 											onclick={() => openExposeModal(site)}
 										>
 											<CloudUploadIcon data-icon="inline-start" />
-											Ekspos Tunnel
+											{t('webstack.page.exposeTunnelBtn')}
 										</Button>
 									{/if}
 								</Table.Cell>
 							{/if}
-							<Table.Cell data-label="Aksi" class="text-right">
+							<Table.Cell data-label={t('webstack.page.dataActions')} class="text-right">
 								{@const busySite =
 									Boolean(sslPending[site.domain]) ||
 									Boolean(siteDeleting[site.domain]) ||
@@ -825,7 +841,7 @@
 											onclick={() => openManageApp(site)}
 										>
 											<SlidersHorizontalIcon data-icon="inline-start" />
-											Kelola
+											{t('webstack.page.manageBtn')}
 										</Button>
 									{/if}
 									<DropdownMenu.Root>
@@ -834,15 +850,15 @@
 												<Button variant="outline" size="xs" disabled={busySite} {...props}>
 													{#if sslPending[site.domain]}
 														<Spinner data-icon="inline-start" />
-														Memproses...
+														{t('webstack.page.busyProcessing')}
 													{:else if siteDeleting[site.domain]}
 														<Spinner data-icon="inline-start" />
-														Menghapus...
+														{t('webstack.page.busyDeleting')}
 													{:else if appActionPending[site.domain]}
 														<Spinner data-icon="inline-start" />
-														Service...
+														{t('webstack.page.busyService')}
 													{:else}
-														Aksi
+														{t('webstack.page.actionsBtn')}
 														<ChevronDownIcon data-icon="inline-end" />
 													{/if}
 												</Button>
@@ -858,48 +874,48 @@
 													{#snippet child({ props })}
 														<a href={primaryHref} target="_blank" rel="noopener noreferrer" {...props}>
 															<ExternalLinkIcon />
-															<span>{isEdge && site.exposed_to ? 'Buka URL Publik' : 'Buka Situs'}</span>
+															<span>{isEdge && site.exposed_to ? t('webstack.page.menuOpenPublicUrl') : t('webstack.page.menuOpenSite')}</span>
 														</a>
 													{/snippet}
 												</DropdownMenu.Item>
 												{#if managed}
 													<DropdownMenu.Item disabled={busySite} onclick={() => openManageApp(site)}>
 														<CpuIcon />
-														<span>Kelola App, .env &amp; Logs</span>
+														<span>{t('webstack.page.menuManageApp')}</span>
 													</DropdownMenu.Item>
 													{#if site.app?.build_command}
 														<DropdownMenu.Item disabled={busySite} onclick={() => triggerQuickAppBuild(site)}>
 															<HammerIcon />
-															<span>Rebuild &amp; Restart</span>
+															<span>{t('webstack.page.menuRebuildRestart')}</span>
 														</DropdownMenu.Item>
 													{/if}
 													{#if appRunning}
 														<DropdownMenu.Item disabled={busySite} onclick={() => runQuickAppAction(site, 'restart')}>
 															<RotateCwIcon />
-															<span>Restart Service</span>
+															<span>{t('webstack.page.menuRestartService')}</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Item disabled={busySite} onclick={() => runQuickAppAction(site, 'stop')}>
 															<SquareIcon />
-															<span>Stop Service</span>
+															<span>{t('webstack.page.menuStopService')}</span>
 														</DropdownMenu.Item>
 													{:else}
 														<DropdownMenu.Item disabled={busySite} onclick={() => runQuickAppAction(site, 'start')}>
 															<PlayIcon />
-															<span>Start Service</span>
+															<span>{t('webstack.page.menuStartService')}</span>
 														</DropdownMenu.Item>
 													{/if}
 													<DropdownMenu.Separator />
 												{/if}
 												<DropdownMenu.Item disabled={busySite} onclick={() => openEdit(site)}>
 													<PencilIcon />
-													<span>Ubah Virtual Host</span>
+													<span>{t('webstack.page.menuEditVhost')}</span>
 												</DropdownMenu.Item>
 												{#if site.root_path && site.framework !== 'proxy'}
 													<DropdownMenu.Item>
 														{#snippet child({ props })}
 															<a href={`/files?path=${encodeURIComponent(site.root_path)}`} {...props}>
 																<FolderOpenIcon />
-																<span>Buka File Manager</span>
+																<span>{t('webstack.page.menuOpenFiles')}</span>
 															</a>
 														{/snippet}
 													</DropdownMenu.Item>
@@ -907,7 +923,7 @@
 												{#if isVPS}
 													<DropdownMenu.Item disabled={busySite} onclick={() => triggerLetsEncrypt(site.domain)}>
 														<ShieldCheckIcon />
-														<span>{hasLetsEncrypt ? 'Perbarui SSL' : "Generate Let's Encrypt"}</span>
+														<span>{hasLetsEncrypt ? t('webstack.page.menuRenewSsl') : t('webstack.page.menuGenerateLe')}</span>
 													</DropdownMenu.Item>
 												{/if}
 												{#if isEdge}
@@ -917,19 +933,19 @@
 															onclick={() => exposeOrRenewEdge(site.domain, site.exposed_to, true)}
 														>
 															<ShieldCheckIcon />
-															<span>Perbarui Let's Encrypt (VPS)</span>
+															<span>{t('webstack.page.menuRenewLeVps')}</span>
 														</DropdownMenu.Item>
 														<DropdownMenu.Item
 															disabled={busySite}
 															onclick={() => openUnexposeModal(site)}
 														>
 															<LinkIcon />
-															<span>Cabut Eksposur Tunnel</span>
+															<span>{t('webstack.page.menuUnexposeTunnel')}</span>
 														</DropdownMenu.Item>
 													{:else}
 														<DropdownMenu.Item disabled={busySite} onclick={() => openExposeModal(site)}>
 															<CloudUploadIcon />
-															<span>Ekspos &amp; SSL via Tunnel</span>
+															<span>{t('webstack.page.menuExposeSslTunnel')}</span>
 														</DropdownMenu.Item>
 													{/if}
 												{/if}
@@ -940,7 +956,7 @@
 													onclick={() => deleteSite(site)}
 												>
 													<Trash2Icon />
-													<span>Hapus Situs</span>
+													<span>{t('webstack.page.menuDeleteSite')}</span>
 												</DropdownMenu.Item>
 											</DropdownMenu.Group>
 										</DropdownMenu.Content>
@@ -956,7 +972,7 @@
 			bind:page={sitePage}
 			totalItems={filteredSites.length}
 			pageSize={PAGE_SIZE}
-			itemLabel="virtual host"
+			itemLabel={t('webstack.page.paginationItemLabel')}
 			class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
 		/>
 	</div>
@@ -988,20 +1004,20 @@
 <Dialog.Root bind:open={exposeOpen}>
 	<Dialog.Content class="max-h-[90dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain sm:w-full sm:max-w-md">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Ekspos ke VPS Edge Gateway</Dialog.Title>
+			<Dialog.Title>{t('webstack.page.exposeModal.title')}</Dialog.Title>
 			<Dialog.Description class="break-words">
-				Memetakan vhost lokal <code class="break-all font-mono">{exposeLocalDomain}</code> ke VPS Edge lewat NetBird Tunnel, menambah record DNS A (jika zone ada di PowerDNS), dan menerbitkan Let's Encrypt di VPS.
+				{t('webstack.page.exposeModal.desc1')}<code class="break-all font-mono">{exposeLocalDomain}</code>{t('webstack.page.exposeModal.desc2')}
 			</Dialog.Description>
 		</Dialog.Header>
 
 		<form onsubmit={submitExposeModal} class="flex flex-col gap-4">
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldLabel for="expose-pub-domain">Domain Publik di VPS Edge</Field.FieldLabel>
+					<Field.FieldLabel for="expose-pub-domain">{t('webstack.page.exposeModal.domainLabel')}</Field.FieldLabel>
 					<Input
 						id="expose-pub-domain"
 						class="h-11 text-base sm:h-8 sm:text-sm"
-						placeholder={parentDomains[0] ? `app.${parentDomains[0]}` : 'app.domainanda.com'}
+						placeholder={parentDomains[0] ? `app.${parentDomains[0]}` : t('webstack.page.exposeModal.domainPlaceholderDefault')}
 						autocorrect="off"
 						autocapitalize="none"
 						spellcheck={false}
@@ -1011,28 +1027,28 @@
 					/>
 					<Field.FieldDescription>
 						{modeStore.netbirdIP
-							? `Trafik VPS akan diteruskan ke http://${modeStore.netbirdIP}:80.`
-							: 'Trafik VPS akan diteruskan ke IP NetBird mesin ini (port 80).'}
+							? t('webstack.page.exposeModal.descWithIp', { ip: modeStore.netbirdIP })
+							: t('webstack.page.exposeModal.descNoIp')}
 					</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
 					<Checkbox id="expose-use-ssl" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={exposeUseSSL} />
 					<Field.FieldLabel for="expose-use-ssl" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-						Terbitkan Sertifikat SSL Let's Encrypt (HTTPS) di VPS Edge
+						{t('webstack.page.exposeModal.sslCheckbox')}
 					</Field.FieldLabel>
 				</Field.Field>
 			</Field.FieldGroup>
 
 			<Dialog.Footer class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
-				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (exposeOpen = false)}>Batal</Button>
+				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (exposeOpen = false)}>{t('webstack.page.exposeModal.cancel')}</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={exposing}>
 					{#if exposing}
 						<Spinner data-icon="inline-start" />
-						Mengekspos...
+						{t('webstack.page.exposeModal.exposing')}
 					{:else}
 						<CloudUploadIcon data-icon="inline-start" />
-						<span class="truncate">Ekspos Sekarang</span>
+						<span class="truncate">{t('webstack.page.exposeModal.submit')}</span>
 					{/if}
 				</Button>
 			</Dialog.Footer>
@@ -1044,9 +1060,9 @@
 <Dialog.Root bind:open={unexposeOpen}>
 	<Dialog.Content class="max-h-[90dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain sm:w-full sm:max-w-md">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Cabut Eksposur Tunnel</Dialog.Title>
+			<Dialog.Title>{t('webstack.page.unexposeModal.title')}</Dialog.Title>
 			<Dialog.Description class="break-words">
-				Lepaskan reverse proxy VPS Edge untuk <strong class="break-all font-mono">{unexposeTarget?.exposed_to}</strong>. Virtual host lokal <strong class="break-all font-mono">{unexposeTarget?.domain}</strong> akan tetap dipertahankan.
+				{t('webstack.page.unexposeModal.desc1')}<strong class="break-all font-mono">{unexposeTarget?.exposed_to}</strong>{t('webstack.page.unexposeModal.desc2')}<strong class="break-all font-mono">{unexposeTarget?.domain}</strong>{t('webstack.page.unexposeModal.desc3')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -1054,19 +1070,19 @@
 			<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
 				<Checkbox id="unexpose-del-dns" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={unexposeDeleteDNS} />
 				<Field.FieldLabel for="unexpose-del-dns" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-					Hapus juga record DNS A / CNAME dari PowerDNS (bila subdomain)
+					{t('webstack.page.unexposeModal.deleteDnsCheckbox')}
 				</Field.FieldLabel>
 			</Field.Field>
 		</div>
 
 		<Dialog.Footer class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
-			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (unexposeOpen = false)}>Batal</Button>
+			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (unexposeOpen = false)}>{t('webstack.page.unexposeModal.cancel')}</Button>
 			<Button variant="destructive" class="min-h-10 sm:min-h-0" disabled={unexposing} onclick={confirmUnexpose}>
 				{#if unexposing}
 					<Spinner data-icon="inline-start" />
-					Mencabut...
+					{t('webstack.page.unexposeModal.unexposing')}
 				{:else}
-					<span class="truncate">Cabut Eksposur</span>
+					<span class="truncate">{t('webstack.page.unexposeModal.submit')}</span>
 				{/if}
 			</Button>
 		</Dialog.Footer>
@@ -1077,9 +1093,9 @@
 <Dialog.Root bind:open={deleteOpen}>
 	<Dialog.Content class="max-h-[90dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain sm:w-full sm:max-w-md">
 		<Dialog.Header class="pr-8">
-			<Dialog.Title>Hapus Virtual Host</Dialog.Title>
+			<Dialog.Title>{t('webstack.page.deleteModal.title')}</Dialog.Title>
 			<Dialog.Description class="break-words">
-				Hapus konfigurasi Nginx lokal dan data situs untuk <strong class="break-all font-mono">{deleteTarget?.domain}</strong>. Berkas web di document root tetap aman.
+				{t('webstack.page.deleteModal.desc1')}<strong class="break-all font-mono">{deleteTarget?.domain}</strong>{t('webstack.page.deleteModal.desc2')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -1087,9 +1103,9 @@
 			{#if deleteTarget && isManagedApp(deleteTarget)}
 				<Alert.Root>
 					<CpuIcon />
-					<Alert.Title>Pembersihan Service Systemd</Alert.Title>
+					<Alert.Title>{t('webstack.page.deleteModal.systemdTitle')}</Alert.Title>
 					<Alert.Description class="min-w-0 text-xs">
-						Unit <code class="break-all font-mono">{deleteTarget.app?.service_name || `wdev-app-${deleteTarget.domain}`}.service</code> dan file env terkelola akan dihentikan serta dihapus permanen. Folder proyek dan <code>.env</code> proyek di <code class="font-mono break-all">{deleteTarget.root_path}</code> tetap aman di disk.
+						{t('webstack.page.deleteModal.systemdDesc1')}<code class="break-all font-mono">{deleteTarget.app?.service_name || `wdev-app-${deleteTarget.domain}`}.service</code>{t('webstack.page.deleteModal.systemdDesc2')}<code>.env</code>{t('webstack.page.deleteModal.systemdDesc3')}<code class="font-mono break-all">{deleteTarget.root_path}</code>{t('webstack.page.deleteModal.systemdDesc4')}
 					</Alert.Description>
 				</Alert.Root>
 			{/if}
@@ -1098,7 +1114,7 @@
 				<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
 					<Checkbox id="del-unexpose" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={deleteUnexpose} />
 					<Field.FieldLabel for="del-unexpose" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-						Cabut juga reverse proxy VPS Edge untuk <code class="break-all font-mono">{deleteTarget.exposed_to}</code>
+						{t('webstack.page.deleteModal.unexposeCheckbox')}<code class="break-all font-mono">{deleteTarget.exposed_to}</code>
 					</Field.FieldLabel>
 				</Field.Field>
 			{/if}
@@ -1107,14 +1123,14 @@
 				<Field.Field orientation="horizontal" class="fm-touch-check items-start gap-2.5 sm:items-center">
 					<Checkbox id="del-dns" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={deleteDNSRecord} />
 					<Field.FieldLabel for="del-dns" class="cursor-pointer py-0.5 font-normal leading-snug sm:py-0">
-						Hapus juga record DNS A dari PowerDNS (jika dikelola lokal/Edge)
+						{t('webstack.page.deleteModal.deleteDnsCheckbox')}
 					</Field.FieldLabel>
 				</Field.Field>
 			{/if}
 		</div>
 
 		<Dialog.Footer class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
-			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (deleteOpen = false)}>Batal</Button>
+			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (deleteOpen = false)}>{t('webstack.page.deleteModal.cancel')}</Button>
 			<Button
 				variant="destructive"
 				class="min-h-10 sm:min-h-0"
@@ -1128,11 +1144,11 @@
 			>
 				{#if deleteTarget && siteDeleting[deleteTarget.domain]}
 					<Spinner data-icon="inline-start" />
-					Menghapus...
+					{t('webstack.page.deleteModal.deleting')}
 				{:else}
 					<Trash2Icon data-icon="inline-start" />
-					<span class="truncate sm:hidden">Hapus</span>
-					<span class="hidden sm:inline">Hapus Virtual Host</span>
+					<span class="truncate sm:hidden">{t('webstack.page.deleteModal.deleteShort')}</span>
+					<span class="hidden sm:inline">{t('webstack.page.deleteModal.deleteFull')}</span>
 				{/if}
 			</Button>
 		</Dialog.Footer>

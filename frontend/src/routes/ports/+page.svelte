@@ -10,6 +10,7 @@
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import { api, ApiError } from '#lib/api/client.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import { modeStore, MODE_LABELS } from '#lib/stores/mode.svelte.js';
 	import type { PortColorTone, PortEntry, PortScopeDetail, PortStatusReport } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
@@ -34,14 +35,14 @@
 	let colorFilter = $state<ColorFilter>('all');
 	let showNotInstalled = $state(true);
 
-	const categories = [
-		{ id: 'all', label: 'Semua Kategori' },
-		{ id: 'system', label: 'Panel & Akses' },
-		{ id: 'web', label: 'Web & Proxy' },
-		{ id: 'database', label: 'Database & Cache' },
-		{ id: 'dns', label: 'DNS & Edge' },
-		{ id: 'mail', label: 'Mail Server' }
-	];
+	const categories = $derived([
+		{ id: 'all', label: t('ports.categories.all') },
+		{ id: 'system', label: t('ports.categories.system') },
+		{ id: 'web', label: t('ports.categories.web') },
+		{ id: 'database', label: t('ports.categories.database') },
+		{ id: 'dns', label: t('ports.categories.dns') },
+		{ id: 'mail', label: t('ports.categories.mail') }
+	]);
 
 	function badgeToneFromColor(color: PortColorTone): 'success' | 'warning' | 'destructive' | 'neutral' {
 		switch (color) {
@@ -115,9 +116,9 @@
 		if (!val || val === '-') return;
 		try {
 			await navigator.clipboard.writeText(val);
-			toast.success(`${label} (${val}) disalin.`);
+			toast.success(t('ports.toast.copied', { label, val }));
 		} catch {
-			toast.error(`Gagal menyalin ${label}`);
+			toast.error(t('ports.toast.copyFailed', { label }));
 		}
 	}
 
@@ -131,13 +132,13 @@
 		try {
 			report = await api.getPortStatus(forceRefresh);
 			if (forceRefresh) {
-				toast.success('Pemeriksaan port Lokal, VPN, dan IP VPS diperbarui.');
+				toast.success(t('ports.toast.refreshed'));
 			}
 		} catch (err) {
-			const msg = err instanceof ApiError ? err.message : 'Gagal memuat status port wdev';
+			const msg = err instanceof ApiError ? err.message : t('ports.toast.loadFailed');
 			loadError = msg;
 			if (forceRefresh) {
-				toast.error('Gagal Memeriksa Port', { description: msg });
+				toast.error(t('ports.toast.checkFailedTitle'), { description: msg });
 			}
 		} finally {
 			loading = false;
@@ -156,15 +157,15 @@
 		<div class="space-y-1">
 			<div class="flex items-center gap-2">
 				<EthernetPortIcon class="size-5 text-primary" />
-				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Cek Port Status &amp; Jaringan</h1>
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('ports.title')}</h1>
 				{#if report?.network?.mode}
 					<Badge variant="outline" class="font-mono text-xs">
-						Mode: {MODE_LABELS[report.network.mode] ?? report.network.mode}
+						{t('ports.modePrefix', { mode: MODE_LABELS[report.network.mode] ?? report.network.mode })}
 					</Badge>
 				{/if}
 			</div>
 			<p class="text-sm text-muted-foreground">
-				Inventaris seluruh port yang berkaitan dengan layanan <span class="font-mono font-medium">wdev</span> beserta status keterjangkauan pada jaringan <strong>Lokal</strong>, <strong>VPN (NetBird)</strong>, dan <strong>IP VPS / Publik</strong>.
+				{t('ports.subtitlePrefix')} <span class="font-mono font-medium">wdev</span> {t('ports.subtitleMiddle')} <strong>{t('ports.scopeLocalBold')}</strong>, <strong>{t('ports.scopeVpnBold')}</strong>, {t('ports.andWord')} <strong>{t('ports.scopeVpsBold')}</strong>.
 			</p>
 		</div>
 
@@ -180,7 +181,7 @@
 				{:else}
 					<RefreshCwIcon data-icon="inline-start" />
 				{/if}
-				<span>{refreshing ? 'Memeriksa Port...' : 'Cek Ulang Port'}</span>
+				<span>{refreshing ? t('ports.refreshingBtn') : t('ports.refreshBtn')}</span>
 			</Button>
 		</div>
 	</div>
@@ -188,7 +189,7 @@
 	{#if loadError}
 		<Alert.Root variant="destructive">
 			<AlertCircleIcon />
-			<Alert.Title>Gagal Memuat Diagnostik Port</Alert.Title>
+			<Alert.Title>{t('ports.loadErrorTitle')}</Alert.Title>
 			<Alert.Description>{loadError}</Alert.Description>
 		</Alert.Root>
 	{/if}
@@ -198,23 +199,23 @@
 		<Card.Root>
 			<Card.Content class="space-y-2 p-4">
 				<div class="flex items-center justify-between">
-					<span class="text-xs font-medium text-muted-foreground">Lokal &amp; LAN Host</span>
+					<span class="text-xs font-medium text-muted-foreground">{t('ports.cards.localTitle')}</span>
 					<LaptopIcon class="size-4 text-primary" />
 				</div>
 				<div class="flex items-center justify-between gap-2">
 					<span class="font-mono text-base font-bold tabular-nums">
 						{report?.network.local_ip || '127.0.0.1'}
 					</span>
-					<StatusBadge tone="success" label="Loopback" />
+					<StatusBadge tone="success" label={t('ports.cards.loopbackBadge')} />
 				</div>
 				<div class="flex items-center justify-between text-xs text-muted-foreground">
-					<span>LAN: <span class="font-mono">{report?.network.lan_ip || '-'}</span></span>
+					<span>{t('ports.cards.lanLabel')} <span class="font-mono">{report?.network.lan_ip || '-'}</span></span>
 					{#if report?.network.lan_ip}
 						<button
 							type="button"
 							class="inline-flex items-center gap-1 hover:text-foreground"
-							onclick={() => copyText(report?.network.lan_ip || '', 'IP LAN')}
-							title="Salin IP LAN"
+							onclick={() => copyText(report?.network.lan_ip || '', t('ports.cards.lanIpLabel'))}
+							title={t('ports.cards.copyLanTitle')}
 						>
 							<CopyIcon class="size-3" />
 						</button>
@@ -226,7 +227,7 @@
 		<Card.Root>
 			<Card.Content class="space-y-2 p-4">
 				<div class="flex items-center justify-between">
-					<span class="text-xs font-medium text-muted-foreground">VPN Mesh (NetBird)</span>
+					<span class="text-xs font-medium text-muted-foreground">{t('ports.cards.vpnTitle')}</span>
 					<NetworkIcon class="size-4 text-primary" />
 				</div>
 				<div class="flex items-center justify-between gap-2">
@@ -234,28 +235,28 @@
 						{report?.network.vpn_ip || '-'}
 					</span>
 					{#if report?.network.netbird_active && report?.network.vpn_ip}
-						<StatusBadge tone="success" label="Aktif" />
+						<StatusBadge tone="success" label={t('ports.cards.activeBadge')} />
 					{:else if report?.network.netbird_active}
-						<StatusBadge tone="warning" label="IP N/A" />
+						<StatusBadge tone="warning" label={t('ports.cards.ipNaBadge')} />
 					{:else}
-						<StatusBadge tone="neutral" label="Nonaktif" />
+						<StatusBadge tone="neutral" label={t('ports.cards.inactiveBadge')} />
 					{/if}
 				</div>
 				<div class="flex items-center justify-between text-xs text-muted-foreground">
 					{#if report?.network.vps_vpn_ip}
-						<span>Edge VPS VPN: <span class="font-mono">{report.network.vps_vpn_ip}</span></span>
+						<span>{t('ports.cards.edgeVpsVpnLabel')} <span class="font-mono">{report.network.vps_vpn_ip}</span></span>
 					{:else if report?.network.vpn_ip}
-						<span>Subnet CGNAT <span class="font-mono">100.64.0.0/10</span></span>
+						<span>{t('ports.cards.cgnatLabel')} <span class="font-mono">100.64.0.0/10</span></span>
 						<button
 							type="button"
 							class="inline-flex items-center gap-1 hover:text-foreground"
-							onclick={() => copyText(report?.network.vpn_ip || '', 'IP NetBird')}
-							title="Salin IP NetBird"
+							onclick={() => copyText(report?.network.vpn_ip || '', t('ports.cards.netbirdIpLabel'))}
+							title={t('ports.cards.copyNetbirdTitle')}
 						>
 							<CopyIcon class="size-3" />
 						</button>
 					{:else}
-						<span>Interface NetBird (wt0) tidak aktif</span>
+						<span>{t('ports.cards.netbirdInactive')}</span>
 					{/if}
 				</div>
 			</Card.Content>
@@ -264,37 +265,37 @@
 		<Card.Root>
 			<Card.Content class="space-y-2 p-4">
 				<div class="flex items-center justify-between">
-					<span class="text-xs font-medium text-muted-foreground">IP VPS / Publik</span>
+					<span class="text-xs font-medium text-muted-foreground">{t('ports.cards.vpsTitle')}</span>
 					<GlobeIcon class="size-4 text-primary" />
 				</div>
 				<div class="flex items-center justify-between gap-2">
 					<span class="truncate font-mono text-base font-bold tabular-nums">
 						{report?.network.mode === 'local'
-							? 'Mode Lokal'
-							: report?.network.vps_public_ip || 'Belum Terdeteksi'}
+							? t('ports.cards.localMode')
+							: report?.network.vps_public_ip || t('ports.cards.notDetected')}
 					</span>
 					{#if report?.network.mode === 'local'}
-						<StatusBadge tone="neutral" label="Non-Publik" />
+						<StatusBadge tone="neutral" label={t('ports.cards.nonPublicBadge')} />
 					{:else if report?.network.vps_public_ip}
-						<StatusBadge tone="info" label={report?.network.mode === 'edge' ? 'Edge IP' : 'Publik IP'} />
+						<StatusBadge tone="info" label={report?.network.mode === 'edge' ? t('ports.cards.edgeIpBadge') : t('ports.cards.publicIpBadge')} />
 					{:else}
-						<StatusBadge tone="warning" label="N/A" />
+						<StatusBadge tone="warning" label={t('ports.cards.naBadge')} />
 					{/if}
 				</div>
 				<div class="flex items-center justify-between text-xs text-muted-foreground">
 					{#if report?.network.mode === 'local'}
-						<span>Tidak mengekspos port ke internet publik</span>
+						<span>{t('ports.cards.localNoExpose')}</span>
 					{:else if report?.network.mode === 'edge'}
-						<span>Uji koneksi langsung ke IP VPS Edge</span>
+						<span>{t('ports.cards.edgeTestHint')}</span>
 					{:else}
-						<span>Uji eksternal via ifconfig.co/port</span>
+						<span>{t('ports.cards.vpsTestHint')}</span>
 					{/if}
 					{#if report?.network.vps_public_ip}
 						<button
 							type="button"
 							class="inline-flex items-center gap-1 hover:text-foreground"
-							onclick={() => copyText(report?.network.vps_public_ip || '', 'IP VPS Publik')}
-							title="Salin IP VPS Publik"
+							onclick={() => copyText(report?.network.vps_public_ip || '', t('ports.cards.vpsIpLabel'))}
+							title={t('ports.cards.copyVpsTitle')}
 						>
 							<CopyIcon class="size-3" />
 						</button>
@@ -306,25 +307,25 @@
 		<Card.Root>
 			<Card.Content class="space-y-2 p-4">
 				<div class="flex items-center justify-between">
-					<span class="text-xs font-medium text-muted-foreground">Firewall &amp; Ringkasan Port</span>
+					<span class="text-xs font-medium text-muted-foreground">{t('ports.cards.firewallTitle')}</span>
 					<ShieldCheckIcon class="size-4 text-primary" />
 				</div>
 				<div class="flex flex-wrap items-center gap-1.5">
 					<span class="inline-flex items-center gap-1 rounded-md border border-success/35 bg-success/15 px-2 py-0.5 font-mono text-xs font-semibold text-success tabular-nums">
 						<span class="size-1.5 rounded-full bg-success"></span>
-						{report?.summary.green ?? 0} Terbuka
+						{t('ports.cards.openCount', { count: report?.summary.green ?? 0 })}
 					</span>
 					<span class="inline-flex items-center gap-1 rounded-md border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 font-mono text-xs font-semibold text-amber-700 dark:text-amber-400 tabular-nums">
 						<span class="size-1.5 rounded-full bg-amber-500"></span>
-						{report?.summary.yellow ?? 0} Terblokir
+						{t('ports.cards.blockedCount', { count: report?.summary.yellow ?? 0 })}
 					</span>
 					<span class="inline-flex items-center gap-1 rounded-md border border-destructive/35 bg-destructive/15 px-2 py-0.5 font-mono text-xs font-semibold text-destructive tabular-nums">
 						<span class="size-1.5 rounded-full bg-destructive"></span>
-						{report?.summary.red ?? 0} Mati
+						{t('ports.cards.closedCount', { count: report?.summary.red ?? 0 })}
 					</span>
 				</div>
 				<p class="truncate text-xs text-muted-foreground" title={report?.network.firewall.summary}>
-					{report?.network.firewall.summary || 'Memeriksa firewall host...'}
+					{report?.network.firewall.summary || t('ports.cards.checkingFirewall')}
 				</p>
 			</Card.Content>
 		</Card.Root>
@@ -335,23 +336,23 @@
 		<Card.Header class="pb-3">
 			<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<Card.Title class="text-base">Peta Cepat Port wdev</Card.Title>
+					<Card.Title class="text-base">{t('ports.quickMap.title')}</Card.Title>
 					<Card.Description>
-						Klik indikator warna untuk menyaring daftar, atau arahkan kursor ke angka port untuk melihat detail Lokal, VPN, dan IP VPS.
+						{t('ports.quickMap.description')}
 					</Card.Description>
 				</div>
 				<div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
 					<span class="inline-flex items-center gap-1.5">
-						<span class="size-2 rounded-full bg-success"></span> Terbuka / Optimal
+						<span class="size-2 rounded-full bg-success"></span> {t('ports.quickMap.legendOpen')}
 					</span>
 					<span class="inline-flex items-center gap-1.5">
-						<span class="size-2 rounded-full bg-amber-500"></span> Terblokir / Perlu Cek
+						<span class="size-2 rounded-full bg-amber-500"></span> {t('ports.quickMap.legendBlocked')}
 					</span>
 					<span class="inline-flex items-center gap-1.5">
-						<span class="size-2 rounded-full bg-destructive"></span> Mati / Tertutup
+						<span class="size-2 rounded-full bg-destructive"></span> {t('ports.quickMap.legendClosed')}
 					</span>
 					<span class="inline-flex items-center gap-1.5">
-						<span class="size-2 rounded-full bg-muted-foreground"></span> Internal / Belum Terpasang
+						<span class="size-2 rounded-full bg-muted-foreground"></span> {t('ports.quickMap.legendInternal')}
 					</span>
 				</div>
 			</div>
@@ -360,10 +361,10 @@
 			{#if loading && !report}
 				<div class="flex items-center gap-2 py-4 text-sm text-muted-foreground">
 					<Spinner class="size-4" />
-					<span>Memeriksa port Lokal, VPN NetBird, Firewall, dan IP VPS...</span>
+					<span>{t('ports.quickMap.checkingAll')}</span>
 				</div>
 			{:else}
-				<div class="flex flex-wrap gap-1.5" aria-label="Ringkasan status port wdev">
+				<div class="flex flex-wrap gap-1.5" aria-label={t('ports.quickMap.ariaSummary')}>
 					{#each pillPorts as item (item.id)}
 						<button
 							type="button"
@@ -371,7 +372,15 @@
 								categoryFilter = item.category;
 								colorFilter = 'all';
 							}}
-							title={`${item.name} (Port ${item.port}/${item.protocol}): ${item.overall_label} — Lokal: ${item.local.label} | VPN: ${item.vpn.label} | VPS: ${item.vps.label}`}
+							title={t('ports.quickMap.pillTitle', {
+								name: item.name,
+								port: item.port,
+								protocol: item.protocol,
+								overall: item.overall_label,
+								local: item.local.label,
+								vpn: item.vpn.label,
+								vps: item.vps.label
+							})}
 							class={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-xs font-medium tabular-nums transition-opacity hover:opacity-85 ${pillClassFromColor(item.overall_color)}`}
 						>
 							<span class={`size-1.5 shrink-0 rounded-full ${dotClassFromColor(item.overall_color)}`}></span>
@@ -403,7 +412,7 @@
 							class="h-7 px-2 text-xs"
 							onclick={() => (colorFilter = 'all')}
 						>
-							Semua Status
+							{t('ports.quickMap.filterAllStatus')}
 						</Button>
 						<Button
 							variant={colorFilter === 'green' ? 'secondary' : 'ghost'}
@@ -411,7 +420,7 @@
 							class="h-7 px-2 text-xs text-success"
 							onclick={() => (colorFilter = 'green')}
 						>
-							Hijau
+							{t('ports.quickMap.filterGreen')}
 						</Button>
 						<Button
 							variant={colorFilter === 'yellow' ? 'secondary' : 'ghost'}
@@ -419,7 +428,7 @@
 							class="h-7 px-2 text-xs text-amber-600 dark:text-amber-400"
 							onclick={() => (colorFilter = 'yellow')}
 						>
-							Kuning
+							{t('ports.quickMap.filterYellow')}
 						</Button>
 						<Button
 							variant={colorFilter === 'red' ? 'secondary' : 'ghost'}
@@ -427,7 +436,7 @@
 							class="h-7 px-2 text-xs text-destructive"
 							onclick={() => (colorFilter = 'red')}
 						>
-							Merah
+							{t('ports.quickMap.filterRed')}
 						</Button>
 						<Button
 							variant={showNotInstalled ? 'outline' : 'ghost'}
@@ -435,7 +444,7 @@
 							class="h-7 px-2.5 text-xs"
 							onclick={() => (showNotInstalled = !showNotInstalled)}
 						>
-							{showNotInstalled ? 'Sembunyikan Belum Terpasang' : 'Tampilkan Semua Port wdev'}
+							{showNotInstalled ? t('ports.quickMap.hideNotInstalled') : t('ports.quickMap.showAllPorts')}
 						</Button>
 					</div>
 				</div>
@@ -447,14 +456,14 @@
 	<div class="rounded-lg border bg-card">
 		<div class="flex flex-col gap-1 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
 			<div>
-				<h2 class="text-sm font-semibold">Detail Status Port (Lokal, VPN NetBird &amp; IP VPS)</h2>
+				<h2 class="text-sm font-semibold">{t('ports.table.title')}</h2>
 				<p class="text-xs text-muted-foreground">
-					Menampilkan {filteredPorts.length} dari {allPorts.length} port terkait wdev.
+					{t('ports.table.showingCount', { filtered: filteredPorts.length, total: allPorts.length })}
 				</p>
 			</div>
 			{#if report?.checked_at}
 				<span class="font-mono text-[11px] text-muted-foreground">
-					Terakhir dicek: {new Date(report.checked_at).toLocaleTimeString('id-ID')}
+					{t('ports.table.lastChecked', { time: i18n.formatTime(report.checked_at) })}
 				</span>
 			{/if}
 		</div>
@@ -462,7 +471,7 @@
 		{#if loading && !report}
 			<div class="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
 				<Spinner class="size-4" />
-				<span>Memuat daftar port...</span>
+				<span>{t('ports.table.loadingList')}</span>
 			</div>
 		{:else if filteredPorts.length === 0}
 			<Empty.Root class="border-0 py-10">
@@ -470,9 +479,9 @@
 					<Empty.Media variant="icon">
 						<EthernetPortIcon />
 					</Empty.Media>
-					<Empty.Title>Tidak Ada Port Sesuai Filter</Empty.Title>
+					<Empty.Title>{t('ports.table.emptyTitle')}</Empty.Title>
 					<Empty.Description>
-						Ubah filter kategori, warna status, atau aktifkan tampilan port yang belum terpasang.
+						{t('ports.table.emptyDesc')}
 					</Empty.Description>
 				</Empty.Header>
 				<Empty.Content>
@@ -485,35 +494,38 @@
 							showNotInstalled = true;
 						}}
 					>
-						Reset Filter
+						{t('ports.table.resetFilter')}
 					</Button>
 				</Empty.Content>
 			</Empty.Root>
 		{:else}
-			<ResponsiveTableWrapper label="Status Port Terkait wdev">
+			<ResponsiveTableWrapper label={t('ports.table.ariaLabel')}>
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
-							<Table.Head class="w-[105px]">Port</Table.Head>
-							<Table.Head class="min-w-[200px]">Layanan &amp; Status</Table.Head>
+							<Table.Head class="w-[105px]">{t('ports.table.colPort')}</Table.Head>
+							<Table.Head class="min-w-[200px]">{t('ports.table.colService')}</Table.Head>
 							<Table.Head class="min-w-[165px]">
-								Lokal ({report?.network.local_ip || '127.0.0.1'})
+								{t('ports.table.colLocal', { ip: report?.network.local_ip || '127.0.0.1' })}
 							</Table.Head>
 							<Table.Head class="min-w-[175px]">
-								VPN ({report?.network.vpn_ip || report?.network.vps_vpn_ip || 'NetBird'})
+								{t('ports.table.colVpn', { target: report?.network.vpn_ip || report?.network.vps_vpn_ip || 'NetBird' })}
 							</Table.Head>
 							<Table.Head class="min-w-[180px]">
-								IP VPS ({report?.network.mode === 'local'
-									? 'Mode Lokal'
-									: report?.network.vps_public_ip || 'Publik'})
+								{t('ports.table.colVps', {
+									target:
+										report?.network.mode === 'local'
+											? t('ports.cards.localMode')
+											: report?.network.vps_public_ip || t('ports.table.publicFallback')
+								})}
 							</Table.Head>
-							<Table.Head class="min-w-[250px]">Keterangan &amp; Rekomendasi</Table.Head>
+							<Table.Head class="min-w-[250px]">{t('ports.table.colDesc')}</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
 						{#each filteredPorts as item (item.id)}
 							<Table.Row class={!item.installed ? 'opacity-70' : ''}>
-								<Table.Cell data-label="Port" class="align-top">
+								<Table.Cell data-label={t('ports.table.dataPort')} class="align-top">
 									<div class="flex items-center gap-1.5 font-mono text-sm font-bold">
 										<span class={`size-2 shrink-0 rounded-full ${dotClassFromColor(item.overall_color)}`}></span>
 										<span>{item.port}</span>
@@ -528,7 +540,7 @@
 									{/if}
 								</Table.Cell>
 
-								<Table.Cell data-label="Layanan" class="align-top">
+								<Table.Cell data-label={t('ports.table.dataService')} class="align-top">
 									<div class="font-semibold">{item.name}</div>
 									<div class="mt-1 flex flex-wrap items-center gap-1">
 										<StatusBadge
@@ -546,8 +558,8 @@
 									{/if}
 								</Table.Cell>
 
-								<Table.Cell data-label="Lokal" class="align-top">
-									<div title={scopeTooltip(item, 'Lokal', item.local)}>
+								<Table.Cell data-label={t('ports.table.dataLocal')} class="align-top">
+									<div title={scopeTooltip(item, t('ports.table.scopeLocal'), item.local)}>
 										<StatusBadge
 											tone={badgeToneFromColor(item.local.color)}
 											label={item.local.label}
@@ -565,8 +577,8 @@
 									{/if}
 								</Table.Cell>
 
-								<Table.Cell data-label="VPN NetBird" class="align-top">
-									<div title={scopeTooltip(item, 'VPN', item.vpn)}>
+								<Table.Cell data-label={t('ports.table.dataVpn')} class="align-top">
+									<div title={scopeTooltip(item, t('ports.table.scopeVpn'), item.vpn)}>
 										<StatusBadge
 											tone={badgeToneFromColor(item.vpn.color)}
 											label={item.vpn.label}
@@ -584,8 +596,8 @@
 									{/if}
 								</Table.Cell>
 
-								<Table.Cell data-label="IP VPS" class="align-top">
-									<div title={scopeTooltip(item, 'IP VPS', item.vps)}>
+								<Table.Cell data-label={t('ports.table.dataVps')} class="align-top">
+									<div title={scopeTooltip(item, t('ports.table.scopeVps'), item.vps)}>
 										<StatusBadge
 											tone={badgeToneFromColor(item.vps.color)}
 											label={item.vps.label}
@@ -603,7 +615,7 @@
 									{/if}
 								</Table.Cell>
 
-								<Table.Cell data-label="Keterangan" class="align-top text-xs text-muted-foreground">
+								<Table.Cell data-label={t('ports.table.dataDesc')} class="align-top text-xs text-muted-foreground">
 									<p class="leading-relaxed">{item.description}</p>
 									{#if item.recommendation}
 										<p class={`mt-1.5 rounded border px-2 py-1 text-[11px] leading-relaxed ${
@@ -631,10 +643,10 @@
 					<Alert.Root variant="destructive">
 						<AlertCircleIcon />
 						<Alert.Title>
-							Layanan Terpasang Tidak Listen ({closedPorts.map((p) => `${p.port}/${p.service}`).join(', ')})
+							{t('ports.alerts.closedTitle', { list: closedPorts.map((p) => `${p.port}/${p.service}`).join(', ') })}
 						</Alert.Title>
 						<Alert.Description class="text-xs leading-relaxed">
-							Port di atas dimiliki oleh layanan yang sudah terpasang tetapi saat ini tidak menerima koneksi di server lokal. Jalankan ulang layanannya dari menu <strong>Status &amp; Update</strong> atau periksa log service terkait.
+							{t('ports.alerts.closedDescPrefix')} <strong>{t('ports.alerts.closedDescLink')}</strong> {t('ports.alerts.closedDescSuffix')}
 						</Alert.Description>
 					</Alert.Root>
 				{/if}
@@ -643,10 +655,10 @@
 					<Alert.Root class="border-amber-500/30 bg-amber-500/5">
 						<InfoIcon class="text-amber-600 dark:text-amber-400" />
 						<Alert.Title class="font-semibold text-amber-700 dark:text-amber-400">
-							Port Terblokir / Memerlukan Perhatian ({blockedOrWarningPorts.map((p) => p.port).join(', ')})
+							{t('ports.alerts.blockedTitle', { list: blockedOrWarningPorts.map((p) => p.port).join(', ') })}
 						</Alert.Title>
 						<Alert.Description class="text-xs leading-relaxed text-muted-foreground">
-							Port berhasil aktif di server lokal, namun ditolak pada interface VPN (misal database hanya bind <span class="font-mono">127.0.0.1</span>) atau terblokir firewall host / Security Group cloud / ISP pada IP VPS publik. Periksa kolom <strong>VPN</strong>, <strong>IP VPS</strong>, dan rekomendasi di setiap baris.
+							{t('ports.alerts.blockedDescPrefix')} <span class="font-mono">127.0.0.1</span>{t('ports.alerts.blockedDescMiddle')} <strong>{t('ports.table.scopeVpn')}</strong>{t('ports.alerts.blockedDescAnd')} <strong>{t('ports.table.scopeVps')}</strong>{t('ports.alerts.blockedDescSuffix')}
 						</Alert.Description>
 					</Alert.Root>
 				{/if}
@@ -654,7 +666,7 @@
 				{#if closedPorts.length === 0 && blockedOrWarningPorts.length === 0}
 					<div class="flex items-center gap-2 text-xs text-muted-foreground">
 						<CheckIcon class="size-4 text-success" />
-						<span>Seluruh port layanan yang terpasang berjalan optimal sesuai kebijakan Lokal, VPN, dan IP VPS.</span>
+						<span>{t('ports.alerts.allOptimal')}</span>
 					</div>
 				{/if}
 			</div>

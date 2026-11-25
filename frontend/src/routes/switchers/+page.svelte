@@ -5,6 +5,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { RuntimeInfo, SwitchersMap } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
@@ -19,7 +20,7 @@
 		try {
 			switchers = (await api.getSwitchers()) ?? {};
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat daftar runtime');
+			toast.error(err instanceof Error ? err.message : t('switchers.loadFailed'));
 		} finally {
 			loading = false;
 		}
@@ -43,9 +44,13 @@
 
 <div class="flex flex-col gap-5 sm:gap-6">
 	<div>
-		<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Pengelola Multi-Versi Runtime</h1>
+		<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('switchers.title')}</h1>
 		<p class="text-sm text-muted-foreground">
-			Beralih versi runtime Node.js (<code>wdev switch node</code>), PHP CLI &amp; FPM (<code>wdev switch php</code>), PostgreSQL (<code>wdev switch pg</code>), serta Java OpenJDK dengan satu klik.
+			{t('switchers.subtitle', {
+				nodeCmd: 'wdev switch node',
+				phpCmd: 'wdev switch php',
+				pgCmd: 'wdev switch pg'
+			})}
 		</p>
 	</div>
 
@@ -72,7 +77,7 @@
 							<div class="min-w-0">
 								<Card.Title>{item.name}</Card.Title>
 								<Card.Description>
-									Versi Aktif:
+									{t('switchers.activeVersion')}
 									<span class="font-mono font-semibold text-foreground">
 										{item.active_version}
 									</span>
@@ -80,9 +85,9 @@
 							</div>
 							<div class="flex flex-wrap items-center gap-2">
 								{#if item.active_version && item.active_version !== 'None'}
-									<StatusBadge tone="success" label="Terpasang" />
+									<StatusBadge tone="success" label={t('common.status.installed')} />
 								{:else}
-									<StatusBadge tone="neutral" label="Belum Aktif" />
+									<StatusBadge tone="neutral" label={t('common.status.notActive')} />
 								{/if}
 								{#if (key === 'php' || key === 'pg') && item.active_version && item.active_version !== 'None'}
 									<Button
@@ -95,7 +100,7 @@
 											)}
 									>
 										<SettingsIcon data-icon="inline-start" />
-										Config
+										{t('switchers.configBtn')}
 									</Button>
 								{/if}
 							</div>
@@ -105,7 +110,7 @@
 					<Card.Content>
 						<div class="flex flex-col gap-2">
 							<span class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-								Ganti ke Versi
+								{t('switchers.switchToLabel')}
 							</span>
 							<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
 								{#each item.available_versions || [] as ver (ver)}

@@ -430,4 +430,30 @@ func TestHandlePortsEndpointAndEdgeMode(t *testing.T) {
 	if panel := vpsByID["wdev-panel"]; panel.OverallColor != "yellow" || panel.VPS.Status != "blocked" {
 		t.Fatalf("wdev-panel blocked externally expected yellow, got %+v", panel)
 	}
+
+	// Default locale on /api/ports should be English
+	if p80, ok := vpsByID["nginx-http"]; !ok || p80.CategoryLabel != "Web & Proxy" || p80.OverallLabel != "Fully Open" {
+		t.Fatalf("expected English default labels for port 80, got %+v", p80)
+	}
+
+	// Indonesian locale via Accept-Language header
+	idReq := httptest.NewRequest(http.MethodGet, "/api/ports?refresh=1", nil)
+	idReq.Header.Set("Accept-Language", "id-ID,id;q=0.9")
+	idRec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(idRec, idReq)
+	if idRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/ports (id) status = %d, want 200", idRec.Code)
+	}
+	var idReport PortStatusReport
+	if err := json.Unmarshal(idRec.Body.Bytes(), &idReport); err != nil {
+		t.Fatalf("invalid json (id): %v", err)
+	}
+	for _, p := range idReport.Ports {
+		if p.ID == "nginx-http" && p.OverallLabel != "Terbuka Penuh" {
+			t.Fatalf("expected Indonesian OverallLabel 'Terbuka Penuh', got %q", p.OverallLabel)
+		}
+		if p.ID == "wdev-panel" && p.CategoryLabel != "Panel & Akses" {
+			t.Fatalf("expected Indonesian CategoryLabel 'Panel & Akses', got %q", p.CategoryLabel)
+		}
+	}
 }

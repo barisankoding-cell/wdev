@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"wdev/internal/i18n"
 	"wdev/internal/pdns"
 )
 
@@ -27,8 +28,14 @@ type PreflightStatus struct {
 	Warnings        []string `json:"warnings"`
 }
 
-// Preflight memeriksa prasyarat tanpa mengubah apa pun.
+// Preflight memeriksa prasyarat tanpa mengubah apa pun menggunakan locale default (English).
 func (m *Manager) Preflight(domain string) PreflightStatus {
+	return m.PreflightLocale(domain, i18n.DefaultLocale)
+}
+
+// PreflightLocale memeriksa prasyarat mail dengan pesan blocker/warning sesuai locale ("en" / "id").
+func (m *Manager) PreflightLocale(domain, lang string) PreflightStatus {
+	loc := i18n.Normalize(lang)
 	st := PreflightStatus{Domain: strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))}
 
 	if p, err := exec.LookPath("stalwart"); err == nil && p != "" {
@@ -59,7 +66,7 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 		st.EdgeConfigured = cfg.Configured || cfg.HasLocalPDNS
 	case "local":
 		if st.NetbirdIP == "" {
-			st.NetbirdIP = "127.0.0.1 (Mode Lokal)"
+			st.NetbirdIP = i18n.Pick(loc, "127.0.0.1 (Local Mode)", "127.0.0.1 (Mode Lokal)")
 		}
 		st.EdgeConfigured = true
 	default:
@@ -88,73 +95,130 @@ func (m *Manager) Preflight(domain string) PreflightStatus {
 
 	if !st.StalwartBinary {
 		if m.ensureStackFn != nil {
-			st.Warnings = append(st.Warnings, "Stalwart belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"Stalwart is not installed yet — it will be installed automatically when running Domain Setup",
+				"Stalwart belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan",
+			))
 		} else {
-			st.Blockers = append(st.Blockers, "Stalwart belum terpasang (jalankan: wdev install mail)")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"Stalwart is not installed (run: wdev install mail)",
+				"Stalwart belum terpasang (jalankan: wdev install mail)",
+			))
 		}
 	}
 	if !st.StalwartCLI {
 		if m.ensureStackFn != nil {
-			st.Warnings = append(st.Warnings, "stalwart-cli belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"stalwart-cli is not installed yet — it will be installed automatically when running Domain Setup",
+				"stalwart-cli belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan",
+			))
 		} else {
-			st.Blockers = append(st.Blockers, "stalwart-cli belum terpasang (jalankan: wdev install mail)")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"stalwart-cli is not installed (run: wdev install mail)",
+				"stalwart-cli belum terpasang (jalankan: wdev install mail)",
+			))
 		}
 	}
 	if st.Domain != "" && !validMailDomain(st.Domain) {
-		st.Blockers = append(st.Blockers, "domain tidak valid")
+		st.Blockers = append(st.Blockers, i18n.Pick(loc, "invalid domain", "domain tidak valid"))
 	}
 
 	switch mode {
 	case "local":
 		// Mode Lokal standalone: NetBird, PowerDNS zone, maupun relay tidak menjadi blocker.
 		if !cfg.Reachable && !cfg.HasLocalPDNS {
-			st.Warnings = append(st.Warnings, "PowerDNS lokal belum terpasang; domain webmail/admin lokal tetap berjalan via /etc/hosts")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"Local PowerDNS is not installed; local webmail/admin domains continue working via /etc/hosts",
+				"PowerDNS lokal belum terpasang; domain webmail/admin lokal tetap berjalan via /etc/hosts",
+			))
 		} else if st.Domain != "" && st.DNSZone == "" {
-			st.Warnings = append(st.Warnings, "Zone DNS "+st.Domain+" belum ada di PowerDNS; record DNS dilewati dan memakai /etc/hosts lokal")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"DNS zone "+st.Domain+" does not exist in PowerDNS yet; DNS records are skipped and /etc/hosts is used",
+				"Zone DNS "+st.Domain+" belum ada di PowerDNS; record DNS dilewati dan memakai /etc/hosts lokal",
+			))
 		}
 		if !st.RelayConfigured {
-			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email tetap berjalan via SMTP lokal Stalwart atau atur relay nanti di tab Relay")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"Outbound relay is not configured yet; email continues working via local Stalwart SMTP or configure a relay later in the Relay tab",
+				"Relay outbound belum disetel; email tetap berjalan via SMTP lokal Stalwart atau atur relay nanti di tab Relay",
+			))
 		}
 	case "vps":
 		if !cfg.Reachable && !cfg.HasLocalPDNS {
-			st.Blockers = append(st.Blockers, "PowerDNS lokal belum siap (jalankan: wdev install pdns)")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"Local PowerDNS is not ready yet (run: wdev install pdns)",
+				"PowerDNS lokal belum siap (jalankan: wdev install pdns)",
+			))
 		}
 		if st.VPSPublicIP == "" {
-			st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"VPS public IP is not recorded yet; A records cannot be created",
+				"IP publik VPS belum tercatat; record A tidak bisa dibuat",
+			))
 		}
 		if !st.RelayConfigured {
-			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email keluar akan memakai SMTP lokal Stalwart (direct MX). Atur relay nanti bila port 25 dibatasi penyedia VPS")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"Outbound relay is not configured yet; outgoing email will use local Stalwart SMTP (direct MX). Set a relay later if port 25 is restricted by the VPS provider",
+				"Relay outbound belum disetel; email keluar akan memakai SMTP lokal Stalwart (direct MX). Atur relay nanti bila port 25 dibatasi penyedia VPS",
+			))
 		}
 		if st.Domain != "" && st.DNSZone == "" {
-			st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"DNS zone "+st.Domain+" does not exist in PowerDNS yet; add the zone in the DNS menu",
+				"zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS",
+			))
 		}
 	default: // "edge"
 		if st.NetbirdIP == "" {
-			st.Blockers = append(st.Blockers, "IP NetBird (wt0) tidak terdeteksi; aktifkan netbird")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"NetBird IP (wt0) was not detected; enable netbird",
+				"IP NetBird (wt0) tidak terdeteksi; aktifkan netbird",
+			))
 		}
 		if !st.EdgeConfigured {
-			st.Blockers = append(st.Blockers, "VPS Edge Gateway belum dikonfigurasi (wdev pdns connect)")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"VPS Edge Gateway is not configured (wdev pdns connect)",
+				"VPS Edge Gateway belum dikonfigurasi (wdev pdns connect)",
+			))
 		}
 		if st.VPSPublicIP == "" {
-			st.Blockers = append(st.Blockers, "IP publik VPS belum tercatat; record A tidak bisa dibuat")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"VPS public IP is not recorded yet; A records cannot be created",
+				"IP publik VPS belum tercatat; record A tidak bisa dibuat",
+			))
 		}
 		if !st.RelayConfigured {
-			st.Warnings = append(st.Warnings, "Relay outbound belum disetel; email keluar akan memakai SMTP lokal Stalwart (direct MX). Atur relay nanti bila port 25 dibatasi ISP/VPS")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"Outbound relay is not configured yet; outgoing email will use local Stalwart SMTP (direct MX). Set a relay later if port 25 is restricted by ISP/VPS",
+				"Relay outbound belum disetel; email keluar akan memakai SMTP lokal Stalwart (direct MX). Atur relay nanti bila port 25 dibatasi ISP/VPS",
+			))
 		}
 		if st.Domain != "" && st.DNSZone == "" {
-			st.Blockers = append(st.Blockers, "zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS")
+			st.Blockers = append(st.Blockers, i18n.Pick(loc,
+				"DNS zone "+st.Domain+" does not exist in PowerDNS yet; add the zone in the DNS menu",
+				"zone DNS "+st.Domain+" belum ada di PowerDNS; tambahkan zone di menu DNS",
+			))
 		}
 	}
 
 	if !st.SnappyMail {
 		if m.ensureStackFn != nil {
-			st.Warnings = append(st.Warnings, "SnappyMail belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"SnappyMail is not installed yet — it will be installed automatically when running Domain Setup",
+				"SnappyMail belum terpasang — akan diinstal otomatis saat Setup Domain dijalankan",
+			))
 		} else {
-			st.Warnings = append(st.Warnings, "SnappyMail belum terpasang; webmail tidak akan aktif")
+			st.Warnings = append(st.Warnings, i18n.Pick(loc,
+				"SnappyMail is not installed yet; webmail will not be active",
+				"SnappyMail belum terpasang; webmail tidak akan aktif",
+			))
 		}
 	}
 	if mode != "local" && st.VPSPublicIP != "" && !st.PTRMatch {
-		st.Warnings = append(st.Warnings, "PTR/rDNS IP publik belum menunjuk mail."+st.Domain+"; banyak penerima akan menolak email masuk")
+		st.Warnings = append(st.Warnings, i18n.Pick(loc,
+			"Public IP PTR/rDNS does not point to mail."+st.Domain+"; many recipients will reject incoming email",
+			"PTR/rDNS IP publik belum menunjuk mail."+st.Domain+"; banyak penerima akan menolak email masuk",
+		))
 	}
 	return st
 }

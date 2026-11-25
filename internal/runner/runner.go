@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"wdev/internal/i18n"
 	"wdev/internal/store"
 )
 
@@ -145,18 +146,29 @@ func (r *Runner) appendAndBroadcastLocked(taskID int64, typ EventType, message, 
 	return evt
 }
 
-// StartNativeTask runs a native Go function while broadcasting logs
+// StartNativeTask runs a native Go function while broadcasting logs (English default)
 func (r *Runner) StartNativeTask(name string, fn func(ctx context.Context, cb func(string)) error) (int64, error) {
-	return r.StartNativeTaskAfter(name, fn, nil)
+	return r.StartNativeTaskAfterLocale(i18n.DefaultLocale, name, fn, nil)
+}
+
+// StartNativeTaskLocale runs a native Go function while broadcasting localized logs.
+func (r *Runner) StartNativeTaskLocale(lang, name string, fn func(ctx context.Context, cb func(string)) error) (int64, error) {
+	return r.StartNativeTaskAfterLocale(lang, name, fn, nil)
 }
 
 // StartNativeTaskAfter runs a native Go function while broadcasting logs and invokes
 // afterFinish only after the task record and SSE finish event have been emitted.
 func (r *Runner) StartNativeTaskAfter(name string, fn func(ctx context.Context, cb func(string)) error, afterFinish func(status string)) (int64, error) {
+	return r.StartNativeTaskAfterLocale(i18n.DefaultLocale, name, fn, afterFinish)
+}
+
+// StartNativeTaskAfterLocale is the locale-aware implementation of StartNativeTaskAfter.
+func (r *Runner) StartNativeTaskAfterLocale(lang, name string, fn func(ctx context.Context, cb func(string)) error, afterFinish func(status string)) (int64, error) {
+	loc := i18n.Normalize(lang)
 	r.mu.Lock()
 	if r.activeTask != nil {
 		r.mu.Unlock()
-		return 0, fmt.Errorf("ada tugas yang sedang berjalan: %s", r.activeTask.Command)
+		return 0, fmt.Errorf(i18n.Pick(loc, "a task is already running: %s", "ada tugas yang sedang berjalan: %s"), r.activeTask.Command)
 	}
 
 	var taskID int64
@@ -174,7 +186,7 @@ func (r *Runner) StartNativeTaskAfter(name string, fn func(ctx context.Context, 
 		Command:   name,
 		StartedAt: time.Now(),
 	}
-	r.appendAndBroadcastLocked(taskID, EventStart, fmt.Sprintf("Memulai: %s", name), "", false)
+	r.appendAndBroadcastLocked(taskID, EventStart, fmt.Sprintf(i18n.Pick(loc, "Starting: %s", "Memulai: %s"), name), "", false)
 	r.mu.Unlock()
 
 	go func() {
@@ -192,10 +204,10 @@ func (r *Runner) StartNativeTaskAfter(name string, fn func(ctx context.Context, 
 
 		err := fn(ctx, cb)
 		status := "success"
-		msg := "Selesai dengan sukses."
+		msg := i18n.Pick(loc, "Completed successfully.", "Selesai dengan sukses.")
 		if err != nil {
 			status = "failed"
-			msg = fmt.Sprintf("Gagal dengan error: %v", err)
+			msg = fmt.Sprintf(i18n.Pick(loc, "Failed with error: %v", "Gagal dengan error: %v"), err)
 		}
 
 		if r.store != nil {

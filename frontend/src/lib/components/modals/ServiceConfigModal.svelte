@@ -6,6 +6,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import type {
@@ -66,38 +67,40 @@
 
 	const modalTitle = $derived(
 		cp.serviceConfigTarget === 'redis'
-			? 'Konfigurasi Redis / Valkey'
+			? t('modals.serviceConfig.titles.redis')
 			: cp.serviceConfigTarget === 'postgresql'
-				? 'Konfigurasi PostgreSQL'
+				? t('modals.serviceConfig.titles.postgresql')
 				: cp.serviceConfigTarget === 'php-fpm'
-					? 'Konfigurasi PHP & PHP-FPM'
+					? t('modals.serviceConfig.titles.phpFpm')
 					: cp.serviceConfigTarget === 'docker'
-						? 'Konfigurasi Docker & Compose'
-						: 'Konfigurasi Global Nginx'
+						? t('modals.serviceConfig.titles.docker')
+						: t('modals.serviceConfig.titles.nginx')
 	);
 
 	const metaSubtitle = $derived.by(() => {
+		const activeStr = t('common.status.active');
+		const inactiveStr = t('common.status.inactive');
 		if (cp.serviceConfigTarget === 'redis' && redisCfg) {
-			return `${redisCfg.config_path || '-'} · Unit: ${redisCfg.service_unit || '-'} (${redisCfg.active ? 'Aktif' : 'Nonaktif'})`;
+			return `${redisCfg.config_path || '-'} · Unit: ${redisCfg.service_unit || '-'} (${redisCfg.active ? activeStr : inactiveStr})`;
 		}
 		if (cp.serviceConfigTarget === 'postgresql' && pgCfg) {
-			return `${pgCfg.config_path || '-'} · Unit: ${pgCfg.service_unit || '-'} (${pgCfg.active ? 'Aktif' : 'Nonaktif'})`;
+			return `${pgCfg.config_path || '-'} · Unit: ${pgCfg.service_unit || '-'} (${pgCfg.active ? activeStr : inactiveStr})`;
 		}
 		if (cp.serviceConfigTarget === 'php-fpm' && phpCfg) {
-			return `${phpCfg.dropin_path || phpCfg.ini_path || '-'} · Pool: ${phpCfg.pool_path || '-'} (${phpCfg.active ? 'Aktif' : 'Nonaktif'})`;
+			return `${phpCfg.dropin_path || phpCfg.ini_path || '-'} · Pool: ${phpCfg.pool_path || '-'} (${phpCfg.active ? activeStr : inactiveStr})`;
 		}
 		if (cp.serviceConfigTarget === 'nginx' && nginxCfg) {
-			return `${nginxCfg.config_path || '-'} · Unit: ${nginxCfg.service_unit || 'nginx'} (${nginxCfg.active ? 'Aktif' : 'Nonaktif'})`;
+			return `${nginxCfg.config_path || '-'} · Unit: ${nginxCfg.service_unit || 'nginx'} (${nginxCfg.active ? activeStr : inactiveStr})`;
 		}
 		if (cp.serviceConfigTarget === 'docker' && dockerCfg) {
 			const statusTxt = !dockerCfg.installed
-				? 'Belum Terpasang — Pra-konfigurasi'
+				? t('modals.serviceConfig.dockerNotInstalledSub')
 				: dockerCfg.active
-					? 'Aktif'
-					: 'Nonaktif';
+					? activeStr
+					: inactiveStr;
 			return `${dockerCfg.config_path || '/etc/docker/daemon.json'} · Unit: ${dockerCfg.service_unit || 'docker'} (${statusTxt})`;
 		}
-		return 'Memuat konfigurasi layanan...';
+		return t('modals.serviceConfig.loadingSub');
 	});
 
 	$effect(() => {
@@ -116,7 +119,7 @@
 		formError = '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Membaca konfigurasi layanan ini memerlukan hak akses administrator (sudo).',
+				t('modals.serviceConfig.loadSudoPrompt'),
 				(sudoPass) => {
 					if (sudoPass) {
 						return api.verifySudo(sudoPass).then(() => api.getServiceConfig(cp.serviceConfigTarget, version));
@@ -143,7 +146,7 @@
 				dockerCfg = res.config as DockerConfig;
 			}
 		} catch (err) {
-			loadError = err instanceof Error ? err.message : 'Gagal memuat konfigurasi';
+			loadError = err instanceof Error ? err.message : t('modals.serviceConfig.loadErrorFallback');
 		} finally {
 			loading = false;
 		}
@@ -154,16 +157,16 @@
 		formError = '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Menyimpan konfigurasi & me-restart layanan memerlukan hak akses sudo.',
+				t('modals.serviceConfig.saveSudoPrompt'),
 				(sudoPass) =>
 					api.saveServiceConfig(cp.serviceConfigTarget, sudoPass ? { ...payload, sudo_pass: sudoPass } : payload)
 			);
 			if (!res) return;
 			cp.serviceConfigOpen = false;
 			cp.loadStatus(false);
-			toast.success(`${modalTitle} berhasil disimpan dan diterapkan.`);
+			toast.success(t('modals.serviceConfig.saveSuccessToast', { title: modalTitle }));
 		} catch (err) {
-			formError = err instanceof Error ? err.message : 'Gagal menyimpan konfigurasi';
+			formError = err instanceof Error ? err.message : t('modals.serviceConfig.saveErrorFallback');
 		} finally {
 			saving = false;
 		}
@@ -189,7 +192,7 @@
 					: '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Inspeksi layanan ini memerlukan hak akses administrator (sudo).',
+				t('modals.serviceConfig.inspectSudoPrompt'),
 				(sudoPass) => {
 					if (sudoPass) {
 						return api.verifySudo(sudoPass).then(() => api.inspectService(svc, ver));
@@ -206,7 +209,7 @@
 				phpInspect = res.inspect as PHPInspectResult;
 			}
 		} catch (err) {
-			inspectError = err instanceof Error ? err.message : 'Gagal mengambil data inspeksi';
+			inspectError = err instanceof Error ? err.message : t('modals.serviceConfig.inspectErrorFallback');
 		} finally {
 			inspectLoading = false;
 		}
@@ -214,9 +217,9 @@
 
 	async function handleFlushRedisDB(dbIndex: number) {
 		const confirmed = await cp.confirm({
-			title: `Flush Redis db${dbIndex}`,
-			description: `Kosongkan seluruh key pada db${dbIndex}? Tindakan ini tidak dapat dibatalkan.`,
-			confirmText: 'Ya, Flush DB',
+			title: t('modals.serviceConfig.flushConfirmTitle', { db: dbIndex }),
+			description: t('modals.serviceConfig.flushConfirmDesc', { db: dbIndex }),
+			confirmText: t('modals.serviceConfig.flushConfirmBtn'),
 			destructive: true
 		});
 		if (!confirmed) return;
@@ -224,14 +227,14 @@
 		inspectError = '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Operasi flush Redis memerlukan password sudo.',
+				t('modals.serviceConfig.flushSudoPrompt'),
 				(sudoPass) => api.flushRedisDB(dbIndex, sudoPass)
 			);
 			if (!res) return;
-			toast.success(`Redis db${dbIndex} berhasil dikosongkan.`);
+			toast.success(t('modals.serviceConfig.flushSuccessToast', { db: dbIndex }));
 			await loadInspect();
 		} catch (err) {
-			inspectError = err instanceof Error ? err.message : 'Gagal melakukan flush DB';
+			inspectError = err instanceof Error ? err.message : t('modals.serviceConfig.flushErrorFallback');
 		} finally {
 			flushingDB = null;
 		}
@@ -243,15 +246,15 @@
 		inspectSuccess = '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Membuat database PostgreSQL memerlukan password sudo.',
+				t('modals.serviceConfig.createDbSudoPrompt'),
 				(sudoPass) => api.createPostgresDB(sudoPass ? { ...payload, sudo_pass: sudoPass } : payload)
 			);
 			if (!res) return false;
-			inspectSuccess = `Database "${payload.database}" berhasil dibuat.`;
+			inspectSuccess = t('modals.serviceConfig.createDbSuccess', { database: payload.database });
 			await loadInspect();
 			return true;
 		} catch (err) {
-			inspectError = err instanceof Error ? err.message : 'Gagal membuat database';
+			inspectError = err instanceof Error ? err.message : t('modals.serviceConfig.createDbErrorFallback');
 			return false;
 		} finally {
 			creatingDB = false;
@@ -264,18 +267,18 @@
 		inspectSuccess = '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Mengelola role PostgreSQL memerlukan password sudo.',
+				t('modals.serviceConfig.saveRoleSudoPrompt'),
 				(sudoPass) => api.savePostgresRole(sudoPass ? { ...payload, sudo_pass: sudoPass } : payload)
 			);
 			if (!res) return false;
 			inspectSuccess =
 				res.status === 'created'
-					? `Role "${payload.role}" berhasil dibuat.`
-					: `Role "${payload.role}" berhasil diperbarui.`;
+					? t('modals.serviceConfig.createRoleSuccess', { role: payload.role })
+					: t('modals.serviceConfig.updateRoleSuccess', { role: payload.role });
 			await loadInspect();
 			return true;
 		} catch (err) {
-			inspectError = err instanceof Error ? err.message : 'Gagal menyimpan role PostgreSQL';
+			inspectError = err instanceof Error ? err.message : t('modals.serviceConfig.saveRoleErrorFallback');
 			return false;
 		} finally {
 			savingRole = false;
@@ -284,9 +287,9 @@
 
 	async function handleDeletePostgresRole(payload: PostgresDeleteRolePayload): Promise<boolean> {
 		const confirmed = await cp.confirm({
-			title: `Hapus Role PostgreSQL "${payload.role}"`,
-			description: `Hapus role/user "${payload.role}" dari PostgreSQL? Tindakan ini tidak dapat dibatalkan.`,
-			confirmText: 'Ya, Hapus Role',
+			title: t('modals.serviceConfig.deleteRoleConfirmTitle', { role: payload.role }),
+			description: t('modals.serviceConfig.deleteRoleConfirmDesc', { role: payload.role }),
+			confirmText: t('modals.serviceConfig.deleteRoleConfirmBtn'),
 			destructive: true
 		});
 		if (!confirmed) return false;
@@ -295,15 +298,15 @@
 		inspectSuccess = '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Menghapus role PostgreSQL memerlukan password sudo.',
+				t('modals.serviceConfig.deleteRoleSudoPrompt'),
 				(sudoPass) => api.deletePostgresRole(sudoPass ? { ...payload, sudo_pass: sudoPass } : payload)
 			);
 			if (!res) return false;
-			inspectSuccess = `Role "${payload.role}" berhasil dihapus.`;
+			inspectSuccess = t('modals.serviceConfig.deleteRoleSuccess', { role: payload.role });
 			await loadInspect();
 			return true;
 		} catch (err) {
-			inspectError = err instanceof Error ? err.message : 'Gagal menghapus role PostgreSQL';
+			inspectError = err instanceof Error ? err.message : t('modals.serviceConfig.deleteRoleErrorFallback');
 			return false;
 		} finally {
 			deletingRole = '';
@@ -312,7 +315,7 @@
 
 	async function loadLogs() {
 		logsLoading = true;
-		logsText = 'Memuat log layanan...';
+		logsText = t('modals.serviceConfig.logsLoadingText');
 		const ver =
 			cp.serviceConfigTarget === 'postgresql'
 				? pgCfg?.version || ''
@@ -321,7 +324,7 @@
 					: '';
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Membaca log layanan memerlukan hak akses administrator (sudo).',
+				t('modals.serviceConfig.logsSudoPrompt'),
 				(sudoPass) => {
 					if (sudoPass) {
 						return api
@@ -333,9 +336,11 @@
 			);
 			if (!res) return;
 			logsUnit = res.unit || '';
-			logsText = res.logs || '(Log kosong)';
+			logsText = res.logs || t('modals.serviceConfig.logsEmptyText');
 		} catch (err) {
-			logsText = `Gagal memuat log: ${err instanceof Error ? err.message : 'Error'}`;
+			logsText = t('modals.serviceConfig.logsLoadError', {
+				error: err instanceof Error ? err.message : 'Error'
+			});
 		} finally {
 			logsLoading = false;
 		}
@@ -360,7 +365,7 @@
 		{#if loadError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Gagal Memuat Konfigurasi</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.loadFailedTitle')}</Alert.Title>
 				<Alert.Description>{loadError}</Alert.Description>
 			</Alert.Root>
 		{:else if loading && !redisCfg && !pgCfg && !phpCfg && !nginxCfg && !dockerCfg}
@@ -372,19 +377,19 @@
 		{:else}
 			<Tabs.Root bind:value={activeTab} onValueChange={handleTabChange} class="flex min-h-0 flex-1 flex-col gap-3">
 				<Tabs.List class={cn('grid w-full shrink-0 sm:inline-flex sm:w-auto', hasInspect ? 'grid-cols-3' : 'grid-cols-2')}>
-					<Tabs.Trigger value="settings">Pengaturan</Tabs.Trigger>
+					<Tabs.Trigger value="settings">{t('modals.serviceConfig.tabSettings')}</Tabs.Trigger>
 					{#if hasInspect}
 						<Tabs.Trigger value="inspect">
 							<span class="truncate">
 								{cp.serviceConfigTarget === 'redis'
-									? 'Inspeksi'
+									? t('modals.serviceConfig.tabInspectRedis')
 									: cp.serviceConfigTarget === 'php-fpm'
-										? 'Info PHP & Ekstensi'
-										: 'Database & Roles'}
+										? t('modals.serviceConfig.tabInspectPhp')
+										: t('modals.serviceConfig.tabInspectPg')}
 							</span>
 						</Tabs.Trigger>
 					{/if}
-					<Tabs.Trigger value="logs">Log</Tabs.Trigger>
+					<Tabs.Trigger value="logs">{t('modals.serviceConfig.tabLogs')}</Tabs.Trigger>
 				</Tabs.List>
 
 				<div class="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1">
@@ -518,15 +523,15 @@
 						<div class="flex flex-col gap-3">
 							<div class="flex items-center justify-between gap-2">
 								<h4 class="text-sm font-semibold">
-									{logsUnit ? `Log Layanan (${logsUnit})` : 'Log Layanan'}
+									{logsUnit ? t('modals.serviceConfig.logsHeadingUnit', { unit: logsUnit }) : t('modals.serviceConfig.logsHeading')}
 								</h4>
 								<Button type="button" variant="outline" size="sm" disabled={logsLoading} onclick={loadLogs}>
 									{#if logsLoading}
 										<Spinner data-icon="inline-start" />
-										Memuat...
+										{t('common.actions.loading')}
 									{:else}
 										<RefreshCwIcon data-icon="inline-start" />
-										Muat Ulang Log
+										{t('modals.serviceConfig.reloadLogsBtn')}
 									{/if}
 								</Button>
 							</div>

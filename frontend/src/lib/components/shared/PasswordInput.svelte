@@ -1,6 +1,7 @@
 <script lang="ts">
 	import * as InputGroup from '#lib/components/ui/input-group/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import { toast } from 'svelte-sonner';
 	import EyeIcon from '@lucide/svelte/icons/eye';
@@ -14,13 +15,13 @@
 		id,
 		name,
 		value = $bindable(''),
-		placeholder = 'Minimal 8 karakter...',
+		placeholder,
 		disabled = false,
 		required = false,
 		autocomplete = 'new-password',
 		canGenerate = true,
 		generateLength = 16,
-		generateLabel = 'Generate',
+		generateLabel,
 		onGenerate,
 		class: className = ''
 	}: {
@@ -37,6 +38,9 @@
 		onGenerate?: (password: string) => void;
 		class?: string;
 	} = $props();
+
+	const resolvedPlaceholder = $derived(placeholder ?? t('common.passwordInput.defaultPlaceholder'));
+	const resolvedGenerateLabel = $derived(generateLabel ?? t('common.passwordInput.generateLabel'));
 
 	let revealed = $state(false);
 	let copied = $state(false);
@@ -59,7 +63,7 @@
 			}
 		}
 
-		// Pastikan minimal ada huruf besar, huruf kecil, angka, dan simbol aman.
+		// Ensure at least one uppercase, lowercase, digit, and safe symbol.
 		const chars: string[] = [
 			upper[bytes[0] % upper.length],
 			lower[bytes[1] % lower.length],
@@ -101,13 +105,13 @@
 		try {
 			await navigator.clipboard.writeText(value);
 			copied = true;
-			toast.success('Password disalin ke clipboard');
+			toast.success(t('common.passwordInput.copiedToast'));
 			if (copyTimer) clearTimeout(copyTimer);
 			copyTimer = setTimeout(() => {
 				copied = false;
 			}, 1500);
 		} catch {
-			toast.error('Gagal menyalin password ke clipboard');
+			toast.error(t('common.passwordInput.copyFailedToast'));
 		}
 	}
 </script>
@@ -119,7 +123,7 @@
 			{name}
 			type={revealed ? 'text' : 'password'}
 			{autocomplete}
-			{placeholder}
+			placeholder={resolvedPlaceholder}
 			{disabled}
 			{required}
 			autocorrect="off"
@@ -131,8 +135,8 @@
 			{#if value}
 				<InputGroup.Button
 					size="icon-xs"
-					title="Salin password"
-					aria-label="Salin password"
+					title={t('common.passwordInput.copyTitle')}
+					aria-label={t('common.passwordInput.copyTitle')}
 					{disabled}
 					onclick={handleCopy}
 				>
@@ -145,8 +149,8 @@
 			{/if}
 			<InputGroup.Button
 				size="icon-xs"
-				title={revealed ? 'Sembunyikan password' : 'Tampilkan password'}
-				aria-label={revealed ? 'Sembunyikan password' : 'Tampilkan password'}
+				title={revealed ? t('common.passwordInput.hideTitle') : t('common.passwordInput.showTitle')}
+				aria-label={revealed ? t('common.passwordInput.hideTitle') : t('common.passwordInput.showTitle')}
 				{disabled}
 				onclick={() => (revealed = !revealed)}
 			>
@@ -166,11 +170,11 @@
 			size="sm"
 			class="shrink-0"
 			{disabled}
-			title="Buat password acak yang kuat"
+			title={t('common.passwordInput.generateTitle')}
 			onclick={handleGenerate}
 		>
 			<SparklesIcon data-icon="inline-start" />
-			{generateLabel}
+			{resolvedGenerateLabel}
 		</Button>
 	{/if}
 </div>

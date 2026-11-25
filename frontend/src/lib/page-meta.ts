@@ -1,9 +1,17 @@
+import { t } from '#lib/i18n/index.svelte.js';
 import type { ServerMode } from '#lib/stores/mode.svelte.js';
 
-export const APP_TITLE = 'wdev Control Plane';
-export const DEFAULT_SEO_TITLE = 'wdev — Server Control Plane';
-export const DEFAULT_SEO_DESCRIPTION =
-	'Panel kontrol server Linux untuk mengelola web stack, multi-versi runtime, toolchain, berkas, terminal SSH, DNS, dan layanan server.';
+export function getAppTitle(): string {
+	return t('layout.appTitle');
+}
+
+export function getDefaultSeoTitle(): string {
+	return t('layout.defaultSeoTitle');
+}
+
+export function getDefaultSeoDescription(): string {
+	return t('layout.defaultSeoDescription');
+}
 
 export interface PageMeta {
 	title: string;
@@ -17,7 +25,7 @@ export function normalizePathname(pathname: string): string {
 }
 
 function buildSeoTitle(title: string): string {
-	return `${title} — ${APP_TITLE}`;
+	return `${title} — ${getAppTitle()}`;
 }
 
 export function getPageMeta(pathname: string, mode: ServerMode): PageMeta {
@@ -25,118 +33,131 @@ export function getPageMeta(pathname: string, mode: ServerMode): PageMeta {
 	const resolvedPath = resolveRoutePath(path);
 
 	switch (resolvedPath) {
-		case '/':
-			return {
-				title: 'Status & Pembaruan Sistem',
-				seoTitle: buildSeoTitle('Status & Pembaruan Sistem'),
-				description:
-					'Pantau kesehatan server Linux, pembaruan sistem, runtime aktif, dan status layanan daemon.'
-			};
-		case '/webstack': {
-			const title = mode === 'local' ? 'Web Stack & Domain Lokal' : 'Web Stack & Virtual Host';
+		case '/': {
+			const title = t('layout.meta.dashboard.title');
 			return {
 				title,
 				seoTitle: buildSeoTitle(title),
-				description:
-					'Kelola virtual host Nginx, konfigurasi PHP-FPM, domain, serta sertifikat SSL.'
+				description: t('layout.meta.dashboard.description')
 			};
 		}
-		case '/compose':
+		case '/webstack': {
+			const title =
+				mode === 'local'
+					? t('layout.meta.webstack.titleLocal')
+					: t('layout.meta.webstack.titleDefault');
 			return {
-				title: 'Docker & Compose v5',
-				seoTitle: buildSeoTitle('Docker & Compose v5'),
-				description:
-					'Kelola stack Docker Compose v5, status container, editor YAML/.env, live logs, exec shell, dan eksposur VHost.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.webstack.description')
 			};
-		case '/switchers':
+		}
+		case '/compose': {
+			const title = t('layout.meta.compose.title');
 			return {
-				title: 'Pengelola Multi-Versi Runtime',
-				seoTitle: buildSeoTitle('Pengelola Multi-Versi Runtime'),
-				description:
-					'Beralih versi aktif Node.js, PHP CLI & FPM, PostgreSQL, dan Java OpenJDK dengan cepat.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.compose.description')
 			};
-		case '/toolchains':
+		}
+		case '/switchers': {
+			const title = t('layout.meta.switchers.title');
 			return {
-				title: 'Toolchains, Compilers & SDKs',
-				seoTitle: buildSeoTitle('Toolchains, Compilers & SDKs'),
-				description:
-					'Status versi toolchain terpasang, deteksi rilis resmi upstream, dan audit PATH sistem.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.switchers.description')
 			};
-		case '/workspace':
+		}
+		case '/toolchains': {
+			const title = t('layout.meta.toolchains.title');
 			return {
-				title: 'Workspace, ADE & Shell',
-				seoTitle: buildSeoTitle('Workspace, ADE & Shell'),
-				description:
-					'Kelola Orca Autonomous Development Environment (ADE), akses Web Client, dan Oh My Zsh.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.toolchains.description')
 			};
-		case '/ports':
+		}
+		case '/workspace': {
+			const title = t('layout.meta.workspace.title');
 			return {
-				title: 'Status Port & Jaringan',
-				seoTitle: buildSeoTitle('Status Port & Jaringan'),
-				description: 'Diagnostik port layanan wdev pada Lokal, VPN NetBird, Firewall, dan IP VPS.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.workspace.description')
 			};
-		case '/files':
+		}
+		case '/ports': {
+			const title = t('layout.meta.ports.title');
 			return {
-				title: 'File Manager',
-				seoTitle: buildSeoTitle('File Manager'),
-				description:
-					'Jelajahi, unggah, unduh, edit, dan kelola berkas serta direktori server secara langsung.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.ports.description')
 			};
-		case '/terminal':
+		}
+		case '/files': {
+			const title = t('layout.meta.files.title');
 			return {
-				title: 'Terminal SSH (PTY)',
-				seoTitle: buildSeoTitle('Terminal SSH (PTY)'),
-				description:
-					'Akses sesi terminal shell interaktif (PTY) langsung dari browser untuk mengelola server.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.files.description')
 			};
+		}
+		case '/terminal': {
+			const title = t('layout.meta.terminal.title');
+			return {
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.terminal.description')
+			};
+		}
 		case '/powerdns': {
 			const title =
 				mode === 'edge'
-					? 'PowerDNS & VPS Edge Gateway'
+					? t('layout.meta.powerdns.titleEdge')
 					: mode === 'local'
-						? 'Domain & DNS Manager (Lokal)'
-						: 'Domain & DNS Manager';
+						? t('layout.meta.powerdns.titleLocal')
+						: t('layout.meta.powerdns.titleDefault');
 			return {
 				title,
 				seoTitle: buildSeoTitle(title),
-				description:
-					'Kelola PowerDNS Authoritative Server, zona dan record DNS domain, serta edge gateway.'
+				description: t('layout.meta.powerdns.description')
 			};
 		}
-		case '/cloudflare':
+		case '/cloudflare': {
+			const title = t('layout.meta.cloudflare.title');
 			return {
-				title: 'Cloudflare Tunnel & DNS Manager',
-				seoTitle: buildSeoTitle('Cloudflare Tunnel & DNS Manager'),
-				description:
-					'Kelola profil multi-tunnel Cloudflare dan eksposur virtual host lokal ke domain publik.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.cloudflare.description')
 			};
+		}
 		case '/mail': {
 			const title =
 				mode === 'edge'
-					? 'Mail Server & Outbound SMTP'
+					? t('layout.meta.mail.titleEdge')
 					: mode === 'local'
-						? 'Mail Server Standalone (Lokal)'
-						: 'Mail Server & Webmail';
+						? t('layout.meta.mail.titleLocal')
+						: t('layout.meta.mail.titleDefault');
 			return {
 				title,
 				seoTitle: buildSeoTitle(title),
-				description:
-					'Kelola Stalwart Mail Server, webmail SnappyMail, kotak pos domain, dan outbound SMTP.'
+				description: t('layout.meta.mail.description')
 			};
 		}
-		case '/setup':
+		case '/setup': {
+			const title = t('layout.meta.setup.title');
 			return {
-				title: 'Instalasi, Preset Mode & Komponen',
-				seoTitle: buildSeoTitle('Instalasi, Preset Mode & Komponen'),
-				description:
-					'Instalasi komponen modular server, pemilihan preset mode operasional, dan riwayat tugas.'
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: t('layout.meta.setup.description')
 			};
-		default:
+		}
+		default: {
+			const title = t('layout.meta.fallback.title');
 			return {
-				title: 'wdev Dashboard',
-				seoTitle: buildSeoTitle('wdev Dashboard'),
-				description: DEFAULT_SEO_DESCRIPTION
+				title,
+				seoTitle: buildSeoTitle(title),
+				description: getDefaultSeoDescription()
 			};
+		}
 	}
 }
 

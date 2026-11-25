@@ -5,6 +5,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import type { FileEntry } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
@@ -63,7 +64,7 @@
 			initialContent = res.content;
 			fileMode = res.mode || '0644';
 		} catch (err) {
-			loadError = err instanceof Error ? err.message : 'Gagal membaca isi berkas';
+			loadError = err instanceof Error ? err.message : t('files.editor.readFailed');
 			content = '';
 			initialContent = '';
 		} finally {
@@ -77,10 +78,10 @@
 		try {
 			await api.writeFileContent(entry.path, content);
 			initialContent = content;
-			toast.success(`Berkas ${entry.name} berhasil disimpan.`);
+			toast.success(t('files.editor.savedToast', { name: entry.name }));
 			onSaved?.();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menyimpan berkas');
+			toast.error(err instanceof Error ? err.message : t('files.editor.saveFailed'));
 		} finally {
 			saving = false;
 		}
@@ -129,10 +130,10 @@
 					{:else}
 						<FileCodeIcon class="size-4 shrink-0 text-primary" />
 					{/if}
-					<span class="truncate font-mono text-sm sm:text-base">{entry?.name || 'Berkas'}</span>
+					<span class="truncate font-mono text-sm sm:text-base">{entry?.name || t('files.editor.fileFallback')}</span>
 					{#if isDirty}
 						<Badge variant="outline" class="border-warning/40 bg-warning/15 text-[10px] text-warning">
-							Belum disimpan
+							{t('files.editor.unsavedBadge')}
 						</Badge>
 					{/if}
 				</Dialog.Title>
@@ -146,7 +147,7 @@
 							class="fm-touch-btn sm:min-h-0"
 							onclick={() => (wrapLines = !wrapLines)}
 						>
-							Word Wrap
+							{t('files.editor.wordWrap')}
 						</Button>
 					{/if}
 					{#if entry}
@@ -160,7 +161,7 @@
 							rel="noopener noreferrer"
 						>
 							<DownloadIcon data-icon="inline-start" />
-							Unduh
+							{t('files.editor.downloadBtn')}
 						</Button>
 					{/if}
 				</div>
@@ -171,13 +172,13 @@
 		{#if loadError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Tidak Dapat Membuka Berkas</Alert.Title>
+				<Alert.Title>{t('files.editor.cannotOpenTitle')}</Alert.Title>
 				<Alert.Description>{loadError}</Alert.Description>
 			</Alert.Root>
 		{:else if loading}
 			<div class="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
 				<Spinner />
-				<span>Memuat berkas...</span>
+				<span>{t('files.editor.loadingFile')}</span>
 			</div>
 		{:else if isImageMode && entry}
 			<div class="flex min-h-0 flex-1 items-center justify-center overflow-auto overscroll-contain rounded-lg border bg-muted/30 p-3 sm:p-4">
@@ -203,7 +204,7 @@
 					bind:value={content}
 					onkeydown={handleKeyDown}
 					onscroll={syncScroll}
-					aria-label={`Isi berkas ${entry?.name || ''}`}
+					aria-label={t('files.editor.contentAria', { name: entry?.name || '' })}
 					spellcheck={false}
 					autocorrect="off"
 					autocapitalize="none"
@@ -220,14 +221,14 @@
 		>
 			<span class="hidden text-[11px] text-muted-foreground sm:inline">
 				{#if isImageMode}
-					Pratinjau gambar langsung dari server
+					{t('files.editor.imagePreviewHint')}
 				{:else}
-					Tips: tekan <kbd class="rounded border px-1 py-0.5 font-mono text-[10px]">Ctrl+S</kbd> untuk menyimpan, <kbd class="rounded border px-1 py-0.5 font-mono text-[10px]">Tab</kbd> untuk indentasi.
+					{t('files.editor.tipsPart1')}<kbd class="rounded border px-1 py-0.5 font-mono text-[10px]">Ctrl+S</kbd>{t('files.editor.tipsPart2')}<kbd class="rounded border px-1 py-0.5 font-mono text-[10px]">Tab</kbd>{t('files.editor.tipsPart3')}
 				{/if}
 			</span>
 			<div class="flex w-full items-center gap-2 sm:w-auto sm:justify-end">
 				<Button type="button" variant="outline" class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial" onclick={requestClose}>
-					Tutup
+					{t('files.editor.closeBtn')}
 				</Button>
 				{#if !isImageMode && !loadError}
 					<Button
@@ -238,10 +239,10 @@
 					>
 						{#if saving}
 							<Spinner data-icon="inline-start" />
-							Menyimpan...
+							{t('files.editor.savingBtn')}
 						{:else}
 							<CheckIcon data-icon="inline-start" />
-							Simpan Berkas
+							{t('files.editor.saveFileBtn')}
 						{/if}
 					</Button>
 				{/if}

@@ -161,7 +161,7 @@ func (s *Server) suggestFreeSitePort() (int, error) {
 
 func (s *Server) handleInspectSiteDir(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var req struct {
@@ -203,7 +203,7 @@ func (s *Server) handleInspectSiteDir(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSuggestSitePort(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	port, err := s.suggestFreeSitePort()
@@ -236,7 +236,7 @@ func (s *Server) writeSudoRequiredIfNeeded(w http.ResponseWriter, err error, msg
 
 func (s *Server) handleSiteAppAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var req struct {
@@ -272,7 +272,7 @@ func (s *Server) handleSiteAppAction(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSiteAppBuild(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var req struct {
@@ -434,13 +434,13 @@ func (s *Server) handleSiteAppEnv(w http.ResponseWriter, r *http.Request) {
 		})
 
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
 func (s *Server) handleSiteAppLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
@@ -471,7 +471,7 @@ func (s *Server) handleSiteAppLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSiteAppLogsStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))

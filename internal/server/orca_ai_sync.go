@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"wdev/internal/i18n"
 	"wdev/internal/installer"
 )
 
@@ -52,6 +53,7 @@ func (s *Server) startOrcaCommitAISyncLoop() {
 }
 
 func (s *Server) handleWorkspaceOrcaAISync(w http.ResponseWriter, r *http.Request) {
+	lang := i18n.FromRequest(r)
 	switch r.Method {
 	case http.MethodGet:
 		status, err := installer.GetOrcaCommitAISyncStatus(r.Context())
@@ -72,7 +74,7 @@ func (s *Server) handleWorkspaceOrcaAISync(w http.ResponseWriter, r *http.Reques
 				force = *payload.Force
 			}
 		}
-		status, err := installer.ReconcileOrcaCommitAI(r.Context(), nil, force)
+		status, err := installer.ReconcileOrcaCommitAILocale(r.Context(), nil, force, lang)
 		if err != nil {
 			switch {
 			case errors.Is(err, installer.ErrOrcaCommitAIValidation):
@@ -84,14 +86,14 @@ func (s *Server) handleWorkspaceOrcaAISync(w http.ResponseWriter, r *http.Reques
 			}
 			return
 		}
-		message := "Sinkronisasi Orca Commit AI berhasil."
+		message := i18n.Pick(lang, "Orca Commit AI sync succeeded.", "Sinkronisasi Orca Commit AI berhasil.")
 		if status != nil && !status.InSync {
 			message = status.LastError
 			if message == "" && len(status.Drift) > 0 {
-				message = "Masih ada perbedaan: " + strings.Join(status.Drift, ", ")
+				message = i18n.Pick(lang, "Remaining differences: ", "Masih ada perbedaan: ") + strings.Join(status.Drift, ", ")
 			}
 			if message == "" {
-				message = "Sinkronisasi belum berhasil."
+				message = i18n.Pick(lang, "Sync did not complete yet.", "Sinkronisasi belum berhasil.")
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -100,7 +102,7 @@ func (s *Server) handleWorkspaceOrcaAISync(w http.ResponseWriter, r *http.Reques
 			"sync":    status,
 		})
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeError(w, http.StatusMethodNotAllowed, i18n.Pick(lang, "Method not allowed", "Method tidak diizinkan"))
 	}
 }
 

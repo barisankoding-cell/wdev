@@ -12,6 +12,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import type {
 		PostgresConfig,
 		PostgresCreateDBPayload,
@@ -89,7 +90,7 @@
 	let newDBOwner = $state('');
 	let newDBPass = $state('');
 
-	// Manajemen Roles / Users
+	// Roles / Users management
 	let roleFormOpen = $state(false);
 	let roleEditing = $state(false);
 	let roleName = $state('');
@@ -130,11 +131,11 @@
 			: [config.version || '16']
 	);
 
-	const remoteOptions = [
-		{ value: 'local', label: 'Lokal Saja (127.0.0.1 / Unix Socket)' },
-		{ value: 'private_vpn', label: 'LAN & NetBird VPN (RFC1918 + 100.64.0.0/10)' },
-		{ value: 'all', label: 'Semua IP (0.0.0.0/0 — Wajib Password)' }
-	];
+	const remoteOptions = $derived([
+		{ value: 'local', label: t('modals.serviceConfig.postgres.remoteLocal') },
+		{ value: 'private_vpn', label: t('modals.serviceConfig.postgres.remotePrivateVpn') },
+		{ value: 'all', label: t('modals.serviceConfig.postgres.remoteAll') }
+	]);
 
 	const showListenWarning = $derived(remoteMode !== 'local' && listenAddresses.trim() === 'localhost');
 
@@ -184,12 +185,12 @@
 		localError = '';
 		const port = parseInt(portStr.trim(), 10);
 		if (!port || port < 1 || port > 65535) {
-			localError = 'Port harus berada di antara 1 sampai 65535.';
+			localError = t('modals.serviceConfig.postgres.invalidPort');
 			return;
 		}
 		const logMin = parseInt(slowLogStr.trim(), 10);
 		if (Number.isNaN(logMin)) {
-			localError = 'log_min_duration_statement harus berupa angka (mis. -1 atau 500).';
+			localError = t('modals.serviceConfig.postgres.invalidSlowLog');
 			return;
 		}
 		onSave({
@@ -263,16 +264,16 @@
 		roleFormError = '';
 		const cleanName = roleName.trim();
 		if (!cleanName) {
-			roleFormError = 'Nama role / username wajib diisi.';
+			roleFormError = t('modals.serviceConfig.postgres.roleNameRequired');
 			return;
 		}
 		if (!roleEditing && roleCanLogin && !rolePass) {
-			roleFormError = 'Password wajib diisi atau di-generate saat membuat role login baru.';
+			roleFormError = t('modals.serviceConfig.postgres.rolePassRequired');
 			return;
 		}
 		const connLim = parseInt(roleConnLimitStr.trim(), 10);
 		if (Number.isNaN(connLim) || connLim < -1) {
-			roleFormError = 'Connection limit harus berupa angka >= -1 (-1 berarti tanpa batas).';
+			roleFormError = t('modals.serviceConfig.postgres.connLimitInvalid');
 			return;
 		}
 		const ok = await onSaveRole({
@@ -294,7 +295,7 @@
 		}
 	}
 
-	const activePreset = $derived.by(() => {
+	const activePreset = $derived.by((): 'dev' | 'balanced' | 'high' | 'custom' => {
 		const maxConn = Number.parseInt(maxConnectionsStr.trim(), 10);
 		const sb = sharedBuffers.trim().toLowerCase();
 		const ecs = effectiveCacheSize.trim().toLowerCase();
@@ -304,7 +305,7 @@
 		const slowLog = Number.parseInt(slowLogStr.trim(), 10);
 
 		if (maxConn === 50 && sb === '128mb' && ecs === '512mb' && wm === '4mb' && mwm === '64mb' && slowLog === 250) {
-			return 'Dev Hemat RAM';
+			return 'dev';
 		}
 		if (
 			maxConn === 150 &&
@@ -315,7 +316,7 @@
 			tz === 'Asia/Jakarta' &&
 			slowLog === 500
 		) {
-			return 'Balanced (2-4GB RAM)';
+			return 'balanced';
 		}
 		if (
 			maxConn === 300 &&
@@ -326,9 +327,9 @@
 			tz === 'Asia/Jakarta' &&
 			slowLog === 1000
 		) {
-			return 'High Throughput';
+			return 'high';
 		}
-		return 'Custom';
+		return 'custom';
 	});
 </script>
 
@@ -337,7 +338,7 @@
 		{#if localError || formError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Validasi / Penyimpanan Gagal</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.common.validationSaveFailed')}</Alert.Title>
 				<Alert.Description>{localError || formError}</Alert.Description>
 			</Alert.Root>
 		{/if}
@@ -345,49 +346,49 @@
 		{#if showListenWarning}
 			<Alert.Root>
 				<TriangleAlertIcon />
-				<Alert.Title>Perhatian Listen Addresses</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.postgres.listenWarnTitle')}</Alert.Title>
 				<Alert.Description>
-					Aturan remote diaktifkan: Listen Addresses akan disetel otomatis ke <code>*</code> saat disimpan agar koneksi dari luar localhost dapat diterima.
+					{t('modals.serviceConfig.postgres.listenWarnDesc')}
 				</Alert.Description>
 			</Alert.Root>
 		{/if}
 
 		<div class="flex flex-wrap items-center gap-2">
-			<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
+			<span class="text-xs font-medium text-muted-foreground">{t('modals.serviceConfig.common.quickPresets')}</span>
 			<Button
 				type="button"
-				variant={activePreset === 'Dev Hemat RAM' ? 'default' : 'outline'}
+				variant={activePreset === 'dev' ? 'default' : 'outline'}
 				size="xs"
 				onclick={() => applyPreset('dev')}
 			>
-				Dev Hemat RAM
+				{t('modals.serviceConfig.postgres.presetDev')}
 			</Button>
 			<Button
 				type="button"
-				variant={activePreset === 'Balanced (2-4GB RAM)' ? 'default' : 'outline'}
+				variant={activePreset === 'balanced' ? 'default' : 'outline'}
 				size="xs"
 				onclick={() => applyPreset('balanced')}
 			>
-				Balanced (2-4GB RAM)
+				{t('modals.serviceConfig.postgres.presetBalanced')}
 			</Button>
 			<Button
 				type="button"
-				variant={activePreset === 'High Throughput' ? 'default' : 'outline'}
+				variant={activePreset === 'high' ? 'default' : 'outline'}
 				size="xs"
 				onclick={() => applyPreset('high')}
 			>
-				High Throughput
+				{t('modals.serviceConfig.postgres.presetHigh')}
 			</Button>
-			{#if activePreset === 'Custom'}
-				<Badge variant="outline">Custom</Badge>
+			{#if activePreset === 'custom'}
+				<Badge variant="outline">{t('modals.serviceConfig.common.customBadge')}</Badge>
 			{/if}
 		</div>
 
 		<Field.FieldSet>
-			<Field.FieldLegend variant="label">Cluster, Jaringan &amp; Akses Remote</Field.FieldLegend>
+			<Field.FieldLegend variant="label">{t('modals.serviceConfig.postgres.clusterNetLegend')}</Field.FieldLegend>
 			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				<Field.Field>
-					<Field.FieldLabel for="pg-cfg-version">Versi Cluster PostgreSQL</Field.FieldLabel>
+					<Field.FieldLabel for="pg-cfg-version">{t('modals.serviceConfig.postgres.clusterVersionLabel')}</Field.FieldLabel>
 					<Select.Root
 						type="single"
 						value={version}
@@ -409,12 +410,12 @@
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="pg-cfg-port">Port Server</Field.FieldLabel>
+					<Field.FieldLabel for="pg-cfg-port">{t('modals.serviceConfig.postgres.serverPortLabel')}</Field.FieldLabel>
 					<Input id="pg-cfg-port" name="port" inputmode="numeric" pattern="[0-9]+" bind:value={portStr} required />
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="pg-cfg-listen">Listen Addresses</Field.FieldLabel>
+					<Field.FieldLabel for="pg-cfg-listen">{t('modals.serviceConfig.postgres.listenLabel')}</Field.FieldLabel>
 					<Input
 						id="pg-cfg-listen"
 						name="listen_addresses"
@@ -425,11 +426,11 @@
 						bind:value={listenAddresses}
 						required
 					/>
-					<Field.FieldDescription>localhost (aman lokal) atau * (semua interface).</Field.FieldDescription>
+					<Field.FieldDescription>{t('modals.serviceConfig.postgres.listenDesc')}</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="pg-cfg-remote-mode">Aturan Akses (pg_hba.conf)</Field.FieldLabel>
+					<Field.FieldLabel for="pg-cfg-remote-mode">{t('modals.serviceConfig.postgres.remoteModeLabel')}</Field.FieldLabel>
 					<Select.Root type="single" value={remoteMode} onValueChange={handleRemoteModeChange}>
 						<Select.Trigger id="pg-cfg-remote-mode" class="w-full">
 							{remoteOptions.find((o) => o.value === remoteMode)?.label ?? remoteMode}
@@ -443,43 +444,43 @@
 						</Select.Content>
 					</Select.Root>
 					<Field.FieldDescription>
-						Memilih mode remote otomatis menyetel Listen Addresses ke <code>*</code> dan menyelaraskan UFW/firewalld (bila aktif).
+						{t('modals.serviceConfig.postgres.remoteModeDesc')}
 					</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="pg-cfg-auth">Metode Enkripsi Password</Field.FieldLabel>
+					<Field.FieldLabel for="pg-cfg-auth">{t('modals.serviceConfig.postgres.authMethodLabel')}</Field.FieldLabel>
 					<Select.Root type="single" bind:value={passwordEncryption}>
 						<Select.Trigger id="pg-cfg-auth" class="w-full">
 							{passwordEncryption === 'scram-sha-256'
-								? 'scram-sha-256 (Direkomendasikan)'
-								: 'md5 (Legacy Kompatibilitas)'}
+								? t('modals.serviceConfig.postgres.authScram')
+								: t('modals.serviceConfig.postgres.authMd5')}
 						</Select.Trigger>
 						<Select.Content>
 							<Select.Group>
-								<Select.Item value="scram-sha-256">scram-sha-256 (Direkomendasikan)</Select.Item>
-								<Select.Item value="md5">md5 (Legacy Kompatibilitas)</Select.Item>
+								<Select.Item value="scram-sha-256">{t('modals.serviceConfig.postgres.authScram')}</Select.Item>
+								<Select.Item value="md5">{t('modals.serviceConfig.postgres.authMd5')}</Select.Item>
 							</Select.Group>
 						</Select.Content>
 					</Select.Root>
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="pg-cfg-newpass">Setel Password User postgres (Opsional)</Field.FieldLabel>
+					<Field.FieldLabel for="pg-cfg-newpass">{t('modals.serviceConfig.postgres.postgresPassLabel')}</Field.FieldLabel>
 					<PasswordInput
 						id="pg-cfg-newpass"
 						name="new_postgres_password"
 						autocomplete="new-password"
-						placeholder="Kosongkan bila tidak diubah..."
+						placeholder={t('modals.serviceConfig.postgres.postgresPassPlaceholder')}
 						bind:value={newPostgresPassword}
 					/>
-					<Field.FieldDescription>Isi manual atau klik Generate bila ingin menyetel ulang password user <code>postgres</code>.</Field.FieldDescription>
+					<Field.FieldDescription>{t('modals.serviceConfig.postgres.postgresPassDesc')}</Field.FieldDescription>
 				</Field.Field>
 			</Field.FieldGroup>
 		</Field.FieldSet>
 
 		<Field.FieldSet>
-			<Field.FieldLegend variant="label">Tuning Memori, Koneksi &amp; Diagnostik</Field.FieldLegend>
+			<Field.FieldLegend variant="label">{t('modals.serviceConfig.postgres.tuningLegend')}</Field.FieldLegend>
 			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				<Field.Field>
 					<Field.FieldLabel for="pg-cfg-maxconn">max_connections</Field.FieldLabel>
@@ -504,7 +505,7 @@
 						bind:value={sharedBuffers}
 						required
 					/>
-					<Field.FieldDescription>Rekomendasi: ~25% dari total RAM sistem.</Field.FieldDescription>
+					<Field.FieldDescription>{t('modals.serviceConfig.postgres.sharedBuffersDesc')}</Field.FieldDescription>
 				</Field.Field>
 				<Field.Field>
 					<Field.FieldLabel for="pg-cfg-effcache">effective_cache_size</Field.FieldLabel>
@@ -560,7 +561,7 @@
 				</Field.Field>
 				<Field.Field class="sm:col-span-2 lg:col-span-3">
 					<Field.FieldLabel for="pg-cfg-slowlog">
-						Log Slow Query (log_min_duration_statement ms)
+						{t('modals.serviceConfig.postgres.slowLogLabel')}
 					</Field.FieldLabel>
 					<Input
 						id="pg-cfg-slowlog"
@@ -570,7 +571,7 @@
 						required
 					/>
 					<Field.FieldDescription>
-						-1 untuk nonaktif, 0 untuk semua query, atau mis. 500 (catat query &gt; 500ms).
+						{t('modals.serviceConfig.postgres.slowLogDesc')}
 					</Field.FieldDescription>
 				</Field.Field>
 			</Field.FieldGroup>
@@ -582,17 +583,17 @@
 			<Field.Field orientation="horizontal" class="w-auto">
 				<Checkbox id="pg-cfg-restart" bind:checked={restart} />
 				<Field.FieldLabel for="pg-cfg-restart" class="font-normal">
-					Restart layanan setelah simpan
+					{t('modals.serviceConfig.common.restartAfterSave')}
 				</Field.FieldLabel>
 			</Field.Field>
 			<div class="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:items-center">
-				<Button type="button" variant="outline" onclick={onCancel}>Batal</Button>
+				<Button type="button" variant="outline" onclick={onCancel}>{t('common.actions.cancel')}</Button>
 				<Button type="submit" disabled={saving}>
 					{#if saving}
 						<Spinner data-icon="inline-start" />
-						Menyimpan...
+						{t('common.actions.saving')}
 					{:else}
-						Simpan Konfigurasi
+						{t('modals.serviceConfig.common.saveConfigBtn')}
 					{/if}
 				</Button>
 			</div>
@@ -601,33 +602,33 @@
 {:else}
 	<div class="flex flex-col gap-5">
 		<div class="flex flex-wrap items-center justify-between gap-2">
-			<h4 class="text-sm font-semibold">Buat Database &amp; User Baru</h4>
+			<h4 class="text-sm font-semibold">{t('modals.serviceConfig.postgres.createTitle')}</h4>
 			<Button type="button" variant="outline" size="sm" disabled={inspectLoading} onclick={onRefreshInspect}>
 				<RefreshCwIcon data-icon="inline-start" />
-				Segarkan Data
+				{t('modals.serviceConfig.postgres.refreshDataBtn')}
 			</Button>
 		</div>
 
 		{#if inspectError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Operasi Gagal</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.postgres.operationFailed')}</Alert.Title>
 				<Alert.Description>{inspectError}</Alert.Description>
 			</Alert.Root>
 		{/if}
 		{#if inspectSuccess}
 			<Alert.Root>
-				<Alert.Title>Berhasil</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.postgres.successTitle')}</Alert.Title>
 				<Alert.Description>{inspectSuccess}</Alert.Description>
 			</Alert.Root>
 		{/if}
 
 		<form onsubmit={handleCreateDB} class="rounded-lg border p-4">
 			<Field.FieldSet>
-				<Field.FieldLegend variant="label">Database Baru</Field.FieldLegend>
+				<Field.FieldLegend variant="label">{t('modals.serviceConfig.postgres.newDbLegend')}</Field.FieldLegend>
 				<Field.FieldGroup class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 					<Field.Field>
-						<Field.FieldLabel for="pg-new-db-name">Nama Database</Field.FieldLabel>
+						<Field.FieldLabel for="pg-new-db-name">{t('modals.serviceConfig.postgres.dbNameLabel')}</Field.FieldLabel>
 						<Input
 							id="pg-new-db-name"
 							placeholder="myapp_db"
@@ -639,10 +640,10 @@
 						/>
 					</Field.Field>
 					<Field.Field>
-						<Field.FieldLabel for="pg-new-db-owner">Owner / Username (Opsional)</Field.FieldLabel>
+						<Field.FieldLabel for="pg-new-db-owner">{t('modals.serviceConfig.postgres.dbOwnerLabel')}</Field.FieldLabel>
 						<Input
 							id="pg-new-db-owner"
-							placeholder="postgres atau myapp_user"
+							placeholder={t('modals.serviceConfig.postgres.dbOwnerPlaceholder')}
 							autocorrect="off"
 							autocapitalize="none"
 							spellcheck={false}
@@ -650,11 +651,11 @@
 						/>
 					</Field.Field>
 					<Field.Field>
-						<Field.FieldLabel for="pg-new-db-pass">Password User Baru (jika user baru)</Field.FieldLabel>
+						<Field.FieldLabel for="pg-new-db-pass">{t('modals.serviceConfig.postgres.dbPassLabel')}</Field.FieldLabel>
 						<PasswordInput
 							id="pg-new-db-pass"
 							autocomplete="new-password"
-							placeholder="Wajib bila membuat user baru..."
+							placeholder={t('modals.serviceConfig.postgres.dbPassPlaceholder')}
 							bind:value={newDBPass}
 						/>
 					</Field.Field>
@@ -662,10 +663,10 @@
 						<Button type="submit" disabled={creatingDB} class="w-full">
 							{#if creatingDB}
 								<Spinner data-icon="inline-start" />
-								Membuat...
+								{t('modals.serviceConfig.postgres.creatingBtn')}
 							{:else}
 								<PlusIcon data-icon="inline-start" />
-								Buat Database
+								{t('modals.serviceConfig.postgres.createDbBtn')}
 							{/if}
 						</Button>
 					</div>
@@ -674,21 +675,21 @@
 		</form>
 
 		<div class="flex flex-col gap-2">
-			<h4 class="text-sm font-semibold">Daftar Database</h4>
-			<ResponsiveTableWrapper label="Daftar Database PostgreSQL">
+			<h4 class="text-sm font-semibold">{t('modals.serviceConfig.postgres.dbListTitle')}</h4>
+			<ResponsiveTableWrapper label={t('modals.serviceConfig.postgres.dbListAria')}>
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
 							<Table.Head>Database</Table.Head>
 							<Table.Head>Owner</Table.Head>
-							<Table.Head>Ukuran</Table.Head>
+							<Table.Head>{t('modals.serviceConfig.postgres.sizeCol')}</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
 						{#if !inspectData?.databases || inspectData.databases.length === 0}
 							<Table.Row>
 								<Table.Cell colspan={3} class="py-4 text-center text-muted-foreground">
-									{inspectLoading ? 'Memuat database...' : 'Tidak ada database ditemukan.'}
+									{inspectLoading ? t('modals.serviceConfig.postgres.loadingDbs') : t('modals.serviceConfig.postgres.noDbs')}
 								</Table.Cell>
 							</Table.Row>
 						{:else}
@@ -696,7 +697,7 @@
 								<Table.Row>
 									<Table.Cell data-label="Database" class="font-mono font-semibold">{db.name}</Table.Cell>
 									<Table.Cell data-label="Owner">{db.owner}</Table.Cell>
-									<Table.Cell data-label="Ukuran">{db.size}</Table.Cell>
+									<Table.Cell data-label={t('modals.serviceConfig.postgres.sizeCol')}>{db.size}</Table.Cell>
 								</Table.Row>
 							{/each}
 						{/if}
@@ -708,12 +709,12 @@
 		<div class="flex flex-col gap-3">
 			<div class="flex flex-wrap items-center justify-between gap-2">
 				<div>
-					<h4 class="text-sm font-semibold">Roles / Users PostgreSQL</h4>
-					<p class="text-xs text-muted-foreground">Kelola user, password, hak akses (SUPERUSER, CREATEDB, CREATEROLE), batas koneksi, dan akses database.</p>
+					<h4 class="text-sm font-semibold">{t('modals.serviceConfig.postgres.rolesTitle')}</h4>
+					<p class="text-xs text-muted-foreground">{t('modals.serviceConfig.postgres.rolesDesc')}</p>
 				</div>
 				<Button type="button" variant="outline" size="sm" onclick={() => (roleFormOpen ? (roleFormOpen = false) : openCreateRole())}>
 					<UserPlusIcon data-icon="inline-start" />
-					{roleFormOpen ? 'Tutup Form Role' : 'Tambah Role / User'}
+					{roleFormOpen ? t('modals.serviceConfig.postgres.closeRoleForm') : t('modals.serviceConfig.postgres.addRoleBtn')}
 				</Button>
 			</div>
 
@@ -721,7 +722,9 @@
 				<form onsubmit={handleSaveRoleSubmit} class="rounded-lg border bg-muted/20 p-4">
 					<Field.FieldSet>
 						<Field.FieldLegend variant="label">
-							{roleEditing ? `Edit Role & Password: ${roleName}` : 'Tambah Role / User Baru'}
+							{roleEditing
+								? t('modals.serviceConfig.postgres.editRoleLegend', { role: roleName })
+								: t('modals.serviceConfig.postgres.createRoleLegend')}
 						</Field.FieldLegend>
 
 						{#if roleFormError}
@@ -733,7 +736,7 @@
 
 						<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
 							<Field.Field>
-								<Field.FieldLabel for="pg-role-name">Username / Nama Role</Field.FieldLabel>
+								<Field.FieldLabel for="pg-role-name">{t('modals.serviceConfig.postgres.roleNameLabel')}</Field.FieldLabel>
 								<Input
 									id="pg-role-name"
 									placeholder="app_user"
@@ -747,7 +750,7 @@
 							</Field.Field>
 
 							<Field.Field>
-								<Field.FieldLabel for="pg-role-connlimit">Connection Limit (-1 = Unlimited)</Field.FieldLabel>
+								<Field.FieldLabel for="pg-role-connlimit">{t('modals.serviceConfig.postgres.connLimitLabel')}</Field.FieldLabel>
 								<Input
 									id="pg-role-connlimit"
 									inputmode="numeric"
@@ -758,25 +761,27 @@
 
 							<Field.Field class="sm:col-span-2">
 								<Field.FieldLabel for="pg-role-password">
-									{roleEditing ? 'Password Baru (Kosongkan bila tidak diubah)' : 'Password Role / User'}
+									{roleEditing ? t('modals.serviceConfig.postgres.rolePassEditLabel') : t('modals.serviceConfig.postgres.rolePassCreateLabel')}
 								</Field.FieldLabel>
 								<PasswordInput
 									id="pg-role-password"
 									autocomplete="new-password"
-									placeholder={roleEditing ? 'Kosongkan bila tidak mengubah password...' : 'Wajib untuk role LOGIN...'}
+									placeholder={roleEditing
+										? t('modals.serviceConfig.postgres.rolePassEditPlaceholder')
+										: t('modals.serviceConfig.postgres.rolePassCreatePlaceholder')}
 									bind:value={rolePass}
 								/>
 							</Field.Field>
 
 							<Field.Field class="sm:col-span-2">
-								<Field.FieldLabel for="pg-role-grant-db">Beri Hak Akses Penuh ke Database (Opsional)</Field.FieldLabel>
+								<Field.FieldLabel for="pg-role-grant-db">{t('modals.serviceConfig.postgres.grantDbLabel')}</Field.FieldLabel>
 								<Select.Root type="single" bind:value={roleGrantDB}>
 									<Select.Trigger id="pg-role-grant-db" class="w-full">
-										{roleGrantDB || 'Tidak perlu GRANT tambahan'}
+										{roleGrantDB || t('modals.serviceConfig.postgres.noExtraGrant')}
 									</Select.Trigger>
 									<Select.Content>
 										<Select.Group>
-											<Select.Item value="">Tidak perlu GRANT tambahan</Select.Item>
+											<Select.Item value="">{t('modals.serviceConfig.postgres.noExtraGrant')}</Select.Item>
 											{#each inspectData?.databases || [] as db (db.name)}
 												<Select.Item value={db.name}>{db.name} (owner: {db.owner})</Select.Item>
 											{/each}
@@ -784,16 +789,16 @@
 									</Select.Content>
 								</Select.Root>
 								<Field.FieldDescription>
-									Memberikan <code>ALL PRIVILEGES</code> pada database &amp; schema <code>public</code> terpilih.
+									{t('modals.serviceConfig.postgres.grantDbDesc')}
 								</Field.FieldDescription>
 							</Field.Field>
 
 							<div class="sm:col-span-2 flex flex-col gap-2">
-								<span class="text-xs font-medium text-foreground">Atribut &amp; Hak Akses Role</span>
+								<span class="text-xs font-medium text-foreground">{t('modals.serviceConfig.postgres.roleAttrsLabel')}</span>
 								<div class="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
 									<label class="flex items-center gap-2 text-xs">
 										<Checkbox bind:checked={roleCanLogin} disabled={isSystemPostgresRole} />
-										<span>LOGIN (Boleh Login)</span>
+										<span>{t('modals.serviceConfig.postgres.attrLogin')}</span>
 									</label>
 									<label class="flex items-center gap-2 text-xs">
 										<Checkbox bind:checked={roleSuperuser} disabled={isSystemPostgresRole} />
@@ -818,20 +823,22 @@
 								</div>
 								{#if isSystemPostgresRole}
 									<p class="text-[11px] text-muted-foreground">
-										Role sistem <code>postgres</code> selalu mempertahankan hak <code>SUPERUSER</code> dan <code>LOGIN</code>.
+										{t('modals.serviceConfig.postgres.systemRoleNote')}
 									</p>
 								{/if}
 							</div>
 						</Field.FieldGroup>
 
 						<div class="mt-4 flex flex-wrap justify-end gap-2">
-							<Button type="button" variant="outline" size="sm" onclick={() => (roleFormOpen = false)}>Batal</Button>
+							<Button type="button" variant="outline" size="sm" onclick={() => (roleFormOpen = false)}>
+								{t('common.actions.cancel')}
+							</Button>
 							<Button type="submit" size="sm" disabled={savingRole}>
 								{#if savingRole}
 									<Spinner data-icon="inline-start" />
-									Menyimpan Role...
+									{t('modals.serviceConfig.postgres.savingRole')}
 								{:else}
-									{roleEditing ? 'Simpan Perubahan Role' : 'Buat Role'}
+									{roleEditing ? t('modals.serviceConfig.postgres.saveRoleChangesBtn') : t('modals.serviceConfig.postgres.createRoleBtn')}
 								{/if}
 							</Button>
 						</div>
@@ -839,22 +846,22 @@
 				</form>
 			{/if}
 
-			<ResponsiveTableWrapper label="Daftar Roles / Users PostgreSQL">
+			<ResponsiveTableWrapper label={t('modals.serviceConfig.postgres.rolesListAria')}>
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
-							<Table.Head>Username / Role</Table.Head>
-							<Table.Head>Status Login</Table.Head>
-							<Table.Head>Hak Akses &amp; Limit</Table.Head>
-							<Table.Head>Owner Database</Table.Head>
-							<Table.Head class="text-right">Aksi</Table.Head>
+							<Table.Head>{t('modals.serviceConfig.postgres.roleCol')}</Table.Head>
+							<Table.Head>{t('modals.serviceConfig.postgres.loginCol')}</Table.Head>
+							<Table.Head>{t('modals.serviceConfig.postgres.privilegesCol')}</Table.Head>
+							<Table.Head>{t('modals.serviceConfig.postgres.ownerDbCol')}</Table.Head>
+							<Table.Head class="text-right">{t('modals.serviceConfig.common.actionsCol')}</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
 						{#if !inspectData?.roles || inspectData.roles.length === 0}
 							<Table.Row>
 								<Table.Cell colspan={5} class="py-4 text-center text-muted-foreground">
-									{inspectLoading ? 'Memuat daftar role...' : 'Tidak ada role terdeteksi.'}
+									{inspectLoading ? t('modals.serviceConfig.postgres.loadingRoles') : t('modals.serviceConfig.postgres.noRoles')}
 								</Table.Cell>
 							</Table.Row>
 						{:else}
@@ -866,7 +873,7 @@
 											{role.can_login ? 'LOGIN' : 'NOLOGIN'}
 										</Badge>
 									</Table.Cell>
-									<Table.Cell data-label="Hak Akses">
+									<Table.Cell data-label={t('modals.serviceConfig.postgres.privilegesCol')}>
 										<div class="flex flex-wrap gap-1">
 											{#if role.superuser}
 												<Badge variant="destructive">SUPERUSER</Badge>
@@ -884,17 +891,19 @@
 												<Badge variant="outline">BYPASSRLS</Badge>
 											{/if}
 											{#if !role.superuser && !role.create_db && !role.create_role && !role.replication && !role.bypass_rls}
-												<span class="text-xs text-muted-foreground">Standard Role</span>
+												<span class="text-xs text-muted-foreground">{t('modals.serviceConfig.postgres.standardRole')}</span>
 											{/if}
 											<Badge variant="outline" class="font-mono text-[11px]">
-												{role.conn_limit === undefined || role.conn_limit < 0 ? 'Limit: ∞' : `Limit: ${role.conn_limit}`}
+												{role.conn_limit === undefined || role.conn_limit < 0
+													? t('modals.serviceConfig.postgres.unlimitedLimit')
+													: t('modals.serviceConfig.postgres.limitValue', { limit: role.conn_limit })}
 											</Badge>
 										</div>
 									</Table.Cell>
 									<Table.Cell data-label="Database" class="font-mono text-xs text-muted-foreground">
 										{role.databases?.length ? role.databases.join(', ') : '-'}
 									</Table.Cell>
-									<Table.Cell data-label="Aksi" class="text-right">
+									<Table.Cell data-label={t('modals.serviceConfig.common.actionsCol')} class="text-right">
 										<div class="flex justify-end">
 											<DropdownMenu.Root>
 												<DropdownMenu.Trigger>
@@ -908,9 +917,9 @@
 														>
 															{#if deletingRole === role.name}
 																<Spinner data-icon="inline-start" />
-																Menghapus...
+																{t('common.actions.deleting')}
 															{:else}
-																Aksi
+																{t('modals.serviceConfig.common.actionBtn')}
 																<ChevronDownIcon data-icon="inline-end" />
 															{/if}
 														</Button>
@@ -924,7 +933,7 @@
 														<DropdownMenu.Separator />
 														<DropdownMenu.Item onclick={() => openEditRole(role)}>
 															<KeyRoundIcon />
-															<span>Edit / Password</span>
+															<span>{t('modals.serviceConfig.postgres.editPassItem')}</span>
 														</DropdownMenu.Item>
 														{#if role.name !== 'postgres' && onDeleteRole}
 															<DropdownMenu.Separator />
@@ -934,7 +943,7 @@
 																onclick={() => onDeleteRole({ version, role: role.name })}
 															>
 																<Trash2Icon />
-																<span>Hapus Role</span>
+																<span>{t('modals.serviceConfig.postgres.deleteRoleItem')}</span>
 															</DropdownMenu.Item>
 														{/if}
 													</DropdownMenu.Group>
@@ -951,8 +960,8 @@
 		</div>
 
 		<div class="flex flex-col gap-2">
-			<h4 class="text-sm font-semibold">Koneksi Aktif (pg_stat_activity)</h4>
-			<ResponsiveTableWrapper label="Koneksi Aktif PostgreSQL">
+			<h4 class="text-sm font-semibold">{t('modals.serviceConfig.postgres.activeConnsTitle')}</h4>
+			<ResponsiveTableWrapper label={t('modals.serviceConfig.postgres.activeConnsAria')}>
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
@@ -967,7 +976,7 @@
 						{#if !inspectData?.connections || inspectData.connections.length === 0}
 							<Table.Row>
 								<Table.Cell colspan={5} class="py-4 text-center text-muted-foreground">
-									Tidak ada koneksi aktif selain sesi inspeksi.
+									{t('modals.serviceConfig.postgres.noConns')}
 								</Table.Cell>
 							</Table.Row>
 						{:else}

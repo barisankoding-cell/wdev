@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
 	import { Terminal } from '@xterm/xterm';
@@ -178,10 +179,10 @@
 					} else if (msg.type === 'exit') {
 						const code = typeof msg.code === 'number' ? msg.code : 0;
 						emitMeta({ status: 'exited', exitCode: code });
-						term.writeln(`\r\n\x1b[90m[Sesi shell selesai dengan exit code ${code}]\x1b[0m`);
+						term.writeln(`\r\n\x1b[90m${t('terminal.pane.exitLine', { code })}\x1b[0m`);
 					} else if (msg.type === 'error') {
-						emitMeta({ status: 'error', error: msg.message || 'Gagal membuka PTY' });
-						term.writeln(`\r\n\x1b[31m[Error: ${msg.message || 'Gagal membuka sesi PTY'}]\x1b[0m`);
+						emitMeta({ status: 'error', error: msg.message || t('terminal.pane.ptyOpenFailed') });
+						term.writeln(`\r\n\x1b[31m[Error: ${msg.message || t('terminal.pane.ptySessionFailed')}]\x1b[0m`);
 					}
 				} catch {
 					// Abaikan frame JSON yang tidak dikenal
@@ -193,7 +194,7 @@
 			if (socket !== ws || disposed) return;
 			emitMeta({
 				status: 'error',
-				error: 'Koneksi WebSocket terminal gagal atau ditolak server.'
+				error: t('terminal.pane.wsFailed')
 			});
 		};
 
@@ -203,7 +204,7 @@
 			if (!wasOpened) {
 				emitMeta({
 					status: 'error',
-					error: 'Sesi membutuhkan konfirmasi password atau ditolak server.'
+					error: t('terminal.pane.authRequired')
 				});
 				onUnlockRequired?.();
 				return;
@@ -211,10 +212,10 @@
 			if (currentMeta.status === 'connected' || currentMeta.status === 'connecting') {
 				emitMeta({
 					status: ev.wasClean ? 'exited' : 'error',
-					error: ev.wasClean ? undefined : 'Koneksi terminal terputus.'
+					error: ev.wasClean ? undefined : t('terminal.pane.disconnectedError')
 				});
 				if (!ev.wasClean) {
-					term?.writeln('\r\n\x1b[33m[Koneksi terputus — klik Reconnect untuk menyambung ulang]\x1b[0m');
+					term?.writeln(`\r\n\x1b[33m${t('terminal.pane.disconnectedLine')}\x1b[0m`);
 				}
 			}
 		};
@@ -351,7 +352,7 @@
 
 	export function sendText(text: string) {
 		if (!socket || socket.readyState !== WebSocket.OPEN) {
-			toast.error('Terminal belum terhubung.');
+			toast.error(t('terminal.pane.notConnected'));
 			return;
 		}
 		socket.send(encoder.encode(text));
@@ -361,14 +362,14 @@
 	export async function copySelection() {
 		const sel = term?.getSelection() ?? '';
 		if (!sel) {
-			toast.info('Blok teks di terminal terlebih dahulu untuk menyalin.');
+			toast.info(t('terminal.pane.selectTextFirst'));
 			return;
 		}
 		try {
 			await navigator.clipboard.writeText(sel);
-			toast.success('Teks terminal disalin.');
+			toast.success(t('terminal.pane.copied'));
 		} catch {
-			toast.error('Gagal mengakses clipboard browser.');
+			toast.error(t('terminal.pane.copyFailed'));
 		}
 		term?.focus();
 	}
@@ -380,13 +381,13 @@
 				sendText(text);
 			}
 		} catch {
-			toast.error('Izin membaca clipboard ditolak. Gunakan Shift+Insert / Ctrl+Shift+V.');
+			toast.error(t('terminal.pane.pasteDenied'));
 		}
 	}
 
 	export function reconnect(overrideToken?: string) {
 		if (!term) return;
-		term.writeln('\r\n\x1b[36m[Menghubungkan ulang sesi PTY...]\x1b[0m');
+		term.writeln(`\r\n\x1b[36m${t('terminal.pane.reconnectingLine')}\x1b[0m`);
 		connectWS(overrideToken);
 	}
 </script>
@@ -395,5 +396,5 @@
 	bind:this={hostEl}
 	class="h-full w-full overflow-hidden rounded-b-lg bg-[#0b101b] p-2"
 	role="application"
-	aria-label="Sesi Terminal SSH PTY"
+	aria-label={t('terminal.pane.ariaLabel')}
 ></div>

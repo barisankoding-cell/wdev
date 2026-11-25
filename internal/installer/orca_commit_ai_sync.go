@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"wdev/internal/i18n"
 )
 
 // File status sinkronisasi Orca Commit AI milik wdev. Orca ADE adalah pemilik
@@ -450,8 +452,14 @@ func compareOrcaCommitAIDesired(d *OrcaCommitAIDesiredState, a *orcaCommitAIActu
 	return append(drift, a.MirrorDrift...)
 }
 
-// GetOrcaCommitAISyncStatus membandingkan desired state wdev dengan keadaan DB Orca.
+// GetOrcaCommitAISyncStatus membandingkan desired state wdev dengan keadaan DB Orca (default locale en).
 func GetOrcaCommitAISyncStatus(ctx context.Context) (*OrcaCommitAISyncStatus, error) {
+	return GetOrcaCommitAISyncStatusLocale(ctx, i18n.DefaultLocale)
+}
+
+// GetOrcaCommitAISyncStatusLocale compares wdev desired state against Orca DB state using the requested locale.
+func GetOrcaCommitAISyncStatusLocale(ctx context.Context, lang string) (*OrcaCommitAISyncStatus, error) {
+	lang = i18n.Normalize(lang)
 	user, home := resolveOrcaCommitUserFn()
 	profileID, dbPath := ResolveOrcaProfileDBPath(home)
 	st, loadErr := LoadOrcaCommitAISyncState(home)
@@ -484,7 +492,7 @@ func GetOrcaCommitAISyncStatus(ctx context.Context) (*OrcaCommitAISyncStatus, er
 
 	if st.Desired.ProfileID != "" && st.Desired.ProfileID != profileID {
 		status.State = orcaCommitAISyncStateConflict
-		status.Drift = []string{fmt.Sprintf("profil Orca aktif berubah dari %s menjadi %s", st.Desired.ProfileID, profileID)}
+		status.Drift = []string{fmt.Sprintf(i18n.Pick(lang, "active Orca profile changed from %s to %s", "profil Orca aktif berubah dari %s menjadi %s"), st.Desired.ProfileID, profileID)}
 		return status, nil
 	}
 
@@ -513,11 +521,17 @@ func GetOrcaCommitAISyncStatus(ctx context.Context) (*OrcaCommitAISyncStatus, er
 	return status, nil
 }
 
-// SetOrcaCommitAIDesiredState menyimpan keinginan wdev lalu langsung menerapkannya.
+// SetOrcaCommitAIDesiredState menyimpan keinginan wdev lalu langsung menerapkannya (default locale en).
 func SetOrcaCommitAIDesiredState(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput) (*OrcaCommitAISyncStatus, error) {
+	return SetOrcaCommitAIDesiredStateLocale(ctx, cb, input, i18n.DefaultLocale)
+}
+
+// SetOrcaCommitAIDesiredStateLocale stores wdev's desired Orca Commit AI state and reconciles it in the requested locale.
+func SetOrcaCommitAIDesiredStateLocale(ctx context.Context, cb LogCallback, input OrcaCommitAISaveInput, lang string) (*OrcaCommitAISyncStatus, error) {
+	lang = i18n.Normalize(lang)
 	// Validasi dulu: jangan sampai input buruk tersimpan sebagai desired state
 	// dan terus-menerus gagal disinkronkan oleh reconciler.
-	if _, _, agentArgs, err := validateOrcaCommitAISaveInput(input); err != nil {
+	if _, _, agentArgs, err := validateOrcaCommitAISaveInputLocale(input, lang); err != nil {
 		return nil, err
 	} else {
 		input.AgentArgs = agentArgs
@@ -541,13 +555,19 @@ func SetOrcaCommitAIDesiredState(ctx context.Context, cb LogCallback, input Orca
 	if err := saveOrcaCommitAISyncState(user, home, st); err != nil {
 		return nil, err
 	}
-	return ReconcileOrcaCommitAI(ctx, cb, true)
+	return ReconcileOrcaCommitAILocale(ctx, cb, true, lang)
 }
 
-// ReconcileOrcaCommitAI menerapkan desired state bila terjadi drift.
+// ReconcileOrcaCommitAI menerapkan desired state bila terjadi drift (default locale en).
 // Dipanggil setelah save, saat startup, dan oleh ticker periodik server.
 func ReconcileOrcaCommitAI(ctx context.Context, cb LogCallback, force bool) (*OrcaCommitAISyncStatus, error) {
-	status, err := GetOrcaCommitAISyncStatus(ctx)
+	return ReconcileOrcaCommitAILocale(ctx, cb, force, i18n.DefaultLocale)
+}
+
+// ReconcileOrcaCommitAILocale applies desired state on drift using localized diagnostic/log messages.
+func ReconcileOrcaCommitAILocale(ctx context.Context, cb LogCallback, force bool, lang string) (*OrcaCommitAISyncStatus, error) {
+	lang = i18n.Normalize(lang)
+	status, err := GetOrcaCommitAISyncStatusLocale(ctx, lang)
 	if err != nil && status == nil {
 		return nil, err
 	}
@@ -575,13 +595,13 @@ func ReconcileOrcaCommitAI(ctx context.Context, cb LogCallback, force bool) (*Or
 	}
 
 	if cb != nil {
-		cb("==> Memeriksa sinkronisasi Orca Commit AI...")
+		cb(i18n.Pick(lang, "==> Checking Orca Commit AI synchronization...", "==> Memeriksa sinkronisasi Orca Commit AI..."))
 	}
-	if _, err := saveOrcaCommitAIConfig(ctx, cb, st.Desired.toSaveInput(), force); err != nil {
+	if _, err := saveOrcaCommitAIConfigLocale(ctx, cb, st.Desired.toSaveInput(), force, lang); err != nil {
 		st.LastError = err.Error()
 		st.Failures++
 		if saveErr := saveOrcaCommitAISyncState(user, home, st); saveErr != nil && cb != nil {
-			cb(fmt.Sprintf("[WARN] Gagal menyimpan status kegagalan sinkron: %v", saveErr))
+			cb(fmt.Sprintf(i18n.Pick(lang, "[WARN] Failed to save sync failure status: %v", "[WARN] Gagal menyimpan status kegagalan sinkron: %v"), saveErr))
 		}
 		status.State = orcaCommitAISyncStateBlocked
 		if !errors.Is(err, ErrOrcaCommitAIConflict) {
@@ -596,7 +616,7 @@ func ReconcileOrcaCommitAI(ctx context.Context, cb LogCallback, force bool) (*Or
 	st.LastError = ""
 	st.Failures = 0
 	if saveErr := saveOrcaCommitAISyncState(user, home, st); saveErr != nil && cb != nil {
-		cb(fmt.Sprintf("[WARN] Gagal menyimpan waktu sinkron terakhir: %v", saveErr))
+		cb(fmt.Sprintf(i18n.Pick(lang, "[WARN] Failed to save last sync timestamp: %v", "[WARN] Gagal menyimpan waktu sinkron terakhir: %v"), saveErr))
 	}
 
 	// Jika Orca dimulai ulang setelah save, beri jeda singkat lalu pastikan payload
@@ -608,7 +628,7 @@ func ReconcileOrcaCommitAI(ctx context.Context, cb LogCallback, force bool) (*Or
 		}
 	}
 
-	verify, verifyErr := GetOrcaCommitAISyncStatus(ctx)
+	verify, verifyErr := GetOrcaCommitAISyncStatusLocale(ctx, lang)
 	if verifyErr != nil || verify == nil {
 		return status, verifyErr
 	}
@@ -616,14 +636,14 @@ func ReconcileOrcaCommitAI(ctx context.Context, cb LogCallback, force bool) (*Or
 		return verify, nil
 	}
 	if !verify.InSync {
-		msg := "Orca menimpa konfigurasi setelah diterapkan"
+		msg := i18n.Pick(lang, "Orca overwrote configuration after apply", "Orca menimpa konfigurasi setelah diterapkan")
 		if len(verify.Drift) > 0 {
 			msg += ": " + strings.Join(verify.Drift, ", ")
 		}
 		st.LastError = msg
 		st.Failures++
 		if saveErr := saveOrcaCommitAISyncState(user, home, st); saveErr != nil && cb != nil {
-			cb(fmt.Sprintf("[WARN] Gagal menyimpan status konflik sinkron: %v", saveErr))
+			cb(fmt.Sprintf(i18n.Pick(lang, "[WARN] Failed to save sync conflict status: %v", "[WARN] Gagal menyimpan status konflik sinkron: %v"), saveErr))
 		}
 		verify.State = orcaCommitAISyncStateConflict
 		verify.InSync = false

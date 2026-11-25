@@ -1,13 +1,20 @@
 import { api, ApiError } from '#lib/api/client.js';
+import { t } from '#lib/i18n/index.svelte.js';
 import { cp } from '#lib/stores/control-plane.svelte.js';
 import { toast } from 'svelte-sonner';
 
 export type ServerMode = 'local' | 'edge' | 'vps';
 
 export const MODE_LABELS: Record<ServerMode, string> = {
-	local: 'Lokal Standalone',
-	edge: 'Edge Gateway',
-	vps: 'Full VPS'
+	get local() {
+		return t('stores.mode.labels.local');
+	},
+	get edge() {
+		return t('stores.mode.labels.edge');
+	},
+	get vps() {
+		return t('stores.mode.labels.vps');
+	}
 };
 
 class ModeStore {
@@ -31,7 +38,7 @@ class ModeStore {
 			this.reachable = res.reachable;
 			return res;
 		} catch (err) {
-			console.error('Gagal mengambil status mode server:', err);
+			console.error('Failed to fetch server mode status:', err);
 			return null;
 		}
 	}
@@ -42,15 +49,15 @@ class ModeStore {
 			await api.setMode(target);
 			this.mode = target;
 			this.isSet = true;
-			toast.success('Mode Server Berhasil Diubah', {
-				description: `Mode operasional panel beralih ke: ${MODE_LABELS[target]}.`
+			toast.success(t('stores.mode.switchSuccessTitle'), {
+				description: t('stores.mode.switchSuccessDesc', { label: MODE_LABELS[target] })
 			});
 			this.modalOpen = false;
 			await this.fetchMode();
 			void cp.loadStatus(false);
 		} catch (err) {
-			const msg = err instanceof ApiError ? err.message : 'Gagal mengubah mode server';
-			toast.error('Gagal Mengubah Mode', { description: msg });
+			const msg = err instanceof ApiError ? err.message : t('stores.mode.switchErrorFallback');
+			toast.error(t('stores.mode.switchErrorTitle'), { description: msg });
 		} finally {
 			this.loading = false;
 		}

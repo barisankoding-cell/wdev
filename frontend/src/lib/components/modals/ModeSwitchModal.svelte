@@ -3,6 +3,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { modeStore, MODE_LABELS, type ServerMode } from '#lib/stores/mode.svelte.js';
 	import LaptopIcon from '@lucide/svelte/icons/laptop';
 	import ServerIcon from '@lucide/svelte/icons/server';
@@ -34,10 +35,10 @@
 				</div>
 				<div class="min-w-0 flex-1">
 					<Dialog.Title class="text-base sm:text-lg font-bold leading-tight truncate">
-						Pilih Mode Operasional Server
+						{t('modals.modeSwitch.title')}
 					</Dialog.Title>
 					<Dialog.Description class="text-xs text-muted-foreground mt-0.5">
-						Tentukan arsitektur wdev sesuai lingkungan mesin ini (Lokal, Edge, atau VPS). Dapat diubah kapan saja.
+						{t('modals.modeSwitch.description')}
 					</Dialog.Description>
 				</div>
 			</div>
@@ -46,9 +47,9 @@
 		<!-- Scrollable Body -->
 		<div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto py-3 pr-1 -mr-1">
 			<fieldset class="grid gap-3 md:grid-cols-3">
-				<legend class="sr-only">Mode Operasional Server</legend>
+				<legend class="sr-only">{t('modals.modeSwitch.legend')}</legend>
 
-				<!-- Option 1: Mode Lokal Standalone -->
+				<!-- Option 1: Local Standalone -->
 				<label
 					class={`flex flex-col text-left rounded-xl border-2 p-3 sm:p-3.5 transition-colors duration-150 relative cursor-pointer has-focus-visible:ring-2 has-focus-visible:ring-ring has-focus-visible:ring-offset-2 ${
 						selected === 'local'
@@ -69,7 +70,7 @@
 						</div>
 						<div class="flex items-center gap-1.5">
 							{#if modeStore.mode === 'local' && modeStore.isSet}
-								<Badge variant="default" class="text-[9px] sm:text-[10px] px-1.5 py-0 h-4">Aktif</Badge>
+								<Badge variant="default" class="text-[9px] sm:text-[10px] px-1.5 py-0 h-4">{t('modals.modeSwitch.activeBadge')}</Badge>
 							{/if}
 							<div
 								class={`size-4 sm:size-5 rounded-full border flex items-center justify-center shrink-0 ${
@@ -86,24 +87,24 @@
 					</div>
 
 					<div class="font-bold text-xs sm:text-sm text-foreground mb-0.5">
-						Mode Lokal (Standalone)
+						{t('modals.modeSwitch.local.title')}
 					</div>
 					<p class="text-[11px] sm:text-xs text-muted-foreground mb-2 leading-relaxed">
-						Mandiri di workstation / server lokal tanpa NetBird atau VPS Edge.
+						{t('modals.modeSwitch.local.subtitle')}
 					</p>
 
 					<ul class="space-y-1 text-[11px] sm:text-xs text-muted-foreground border-t border-border/60 pt-2 mt-auto">
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-success shrink-0 mt-0.5" />
-							<span>PowerDNS &amp; Mail Server berjalan lokal tanpa NetBird VPN.</span>
+							<span>{t('modals.modeSwitch.local.b1')}</span>
 						</li>
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-success shrink-0 mt-0.5" />
-							<span>Akses webmail/admin otomatis via <code class="font-mono text-[10px]">/etc/hosts</code> &amp; SSL lokal (<code class="font-mono text-[10px]">mkcert</code>).</span>
+							<span>{t('modals.modeSwitch.local.b2')}</span>
 						</li>
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-success shrink-0 mt-0.5" />
-							<span>Relay SMTP eksternal bersifat opsional (cocok untuk dev/intranet).</span>
+							<span>{t('modals.modeSwitch.local.b3')}</span>
 						</li>
 					</ul>
 				</label>
@@ -129,7 +130,7 @@
 						</div>
 						<div class="flex items-center gap-1.5">
 							{#if modeStore.mode === 'edge' && modeStore.isSet}
-								<Badge variant="default" class="text-[9px] sm:text-[10px] px-1.5 py-0 h-4">Aktif</Badge>
+								<Badge variant="default" class="text-[9px] sm:text-[10px] px-1.5 py-0 h-4">{t('modals.modeSwitch.activeBadge')}</Badge>
 							{/if}
 							<div
 								class={`size-4 sm:size-5 rounded-full border flex items-center justify-center shrink-0 ${
@@ -146,24 +147,24 @@
 					</div>
 
 					<div class="font-bold text-xs sm:text-sm text-foreground mb-0.5">
-						Edge Gateway (Hybrid Mode)
+						{t('modals.modeSwitch.edge.title')}
 					</div>
 					<p class="text-[11px] sm:text-xs text-muted-foreground mb-2 leading-relaxed">
-						Untuk PC / Laptop developer di balik NAT kantor atau rumah ke publik.
+						{t('modals.modeSwitch.edge.subtitle')}
 					</p>
 
 					<ul class="space-y-1 text-[11px] sm:text-xs text-muted-foreground border-t border-border/60 pt-2 mt-auto">
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-primary shrink-0 mt-0.5" />
-							<span>Terhubung ke VPS Edge via NetBird VPN (<code class="font-mono text-[10px]">wt0</code>).</span>
+							<span>{t('modals.modeSwitch.edge.b1')}</span>
 						</li>
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-primary shrink-0 mt-0.5" />
-							<span>Webstack &amp; file mail tetap berada di storage lokal PC.</span>
+							<span>{t('modals.modeSwitch.edge.b2')}</span>
 						</li>
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-primary shrink-0 mt-0.5" />
-							<span>VPS Edge mengelola IP publik &amp; SSL reverse proxy.</span>
+							<span>{t('modals.modeSwitch.edge.b3')}</span>
 						</li>
 					</ul>
 				</label>
@@ -189,7 +190,7 @@
 						</div>
 						<div class="flex items-center gap-1.5">
 							{#if modeStore.mode === 'vps' && modeStore.isSet}
-								<Badge variant="default" class="text-[9px] sm:text-[10px] px-1.5 py-0 h-4">Aktif</Badge>
+								<Badge variant="default" class="text-[9px] sm:text-[10px] px-1.5 py-0 h-4">{t('modals.modeSwitch.activeBadge')}</Badge>
 							{/if}
 							<div
 								class={`size-4 sm:size-5 rounded-full border flex items-center justify-center shrink-0 ${
@@ -206,31 +207,31 @@
 					</div>
 
 					<div class="font-bold text-xs sm:text-sm text-foreground mb-0.5">
-						Full VPS (aaPanel Style)
+						{t('modals.modeSwitch.vps.title')}
 					</div>
 					<p class="text-[11px] sm:text-xs text-muted-foreground mb-2 leading-relaxed">
-						Standalone server langsung untuk Cloud VPS / Dedicated publik.
+						{t('modals.modeSwitch.vps.subtitle')}
 					</p>
 
 					<ul class="space-y-1 text-[11px] sm:text-xs text-muted-foreground border-t border-border/60 pt-2 mt-auto">
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-success shrink-0 mt-0.5" />
-							<span>PowerDNS lokal authoritative (Port 53 UDP/TCP &amp; 8081) tanpa NetBird.</span>
+							<span>{t('modals.modeSwitch.vps.b1')}</span>
 						</li>
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-success shrink-0 mt-0.5" />
-							<span>Domain &amp; DNS record langsung aktif dengan NS1/NS2 VPS.</span>
+							<span>{t('modals.modeSwitch.vps.b2')}</span>
 						</li>
 						<li class="flex items-start gap-1.5">
 							<ShieldCheckIcon class="size-3 text-success shrink-0 mt-0.5" />
-							<span>Mail Server Stalwart &amp; SSL Let's Encrypt langsung melayani publik.</span>
+							<span>{t('modals.modeSwitch.vps.b3')}</span>
 						</li>
 					</ul>
 				</label>
 			</fieldset>
 
 			<div class="rounded-lg bg-muted/40 p-2.5 text-[11px] sm:text-xs text-muted-foreground border">
-				💡 <strong>Tips:</strong> Mode dideteksi otomatis sesuai konfigurasi PowerDNS/jaringan, dan dapat diubah kapan saja dari tombol mode di bilah atas.
+				💡 <strong>{t('modals.modeSwitch.tipPrefix')}</strong> {t('modals.modeSwitch.tipBody')}
 			</div>
 		</div>
 
@@ -238,7 +239,7 @@
 		<Dialog.Footer class="shrink-0 pt-3 border-t border-border/40 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2">
 			{#if modeStore.isSet}
 				<Button type="button" variant="outline" size="sm" class="w-full sm:w-auto" onclick={() => modeStore.closeModal()}>
-					Batal
+					{t('common.actions.cancel')}
 				</Button>
 			{/if}
 			<Button
@@ -251,9 +252,9 @@
 			>
 				{#if modeStore.loading}
 					<Spinner data-icon="inline-start" />
-					Menerapkan...
+					{t('common.actions.applying')}
 				{:else}
-					Pilih Mode {MODE_LABELS[selected]}
+					{t('modals.modeSwitch.selectModeBtn', { mode: MODE_LABELS[selected] })}
 				{/if}
 			</Button>
 		</Dialog.Footer>

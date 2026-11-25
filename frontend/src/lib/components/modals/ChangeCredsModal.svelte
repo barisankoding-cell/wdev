@@ -5,6 +5,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { api, ApiError } from '#lib/api/client.js';
 	import { toast } from 'svelte-sonner';
@@ -34,22 +35,22 @@
 		errorMessage = '';
 
 		if (!oldPassword) {
-			errorMessage = 'Kata sandi lama wajib diisi untuk verifikasi keamanan.';
+			errorMessage = t('modals.changeCreds.oldPasswordRequired');
 			return;
 		}
 
 		if (newPassword && newPassword.length < 6) {
-			errorMessage = 'Kata sandi baru minimal 6 karakter.';
+			errorMessage = t('modals.changeCreds.newPasswordMinLength');
 			return;
 		}
 
 		if (newPassword && newPassword !== confirmPassword) {
-			errorMessage = 'Konfirmasi kata sandi baru tidak cocok.';
+			errorMessage = t('modals.changeCreds.confirmMismatch');
 			return;
 		}
 
 		if (!newUsername.trim()) {
-			errorMessage = 'Username tidak boleh kosong.';
+			errorMessage = t('modals.changeCreds.usernameEmpty');
 			return;
 		}
 
@@ -65,12 +66,12 @@
 				authStore.username = newUsername.trim();
 			}
 
-			toast.success('Kredensial Diperbarui', {
-				description: 'Username / kata sandi panel berhasil diubah.'
+			toast.success(t('modals.changeCreds.saveSuccessTitle'), {
+				description: t('modals.changeCreds.saveSuccessDesc')
 			});
 			authStore.closeChangeCreds();
 		} catch (err) {
-			errorMessage = err instanceof ApiError ? err.message : 'Gagal memperbarui kredensial.';
+			errorMessage = err instanceof ApiError ? err.message : t('modals.changeCreds.saveErrorFallback');
 		} finally {
 			loading = false;
 		}
@@ -87,10 +88,10 @@
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				<KeyRoundIcon class="size-4 text-primary" />
-				<span>Ubah Kredensial Panel</span>
+				<span>{t('modals.changeCreds.title')}</span>
 			</Dialog.Title>
 			<Dialog.Description>
-				Ubah username atau kata sandi login wdev Web Dashboard.
+				{t('modals.changeCreds.description')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -104,12 +105,12 @@
 		<form onsubmit={handleSubmit} class="space-y-3.5">
 			<div class="space-y-1">
 				<label for="old-password" class="text-xs font-medium text-foreground">
-					Kata Sandi Saat Ini <span class="text-destructive">*</span>
+					{t('modals.changeCreds.currentPasswordLabel')} <span class="text-destructive">*</span>
 				</label>
 				<PasswordInput
 					id="old-password"
 					canGenerate={false}
-					placeholder="Masukkan kata sandi lama..."
+					placeholder={t('modals.changeCreds.currentPasswordPlaceholder')}
 					bind:value={oldPassword}
 					disabled={loading}
 					required
@@ -119,7 +120,7 @@
 
 			<div class="space-y-1">
 				<label for="new-username" class="text-xs font-medium text-foreground">
-					Username Panel
+					{t('modals.changeCreds.usernameLabel')}
 				</label>
 				<Input
 					id="new-username"
@@ -133,11 +134,11 @@
 
 			<div class="space-y-1">
 				<label for="new-password" class="text-xs font-medium text-foreground">
-					Kata Sandi Baru (Kosongkan jika tidak diubah)
+					{t('modals.changeCreds.newPasswordLabel')}
 				</label>
 				<PasswordInput
 					id="new-password"
-					placeholder="Minimal 8 karakter..."
+					placeholder={t('modals.changeCreds.newPasswordPlaceholder')}
 					bind:value={newPassword}
 					disabled={loading}
 					autocomplete="new-password"
@@ -150,12 +151,12 @@
 			{#if newPassword}
 				<div class="space-y-1">
 					<label for="confirm-password" class="text-xs font-medium text-foreground">
-						Konfirmasi Kata Sandi Baru
+						{t('modals.changeCreds.confirmPasswordLabel')}
 					</label>
 					<PasswordInput
 						id="confirm-password"
 						canGenerate={false}
-						placeholder="Ulangi kata sandi baru..."
+						placeholder={t('modals.changeCreds.confirmPasswordPlaceholder')}
 						bind:value={confirmPassword}
 						disabled={loading}
 						autocomplete="new-password"
@@ -165,14 +166,14 @@
 
 			<Dialog.Footer class="pt-2">
 				<Button type="button" variant="outline" onclick={() => authStore.closeChangeCreds()} disabled={loading}>
-					Batal
+					{t('common.actions.cancel')}
 				</Button>
 				<Button type="submit" disabled={loading}>
 					{#if loading}
 						<Spinner class="mr-2 size-4" />
-						<span>Menyimpan...</span>
+						<span>{t('common.actions.saving')}</span>
 					{:else}
-						Simpan Kredensial
+						{t('modals.changeCreds.saveBtn')}
 					{/if}
 				</Button>
 			</Dialog.Footer>

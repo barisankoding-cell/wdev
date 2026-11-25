@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"wdev/internal/i18n"
 )
 
 // soaInfo adalah hasil parsing record SOA PowerDNS.
@@ -32,14 +33,22 @@ func parseSOAContent(content string) soaInfo {
 }
 
 func (z ZoneDoctorReport) soaBroken(info soaInfo) (bool, string) {
+	return z.soaBrokenLocale(info, i18n.DefaultLocale)
+}
+
+func (z ZoneDoctorReport) soaBrokenLocale(info soaInfo, lang string) (bool, string) {
 	if info.Primary == "" {
-		return true, "record SOA tidak ditemukan"
+		return true, i18n.Pick(lang, "SOA record not found", "record SOA tidak ditemukan")
 	}
 	if strings.Contains(info.Primary, "misconfigured") {
-		return true, "SOA primary masih " + info.Primary + " (zone lama dibuat tanpa nameserver)"
+		return true, i18n.Pick(
+			lang,
+			"SOA primary is still "+info.Primary+" (legacy zone created without nameservers)",
+			"SOA primary masih "+info.Primary+" (zone lama dibuat tanpa nameserver)",
+		)
 	}
 	if info.Serial == 0 {
-		return true, "serial SOA masih 0"
+		return true, i18n.Pick(lang, "SOA serial is still 0", "serial SOA masih 0")
 	}
 	return false, ""
 }
@@ -79,10 +88,15 @@ func (m *Manager) setZoneMetadata(zone, kind string, values []string) error {
 	return fmt.Errorf("set metadata %s gagal: status %d %s", kind, resp.StatusCode, detail)
 }
 
-// RepairZone memperbaiki zone lama: NS, glue A, SOA primary/serial, dan
-// SOA-EDIT-API. Aman dijalankan berulang.
+// RepairZone memperbaiki zone lama using the default locale (English).
 func (m *Manager) RepairZone(domain string) (ZoneDoctorReport, error) {
-	report, _ := m.DoctorZone(domain)
+	return m.RepairZoneLocale(domain, i18n.DefaultLocale)
+}
+
+// RepairZoneLocale memperbaiki zone lama: NS, glue A, SOA primary/serial, dan
+// SOA-EDIT-API. Aman dijalankan berulang dengan pesan terlokalisasi.
+func (m *Manager) RepairZoneLocale(domain, lang string) (ZoneDoctorReport, error) {
+	report, _ := m.DoctorZoneLocale(domain, lang)
 	zone, err := NormalizeZoneName(domain)
 	if err != nil {
 		return report, err
@@ -102,20 +116,26 @@ func (m *Manager) RepairZone(domain string) (ZoneDoctorReport, error) {
 			targetIP = DetectPublicIP()
 		}
 		if !IsPublicIPv4String(targetIP) {
-			return report, fmt.Errorf("IP publik VPS valid belum terdeteksi; atur VPS_PUBLIC_IP di konfigurasi DNS")
+			return report, fmt.Errorf("%s", i18n.Pick(lang,
+				"valid VPS public IP not detected; set VPS_PUBLIC_IP in DNS config",
+				"IP publik VPS valid belum terdeteksi; atur VPS_PUBLIC_IP di konfigurasi DNS",
+			))
 		}
 		if os.Geteuid() == 0 && conf.HasAPIKey && !IsPublicIPv4String(m.readEdgeDNSFilePublicIP()) {
 			_ = m.SaveConfig(conf.VPSNetbirdIP, targetIP, conf.APIKey, conf.PDNSPort, conf.AgentPort)
 		}
 	default:
 		if targetIP == "" {
-			return report, fmt.Errorf("IP publik VPS belum tercatat; jalankan 'wdev pdns connect'")
+			return report, fmt.Errorf("%s", i18n.Pick(lang,
+				"VPS public IP not recorded; run 'wdev pdns connect'",
+				"IP publik VPS belum tercatat; jalankan 'wdev pdns connect'",
+			))
 		}
 	}
 
 	info, err := m.GetZone(zone)
 	if err != nil {
-		return report, fmt.Errorf("zone %s tidak dapat dibaca: %w", zone, err)
+		return report, fmt.Errorf(i18n.Pick(lang, "cannot read zone %s: %w", "zone %s tidak dapat dibaca: %w"), zone, err)
 	}
 	var current soaInfo
 	for _, rr := range info.RRsets {

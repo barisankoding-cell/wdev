@@ -16,6 +16,7 @@
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import FolderPickerDialog from '#lib/components/modals/FolderPickerDialog.svelte';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type { FileRootInfo, SiteAppInspectResult, SiteRecord } from '#lib/types/api.js';
@@ -90,25 +91,27 @@
 	let portSuggesting = $state(false);
 	let advancedAppOpen = $state(false);
 
-	const webFrameworks = [
-		{ value: 'laravel', label: 'Laravel (root di /public)' },
-		{ value: 'wordpress', label: 'WordPress' },
-		{ value: 'ci4', label: 'CodeIgniter 4 (root di /public)' },
-		{ value: 'ci3', label: 'CodeIgniter 3' },
-		{ value: 'symfony', label: 'Symfony (root di /public)' },
-		{ value: 'generic', label: 'Generic PHP' },
-		{ value: 'static', label: 'Static HTML (index.html)' }
-	];
+	const webFrameworks = $derived([
+		{ value: 'laravel', label: t('webstack.createModal.frameworks.laravel') },
+		{ value: 'wordpress', label: t('webstack.createModal.frameworks.wordpress') },
+		{ value: 'ci4', label: t('webstack.createModal.frameworks.ci4') },
+		{ value: 'ci3', label: t('webstack.createModal.frameworks.ci3') },
+		{ value: 'symfony', label: t('webstack.createModal.frameworks.symfony') },
+		{ value: 'generic', label: t('webstack.createModal.frameworks.generic') },
+		{ value: 'static', label: t('webstack.createModal.frameworks.static') }
+	]);
 
-	const managedAppFrameworks = [
-		{ value: 'nodejs', label: 'Node.js (systemd · pnpm / npm / bun)' },
-		{ value: 'go', label: 'Go (systemd · Binary Service)' },
-		{ value: 'rust', label: 'Rust (systemd · Cargo Service)' }
-	];
+	const managedAppFrameworks = $derived([
+		{ value: 'nodejs', label: t('webstack.createModal.frameworks.nodejs') },
+		{ value: 'go', label: t('webstack.createModal.frameworks.go') },
+		{ value: 'rust', label: t('webstack.createModal.frameworks.rust') }
+	]);
 
-	const proxyFrameworks = [{ value: 'proxy', label: 'Reverse Proxy (Manual / Eksternal / Docker)' }];
+	const proxyFrameworks = $derived([
+		{ value: 'proxy', label: t('webstack.createModal.frameworks.proxy') }
+	]);
 
-	const frameworks = [...webFrameworks, ...managedAppFrameworks, ...proxyFrameworks];
+	const frameworks = $derived([...webFrameworks, ...managedAppFrameworks, ...proxyFrameworks]);
 
 	const phpVersions = ['8.4', '8.3', '8.2', '8.1'];
 
@@ -192,12 +195,16 @@
 					? rootPath.trim()
 					: `/var/www/${effectiveDomain || '<domain>'}`;
 		if (isEdge) {
-			return `${dom} → ${targetDesc} · Tunnel VPS Edge${modeStore.publicIP ? ` (${modeStore.publicIP})` : ''}`;
+			return t('webstack.createModal.subtitleEdge', {
+				domain: dom,
+				target: targetDesc,
+				ipPart: modeStore.publicIP ? ` (${modeStore.publicIP})` : ''
+			});
 		}
 		if (isVPS) {
-			return `/etc/nginx/sites-available/${dom} · Target: ${targetDesc} · VPS Publik`;
+			return t('webstack.createModal.subtitleVps', { domain: dom, target: targetDesc });
 		}
-		return `/etc/nginx/sites-available/${dom} · Target: ${targetDesc} · Lokal`;
+		return t('webstack.createModal.subtitleLocal', { domain: dom, target: targetDesc });
 	});
 
 	async function refreshZonesQuiet() {
@@ -268,7 +275,7 @@
 			}
 		} catch (err) {
 			inspectResult = null;
-			toast.error(err instanceof Error ? err.message : 'Gagal memeriksa direktori proyek');
+			toast.error(err instanceof Error ? err.message : t('webstack.createModal.inspectFailedToast'));
 		} finally {
 			inspectLoading = false;
 		}
@@ -425,13 +432,13 @@
 		if (!isEdit && (isEdge || (isVPS && domainMode === 'subdomain'))) {
 			if (!parentDomain) {
 				formError = isEdge
-					? 'Tambahkan domain/zone di menu PowerDNS & Edge terlebih dahulu.'
-					: 'Pilih domain induk terlebih dahulu atau gunakan mode Domain Utama.';
+					? t('webstack.createModal.errNeedEdgeZone')
+					: t('webstack.createModal.errNeedParentOrMain');
 				document.getElementById('site-parent-domain')?.focus();
 				return;
 			}
 			if (!isEdge && !cleanSubPrefix) {
-				formError = 'Awalan subdomain wajib diisi pada mode Subdomain.';
+				formError = t('webstack.createModal.errSubPrefixRequired');
 				document.getElementById('site-sub-prefix')?.focus();
 				return;
 			}
@@ -439,7 +446,7 @@
 				cleanSubPrefix &&
 				!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(cleanSubPrefix)
 			) {
-				formError = 'Nama subdomain hanya boleh berisi huruf, angka, tanda hubung (-), atau titik.';
+				formError = t('webstack.createModal.errInvalidSubPrefix');
 				document.getElementById('site-sub-prefix')?.focus();
 				return;
 			}
@@ -447,25 +454,25 @@
 
 		const cleanDomain = isEdit && siteToEdit ? siteToEdit.domain : effectiveDomain;
 		if (!cleanDomain) {
-			formError = 'Nama domain wajib diisi.';
+			formError = t('webstack.createModal.errDomainRequired');
 			document.getElementById('site-domain')?.focus();
 			return;
 		}
 
 		const proxyPort = parseInt(proxyPortStr, 10) || 0;
 		if (usesProxyPort && (proxyPort < 1 || proxyPort > 65535)) {
-			formError = 'Port aplikasi lokal harus antara 1 sampai 65535.';
+			formError = t('webstack.createModal.errPortRange');
 			document.getElementById('site-proxy-port')?.focus();
 			return;
 		}
 		if (isManagedApp) {
 			if (!rootPath.trim()) {
-				formError = 'Direktori proyek wajib dipilih untuk Managed App.';
+				formError = t('webstack.createModal.errProjectDirRequired');
 				document.getElementById('site-root-path')?.focus();
 				return;
 			}
 			if (!startCommand.trim()) {
-				formError = 'Start Command wajib diisi (mis. pnpm run start, ./bin/app, atau cargo run).';
+				formError = t('webstack.createModal.errStartCmdRequired');
 				document.getElementById('site-start-cmd')?.focus();
 				return;
 			}
@@ -486,7 +493,10 @@
 			creating = true;
 			try {
 				const res = await cp.runWithSudoRetry(
-					`Pembaruan konfigurasi Nginx${isManagedApp ? ' & service systemd' : ''} untuk ${cleanDomain} memerlukan hak akses administrator (sudo).`,
+					t('webstack.createModal.sudoUpdatePrompt', {
+						appSuffix: isManagedApp ? t('webstack.createModal.sudoAppSuffix') : '',
+						domain: cleanDomain
+					}),
 					(sudoPass) =>
 						api.updateSite(cleanDomain, {
 							domain: cleanDomain,
@@ -500,12 +510,12 @@
 						})
 				);
 				if (res) {
-					toast.success(`Virtual host ${cleanDomain} berhasil diperbarui!`);
+					toast.success(t('webstack.createModal.updatedToast', { domain: cleanDomain }));
 					open = false;
 					if (res.build_task_id) {
-						cp.openTerminal(`Build App: ${cleanDomain}`);
+						cp.openTerminal(t('webstack.createModal.buildTerminalTitle', { domain: cleanDomain }));
 					} else if (res.build_error) {
-						toast.warning(`VHost diperbarui, namun build otomatis gagal dimulai: ${res.build_error}`);
+						toast.warning(t('webstack.createModal.autoBuildWarning', { error: res.build_error }));
 					}
 					if (onUpdated) {
 						await onUpdated(
@@ -522,7 +532,7 @@
 					}
 				}
 			} catch (err) {
-				formError = err instanceof Error ? err.message : 'Gagal memperbarui virtual host';
+				formError = err instanceof Error ? err.message : t('webstack.createModal.updateFailed');
 			} finally {
 				creating = false;
 			}
@@ -536,7 +546,10 @@
 		creating = true;
 		try {
 			const res = await cp.runWithSudoRetry(
-				`Pembuatan Virtual Host ${cleanDomain}${isManagedApp ? ' & service systemd' : ''} memerlukan hak akses administrator (sudo).`,
+				t('webstack.createModal.sudoCreatePrompt', {
+					domain: cleanDomain,
+					appSuffix: isManagedApp ? t('webstack.createModal.sudoAppSuffix') : ''
+				}),
 				(sudoPass) =>
 					api.createSite({
 						domain: cleanDomain,
@@ -561,29 +574,33 @@
 
 			if (res?.edge_error) {
 				toast.warning(
-					`Virtual host ${cleanDomain} berhasil dibuat, namun eksposur VPS Edge gagal: ${res.edge_error}`
+					t('webstack.createModal.edgeExposeWarning', { domain: cleanDomain, error: res.edge_error })
 				);
 			} else if (res?.edge_exposed) {
 				toast.success(
-					`Virtual host ${cleanDomain} dibuat & terekspos ke ${res.edge_domain || cleanDomain}${res.dns_synced ? ' (DNS A & Proxy VPS aktif)' : ''}.`
+					t('webstack.createModal.createdEdgeToast', {
+						domain: cleanDomain,
+						edgeDomain: res.edge_domain || cleanDomain,
+						dnsSuffix: res.dns_synced ? t('webstack.createModal.dnsSuffixActive') : ''
+					})
 				);
 			} else if (res?.dns_synced && res?.dns_message) {
-				toast.success(`Virtual host ${cleanDomain} berhasil dibuat (${res.dns_message}).`);
+				toast.success(t('webstack.createModal.createdDnsToast', { domain: cleanDomain, message: res.dns_message }));
 			} else {
-				toast.success(`Virtual host ${cleanDomain} berhasil dibuat!`);
+				toast.success(t('webstack.createModal.createdToast', { domain: cleanDomain }));
 			}
 
 			open = false;
 			if (res?.build_task_id) {
-				cp.openTerminal(`Build App: ${cleanDomain}`);
+				cp.openTerminal(t('webstack.createModal.buildTerminalTitle', { domain: cleanDomain }));
 			} else if (res?.build_error) {
-				toast.warning(`VHost dibuat, namun build otomatis gagal dimulai: ${res.build_error}`);
+				toast.warning(t('webstack.createModal.createAutoBuildWarning', { error: res.build_error }));
 			}
 			if (onCreated) {
 				await onCreated({ domain: cleanDomain, wantVPSLetsEncrypt });
 			}
 		} catch (err) {
-			formError = err instanceof Error ? err.message : 'Gagal membuat virtual host';
+			formError = err instanceof Error ? err.message : t('webstack.createModal.createFailed');
 		} finally {
 			creating = false;
 		}
@@ -596,10 +613,10 @@
 			<Dialog.Title class="flex min-w-0 items-center gap-2">
 				{#if isEdit}
 					<PencilIcon class="size-4 shrink-0 text-primary" />
-					<span class="truncate text-base sm:text-lg">Ubah Virtual Host</span>
+					<span class="truncate text-base sm:text-lg">{t('webstack.createModal.titleEdit')}</span>
 				{:else}
 					<GlobeIcon class="size-4 shrink-0 text-primary" />
-					<span class="truncate text-base sm:text-lg">Buat Virtual Host Baru</span>
+					<span class="truncate text-base sm:text-lg">{t('webstack.createModal.titleCreate')}</span>
 				{/if}
 			</Dialog.Title>
 			<Dialog.Description class="line-clamp-2 break-all font-mono text-[11px] sm:line-clamp-none sm:text-xs">{metaSubtitle}</Dialog.Description>
@@ -611,13 +628,13 @@
 					{#if formError}
 						<Alert.Root variant="destructive" role="alert">
 							<AlertCircleIcon />
-							<Alert.Title>{isEdit ? 'Pembaruan Virtual Host Gagal' : 'Pembuatan Virtual Host Gagal'}</Alert.Title>
+							<Alert.Title>{isEdit ? t('webstack.createModal.errorTitleEdit') : t('webstack.createModal.errorTitleCreate')}</Alert.Title>
 							<Alert.Description class="break-words">{formError}</Alert.Description>
 						</Alert.Root>
 					{/if}
 
 					<div class="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
-						<span class="shrink-0 text-xs font-medium text-muted-foreground">Preset Cepat:</span>
+						<span class="shrink-0 text-xs font-medium text-muted-foreground">{t('webstack.createModal.presetsLabel')}</span>
 						<div class="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
 							<Button
 								type="button"
@@ -626,7 +643,7 @@
 								size="xs"
 								onclick={() => applyPreset('laravel')}
 							>
-								Laravel
+								{t('webstack.createModal.presetLaravel')}
 							</Button>
 							<Button
 								type="button"
@@ -635,7 +652,7 @@
 								size="xs"
 								onclick={() => applyPreset('wordpress')}
 							>
-								WordPress
+								{t('webstack.createModal.presetWordPress')}
 							</Button>
 							<Button
 								type="button"
@@ -644,7 +661,7 @@
 								size="xs"
 								onclick={() => applyPreset('nodejs')}
 							>
-								Node.js (systemd)
+								{t('webstack.createModal.presetNode')}
 							</Button>
 							<Button
 								type="button"
@@ -653,7 +670,7 @@
 								size="xs"
 								onclick={() => applyPreset('go')}
 							>
-								Go (systemd)
+								{t('webstack.createModal.presetGo')}
 							</Button>
 							<Button
 								type="button"
@@ -662,7 +679,7 @@
 								size="xs"
 								onclick={() => applyPreset('rust')}
 							>
-								Rust (systemd)
+								{t('webstack.createModal.presetRust')}
 							</Button>
 							<Button
 								type="button"
@@ -671,7 +688,7 @@
 								size="xs"
 								onclick={() => applyPreset('proxy')}
 							>
-								Proxy Manual
+								{t('webstack.createModal.presetProxy')}
 							</Button>
 							<Button
 								type="button"
@@ -680,20 +697,20 @@
 								size="xs"
 								onclick={() => applyPreset('static')}
 							>
-								Static HTML
+								{t('webstack.createModal.presetStatic')}
 							</Button>
 							{#if activePreset === 'custom'}
-								<Badge variant="outline" class="shrink-0">Custom</Badge>
+								<Badge variant="outline" class="shrink-0">{t('webstack.createModal.presetCustom')}</Badge>
 							{/if}
 						</div>
 					</div>
 
 					<Field.FieldSet>
-						<Field.FieldLegend variant="label">Domain &amp; Identitas Host</Field.FieldLegend>
+						<Field.FieldLegend variant="label">{t('webstack.createModal.legendDomain')}</Field.FieldLegend>
 						<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 							{#if isEdit}
 								<Field.Field class="sm:col-span-2">
-									<Field.FieldLabel for="site-domain">Domain (Terkunci)</Field.FieldLabel>
+									<Field.FieldLabel for="site-domain">{t('webstack.createModal.domainLockedLabel')}</Field.FieldLabel>
 									<Input
 										id="site-domain"
 										name="domain"
@@ -703,7 +720,7 @@
 										readonly
 									/>
 									<Field.FieldDescription>
-										Nama domain tidak dapat diubah setelah dibuat. Untuk mengganti nama domain, buat virtual host baru.
+										{t('webstack.createModal.domainLockedDesc')}
 									</Field.FieldDescription>
 								</Field.Field>
 							{:else}
@@ -712,11 +729,11 @@
 									<Field.FieldLabel
 										for={isEdge || (isVPS && domainMode === 'subdomain') ? 'site-sub-prefix' : 'site-domain'}
 									>
-										{isLocal ? 'Domain Lokal' : isEdge ? 'Domain PowerDNS' : 'Domain'}
+										{isLocal ? t('webstack.createModal.domainLocalLabel') : isEdge ? t('webstack.createModal.domainPdnsLabel') : t('webstack.createModal.domainLabel')}
 									</Field.FieldLabel>
 									{#if isEdge}
 										<Badge variant="outline" class="w-fit text-[11px] font-medium">
-											Zone PowerDNS ({domainChoices.length})
+											{t('webstack.createModal.zoneBadgeCount', { count: domainChoices.length })}
 										</Badge>
 									{:else if isVPS}
 										<ToggleGroup.Root
@@ -725,13 +742,13 @@
 											variant="outline"
 											spacing={2}
 											class="grid w-full grid-cols-2 sm:inline-flex sm:w-auto"
-											aria-label="Mode input domain"
+											aria-label={t('webstack.createModal.domainModeAria')}
 										>
 											<ToggleGroup.Item value="custom" class="min-h-10 text-xs sm:min-h-8 sm:px-3">
-												Domain Utama
+												{t('webstack.createModal.modeMainDomain')}
 											</ToggleGroup.Item>
 											<ToggleGroup.Item value="subdomain" class="min-h-10 text-xs sm:min-h-8 sm:px-3">
-												Subdomain ({domainChoices.length})
+												{t('webstack.createModal.modeSubdomainCount', { count: domainChoices.length })}
 											</ToggleGroup.Item>
 										</ToggleGroup.Root>
 									{/if}
@@ -742,19 +759,17 @@
 										<div class="flex flex-col gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-3 text-xs text-muted-foreground">
 											{#if isEdge}
 												<p>
-													Belum ada zone di PowerDNS VPS Edge. Tambahkan domain zone di menu
-													<strong>PowerDNS &amp; Edge</strong> terlebih dahulu sebelum membuat Virtual Host.
+													{t('webstack.createModal.noEdgeZone1')}<strong>{t('webstack.createModal.noEdgeZoneBold')}</strong>{t('webstack.createModal.noEdgeZone2')}
 												</p>
 												<div>
 													<Button size="sm" variant="outline" href="/powerdns">
 														<NetworkIcon data-icon="inline-start" />
-														Kelola Zone PowerDNS
+														{t('webstack.createModal.managePdnsZoneBtn')}
 													</Button>
 												</div>
 											{:else}
 												<p>
-													Belum ada domain atau zone PowerDNS yang tersedia sebagai induk subdomain. Tambahkan zone di menu
-													PowerDNS terlebih dahulu atau pilih <strong>Domain Utama</strong>.
+													{t('webstack.createModal.noVpsParent1')}<strong>{t('webstack.createModal.noVpsParentBold')}</strong>{t('webstack.createModal.noVpsParent2')}
 												</p>
 											{/if}
 										</div>
@@ -764,7 +779,7 @@
 												<InputGroup.Input
 													id="site-sub-prefix"
 													name="subdomain_prefix"
-													placeholder={isEdge ? 'app / api (kosong = utama)' : 'app / api / admin'}
+													placeholder={isEdge ? t('webstack.createModal.subPrefixPlaceholderEdge') : t('webstack.createModal.subPrefixPlaceholderVps')}
 													class="h-full text-base md:text-sm"
 													autocorrect="off"
 													autocapitalize="none"
@@ -795,9 +810,9 @@
 												<Select.Trigger
 													id="site-parent-domain"
 													class="h-11 w-full text-base sm:h-9 sm:text-sm"
-													aria-label="Pilih domain PowerDNS"
+													aria-label={t('webstack.createModal.selectPdnsAria')}
 												>
-													<span class="truncate">{parentDomain || 'Pilih domain PowerDNS'}</span>
+													<span class="truncate">{parentDomain || t('webstack.createModal.selectPdnsPlaceholder')}</span>
 												</Select.Trigger>
 												<Select.Content>
 													<Select.Group>
@@ -809,7 +824,7 @@
 											</Select.Root>
 										</div>
 										<div class="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-											<span class="shrink-0">Domain hasil:</span>
+											<span class="shrink-0">{t('webstack.createModal.resultDomainLabel')}</span>
 											<code class="min-w-0 break-all rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
 												{effectiveDomain || `<subdomain>.${parentDomain}`}
 											</code>
@@ -820,7 +835,7 @@
 										id="site-domain"
 										name="domain"
 										class="h-11 text-base sm:h-9 sm:text-sm"
-										placeholder={isLocal ? 'proyekanda.test' : 'domainanda.com'}
+										placeholder={isLocal ? t('webstack.createModal.domainPlaceholderLocal') : t('webstack.createModal.domainPlaceholderPublic')}
 										autocorrect="off"
 										autocapitalize="none"
 										spellcheck={false}
@@ -838,13 +853,13 @@
 
 								<Field.FieldDescription>
 									{#if isEdge}
-										Pilih zone PowerDNS lalu isi awalan subdomain (atau kosongkan awalan untuk memakai domain utama zone).
+										{t('webstack.createModal.domainDescEdge')}
 									{:else if isVPS && domainMode === 'subdomain'}
-										Pilih domain induk dan isi awalan subdomain. Record DNS A otomatis dibuat bila zone dikelola PowerDNS lokal.
+										{t('webstack.createModal.domainDescVpsSub')}
 									{:else if isVPS}
-										Masukkan domain FQDN yang mengarah ke IP publik VPS ini.
+										{t('webstack.createModal.domainDescVpsMain')}
 									{:else}
-										Akhiran <code>.test</code> disarankan untuk pengembangan lokal.
+										{t('webstack.createModal.domainDescLocal1')}<code>.test</code>{t('webstack.createModal.domainDescLocal2')}
 									{/if}
 								</Field.FieldDescription>
 								{#if domainInvalid}
@@ -852,10 +867,10 @@
 										errors={[
 											{
 												message: isEdge
-													? 'Pilih zone PowerDNS terlebih dahulu.'
+													? t('webstack.createModal.errEdgeZoneMissing')
 													: isVPS && domainMode === 'subdomain'
-														? 'Awalan subdomain dan domain induk wajib diisi.'
-														: 'Domain wajib diisi.'
+														? t('webstack.createModal.errSubRequired')
+														: t('webstack.createModal.errDomainRequired')
 											}
 										]}
 									/>
@@ -868,10 +883,10 @@
 					<Separator />
 
 					<Field.FieldSet class="min-w-0">
-						<Field.FieldLegend variant="label">Runtime, Framework &amp; Target Aplikasi</Field.FieldLegend>
+						<Field.FieldLegend variant="label">{t('webstack.createModal.legendRuntime')}</Field.FieldLegend>
 						<Field.FieldGroup class="grid min-w-0 gap-4 sm:grid-cols-2">
 							<Field.Field class="min-w-0">
-								<Field.FieldLabel for="site-framework">Framework / Pola Aplikasi</Field.FieldLabel>
+								<Field.FieldLabel for="site-framework">{t('webstack.createModal.frameworkLabel')}</Field.FieldLabel>
 								<Select.Root
 									type="single"
 									value={framework}
@@ -884,21 +899,21 @@
 									</Select.Trigger>
 									<Select.Content>
 										<Select.Group>
-											<Select.Label>Web &amp; PHP</Select.Label>
+											<Select.Label>{t('webstack.createModal.groupWebPhp')}</Select.Label>
 											{#each webFrameworks as fw (fw.value)}
 												<Select.Item value={fw.value}>{fw.label}</Select.Item>
 											{/each}
 										</Select.Group>
 										<Select.Separator />
 										<Select.Group>
-											<Select.Label>Managed App (systemd)</Select.Label>
+											<Select.Label>{t('webstack.createModal.groupManagedApp')}</Select.Label>
 											{#each managedAppFrameworks as fw (fw.value)}
 												<Select.Item value={fw.value}>{fw.label}</Select.Item>
 											{/each}
 										</Select.Group>
 										<Select.Separator />
 										<Select.Group>
-											<Select.Label>Reverse Proxy Manual</Select.Label>
+											<Select.Label>{t('webstack.createModal.groupProxy')}</Select.Label>
 											{#each proxyFrameworks as fw (fw.value)}
 												<Select.Item value={fw.value}>{fw.label}</Select.Item>
 											{/each}
@@ -909,7 +924,7 @@
 
 							{#if usesProxyPort}
 								<Field.Field>
-									<Field.FieldLabel for="site-proxy-port">Port Aplikasi Lokal</Field.FieldLabel>
+									<Field.FieldLabel for="site-proxy-port">{t('webstack.createModal.portLabel')}</Field.FieldLabel>
 									<InputGroup.Root class="h-11 sm:h-9">
 										<InputGroup.Input
 											id="site-proxy-port"
@@ -944,7 +959,7 @@
 													{#if portSuggesting}
 														<Spinner data-icon="inline-start" />
 													{:else}
-														Auto
+														{t('webstack.createModal.autoBtn')}
 													{/if}
 												</Button>
 											</InputGroup.Addon>
@@ -953,20 +968,20 @@
 									<Field.FieldDescription>
 										{#if portConflictHint}
 											<span class="font-medium text-warning">
-												{portConflictHint}; disarankan port {proxyPortStr}.
+												{t('webstack.createModal.portConflictSuggested', { hint: portConflictHint, port: proxyPortStr })}
 											</span>
 										{:else if isManagedApp}
 											{inspectResult?.detected_port_hint
-												? `Diambil dari PORT=${inspectResult.detected_port_hint} di .env proyek dan diteruskan oleh Nginx.`
-												: 'Aplikasi dijalankan pada localhost port ini dan diteruskan Nginx (env PORT diselaraskan).'}
+												? t('webstack.createModal.portDetectedHint', { port: inspectResult.detected_port_hint })
+												: t('webstack.createModal.portManagedDefaultHint')}
 										{:else}
-											Contoh: 3000 (Node/Vite), 8080 (Go/Docker), atau 3200 (Panel).
+											{t('webstack.createModal.portProxyExampleHint')}
 										{/if}
 									</Field.FieldDescription>
 								</Field.Field>
 							{:else if !isStatic}
 								<Field.Field>
-									<Field.FieldLabel for="site-php-ver">Versi PHP Target</Field.FieldLabel>
+									<Field.FieldLabel for="site-php-ver">{t('webstack.createModal.phpVersionLabel')}</Field.FieldLabel>
 									<Select.Root type="single" bind:value={phpVersion}>
 										<Select.Trigger id="site-php-ver" class="h-11 w-full text-base sm:h-9 sm:text-sm">
 											PHP {phpVersion}
@@ -979,13 +994,13 @@
 											</Select.Group>
 										</Select.Content>
 									</Select.Root>
-									<Field.FieldDescription>Socket PHP-FPM yang melayani skrip PHP pada domain ini.</Field.FieldDescription>
+									<Field.FieldDescription>{t('webstack.createModal.phpVersionDesc')}</Field.FieldDescription>
 								</Field.Field>
 							{:else}
 								<div class="flex flex-col justify-center rounded-lg border bg-muted/25 px-3.5 py-2.5 text-xs">
-									<span class="font-medium text-foreground">Mode Static HTML</span>
+									<span class="font-medium text-foreground">{t('webstack.createModal.staticModeTitle')}</span>
 									<span class="mt-0.5 text-muted-foreground">
-										Nginx menyajikan berkas statis (<code>index.html</code>) secara langsung tanpa PHP-FPM.
+										{t('webstack.createModal.staticModeDesc1')}<code>index.html</code>{t('webstack.createModal.staticModeDesc2')}
 									</span>
 								</div>
 							{/if}
@@ -993,7 +1008,7 @@
 							{#if !isProxy}
 								<Field.Field class="sm:col-span-2">
 									<Field.FieldLabel for="site-root-path">
-										{isManagedApp ? 'Direktori Proyek Aplikasi (Wajib)' : 'Document Root (Opsional)'}
+										{isManagedApp ? t('webstack.createModal.rootDirRequired') : t('webstack.createModal.docRootOptional')}
 									</Field.FieldLabel>
 									<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
 										<Input
@@ -1005,8 +1020,8 @@
 												: effectiveDomain
 													? `/var/www/${effectiveDomain}`
 													: isLocal
-														? '/var/www/proyekanda.test'
-														: '/var/www/domainanda.com'}
+														? t('webstack.createModal.placeholderDocRootLocal')
+														: t('webstack.createModal.placeholderDocRootPublic')}
 											autocorrect="off"
 											autocapitalize="none"
 											spellcheck={false}
@@ -1031,7 +1046,7 @@
 													{:else}
 														<SparklesIcon data-icon="inline-start" />
 													{/if}
-													Deteksi Proyek
+													{t('webstack.createModal.inspectBtn')}
 												</Button>
 											{/if}
 											<Button
@@ -1041,13 +1056,13 @@
 												onclick={() => (folderPickerOpen = true)}
 											>
 												<FolderOpenIcon data-icon="inline-start" />
-												Cari Folder
+												{t('webstack.createModal.browseFolderBtn')}
 											</Button>
 										</div>
 									</div>
 									{#if detectedDrives.length > 0 && !isManagedApp}
 										<div class="flex flex-wrap items-center gap-1.5 pt-1">
-											<span class="text-xs text-muted-foreground">Drive cepat:</span>
+											<span class="text-xs text-muted-foreground">{t('webstack.createModal.quickDriveLabel')}</span>
 											<Button
 												type="button"
 												size="xs"
@@ -1058,7 +1073,7 @@
 													rootPath = '';
 												}}
 											>
-												Default (/var/www)
+												{t('webstack.createModal.defaultDriveBtn')}
 											</Button>
 											{#each detectedDrives as drv (drv.path)}
 												{@const active = rootPath.trim() === drv.path || rootPath.trim().startsWith(drv.path + '/')}
@@ -1080,11 +1095,11 @@
 									{/if}
 									<Field.FieldDescription>
 										{#if isManagedApp}
-											Pilih folder kode proyek (<code>package.json</code>, <code>go.mod</code>, atau <code>Cargo.toml</code>) di bawah <code>/home</code>, <code>/var/www</code>, <code>/srv</code>, atau <code>/mnt</code>.
+											{t('webstack.createModal.rootDescApp1')}<code>package.json</code>{t('webstack.createModal.rootDescApp2')}<code>go.mod</code>{t('webstack.createModal.rootDescAppOr')}<code>Cargo.toml</code>{t('webstack.createModal.rootDescApp3')}<code>/home</code>, <code>/var/www</code>, <code>/srv</code>{t('webstack.createModal.rootDescAppOr')}<code>/mnt</code>{t('webstack.createModal.rootDescApp4')}
 										{:else}
-											Kosongkan untuk otomatis di <code>/var/www/&lt;domain&gt;</code>, atau klik <strong>Cari Folder</strong>.
+											{t('webstack.createModal.rootDescWeb1')}<code>/var/www/&lt;domain&gt;</code>{t('webstack.createModal.rootDescWeb2')}<strong>{t('webstack.createModal.rootDescWebBold')}</strong>{t('webstack.createModal.rootDescWeb3')}
 											{#if !isStatic}
-												Untuk Laravel/CI4/Symfony pilih folder root proyek (<code>/public</code> ditambahkan otomatis).
+												<code>/public</code>{t('webstack.createModal.rootDescWeb4')}
 											{/if}
 										{/if}
 									</Field.FieldDescription>
@@ -1098,26 +1113,26 @@
 											<div class="flex flex-wrap items-center gap-2 text-xs">
 												<CpuIcon class="size-3.5 text-primary" />
 												<span class="font-medium text-foreground">
-													Terdeteksi: {inspectResult.runtime?.toUpperCase()}
+													{t('webstack.createModal.detectedLabel', { runtime: inspectResult.runtime?.toUpperCase() || '' })}
 													{inspectResult.package_manager ? ` (${inspectResult.package_manager})` : ''}
 												</span>
 												{#if inspectResult.app_name}
 													<Badge variant="outline" class="font-mono text-[11px]">{inspectResult.app_name}</Badge>
 												{/if}
 												{#if !inspectResult.toolchain_installed}
-													<Badge variant="destructive" class="text-[11px]">Toolchain belum terpasang</Badge>
+													<Badge variant="destructive" class="text-[11px]">{t('webstack.createModal.toolchainMissing')}</Badge>
 												{/if}
 											</div>
 											{#if inspectResult.has_dot_env}
 												<Badge variant="secondary" class="text-[11px]">
-													.env proyek ({inspectResult.dot_env_var_count} var)
+													{t('webstack.createModal.projectEnvVarsBadge', { count: inspectResult.dot_env_var_count ?? 0 })}
 												</Badge>
 											{/if}
 										</div>
 
 										{#if inspectResult.candidates && inspectResult.candidates.length > 0}
 											<div class="flex flex-wrap items-center gap-1.5">
-												<span class="text-[11px] text-muted-foreground">Mode cepat:</span>
+												<span class="text-[11px] text-muted-foreground">{t('webstack.createModal.quickModeLabel')}</span>
 												{#each inspectResult.candidates as cand (cand.label)}
 													{@const activeCand = startCommand.trim() === cand.start_command}
 													<Button
@@ -1140,7 +1155,7 @@
 								{/if}
 
 								<Field.Field class="sm:col-span-2">
-									<Field.FieldLabel for="site-build-cmd">Build Command (Opsional)</Field.FieldLabel>
+									<Field.FieldLabel for="site-build-cmd">{t('webstack.createModal.buildCmdLabel')}</Field.FieldLabel>
 									<Input
 										id="site-build-cmd"
 										name="build_command"
@@ -1159,18 +1174,18 @@
 										}}
 									/>
 									<Field.FieldDescription>
-										Dijalankan saat tombol <strong>Build &amp; Restart</strong> ditekan (output terminal live). Kosongkan bila menjalankan mode dev langsung.
+										{t('webstack.createModal.buildCmdDesc1')}<strong>{t('webstack.createModal.buildCmdDescBold')}</strong>{t('webstack.createModal.buildCmdDesc2')}
 									</Field.FieldDescription>
 								</Field.Field>
 
 								<Field.Field class="min-w-0 sm:col-span-2">
-									<Field.FieldLabel for="site-start-cmd">Start Command (<code>ExecStart</code>, Wajib)</Field.FieldLabel>
+									<Field.FieldLabel for="site-start-cmd">{t('webstack.createModal.startCmdLabel1')}<code>ExecStart</code>{t('webstack.createModal.startCmdLabel2')}</Field.FieldLabel>
 									<Input
 										id="site-start-cmd"
 										name="start_command"
 										class="h-11 font-mono text-base sm:h-9 sm:text-xs"
 										placeholder={framework === 'nodejs'
-											? 'pnpm run start atau pnpm run dev'
+											? t('webstack.createModal.placeholderNodeStart')
 											: framework === 'go'
 												? './bin/app'
 												: './target/release/app'}
@@ -1181,49 +1196,49 @@
 										required
 									/>
 									<Field.FieldDescription>
-										Perintah yang dikelola daemon <code>systemd</code>. Gunakan <code>$PORT</code> bila CLI butuh flag port manual (mis. <code>pnpm run dev -- --port $PORT</code>).
+										{t('webstack.createModal.startCmdDesc1')}<code>systemd</code>{t('webstack.createModal.startCmdDesc2')}<code>$PORT</code>{t('webstack.createModal.startCmdDesc3')}<code>pnpm run dev -- --port $PORT</code>{t('webstack.createModal.startCmdDesc4')}
 									</Field.FieldDescription>
 								</Field.Field>
 
 								<div class="flex min-w-0 flex-col gap-3 rounded-lg border bg-muted/25 p-3 sm:col-span-2">
 									<div class="flex items-center justify-between gap-3">
 										<div class="flex min-w-0 flex-1 flex-col gap-0.5">
-											<span class="text-xs font-medium text-foreground">Auto-Start Saat Server Boot</span>
-											<span class="text-[11px] text-muted-foreground">Aktifkan <code>systemctl enable</code> untuk unit aplikasi ini.</span>
+											<span class="text-xs font-medium text-foreground">{t('webstack.createModal.autoStartTitle')}</span>
+											<span class="text-[11px] text-muted-foreground">{t('webstack.createModal.autoStartDesc1')}<code>systemctl enable</code>{t('webstack.createModal.autoStartDesc2')}</span>
 										</div>
-										<Switch class="shrink-0" bind:checked={autoStart} aria-label="Auto-start saat boot" />
+										<Switch class="shrink-0" bind:checked={autoStart} aria-label={t('webstack.createModal.autoStartAria')} />
 									</div>
 
 									{#if buildCommand.trim()}
 										<div class="flex items-center justify-between gap-3 border-t pt-2.5">
 											<div class="flex min-w-0 flex-1 flex-col gap-0.5">
 												<span class="text-xs font-medium text-foreground">
-													{isEdit ? 'Rebuild & Restart Service Setelah Simpan' : 'Jalankan Build & Start Setelah VHost Dibuat'}
+													{isEdit ? t('webstack.createModal.rebuildAfterSave') : t('webstack.createModal.buildStartAfterCreate')}
 												</span>
 												<span class="text-[11px] text-muted-foreground">
-													Membuka Live Terminal untuk memantau proses build hingga aplikasi menyala.
+													{t('webstack.createModal.rebuildLiveDesc')}
 												</span>
 											</div>
-											<Switch class="shrink-0" bind:checked={runBuildNow} aria-label="Jalankan build sekarang" />
+											<Switch class="shrink-0" bind:checked={runBuildNow} aria-label={t('webstack.createModal.buildNowAria')} />
 										</div>
 									{/if}
 
 									<div class="flex items-center justify-between gap-3 border-t pt-2.5">
 										<div class="flex min-w-0 flex-1 flex-col gap-0.5">
 											<span class="text-xs font-medium text-foreground">
-												Gunakan File <code>.env</code> Proyek Langsung
+												{t('webstack.createModal.useProjectEnv1')}<code>.env</code>{t('webstack.createModal.useProjectEnv2')}
 											</span>
 											<span class="text-[11px] break-words text-muted-foreground">
 												{#if useProjectEnv}
-													<code>systemd</code> memuat <code class="break-all">{rootPath.trim() ? `${rootPath.trim().replace(/\/+$/, '')}/.env` : '<folder>/.env'}</code> langsung (tidak terhapus saat VHost dihapus).
+													<code>systemd</code>{t('webstack.createModal.useProjectEnvOn1')}<code class="break-all">{rootPath.trim() ? `${rootPath.trim().replace(/\/+$/, '')}/.env` : '<folder>/.env'}</code>{t('webstack.createModal.useProjectEnvOn2')}
 												{:else if inspectResult?.has_dot_env}
-													File <code>.env</code> terdeteksi ({inspectResult.dot_env_var_count} var). Aktifkan agar memakai <code>.env</code> proyek langsung, atau matikan untuk memakai file terpisah di <code>/etc/wdev/apps/</code>.
+													{t('webstack.createModal.useProjectEnvDetected1')}<code>.env</code>{t('webstack.createModal.useProjectEnvDetected2', { count: inspectResult.dot_env_var_count ?? 0 })}<code>.env</code>{t('webstack.createModal.useProjectEnvDetected3')}<code>/etc/wdev/apps/</code>.
 												{:else}
-													Aktifkan untuk memakai <code>.env</code> di folder proyek, atau biarkan nonaktif untuk memakai file terkelola <code>/etc/wdev/apps/</code> (<code>0600</code>).
+													{t('webstack.createModal.useProjectEnvOff1')}<code>.env</code>{t('webstack.createModal.useProjectEnvOff2')}<code>/etc/wdev/apps/</code> (<code>0600</code>){t('webstack.createModal.useProjectEnvOff3')}
 												{/if}
 											</span>
 										</div>
-										<Switch class="shrink-0" bind:checked={useProjectEnv} aria-label="Gunakan .env proyek langsung" />
+										<Switch class="shrink-0" bind:checked={useProjectEnv} aria-label={t('webstack.createModal.useProjectEnvAria')} />
 									</div>
 								</div>
 
@@ -1231,25 +1246,25 @@
 									<Collapsible.Trigger class="flex w-full items-center justify-between rounded-md border bg-muted/20 px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground">
 										<span class="flex items-center gap-1.5">
 											<HammerIcon class="size-3.5" />
-											Opsi Lanjutan Systemd (Run As User)
+											{t('webstack.createModal.advancedSystemd')}
 										</span>
 										<ChevronDownIcon class={advancedAppOpen ? 'size-4 rotate-180 transition-transform' : 'size-4 transition-transform'} />
 									</Collapsible.Trigger>
 									<Collapsible.Content class="pt-3">
 										<Field.Field>
-											<Field.FieldLabel for="site-run-user">Run As User Linux (Opsional)</Field.FieldLabel>
+											<Field.FieldLabel for="site-run-user">{t('webstack.createModal.runAsUserLabel')}</Field.FieldLabel>
 											<Input
 												id="site-run-user"
 												name="run_user"
 												class="h-10 font-mono text-base sm:h-9 sm:text-xs"
-												placeholder="Kosongkan = user non-root aktif (mis. dietpi)"
+												placeholder={t('webstack.createModal.runAsUserPlaceholder')}
 												autocorrect="off"
 												autocapitalize="none"
 												spellcheck={false}
 												bind:value={runUser}
 											/>
 											<Field.FieldDescription>
-												Disarankan tetap non-root agar kepemilikan folder proyek (<code>node_modules</code>, <code>target</code>) tetap konsisten.
+												{t('webstack.createModal.runAsUserDesc1')}<code>node_modules</code>{t('webstack.createModal.runAsUserDesc2')}<code>target</code>{t('webstack.createModal.runAsUserDesc3')}
 											</Field.FieldDescription>
 										</Field.Field>
 									</Collapsible.Content>
@@ -1261,13 +1276,13 @@
 					<Separator />
 
 					<Field.FieldSet>
-						<Field.FieldLegend variant="label">SSL, DNS &amp; Eksposur Jaringan</Field.FieldLegend>
+						<Field.FieldLegend variant="label">{t('webstack.createModal.legendNetwork')}</Field.FieldLegend>
 						<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
 							{#if isEdge}
 								<Field.Field orientation="horizontal" class="sm:col-span-2">
 									<Checkbox id="site-edge-expose" bind:checked={edgeExposeEnabled} />
 									<Field.FieldLabel for="site-edge-expose" class="font-normal">
-										Ekspos ke internet &amp; sinkronkan DNS via VPS Edge Tunnel (NetBird{modeStore.publicIP ? ` → ${modeStore.publicIP}` : ''})
+										{t('webstack.createModal.edgeExposeCheckbox', { ipPart: modeStore.publicIP ? ` → ${modeStore.publicIP}` : '' })}
 									</Field.FieldLabel>
 								</Field.Field>
 
@@ -1275,20 +1290,20 @@
 									<Field.Field orientation="horizontal">
 										<Checkbox id="site-edge-ssl" bind:checked={edgeSSLEnabled} />
 										<Field.FieldLabel for="site-edge-ssl" class="font-normal">
-											Terbitkan SSL Let's Encrypt (HTTPS) di VPS Edge Gateway
+											{t('webstack.createModal.edgeSslCheckbox')}
 										</Field.FieldLabel>
 									</Field.Field>
 									<Field.Field orientation="horizontal">
 										<Checkbox id="site-add-hosts" bind:checked={addLocalHosts} />
 										<Field.FieldLabel for="site-add-hosts" class="font-normal">
-											Tambahkan juga ke <code>/etc/hosts</code> lokal (opsional)
+											{t('webstack.createModal.addHostsEdge1')}<code>/etc/hosts</code>{t('webstack.createModal.addHostsEdge2')}
 										</Field.FieldLabel>
 									</Field.Field>
 								{:else}
 									<Field.Field orientation="horizontal" class="sm:col-span-2">
 										<Checkbox id="site-ssl" bind:checked={sslEnabled} />
 										<Field.FieldLabel for="site-ssl" class="font-normal">
-											Aktifkan Sertifikat SSL Lokal (HTTPS mkcert)
+											{t('webstack.createModal.localMkcertCheckbox')}
 										</Field.FieldLabel>
 									</Field.Field>
 								{/if}
@@ -1296,14 +1311,14 @@
 								<Field.Field orientation="horizontal" class="sm:col-span-2">
 									<Checkbox id="site-ssl" bind:checked={sslEnabled} />
 									<Field.FieldLabel for="site-ssl" class="font-normal">
-										Terbitkan SSL Let's Encrypt (HTTPS) setelah virtual host dibuat
+										{t('webstack.createModal.vpsLeCheckbox')}
 									</Field.FieldLabel>
 								</Field.Field>
 							{:else}
 								<Field.Field orientation="horizontal" class="sm:col-span-2">
 									<Checkbox id="site-ssl" bind:checked={sslEnabled} />
 									<Field.FieldLabel for="site-ssl" class="font-normal">
-										Aktifkan Sertifikat SSL Otomatis (HTTPS mkcert)
+										{t('webstack.createModal.localAutoMkcertCheckbox')}
 									</Field.FieldLabel>
 								</Field.Field>
 							{/if}
@@ -1316,9 +1331,9 @@
 				<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
 					<p class="hidden text-xs text-muted-foreground sm:block">
 						{#if effectiveDomain}
-							Konfigurasi Nginx akan diterapkan untuk <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{effectiveDomain}</code>.
+							{t('webstack.createModal.footerApplied1')}<code class="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{effectiveDomain}</code>{t('webstack.createModal.footerApplied2')}
 						{:else}
-							Lengkapi nama domain untuk membuat konfigurasi Virtual Host.
+							{t('webstack.createModal.footerIncomplete')}
 						{/if}
 					</p>
 					<div class="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
@@ -1328,7 +1343,7 @@
 							class="min-h-10 sm:min-h-0"
 							onclick={() => (open = false)}
 						>
-							Batal
+							{t('webstack.createModal.cancel')}
 						</Button>
 						<Button
 							type="submit"
@@ -1337,15 +1352,15 @@
 						>
 							{#if creating}
 								<Spinner data-icon="inline-start" />
-								{isEdit ? 'Menyimpan...' : 'Membuat...'}
+								{isEdit ? t('webstack.createModal.saving') : t('webstack.createModal.creating')}
 							{:else if isEdit}
 								<SaveIcon data-icon="inline-start" />
-								<span class="truncate sm:hidden">Simpan</span>
-								<span class="hidden sm:inline">Simpan Perubahan</span>
+								<span class="truncate sm:hidden">{t('webstack.createModal.saveShort')}</span>
+								<span class="hidden sm:inline">{t('webstack.createModal.saveFull')}</span>
 							{:else}
 								<PlusIcon data-icon="inline-start" />
-								<span class="truncate sm:hidden">Buat VHost</span>
-								<span class="hidden sm:inline">Buat Virtual Host</span>
+								<span class="truncate sm:hidden">{t('webstack.createModal.createShort')}</span>
+								<span class="hidden sm:inline">{t('webstack.createModal.createFull')}</span>
 							{/if}
 						</Button>
 					</div>

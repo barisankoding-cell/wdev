@@ -8,6 +8,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import { api } from '#lib/api/client.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { EnvStatusResponse, ToolchainStatus } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
@@ -23,6 +24,16 @@
 	let refreshing = $state(false);
 	let envStatus = $state<EnvStatusResponse | null>(null);
 
+	function localizeToolchainDesc(item: ToolchainStatus): string {
+		return i18n.tryTranslate(`toolchains.descriptions.${item.id}`) ?? item.description;
+	}
+
+	function localizeInstalledVer(ver: string): string {
+		if (!ver) return t('toolchains.notInstalledValue');
+		if (ver === 'Terpasang' || ver === 'Installed') return t('common.status.installed');
+		return ver;
+	}
+
 	async function loadAll(forceRefresh = false) {
 		if (forceRefresh) refreshing = true;
 		else if (toolchains.length === 0) loading = true;
@@ -35,10 +46,10 @@
 			toolchains = tc ?? [];
 			if (env) envStatus = env;
 			if (forceRefresh) {
-				toast.success('Informasi versi resmi toolchain diperbarui.');
+				toast.success(t('toolchains.refreshedToast'));
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat toolchain');
+			toast.error(err instanceof Error ? err.message : t('toolchains.loadFailed'));
 		} finally {
 			loading = false;
 			refreshing = false;
@@ -55,24 +66,24 @@
 <div class="flex flex-col gap-5 sm:gap-6">
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
-			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Toolchains, Compilers &amp; SDKs</h1>
+			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('toolchains.title')}</h1>
 			<p class="text-sm text-muted-foreground">
-				Status versi terpasang, deteksi rilis resmi upstream, serta audit konsistensi PATH sistem.
+				{t('toolchains.subtitle')}
 			</p>
 		</div>
 		<div class="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
 			<Button variant="outline" size="sm" disabled={refreshing} onclick={() => loadAll(true)}>
 				{#if refreshing}
 					<Spinner data-icon="inline-start" />
-					Memeriksa...
+					{t('toolchains.checkingBtn')}
 				{:else}
 					<RefreshCwIcon data-icon="inline-start" />
-					Periksa Pembaruan
+					{t('toolchains.checkUpdatesBtn')}
 				{/if}
 			</Button>
 			<Button size="sm" onclick={() => cp.triggerInstall('update')}>
 				<DownloadIcon data-icon="inline-start" />
-				Perbarui Toolchain
+				{t('toolchains.updateAllBtn')}
 			</Button>
 		</div>
 	</div>
@@ -99,14 +110,14 @@
 						<div class="flex flex-wrap items-start justify-between gap-2">
 							<div class="min-w-0">
 								<Card.Title class="text-base">{item.name}</Card.Title>
-								<Card.Description class="mt-1">{item.description}</Card.Description>
+								<Card.Description class="mt-1">{localizeToolchainDesc(item)}</Card.Description>
 							</div>
 							{#if !item.installed}
-								<StatusBadge tone="neutral" label="Belum Terpasang" />
+								<StatusBadge tone="neutral" label={t('common.status.notInstalled')} />
 							{:else if item.has_update}
-								<StatusBadge tone="warning" label="Update Tersedia" />
+								<StatusBadge tone="warning" label={t('common.status.updateAvailable')} />
 							{:else}
-								<StatusBadge tone="success" label="Terpasang" />
+								<StatusBadge tone="success" label={t('common.status.installed')} />
 							{/if}
 						</div>
 					</Card.Header>
@@ -114,21 +125,21 @@
 					<Card.Content>
 						<div class="flex flex-col gap-2 rounded-md border bg-muted/40 p-2.5 text-xs">
 							<div class="flex items-center justify-between gap-2">
-								<span class="text-muted-foreground">Versi Terpasang</span>
+								<span class="text-muted-foreground">{t('toolchains.installedVersion')}</span>
 								<span class="truncate font-mono font-semibold">
-									{item.installed ? item.installed_version : 'Belum terpasang'}
+									{item.installed ? localizeInstalledVer(item.installed_version) : t('toolchains.notInstalledValue')}
 								</span>
 							</div>
 							{#if item.extra_info}
 								<Separator />
 								<div class="flex items-center justify-between gap-2">
-									<span class="text-muted-foreground">Detail</span>
+									<span class="text-muted-foreground">{t('toolchains.detailLabel')}</span>
 									<span class="truncate text-right font-mono text-muted-foreground">{item.extra_info}</span>
 								</div>
 							{/if}
 							<Separator />
 							<div class="flex items-center justify-between gap-2">
-								<span class="text-muted-foreground">Rilis Resmi Terbaru</span>
+								<span class="text-muted-foreground">{t('toolchains.latestRelease')}</span>
 								<span class="truncate font-mono font-medium">{item.latest_version || '-'}</span>
 							</div>
 						</div>
@@ -138,12 +149,12 @@
 						{#if !item.installed}
 							<Button size="sm" class="w-full" onclick={() => cp.triggerInstall(item.install_component)}>
 								<DownloadIcon data-icon="inline-start" />
-								Pasang Sekarang
+								{t('toolchains.installNowBtn')}
 							</Button>
 						{:else if item.has_update}
 							<Button size="sm" class="w-full" onclick={() => cp.triggerInstall(item.install_component)}>
 								<ArrowUpCircleIcon data-icon="inline-start" />
-								Perbarui ke {item.latest_version}
+								{t('toolchains.updateToBtn', { version: item.latest_version })}
 							</Button>
 						{:else}
 							<Button
@@ -153,7 +164,7 @@
 								onclick={() => cp.triggerInstall(item.install_component)}
 							>
 								<RefreshCwIcon data-icon="inline-start" />
-								Pasang Ulang / Sinkron
+								{t('common.actions.reinstall')}
 							</Button>
 						{/if}
 					</Card.Footer>
@@ -169,24 +180,24 @@
 				<div class="min-w-0">
 					<Card.Title class="flex items-center gap-2 text-base">
 						<FolderCheckIcon class="size-4 shrink-0 text-primary" />
-						<span>Diagnostik Environment &amp; PATH Toolchain</span>
+						<span>{t('toolchains.envTitle')}</span>
 					</Card.Title>
 					<Card.Description>
-						Sumber tunggal environment di <code>/etc/profile.d/wdev.sh</code> dan validasi symlink kanonik.
+						{t('toolchains.envDesc', { path: '/etc/profile.d/wdev.sh' })}
 					</Card.Description>
 				</div>
 				<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
 					<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('audit')}>
 						<ShieldAlertIcon data-icon="inline-start" />
-						Audit Duplikat
+						{t('toolchains.auditBtn')}
 					</Button>
 					<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('audit-fix')}>
 						<WrenchIcon data-icon="inline-start" />
-						Perbaiki
+						{t('toolchains.fixBtn')}
 					</Button>
 					<Button size="sm" class="col-span-2 sm:col-span-1" onclick={() => cp.syncToolchainEnv()}>
 						<RefreshCwIcon data-icon="inline-start" />
-						Sinkronkan PATH
+						{t('toolchains.syncPathBtn')}
 					</Button>
 				</div>
 			</div>
@@ -197,7 +208,7 @@
 {envStatus.report.join('\n')}</pre>
 				{#if envStatus.path_entries && envStatus.path_entries.length > 0}
 					<div class="flex flex-col gap-1.5">
-						<span class="text-xs font-medium text-muted-foreground">Urutan PATH Login Shell Efektif:</span>
+						<span class="text-xs font-medium text-muted-foreground">{t('toolchains.effectivePathOrder')}</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each envStatus.path_entries as p (p)}
 								<Badge variant="outline" class="max-w-full truncate font-mono text-[11px]">{p}</Badge>

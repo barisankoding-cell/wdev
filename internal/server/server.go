@@ -23,6 +23,7 @@ import (
 	"wdev/internal/compose"
 	"wdev/internal/config"
 	"wdev/internal/filemanager"
+	"wdev/internal/i18n"
 	"wdev/internal/installer"
 	"wdev/internal/mail"
 	"wdev/internal/monitor"
@@ -262,15 +263,16 @@ func (s *Server) wrapCSRF(next http.Handler) http.Handler {
 				}
 				isBearerOnly := !hasSessionCookie && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
 				if !isBearerOnly {
+					lang := i18n.FromRequest(r)
 					if fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); fetchSite == "cross-site" {
-						writeError(w, http.StatusForbidden, "Permintaan cross-site ditolak (CSRF protection)")
+						writeError(w, http.StatusForbidden, i18n.Pick(lang, "Cross-site request rejected (CSRF protection)", "Permintaan cross-site ditolak (CSRF protection)"))
 						return
 					}
 					origin := strings.TrimSpace(r.Header.Get("Origin"))
 					if origin != "" {
 						u, err := url.Parse(origin)
 						if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) || (u.Scheme != "http" && u.Scheme != "https") {
-							writeError(w, http.StatusForbidden, "Origin tidak diizinkan (CSRF protection)")
+							writeError(w, http.StatusForbidden, i18n.Pick(lang, "Origin not allowed (CSRF protection)", "Origin tidak diizinkan (CSRF protection)"))
 							return
 						}
 					}
@@ -278,14 +280,14 @@ func (s *Server) wrapCSRF(next http.Handler) http.Handler {
 					if origin == "" && referer != "" {
 						u, err := url.Parse(referer)
 						if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) || (u.Scheme != "http" && u.Scheme != "https") {
-							writeError(w, http.StatusForbidden, "Referer tidak diizinkan (CSRF protection)")
+							writeError(w, http.StatusForbidden, i18n.Pick(lang, "Referer not allowed (CSRF protection)", "Referer tidak diizinkan (CSRF protection)"))
 							return
 						}
 					}
 					if hasSessionCookie && origin == "" && referer == "" {
 						fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
 						if fetchSite != "same-origin" {
-							writeError(w, http.StatusForbidden, "Header asal permintaan (Origin/Referer) diperlukan (CSRF protection)")
+							writeError(w, http.StatusForbidden, i18n.Pick(lang, "Request origin header (Origin/Referer) is required (CSRF protection)", "Header asal permintaan (Origin/Referer) diperlukan (CSRF protection)"))
 							return
 						}
 					}
@@ -406,7 +408,7 @@ func (s *Server) wrapAuth(next http.Handler) http.Handler {
 
 		username, valid := s.authMgr.ValidateSession(token)
 		if !valid || username == "" {
-			writeError(w, http.StatusUnauthorized, "Autentikasi diperlukan. Silakan login terlebih dahulu.")
+			writeErrorLocale(w, r, http.StatusUnauthorized, "Authentication required. Please sign in first.", "Autentikasi diperlukan. Silakan login terlebih dahulu.")
 			return
 		}
 
@@ -416,9 +418,10 @@ func (s *Server) wrapAuth(next http.Handler) http.Handler {
 
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	var payload struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -431,20 +434,20 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	ip := auth.ClientIP(r)
 	allowed, wait := s.authMgr.CheckRateLimit(ip)
 	if !allowed {
-		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Terlalu banyak percobaan login gagal. Akun dikunci sementara. Coba lagi dalam %d menit.", int(wait.Minutes())+1))
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(i18n.Pick(lang, "Too many failed login attempts. Account temporarily locked. Try again in %d minute(s).", "Terlalu banyak percobaan login gagal. Akun dikunci sementara. Coba lagi dalam %d menit."), int(wait.Minutes())+1))
 		return
 	}
 
 	if !s.authMgr.ValidateCredentials(payload.Username, payload.Password) {
 		s.authMgr.RecordLoginAttempt(ip, false)
-		writeError(w, http.StatusUnauthorized, "Username atau kata sandi salah")
+		writeError(w, http.StatusUnauthorized, i18n.Pick(lang, "Invalid username or password", "Username atau kata sandi salah"))
 		return
 	}
 
 	s.authMgr.RecordLoginAttempt(ip, true)
 	token, err := s.authMgr.CreateSession(payload.Username)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Gagal membuat sesi: "+err.Error())
+		writeError(w, http.StatusInternalServerError, i18n.Pick(lang, "Failed to create session: ", "Gagal membuat sesi: ")+err.Error())
 		return
 	}
 	if s.authMgr.IsAuthEnabled() {
@@ -523,9 +526,10 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthChangeCredentials(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	var payload struct {
 		OldPassword string `json:"old_password"`
 		NewUsername string `json:"new_username"`
@@ -538,14 +542,14 @@ func (s *Server) handleAuthChangeCredentials(w http.ResponseWriter, r *http.Requ
 
 	ip := auth.ClientIP(r)
 	if allowed, wait := s.authMgr.CheckRateLimit(ip); !allowed {
-		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Terlalu banyak percobaan gagal. Coba lagi dalam %d menit.", int(wait.Minutes())+1))
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(i18n.Pick(lang, "Too many failed attempts. Try again in %d minute(s).", "Terlalu banyak percobaan gagal. Coba lagi dalam %d menit."), int(wait.Minutes())+1))
 		return
 	}
 
 	currentUsername := s.authMgr.GetUsername()
 	if !s.authMgr.ValidateCredentials(currentUsername, payload.OldPassword) {
 		s.authMgr.RecordLoginAttempt(ip, false)
-		writeError(w, http.StatusUnauthorized, "Kata sandi saat ini tidak cocok")
+		writeError(w, http.StatusUnauthorized, i18n.Pick(lang, "Current password does not match", "Kata sandi saat ini tidak cocok"))
 		return
 	}
 	s.authMgr.RecordLoginAttempt(ip, true)
@@ -662,6 +666,14 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func writeErrorLocale(w http.ResponseWriter, r *http.Request, status int, enMsg, idMsg string) {
+	writeError(w, status, i18n.Pick(i18n.FromRequest(r), enMsg, idMsg))
+}
+
+func writeMethodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	writeErrorLocale(w, r, http.StatusMethodNotAllowed, "Method not allowed", "Method tidak diizinkan")
+}
+
 func (s *Server) applyPDNSModeToStats(stats *monitor.SystemStats) {
 	if stats == nil || s.pdnsMgr == nil {
 		return
@@ -709,7 +721,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServiceControl(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 
@@ -1043,7 +1055,7 @@ func (s *Server) handleServiceConfig(w http.ResponseWriter, r *http.Request) {
 		})
 
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
@@ -1080,7 +1092,7 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
@@ -1259,7 +1271,7 @@ func (s *Server) handleSiteByDomain(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.handleSiteGet(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
@@ -1508,7 +1520,7 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/sites/")), "."))
@@ -1569,7 +1581,7 @@ func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSiteSSL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -1623,7 +1635,7 @@ func (s *Server) handleSiteSSL(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSwitchers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.switcherMgr.GetAll())
@@ -1631,7 +1643,7 @@ func (s *Server) handleSwitchers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSwitchersAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	typeStr := strings.TrimPrefix(r.URL.Path, "/api/switchers/")
@@ -1904,7 +1916,7 @@ func (s *Server) executeSwitchJava(ctx context.Context, cb func(string), ver str
 
 func (s *Server) handleCFStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	st := s.cfMgr.GetStatus()
@@ -1922,7 +1934,7 @@ func (s *Server) handleCFStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFExpose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload cloudflare.ExposeOptions
@@ -1940,7 +1952,7 @@ func (s *Server) handleCFExpose(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -1961,7 +1973,7 @@ func (s *Server) handleCFUnexpose(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFProfileZones(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
@@ -1981,7 +1993,7 @@ func (s *Server) handleCFProfileZones(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFCheckHost(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
@@ -1997,7 +2009,7 @@ func (s *Server) handleCFCheckHost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFSetProfileAPIToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -2018,7 +2030,7 @@ func (s *Server) handleCFSetProfileAPIToken(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleCFRegisterToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload cloudflare.TokenProfileOptions
@@ -2036,7 +2048,7 @@ func (s *Server) handleCFRegisterToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFRegisterCert(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload cloudflare.CertProfileOptions
@@ -2054,7 +2066,7 @@ func (s *Server) handleCFRegisterCert(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFLoginStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -2076,7 +2088,7 @@ func (s *Server) handleCFLoginStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFLoginStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	sessID := strings.TrimSpace(r.URL.Query().Get("id"))
@@ -2094,7 +2106,7 @@ func (s *Server) handleCFLoginStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFLoginCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -2113,7 +2125,7 @@ func (s *Server) handleCFLoginCancel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFProfileControl(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -2133,7 +2145,7 @@ func (s *Server) handleCFProfileControl(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleCFProfileLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
@@ -2148,7 +2160,7 @@ func (s *Server) handleCFProfileLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCFProfileDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -2208,13 +2220,13 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 			"message": fmt.Sprintf("Mode server berhasil diubah ke %s", target),
 		})
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
 func (s *Server) handlePDNSStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	cfg := s.pdnsMgr.LoadConfig()
@@ -2316,23 +2328,24 @@ func (s *Server) handlePDNSZones(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
 func (s *Server) handlePDNSZoneRepair(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	var payload struct {
 		Zone string `json:"zone"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || strings.TrimSpace(payload.Zone) == "" {
-		writeError(w, http.StatusBadRequest, "Parameter zone diperlukan")
+		writeError(w, http.StatusBadRequest, i18n.Pick(lang, "Zone parameter is required", "Parameter zone diperlukan"))
 		return
 	}
-	report, err := s.pdnsMgr.RepairZone(payload.Zone)
+	report, err := s.pdnsMgr.RepairZoneLocale(payload.Zone, lang)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})
 		return
@@ -2342,9 +2355,10 @@ func (s *Server) handlePDNSZoneRepair(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePDNSZoneDoctor(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	zone := r.URL.Query().Get("zone")
 	if zone == "" && r.Method == http.MethodPost {
 		var payload struct {
@@ -2355,10 +2369,10 @@ func (s *Server) handlePDNSZoneDoctor(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if strings.TrimSpace(zone) == "" {
-		writeError(w, http.StatusBadRequest, "Parameter zone diperlukan")
+		writeError(w, http.StatusBadRequest, i18n.Pick(lang, "Zone parameter is required", "Parameter zone diperlukan"))
 		return
 	}
-	report, err := s.pdnsMgr.DoctorZone(zone)
+	report, err := s.pdnsMgr.DoctorZoneLocale(zone, lang)
 	if err != nil && zone == "" {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -2417,13 +2431,13 @@ func (s *Server) handlePDNSRecords(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
 func (s *Server) handlePDNSExposures(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	proxies, err := s.pdnsMgr.ListExposures()
@@ -2439,7 +2453,7 @@ func (s *Server) handlePDNSExposures(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePDNSExpose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload pdns.ExposeOptions
@@ -2464,7 +2478,7 @@ func (s *Server) handlePDNSExpose(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePDNSUnexpose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -2484,7 +2498,7 @@ func (s *Server) handlePDNSUnexpose(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePDNSDeploy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload pdns.DeployOptions
@@ -2514,7 +2528,7 @@ func (s *Server) handlePDNSDeploy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePDNSConnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload pdns.ConnectOptions
@@ -2543,18 +2557,19 @@ func (s *Server) handleSudoStatus(w http.ResponseWriter, r *http.Request) {
 // verifySudoPasswordWithRateLimit validates a sudo password through the shared per-IP
 // auth rate limiter so secondary sudo_pass fields cannot bypass /api/sudo/verify lockouts.
 func (s *Server) verifySudoPasswordWithRateLimit(w http.ResponseWriter, r *http.Request, pass, invalidPrefix string) bool {
+	lang := i18n.FromRequest(r)
 	verifyFn := s.sudoVerifyFn
 	if verifyFn == nil && s.installer != nil {
 		verifyFn = s.installer.VerifyAndSetSudoPassword
 	}
 	if verifyFn == nil {
-		writeError(w, http.StatusServiceUnavailable, "Installer tidak tersedia")
+		writeError(w, http.StatusServiceUnavailable, i18n.Pick(lang, "Installer unavailable", "Installer tidak tersedia"))
 		return false
 	}
 	ip := auth.ClientIP(r)
 	if s.authMgr != nil {
 		if allowed, wait := s.authMgr.CheckRateLimit(ip); !allowed {
-			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Terlalu banyak percobaan gagal. Coba lagi dalam %d menit.", int(wait.Minutes())+1))
+			writeError(w, http.StatusTooManyRequests, fmt.Sprintf(i18n.Pick(lang, "Too many failed attempts. Try again in %d minute(s).", "Terlalu banyak percobaan gagal. Coba lagi dalam %d menit."), int(wait.Minutes())+1))
 			return false
 		}
 	}
@@ -2573,29 +2588,31 @@ func (s *Server) verifySudoPasswordWithRateLimit(w http.ResponseWriter, r *http.
 
 func (s *Server) handleSudoVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	var payload struct {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		writeError(w, http.StatusBadRequest, i18n.Pick(lang, "Invalid JSON payload", "Payload tidak valid"))
 		return
 	}
-	if !s.verifySudoPasswordWithRateLimit(w, r, payload.Password, "Password sudo salah: ") {
+	if !s.verifySudoPasswordWithRateLimit(w, r, payload.Password, i18n.Pick(lang, "Incorrect sudo password: ", "Password sudo salah: ")) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "message": "Password sudo berhasil diverifikasi"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "message": i18n.Pick(lang, "Sudo password verified successfully", "Password sudo berhasil diverifikasi")})
 }
 
 func (s *Server) handleToolchains(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	refresh := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
-	items, err := s.installer.GetToolchainStatuses(r.Context(), refresh)
+	items, err := s.installer.GetToolchainStatusesLocale(r.Context(), refresh, lang)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -2605,11 +2622,11 @@ func (s *Server) handleToolchains(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetupComponents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.installer == nil {
-		writeError(w, http.StatusServiceUnavailable, "Installer tidak tersedia")
+		writeErrorLocale(w, r, http.StatusServiceUnavailable, "Installer unavailable", "Installer tidak tersedia")
 		return
 	}
 	writeJSON(w, http.StatusOK, s.installer.GetComponentStatuses(r.Context()))
@@ -2722,10 +2739,15 @@ func installComponentOrder(canonical string) int {
 }
 
 func validateInstallItem(rawComponent, rawVersion string) (component, reqVersion string, errMsg string) {
+	return validateInstallItemLocale(rawComponent, rawVersion, i18n.DefaultLocale)
+}
+
+func validateInstallItemLocale(rawComponent, rawVersion, lang string) (component, reqVersion string, errMsg string) {
+	lang = i18n.Normalize(lang)
 	component = strings.TrimSpace(rawComponent)
 	reqVersion = strings.TrimSpace(rawVersion)
 	if component == "" {
-		return "", "", "Nama komponen wajib diisi"
+		return "", "", i18n.Pick(lang, "Component name is required", "Nama komponen wajib diisi")
 	}
 	if reqVersion == "" {
 		return component, "", ""
@@ -2733,31 +2755,36 @@ func validateInstallItem(rawComponent, rawVersion string) (component, reqVersion
 	switch component {
 	case "node", "java", "postgres", "php", "php-stack":
 		if !runtimeVerRe.MatchString(strings.TrimPrefix(reqVersion, "v")) {
-			return "", "", "Format parameter version tidak valid"
+			return "", "", i18n.Pick(lang, "Invalid version parameter format", "Format parameter version tidak valid")
 		}
 	case "zsh", "zsh-p10k":
 		switch strings.ToLower(reqVersion) {
 		case "powerlevel10k", "p10k", "agnoster", "robbyrussell":
 		default:
-			return "", "", "Tema Zsh tidak valid (pilihan: powerlevel10k, agnoster, robbyrussell)"
+			return "", "", i18n.Pick(lang, "Invalid Zsh theme (choices: powerlevel10k, agnoster, robbyrussell)", "Tema Zsh tidak valid (pilihan: powerlevel10k, agnoster, robbyrussell)")
 		}
 	}
 	return component, reqVersion, ""
 }
 
 func (s *Server) resolveInstallSteps(items []installItemPayload) (steps []resolvedInstallStep, needsSudo bool, errMsg string) {
+	return s.resolveInstallStepsLocale(items, i18n.DefaultLocale)
+}
+
+func (s *Server) resolveInstallStepsLocale(items []installItemPayload, lang string) (steps []resolvedInstallStep, needsSudo bool, errMsg string) {
+	lang = i18n.Normalize(lang)
 	if len(items) == 0 {
-		return nil, false, "Pilih minimal satu komponen untuk dipasang"
+		return nil, false, i18n.Pick(lang, "Select at least one component to install", "Pilih minimal satu komponen untuk dipasang")
 	}
 	if len(items) > 32 {
-		return nil, false, "Terlalu banyak komponen dalam satu antrean (maksimal 32)"
+		return nil, false, i18n.Pick(lang, "Too many components in one queue (maximum 32)", "Terlalu banyak komponen dalam satu antrean (maksimal 32)")
 	}
 
 	seen := make(map[string]bool, len(items))
 	steps = make([]resolvedInstallStep, 0, len(items))
 
 	for idx, raw := range items {
-		comp, ver, vErr := validateInstallItem(raw.Component, raw.Version)
+		comp, ver, vErr := validateInstallItemLocale(raw.Component, raw.Version, lang)
 		if vErr != "" {
 			return nil, false, vErr
 		}
@@ -2769,7 +2796,7 @@ func (s *Server) resolveInstallSteps(items []installItemPayload) (steps []resolv
 
 		stepName, stepFn, ok := s.resolveInstallTask(comp, ver)
 		if !ok {
-			return nil, false, "Komponen tidak dikenal: " + comp
+			return nil, false, i18n.Pick(lang, "Unknown component: ", "Komponen tidak dikenal: ") + comp
 		}
 		if !nonPrivilegedInstallComponents[comp] && !nonPrivilegedInstallComponents[canon] {
 			needsSudo = true
@@ -2785,7 +2812,7 @@ func (s *Server) resolveInstallSteps(items []installItemPayload) (steps []resolv
 	}
 
 	if len(steps) == 0 {
-		return nil, false, "Pilih minimal satu komponen untuk dipasang"
+		return nil, false, i18n.Pick(lang, "Select at least one component to install", "Pilih minimal satu komponen untuk dipasang")
 	}
 
 	sort.SliceStable(steps, func(i, j int) bool {
@@ -2799,7 +2826,12 @@ func (s *Server) resolveInstallSteps(items []installItemPayload) (steps []resolv
 }
 
 func (s *Server) buildInstallBatch(items []installItemPayload, customLabel string) (taskName string, fn func(ctx context.Context, cb func(string)) error, needsSudo bool, errMsg string) {
-	steps, needsSudo, errMsg := s.resolveInstallSteps(items)
+	return s.buildInstallBatchLocale(items, customLabel, i18n.DefaultLocale)
+}
+
+func (s *Server) buildInstallBatchLocale(items []installItemPayload, customLabel, lang string) (taskName string, fn func(ctx context.Context, cb func(string)) error, needsSudo bool, errMsg string) {
+	lang = i18n.Normalize(lang)
+	steps, needsSudo, errMsg := s.resolveInstallStepsLocale(items, lang)
 	if errMsg != "" {
 		return "", nil, false, errMsg
 	}
@@ -2820,24 +2852,24 @@ func (s *Server) buildInstallBatch(items []installItemPayload, customLabel strin
 
 	taskName = cleanLabel
 	if taskName == "" {
-		taskName = fmt.Sprintf("Instalasi Modular (%d Komponen)", len(steps))
+		taskName = fmt.Sprintf(i18n.Pick(lang, "Modular Install (%d Components)", "Instalasi Modular (%d Komponen)"), len(steps))
 	}
 
 	fn = func(ctx context.Context, cb func(string)) error {
 		total := len(steps)
-		cb(fmt.Sprintf("==> Memulai %s (%d komponen)...", taskName, total))
+		cb(fmt.Sprintf(i18n.Pick(lang, "==> Starting %s (%d component(s))...", "==> Memulai %s (%d komponen)..."), taskName, total))
 		for idx, st := range steps {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			cb("")
-			cb(fmt.Sprintf(">>> [%d/%d] Memasang: %s", idx+1, total, st.taskName))
+			cb(fmt.Sprintf(i18n.Pick(lang, ">>> [%d/%d] Installing: %s", ">>> [%d/%d] Memasang: %s"), idx+1, total, st.taskName))
 			if err := st.fn(ctx, cb); err != nil {
 				return fmt.Errorf("%s: %w", st.taskName, err)
 			}
 		}
 		cb("")
-		cb(fmt.Sprintf("✓ Selesai: %d komponen berhasil diproses.", total))
+		cb(fmt.Sprintf(i18n.Pick(lang, "✓ Done: %d component(s) processed successfully.", "✓ Selesai: %d komponen berhasil diproses."), total))
 		return nil
 	}
 
@@ -2846,9 +2878,10 @@ func (s *Server) buildInstallBatch(items []installItemPayload, customLabel strin
 
 func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	var payload struct {
 		Component     string                          `json:"component"`
 		Version       string                          `json:"version"`
@@ -2858,7 +2891,7 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		DockerOptions *installer.DockerInstallOptions `json:"docker_options,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeError(w, http.StatusBadRequest, "Payload tidak valid")
+		writeError(w, http.StatusBadRequest, i18n.Pick(lang, "Invalid payload", "Payload tidak valid"))
 		return
 	}
 
@@ -2877,7 +2910,7 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	taskName, fn, needsSudo, errMsg := s.buildInstallBatch(items, payload.Label)
+	taskName, fn, needsSudo, errMsg := s.buildInstallBatchLocale(items, payload.Label, lang)
 	if errMsg != "" {
 		writeError(w, http.StatusBadRequest, errMsg)
 		return
@@ -2890,7 +2923,7 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if payload.SudoPass != "" {
-		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, i18n.Pick(lang, "Invalid sudo password: ", "Password sudo tidak valid: ")) {
 			return
 		}
 	}
@@ -2899,13 +2932,13 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":  "sudo_required",
-				"message": "Operasi pemeliharaan/instalasi ini memerlukan hak akses administrator (sudo).",
+				"message": i18n.Pick(lang, "This maintenance/installation operation requires administrator (sudo) privileges.", "Operasi pemeliharaan/instalasi ini memerlukan hak akses administrator (sudo)."),
 			})
 			return
 		}
 	}
 
-	taskID, err := s.runner.StartNativeTask(taskName, fn)
+	taskID, err := s.runner.StartNativeTaskLocale(lang, taskName, fn)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -3312,7 +3345,7 @@ func (s *Server) handleMailAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMailAccountAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3339,7 +3372,7 @@ func (s *Server) handleMailAccountAdd(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMailAccountPassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3366,7 +3399,7 @@ func (s *Server) handleMailAccountPassword(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleMailAccountDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3389,7 +3422,7 @@ func (s *Server) handleMailAccountDelete(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleMailRelaySet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3414,24 +3447,25 @@ func (s *Server) handleMailRelaySet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMailPreflight(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	if s.mailMgr == nil {
-		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		writeError(w, http.StatusServiceUnavailable, i18n.Pick(lang, "Mail manager unavailable", "Mail manager tidak tersedia"))
 		return
 	}
 	domain := r.URL.Query().Get("domain")
-	writeJSON(w, http.StatusOK, s.mailMgr.Preflight(domain))
+	writeJSON(w, http.StatusOK, s.mailMgr.PreflightLocale(domain, lang))
 }
 
 func (s *Server) handleMailRoutes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
-		writeError(w, http.StatusServiceUnavailable, "Mail manager tidak tersedia")
+		writeErrorLocale(w, r, http.StatusServiceUnavailable, "Mail manager unavailable", "Mail manager tidak tersedia")
 		return
 	}
 	info, err := s.mailMgr.GetOutboundRoutes()
@@ -3444,7 +3478,7 @@ func (s *Server) handleMailRoutes(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMailRelayRemove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3512,13 +3546,13 @@ func (s *Server) handleMailRelayDNS(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, report)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
 func (s *Server) handleMailRelayDNSSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3564,7 +3598,7 @@ func (s *Server) handleMailRelayDNSSync(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleMailAdminReset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3590,7 +3624,7 @@ func (s *Server) handleMailAdminReset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMailDomainDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3619,7 +3653,7 @@ func (s *Server) handleMailDomainDelete(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleMailDomainRepair(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3662,7 +3696,7 @@ func (s *Server) handleMailDomainRepair(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleMailSetup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if s.mailMgr == nil {
@@ -3696,7 +3730,7 @@ func (s *Server) handleMailSetup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 
@@ -3857,9 +3891,10 @@ func (s *Server) handleWorkspaceStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkspaceOrcaAI(w http.ResponseWriter, r *http.Request) {
+	lang := i18n.FromRequest(r)
 	switch r.Method {
 	case http.MethodGet:
-		cfg, err := installer.GetOrcaCommitAIConfig(r.Context())
+		cfg, err := installer.GetOrcaCommitAIConfigLocale(r.Context(), lang)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -3868,10 +3903,10 @@ func (s *Server) handleWorkspaceOrcaAI(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var payload installer.OrcaCommitAISaveInput
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			writeError(w, http.StatusBadRequest, "Payload konfigurasi Commit AI tidak valid")
+			writeError(w, http.StatusBadRequest, i18n.Pick(lang, "Invalid Commit AI configuration payload", "Payload konfigurasi Commit AI tidak valid"))
 			return
 		}
-		syncStatus, err := installer.SetOrcaCommitAIDesiredState(r.Context(), nil, payload)
+		syncStatus, err := installer.SetOrcaCommitAIDesiredStateLocale(r.Context(), nil, payload, lang)
 		if err != nil {
 			switch {
 			case errors.Is(err, installer.ErrOrcaCommitAIValidation):
@@ -3883,13 +3918,13 @@ func (s *Server) handleWorkspaceOrcaAI(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		cfg, cfgErr := installer.GetOrcaCommitAIConfig(r.Context())
+		cfg, cfgErr := installer.GetOrcaCommitAIConfigLocale(r.Context(), lang)
 		if cfgErr != nil {
 			cfg = nil
 		}
-		message := "Konfigurasi Orca Commit AI berhasil disimpan dan disinkronkan."
+		message := i18n.Pick(lang, "Orca Commit AI configuration saved and synchronized.", "Konfigurasi Orca Commit AI berhasil disimpan dan disinkronkan.")
 		if syncStatus != nil && !syncStatus.InSync {
-			message = "Konfigurasi disimpan, tetapi sinkronisasi belum selesai: " + syncStatus.State
+			message = i18n.Pick(lang, "Configuration saved, but synchronization is incomplete: ", "Konfigurasi disimpan, tetapi sinkronisasi belum selesai: ") + syncStatus.State
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "saved",
@@ -3898,22 +3933,23 @@ func (s *Server) handleWorkspaceOrcaAI(w http.ResponseWriter, r *http.Request) {
 			"sync":    syncStatus,
 		})
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
 func (s *Server) handleWorkspaceOrcaAIModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	agentID := strings.TrimSpace(r.URL.Query().Get("agent"))
 	if agentID == "" {
-		writeError(w, http.StatusBadRequest, "Parameter agent wajib diisi")
+		writeError(w, http.StatusBadRequest, i18n.Pick(lang, "Agent parameter is required", "Parameter agent wajib diisi"))
 		return
 	}
 	forceRefresh := r.URL.Query().Get("refresh") == "1"
-	res, err := installer.DiscoverOrcaCommitAIModels(r.Context(), agentID, forceRefresh)
+	res, err := installer.DiscoverOrcaCommitAIModelsLocale(r.Context(), agentID, forceRefresh, lang)
 	if err != nil {
 		if errors.Is(err, installer.ErrOrcaCommitAIValidation) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -3927,7 +3963,7 @@ func (s *Server) handleWorkspaceOrcaAIModels(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	limit := 30
@@ -3981,7 +4017,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	report := installer.ToolchainEnvReport()
@@ -4000,7 +4036,7 @@ func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEnvSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -4034,7 +4070,7 @@ func (s *Server) handleEnvSync(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdaterStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	force := r.URL.Query().Get("check") == "1" || r.URL.Query().Get("check") == "true" || r.URL.Query().Get("force") == "1"
@@ -4055,9 +4091,10 @@ func (s *Server) handleUpdaterStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdaterApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
+	lang := i18n.FromRequest(r)
 	var payload struct {
 		SourceDir string `json:"source_dir"`
 		SudoPass  string `json:"sudo_pass"`
@@ -4066,25 +4103,25 @@ func (s *Server) handleUpdaterApply(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 	}
 	if strings.TrimSpace(payload.SourceDir) != "" {
-		writeError(w, http.StatusBadRequest, "Pembaruan dari source_dir lokal tidak diizinkan lewat Web API; gunakan CLI: sudo wdev update --source <dir>")
+		writeError(w, http.StatusBadRequest, i18n.Pick(lang, "Updating from local source_dir is not allowed via the Web API; use CLI: sudo wdev update --source <dir>", "Pembaruan dari source_dir lokal tidak diizinkan lewat Web API; gunakan CLI: sudo wdev update --source <dir>"))
 		return
 	}
 	if payload.SudoPass != "" {
-		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
+		if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, i18n.Pick(lang, "Invalid sudo password: ", "Password sudo tidak valid: ")) {
 			return
 		}
 	}
 	if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "sudo_required",
-			"message": "Pembaruan biner wdev memerlukan hak akses administrator (sudo).",
+			"message": i18n.Pick(lang, "Updating the wdev binary requires administrator (sudo) privileges.", "Pembaruan biner wdev memerlukan hak akses administrator (sudo)."),
 		})
 		return
 	}
 
 	opts := updater.Options{SkipRestart: true}
 	installed := false
-	taskID, err := s.runner.StartNativeTaskAfter("Pembaruan Biner wdev", func(ctx context.Context, cb func(string)) error {
+	taskID, err := s.runner.StartNativeTaskAfterLocale(lang, i18n.Pick(lang, "wdev Binary Update", "Pembaruan Biner wdev"), func(ctx context.Context, cb func(string)) error {
 		res, err := updater.Run(ctx, version.Version, opts, cb)
 		installed = res.Installed
 		return err
@@ -4103,5 +4140,5 @@ func (s *Server) handleUpdaterApply(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotFound, "Endpoint API tidak ditemukan")
+	writeErrorLocale(w, r, http.StatusNotFound, "API endpoint not found", "Endpoint API tidak ditemukan")
 }

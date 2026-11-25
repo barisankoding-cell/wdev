@@ -3,6 +3,7 @@
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { useSidebar } from '#lib/components/ui/sidebar/index.js';
 	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
@@ -35,52 +36,52 @@ import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 
 	const navGroups = $derived<NavGroup[]>([
 		{
-			title: 'Ringkasan',
-			items: [{ label: 'Status & Update', href: '/', icon: ActivityIcon }]
+			title: t('layout.nav.groups.overview'),
+			items: [{ label: t('layout.nav.items.dashboard'), href: '/', icon: ActivityIcon }]
 		},
 		{
-			title: 'Web & Pengembangan',
+			title: t('layout.nav.groups.webDev'),
 			items: [
-				{ label: 'Web Stack & VHost', href: '/webstack', icon: GlobeIcon },
-				{ label: 'Docker & Compose', href: '/compose', icon: ContainerIcon },
-				{ label: 'Multi-Versi Runtime', href: '/switchers', icon: ArrowLeftRightIcon },
-				{ label: 'Toolchains & SDKs', href: '/toolchains', icon: WrenchIcon },
-				{ label: 'Workspace & ADE', href: '/workspace', icon: MonitorIcon }
+				{ label: t('layout.nav.items.webstack'), href: '/webstack', icon: GlobeIcon },
+				{ label: t('layout.nav.items.compose'), href: '/compose', icon: ContainerIcon },
+				{ label: t('layout.nav.items.switchers'), href: '/switchers', icon: ArrowLeftRightIcon },
+				{ label: t('layout.nav.items.toolchains'), href: '/toolchains', icon: WrenchIcon },
+				{ label: t('layout.nav.items.workspace'), href: '/workspace', icon: MonitorIcon }
 			]
 		},
 		{
-			title: 'Sistem & Berkas',
+			title: t('layout.nav.groups.systemFiles'),
 			items: [
-				{ label: 'Status Port & Jaringan', href: '/ports', icon: EthernetPortIcon },
-				{ label: 'File Manager', href: '/files', icon: FolderOpenIcon },
-				{ label: 'Terminal SSH (PTY)', href: '/terminal', icon: SquareTerminalIcon }
+				{ label: t('layout.nav.items.ports'), href: '/ports', icon: EthernetPortIcon },
+				{ label: t('layout.nav.items.files'), href: '/files', icon: FolderOpenIcon },
+				{ label: t('layout.nav.items.terminal'), href: '/terminal', icon: SquareTerminalIcon }
 			]
 		},
 		modeStore.mode === 'edge'
 			? {
-					title: 'Jaringan & Edge Gateway',
+					title: t('layout.nav.groups.networkEdge'),
 					items: [
-						{ label: 'PowerDNS & Edge', href: '/powerdns', icon: NetworkIcon },
-						{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
-						{ label: 'Mail Server & Relay', href: '/mail', icon: MailIcon }
+						{ label: t('layout.nav.items.powerdnsEdge'), href: '/powerdns', icon: NetworkIcon },
+						{ label: t('layout.nav.items.cloudflare'), href: '/cloudflare', icon: CloudIcon },
+						{ label: t('layout.nav.items.mailEdge'), href: '/mail', icon: MailIcon }
 					]
 			  }
 			: modeStore.mode === 'vps'
 				? {
-						title: 'Domain, DNS & Mail',
+						title: t('layout.nav.groups.domainDnsMail'),
 						items: [
-							{ label: 'Domain & DNS Manager', href: '/powerdns', icon: GlobeIcon },
-							{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon },
-							{ label: 'Mail Server', href: '/mail', icon: MailIcon }
+							{ label: t('layout.nav.items.powerdnsVps'), href: '/powerdns', icon: GlobeIcon },
+							{ label: t('layout.nav.items.cloudflare'), href: '/cloudflare', icon: CloudIcon },
+							{ label: t('layout.nav.items.mailVps'), href: '/mail', icon: MailIcon }
 						]
 				  }
 				: {
-						title: 'Ekspos Opsional',
-						items: [{ label: 'Cloudflare Tunnel', href: '/cloudflare', icon: CloudIcon }]
+						title: t('layout.nav.groups.optionalExpose'),
+						items: [{ label: t('layout.nav.items.cloudflare'), href: '/cloudflare', icon: CloudIcon }]
 				  },
 		{
-			title: 'Instalasi & Setup',
-			items: [{ label: 'Setup & Komponen', href: '/setup', icon: ZapIcon }]
+			title: t('layout.nav.groups.installSetup'),
+			items: [{ label: t('layout.nav.items.setup'), href: '/setup', icon: ZapIcon }]
 		}
 	]);
 
@@ -143,9 +144,9 @@ import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 		<div class="flex items-center justify-between gap-2 group-data-[collapsible=icon]:hidden">
 			<div class="flex flex-col gap-0.5 truncate">
 				<span class="truncate font-medium text-sidebar-foreground">
-					{cp.systemStatus?.hostname || 'Linux Host'}
+					{cp.systemStatus?.hostname || t('layout.nav.footer.defaultHost')}
 				</span>
-				<span class="truncate">{cp.systemStatus?.os_name || 'Control Plane'}</span>
+				<span class="truncate">{cp.systemStatus?.os_name || t('layout.nav.footer.defaultSub')}</span>
 			</div>
 			<button
 				type="button"
@@ -154,17 +155,17 @@ import EthernetPortIcon from '@lucide/svelte/icons/ethernet-port';
 					modeStore.openModal();
 				}}
 				class="inline-flex sm:hidden shrink-0 items-center gap-1.5 rounded-md border border-sidebar-border px-2 py-1 text-[11px] font-medium text-sidebar-foreground hover:bg-sidebar-accent"
-				aria-label="Ubah Mode Server"
+				aria-label={t('layout.nav.footer.changeModeAria')}
 			>
 				{#if modeStore.mode === 'vps'}
 					<ServerIcon class="size-3 text-primary" />
-					<span>VPS</span>
+					<span>{t('layout.nav.footer.modeVpsShort')}</span>
 				{:else if modeStore.mode === 'local'}
 					<LaptopIcon class="size-3 text-primary" />
-					<span>Lokal</span>
+					<span>{t('layout.nav.footer.modeLocalShort')}</span>
 				{:else}
 					<NetworkIcon class="size-3 text-primary" />
-					<span>Edge</span>
+					<span>{t('layout.nav.footer.modeEdgeShort')}</span>
 				{/if}
 			</button>
 		</div>

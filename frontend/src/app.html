@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="id">
+<html lang="en">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -13,11 +13,14 @@
 		<title>wdev — Server Control Plane</title>
 		<meta
 			name="description"
-			content="Panel kontrol server Linux untuk mengelola web stack, multi-versi runtime, toolchain, berkas, terminal SSH, DNS, dan layanan server."
+			content="Linux server control panel for managing web stacks, multi-version runtimes, toolchains, files, SSH terminal, DNS, and server services."
 		/>
 		<script>
 			(function () {
 				try {
+					var storedLocale = localStorage.getItem('wdev:locale');
+					document.documentElement.lang = storedLocale === 'id' ? 'id' : 'en';
+
 					var stored = localStorage.getItem('color-scheme');
 					var meta = document.querySelector('meta[name="color-scheme"]');
 					if (meta) {

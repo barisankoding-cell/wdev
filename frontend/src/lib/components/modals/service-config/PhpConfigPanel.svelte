@@ -11,6 +11,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import type { PHPConfig, PHPInspectResult } from '#lib/types/api.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -110,11 +111,11 @@
 		return !inspectData.default_cli_version.startsWith(inspectData.target_version);
 	});
 
-	const pmOptions = [
-		{ value: 'dynamic', label: 'dynamic (Seimbang & Responsif)' },
-		{ value: 'ondemand', label: 'ondemand (Hemat RAM)' },
-		{ value: 'static', label: 'static (Trafik Tinggi Tetap)' }
-	];
+	const pmOptions = $derived([
+		{ value: 'dynamic', label: t('modals.serviceConfig.php.pmDynamic') },
+		{ value: 'ondemand', label: t('modals.serviceConfig.php.pmOndemand') },
+		{ value: 'static', label: t('modals.serviceConfig.php.pmStatic') }
+	]);
 
 	function applyPreset(preset: 'dev' | 'prod') {
 		localError = '';
@@ -160,7 +161,12 @@
 
 		if (pm === 'dynamic') {
 			if (minSpare > maxSpare || maxSpare > maxChildren || startServers < minSpare || startServers > maxSpare) {
-				localError = `Untuk mode dynamic: pastikan min_spare (${minSpare}) <= start_servers (${startServers}) <= max_spare (${maxSpare}) <= max_children (${maxChildren}).`;
+				localError = t('modals.serviceConfig.php.dynamicValidationError', {
+					min: minSpare,
+					start: startServers,
+					max: maxSpare,
+					children: maxChildren
+				});
 				return;
 			}
 		}
@@ -192,7 +198,7 @@
 	<div class="flex flex-col gap-5">
 		<div class="flex flex-wrap items-center justify-between gap-2">
 			<div class="flex flex-wrap items-center gap-2">
-				<span class="text-xs font-medium text-muted-foreground">Versi PHP diperiksa:</span>
+				<span class="text-xs font-medium text-muted-foreground">{t('modals.serviceConfig.php.inspectedVersionLabel')}</span>
 				<Select.Root
 					type="single"
 					value={version}
@@ -200,7 +206,7 @@
 						if (v && v !== version) onVersionChange(v);
 					}}
 				>
-					<Select.Trigger class="h-8 min-w-28 text-xs" aria-label="Pilih versi PHP info">
+					<Select.Trigger class="h-8 min-w-28 text-xs" aria-label={t('modals.serviceConfig.php.selectInfoAria')}>
 						PHP {version}
 					</Select.Trigger>
 					<Select.Content>
@@ -222,10 +228,10 @@
 			>
 				{#if inspectLoading}
 					<Spinner data-icon="inline-start" />
-					Memeriksa...
+					{t('modals.serviceConfig.php.checking')}
 				{:else}
 					<RefreshCwIcon data-icon="inline-start" />
-					Muat Ulang Info PHP
+					{t('modals.serviceConfig.php.reloadInfoBtn')}
 				{/if}
 			</Button>
 		</div>
@@ -233,7 +239,7 @@
 		{#if inspectError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Gagal Mengambil Info PHP</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.php.infoFailedTitle')}</Alert.Title>
 				<Alert.Description>{inspectError}</Alert.Description>
 			</Alert.Root>
 		{/if}
@@ -247,12 +253,11 @@
 			</div>
 			<Skeleton class="h-44 w-full" />
 		{:else if inspectData}
-			<!-- Ringkasan Versi & Engine -->
 			<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 				<div class="flex flex-col justify-between gap-1 rounded-lg border bg-muted/25 p-3">
 					<span class="flex items-center gap-1.5 text-xs text-muted-foreground">
 						<TerminalIcon class="size-3.5 text-primary" />
-						PHP CLI Target ({inspectData.target_version || version})
+						{t('modals.serviceConfig.php.cliTarget', { version: inspectData.target_version || version })}
 					</span>
 					<div class="font-mono text-base font-bold text-foreground">
 						{inspectData.cli_version || '-'}
@@ -266,24 +271,24 @@
 					<div class="flex items-center justify-between gap-1">
 						<span class="flex items-center gap-1.5 text-xs text-muted-foreground">
 							<TerminalIcon class="size-3.5" />
-							PHP CLI Default (`php`)
+							{t('modals.serviceConfig.php.cliDefault')}
 						</span>
 						{#if cliVersionMismatch}
-							<StatusBadge tone="warning" label="Berbeda" showIcon={false} />
+							<StatusBadge tone="warning" label={t('modals.serviceConfig.php.differentBadge')} showIcon={false} />
 						{/if}
 					</div>
 					<div class="font-mono text-base font-bold text-foreground">
 						{inspectData.default_cli_version || '-'}
 					</div>
 					<span class="truncate font-mono text-[11px] text-muted-foreground" title={inspectData.default_cli_binary}>
-						{inspectData.default_cli_binary || 'Belum terpasang'}
+						{inspectData.default_cli_binary || t('common.status.notInstalled')}
 					</span>
 				</div>
 
 				<div class="flex flex-col justify-between gap-1 rounded-lg border bg-muted/25 p-3">
 					<span class="flex items-center gap-1.5 text-xs text-muted-foreground">
 						<CpuIcon class="size-3.5 text-primary" />
-						PHP-FPM &amp; Zend Engine
+						{t('modals.serviceConfig.php.fpmZend')}
 					</span>
 					<div class="font-mono text-base font-bold text-foreground">
 						{inspectData.fpm_version || inspectData.cli_version || '-'}
@@ -296,43 +301,42 @@
 				<div class="flex flex-col justify-between gap-1 rounded-lg border bg-muted/25 p-3">
 					<span class="flex items-center gap-1.5 text-xs text-muted-foreground">
 						<FileCodeIcon class="size-3.5 text-primary" />
-						Ekstensi &amp; Composer
+						{t('modals.serviceConfig.php.extComposer')}
 					</span>
 					<div class="text-base font-bold text-foreground">
-						{inspectData.extensions.length} Ekstensi Aktif
+						{t('modals.serviceConfig.php.activeExtCount', { count: inspectData.extensions.length })}
 					</div>
 					<span class="truncate font-mono text-[11px] text-muted-foreground">
-						Composer: {inspectData.composer_version || 'Belum terpasang'}
+						Composer: {inspectData.composer_version || t('common.status.notInstalled')}
 					</span>
 				</div>
 			</div>
 
-			<!-- Berkas INI & Parameter Efektif CLI -->
 			<div class="grid gap-4 lg:grid-cols-2">
 				<div class="flex flex-col gap-3 rounded-lg border p-4">
-					<h4 class="text-sm font-semibold">Berkas Konfigurasi INI &amp; Direktori</h4>
+					<h4 class="text-sm font-semibold">{t('modals.serviceConfig.php.iniFilesTitle')}</h4>
 					<dl class="grid grid-cols-1 gap-2.5 text-xs">
 						<div class="flex flex-col gap-0.5">
-							<dt class="text-muted-foreground">Loaded Configuration File (CLI)</dt>
+							<dt class="text-muted-foreground">{t('modals.serviceConfig.php.loadedIni')}</dt>
 							<dd class="break-all rounded bg-muted/60 px-2 py-1 font-mono text-foreground">
 								{inspectData.loaded_ini || '(none)'}
 							</dd>
 						</div>
 						<div class="flex flex-col gap-0.5">
-							<dt class="text-muted-foreground">Extension Directory (extension_dir)</dt>
+							<dt class="text-muted-foreground">{t('modals.serviceConfig.php.extDir')}</dt>
 							<dd class="break-all rounded bg-muted/60 px-2 py-1 font-mono text-foreground">
 								{inspectData.extension_dir || '-'}
 							</dd>
 						</div>
 						<div class="flex flex-col gap-0.5">
-							<dt class="text-muted-foreground">Include Path</dt>
+							<dt class="text-muted-foreground">{t('modals.serviceConfig.php.includePath')}</dt>
 							<dd class="break-all rounded bg-muted/60 px-2 py-1 font-mono text-foreground">
 								{inspectData.include_path || '-'}
 							</dd>
 						</div>
 						<div class="flex flex-col gap-1">
 							<dt class="text-muted-foreground">
-								Additional .ini files parsed ({inspectData.additional_ini_files.length})
+								{t('modals.serviceConfig.php.additionalIni', { count: inspectData.additional_ini_files.length })}
 							</dt>
 							{#if inspectData.additional_ini_files.length === 0}
 								<dd class="text-muted-foreground">-</dd>
@@ -348,7 +352,7 @@
 				</div>
 
 				<div class="flex flex-col gap-3 rounded-lg border p-4">
-					<h4 class="text-sm font-semibold">Nilai Efektif PHP CLI &amp; Status Modul</h4>
+					<h4 class="text-sm font-semibold">{t('modals.serviceConfig.php.effectiveValuesTitle')}</h4>
 					<div class="grid grid-cols-2 gap-2.5 text-xs">
 						<div class="rounded border bg-muted/20 p-2.5">
 							<div class="text-muted-foreground">memory_limit</div>
@@ -375,7 +379,7 @@
 							<div class="mt-1 flex flex-wrap gap-1.5">
 								<StatusBadge
 									tone={inspectData.opcache_enabled ? 'success' : 'neutral'}
-									label={inspectData.opcache_enabled ? 'Aktif' : 'Nonaktif'}
+									label={inspectData.opcache_enabled ? t('common.status.active') : t('common.status.inactive')}
 								/>
 								<Badge variant="outline" class="text-[11px]">
 									CLI: {inspectData.opcache_cli_enabled ? 'On' : 'Off'}
@@ -387,7 +391,7 @@
 					<div class="flex flex-col gap-1 text-xs">
 						<span class="text-muted-foreground">disable_functions (CLI)</span>
 						{#if inspectData.disabled_functions.length === 0}
-							<span class="text-muted-foreground">Tidak ada fungsi yang diblokir (kosong).</span>
+							<span class="text-muted-foreground">{t('modals.serviceConfig.php.noDisabledFns')}</span>
 						{:else}
 							<div class="flex flex-wrap gap-1.5">
 								{#each inspectData.disabled_functions as fn (fn)}
@@ -399,13 +403,12 @@
 				</div>
 			</div>
 
-			<!-- Daftar Ekstensi Aktif -->
 			<div class="flex flex-col gap-3 rounded-lg border p-4">
 				<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 					<div>
-						<h4 class="text-sm font-semibold">Ekstensi PHP &amp; Modul Zend Aktif ({inspectData.extensions.length})</h4>
+						<h4 class="text-sm font-semibold">{t('modals.serviceConfig.php.activeExtsTitle', { count: inspectData.extensions.length })}</h4>
 						<p class="text-xs text-muted-foreground">
-							Daftar seluruh modul yang termuat saat menjalankan PHP {inspectData.target_version || version}.
+							{t('modals.serviceConfig.php.activeExtsDesc', { version: inspectData.target_version || version })}
 						</p>
 					</div>
 					<InputGroup.Root class="w-full sm:w-64">
@@ -414,8 +417,8 @@
 						</InputGroup.Addon>
 						<InputGroup.Input
 							type="search"
-							placeholder="Cari ekstensi (mis. pdo, gd, intl)..."
-							aria-label="Cari ekstensi PHP"
+							placeholder={t('modals.serviceConfig.php.searchExtPlaceholder')}
+							aria-label={t('modals.serviceConfig.php.searchExtAria')}
 							bind:value={extQuery}
 						/>
 					</InputGroup.Root>
@@ -423,7 +426,7 @@
 
 				{#if filteredExtensions.length === 0}
 					<div class="py-4 text-center text-xs text-muted-foreground">
-						Tidak ada ekstensi aktif yang cocok dengan pencarian "{extQuery}".
+						{t('modals.serviceConfig.php.noMatchingExt', { query: extQuery })}
 					</div>
 				{:else}
 					<div class="flex flex-wrap gap-1.5">
@@ -468,7 +471,7 @@
 		maxChildren === 10 &&
 		maxReqs === 500
 	) {
-		return 'Development (Debug On)';
+		return 'dev';
 	}
 	if (
 		tz === 'Asia/Jakarta' &&
@@ -487,47 +490,47 @@
 		maxSpare === 6 &&
 		maxReqs === 500
 	) {
-		return 'Laravel / WordPress Optimal';
+		return 'prod';
 	}
-	return 'Custom';
+	return 'custom';
 })()}
 <form onsubmit={handleSubmit} class="flex flex-col gap-5">
 	{#if localError || formError}
 		<Alert.Root variant="destructive">
 			<AlertCircleIcon />
-			<Alert.Title>Validasi / Penyimpanan Gagal</Alert.Title>
+			<Alert.Title>{t('modals.serviceConfig.common.validationSaveFailed')}</Alert.Title>
 			<Alert.Description>{localError || formError}</Alert.Description>
 		</Alert.Root>
 	{/if}
 
 	<div class="flex flex-wrap items-center gap-2">
-		<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
+		<span class="text-xs font-medium text-muted-foreground">{t('modals.serviceConfig.common.quickPresets')}</span>
 		<Button
 			type="button"
-			variant={phpActivePreset === 'Development (Debug On)' ? 'default' : 'outline'}
+			variant={phpActivePreset === 'dev' ? 'default' : 'outline'}
 			size="xs"
 			onclick={() => applyPreset('dev')}
 		>
-			Development (Debug On)
+			{t('modals.serviceConfig.php.presetDev')}
 		</Button>
 		<Button
 			type="button"
-			variant={phpActivePreset === 'Laravel / WordPress Optimal' ? 'default' : 'outline'}
+			variant={phpActivePreset === 'prod' ? 'default' : 'outline'}
 			size="xs"
 			onclick={() => applyPreset('prod')}
 		>
-			Laravel / WordPress Optimal
+			{t('modals.serviceConfig.php.presetProd')}
 		</Button>
-		{#if phpActivePreset === 'Custom'}
-			<Badge variant="outline">Custom</Badge>
+		{#if phpActivePreset === 'custom'}
+			<Badge variant="outline">{t('modals.serviceConfig.common.customBadge')}</Badge>
 		{/if}
 	</div>
 
 	<Field.FieldSet>
-		<Field.FieldLegend variant="label">Versi &amp; Pengaturan PHP.ini (99-wdev.ini)</Field.FieldLegend>
+		<Field.FieldLegend variant="label">{t('modals.serviceConfig.php.iniLegend')}</Field.FieldLegend>
 		<Field.FieldGroup class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			<Field.Field>
-				<Field.FieldLabel for="php-cfg-version">Versi PHP Target</Field.FieldLabel>
+				<Field.FieldLabel for="php-cfg-version">{t('modals.serviceConfig.php.targetVersionLabel')}</Field.FieldLabel>
 				<Select.Root
 					type="single"
 					value={version}
@@ -602,11 +605,11 @@
 					bind:value={postMaxSize}
 					required
 				/>
-				<Field.FieldDescription>Disarankan &ge; upload_max_filesize.</Field.FieldDescription>
+				<Field.FieldDescription>{t('modals.serviceConfig.php.postMaxDesc')}</Field.FieldDescription>
 			</Field.Field>
 
 			<Field.Field>
-				<Field.FieldLabel for="php-cfg-maxexec">max_execution_time (detik)</Field.FieldLabel>
+				<Field.FieldLabel for="php-cfg-maxexec">{t('modals.serviceConfig.php.maxExecLabel')}</Field.FieldLabel>
 				<Input
 					id="php-cfg-maxexec"
 					name="max_execution_time"
@@ -645,21 +648,21 @@
 				<Field.Field orientation="horizontal">
 					<Checkbox id="php-cfg-display-errors" bind:checked={displayErrors} />
 					<Field.FieldLabel for="php-cfg-display-errors" class="font-normal">
-						Tampilkan Error (display_errors = On)
+						{t('modals.serviceConfig.php.displayErrorsLabel')}
 					</Field.FieldLabel>
 				</Field.Field>
 
 				<Field.Field orientation="horizontal">
 					<Checkbox id="php-cfg-opcache" bind:checked={opcacheEnable} />
 					<Field.FieldLabel for="php-cfg-opcache" class="font-normal">
-						Aktifkan Zend OPcache
+						{t('modals.serviceConfig.php.opcacheLabel')}
 					</Field.FieldLabel>
 				</Field.Field>
 
 				<Field.Field orientation="horizontal">
 					<Checkbox id="php-cfg-sync-cli" bind:checked={syncCLI} />
 					<Field.FieldLabel for="php-cfg-sync-cli" class="font-normal">
-						Terapkan juga pengaturan INI ke PHP CLI (Composer / Artisan)
+						{t('modals.serviceConfig.php.syncCliLabel')}
 					</Field.FieldLabel>
 				</Field.Field>
 			</div>
@@ -667,10 +670,10 @@
 	</Field.FieldSet>
 
 	<Field.FieldSet>
-		<Field.FieldLegend variant="label">Worker Pool PHP-FPM ([www] www.conf)</Field.FieldLegend>
+		<Field.FieldLegend variant="label">{t('modals.serviceConfig.php.poolLegend')}</Field.FieldLegend>
 		<Field.FieldGroup class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			<Field.Field>
-				<Field.FieldLabel for="php-cfg-pm">Process Manager (pm)</Field.FieldLabel>
+				<Field.FieldLabel for="php-cfg-pm">{t('modals.serviceConfig.php.pmLabel')}</Field.FieldLabel>
 				<Select.Root type="single" bind:value={pm}>
 					<Select.Trigger id="php-cfg-pm" class="w-full">
 						{pmOptions.find((o) => o.value === pm)?.label ?? pm}
@@ -745,7 +748,7 @@
 					bind:value={pmMaxRequestsStr}
 					required
 				/>
-				<Field.FieldDescription>Contoh: 500 untuk mencegah kebocoran memori worker.</Field.FieldDescription>
+				<Field.FieldDescription>{t('modals.serviceConfig.php.maxReqDesc')}</Field.FieldDescription>
 			</Field.Field>
 		</Field.FieldGroup>
 	</Field.FieldSet>
@@ -756,17 +759,17 @@
 		<Field.Field orientation="horizontal" class="w-auto">
 			<Checkbox id="php-cfg-restart" bind:checked={restart} />
 			<Field.FieldLabel for="php-cfg-restart" class="font-normal">
-				Uji sintaks (-t) &amp; restart PHP-FPM
+				{t('modals.serviceConfig.php.testRestartLabel')}
 			</Field.FieldLabel>
 		</Field.Field>
 		<div class="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:items-center">
-			<Button type="button" variant="outline" onclick={onCancel}>Batal</Button>
+			<Button type="button" variant="outline" onclick={onCancel}>{t('common.actions.cancel')}</Button>
 			<Button type="submit" disabled={saving}>
 				{#if saving}
 					<Spinner data-icon="inline-start" />
-					Menyimpan...
+					{t('common.actions.saving')}
 				{:else}
-					Simpan Konfigurasi
+					{t('modals.serviceConfig.common.saveConfigBtn')}
 				{/if}
 			</Button>
 		</div>

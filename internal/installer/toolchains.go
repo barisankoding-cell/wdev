@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"wdev/internal/i18n"
 )
 
 // ToolchainStatus merepresentasikan informasi status instalasi & rilis dari suatu SDK/Toolchain.
@@ -403,8 +404,14 @@ func (inst *Installer) fetchLatestVersions(ctx context.Context) map[string]strin
 	return latest
 }
 
-// GetToolchainStatuses mengumpulkan status instalasi lokal dan versi rilis terbaru dari semua toolchain & SDK.
+// GetToolchainStatuses mengumpulkan status instalasi lokal dan versi rilis terbaru dari semua toolchain & SDK (English default).
 func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bool) ([]ToolchainStatus, error) {
+	return inst.GetToolchainStatusesLocale(ctx, forceRefresh, i18n.DefaultLocale)
+}
+
+// GetToolchainStatusesLocale mengumpulkan status instalasi lokal dan versi rilis terbaru dengan label terlokalisasi.
+func (inst *Installer) GetToolchainStatusesLocale(ctx context.Context, forceRefresh bool, lang string) ([]ToolchainStatus, error) {
+	loc := i18n.Normalize(lang)
 	// Ambil atau perbarui cache versi remote
 	globalToolchainCache.mu.Lock()
 	needFetch := forceRefresh || globalToolchainCache.checkedAt.IsZero() || time.Since(globalToolchainCache.checkedAt) > 10*time.Minute
@@ -487,7 +494,7 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 			ID:               "rust",
 			Name:             "🦀 Rust, Mold Linker & Sccache",
 			Category:         "Systems & Toolchain",
-			Description:      "Toolchain compiler Rust modern dengan linker super cepat Mold dan compiler cache Sccache.",
+			Description:      i18n.Pick(loc, "Modern Rust compiler toolchain with ultrafast Mold linker and Sccache compiler cache.", "Toolchain compiler Rust modern dengan linker super cepat Mold dan compiler cache Sccache."),
 			Installed:        installed && installedVer != "",
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,
@@ -524,9 +531,9 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 		}
 		items[1] = ToolchainStatus{
 			ID:               "go",
-			Name:             "🐹 Golang (Go Rilis Resmi)",
+			Name:             i18n.Pick(loc, "🐹 Golang (Official Go Release)", "🐹 Golang (Go Rilis Resmi)"),
 			Category:         "Backend & CLI",
-			Description:      "Compiler dan toolchain bahasa Go resmi terbaru di /usr/local/go.",
+			Description:      i18n.Pick(loc, "Latest official Go language compiler and toolchain in /usr/local/go.", "Compiler dan toolchain bahasa Go resmi terbaru di /usr/local/go."),
 			Installed:        installed,
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,
@@ -561,7 +568,7 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 			ID:               "node",
 			Name:             "🟢 Node.js LTS & NPM",
 			Category:         "Web & Fullstack",
-			Description:      "Runtime JavaScript v8 modern LTS dengan package manager npm di /usr/local/lib/nodejs.",
+			Description:      i18n.Pick(loc, "Modern V8 LTS JavaScript runtime with npm package manager in /usr/local/lib/nodejs.", "Runtime JavaScript v8 modern LTS dengan package manager npm di /usr/local/lib/nodejs."),
 			Installed:        installed,
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,
@@ -615,9 +622,9 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 		}
 		items[3] = ToolchainStatus{
 			ID:               "java",
-			Name:             "☕ OpenJDK Java (JDK Multi-versi)",
+			Name:             i18n.Pick(loc, "☕ OpenJDK Java (Multi-version JDK)", "☕ OpenJDK Java (JDK Multi-versi)"),
 			Category:         "JVM & Enterprise",
-			Description:      "Java Development Kit OpenJDK multi-versi (JDK 17, 21 LTS, dan 25).",
+			Description:      i18n.Pick(loc, "Multi-version OpenJDK Java Development Kit (JDK 17, 21 LTS, and 25).", "Java Development Kit OpenJDK multi-versi (JDK 17, 21 LTS, dan 25)."),
 			Installed:        installed,
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,
@@ -673,7 +680,7 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 			ID:               "flutter",
 			Name:             "🎯 Flutter SDK (Channel Stable)",
 			Category:         "Mobile & Multiplatform",
-			Description:      "Framework UI aplikasi multiplatform Android, Web, dan Desktop di /usr/local/flutter.",
+			Description:      i18n.Pick(loc, "Multiplatform UI framework for Android, Web, and Desktop apps in /usr/local/flutter.", "Framework UI aplikasi multiplatform Android, Web, dan Desktop di /usr/local/flutter."),
 			Installed:        installed,
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,
@@ -712,7 +719,7 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 			if toolsVer != "" {
 				installedVer = "Tools v" + toolsVer
 			} else {
-				installedVer = "Terpasang"
+				installedVer = i18n.Pick(loc, "Installed", "Terpasang")
 			}
 			if len(platforms) > 0 {
 				extra = fmt.Sprintf("API: %s", strings.Join(platforms, ", "))
@@ -726,7 +733,7 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 			ID:               "android",
 			Name:             "🤖 Android SDK & CLI Tools",
 			Category:         "Mobile & Native",
-			Description:      "Command Line Tools, Platform Tools, dan SDK Platform API di /usr/local/android-sdk.",
+			Description:      i18n.Pick(loc, "Command Line Tools, Platform Tools, and SDK Platform APIs in /usr/local/android-sdk.", "Command Line Tools, Platform Tools, dan SDK Platform API di /usr/local/android-sdk."),
 			Installed:        installed,
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,
@@ -762,7 +769,7 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 			ID:               "redis",
 			Name:             "⚡ Redis / Valkey Cache Server",
 			Category:         "Database & Cache",
-			Description:      "Server in-memory cache lokal berkecepatan tinggi port 6379.",
+			Description:      i18n.Pick(loc, "High-speed local in-memory cache server on port 6379.", "Server in-memory cache lokal berkecepatan tinggi port 6379."),
 			Installed:        installed,
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,
@@ -801,7 +808,7 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 			if len(details) > 0 {
 				installedVer = strings.Join(details, " • ")
 			} else {
-				installedVer = "Terpasang (Lengkap)"
+				installedVer = i18n.Pick(loc, "Installed (Complete)", "Terpasang (Lengkap)")
 			}
 		}
 		latestVer := latestMap["base"]
@@ -810,9 +817,9 @@ func (inst *Installer) GetToolchainStatuses(ctx context.Context, forceRefresh bo
 		}
 		items[7] = ToolchainStatus{
 			ID:               "base",
-			Name:             "📦 Dependensi Dasar Sistem",
+			Name:             i18n.Pick(loc, "📦 Core System Dependencies", "📦 Dependensi Dasar Sistem"),
 			Category:         "Core Build Tools",
-			Description:      "Build tools esensial, clang, cmake, ninja, curl, git, jq, dan pustaka dev distro.",
+			Description:      i18n.Pick(loc, "Essential build tools, clang, cmake, ninja, curl, git, jq, and distro dev libraries.", "Build tools esensial, clang, cmake, ninja, curl, git, jq, dan pustaka dev distro."),
 			Installed:        installed,
 			InstalledVersion: installedVer,
 			ExtraInfo:        extra,

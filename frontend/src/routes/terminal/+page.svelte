@@ -32,6 +32,7 @@
 		TableRow
 	} from '#lib/components/ui/table/index.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
 	import type { TerminalAuditRecord, TerminalInfo, TerminalTargetUser } from '#lib/types/api.js';
 	import ClipboardIcon from '@lucide/svelte/icons/clipboard';
@@ -247,10 +248,10 @@
 						}
 					: t
 			);
-			toast.success(`Sesi terminal ${res.user} dibuka.`);
+			toast.success(t('terminal.toast.unlocked', { user: res.user }));
 		} catch (err) {
 			unlockError =
-				err instanceof ApiError || err instanceof Error ? err.message : 'Verifikasi password gagal';
+				err instanceof ApiError || err instanceof Error ? err.message : t('terminal.toast.unlockFailed');
 		} finally {
 			unlockBusy = false;
 		}
@@ -262,9 +263,9 @@
 			if (info) {
 				info = { ...info, root_unlocked: false, root_unlock_expires_at: undefined };
 			}
-			toast.success('Izin sesi root baru dikunci kembali.');
+			toast.success(t('terminal.toast.rootLocked'));
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal mengunci akses root');
+			toast.error(err instanceof Error ? err.message : t('terminal.toast.lockFailed'));
 		}
 	}
 
@@ -275,7 +276,7 @@
 		try {
 			auditRecords = await api.getTerminalAudit(50);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat riwayat audit terminal');
+			toast.error(err instanceof Error ? err.message : t('terminal.toast.auditFailed'));
 		} finally {
 			auditLoading = false;
 		}
@@ -296,18 +297,18 @@
 	}
 
 	function statusLabel(tab: TerminalTab): string {
-		if (tab.locked) return 'Terkunci (Verifikasi Password)';
+		if (tab.locked) return t('terminal.status.locked');
 		switch (tab.meta.status) {
 			case 'connected':
-				return `Terhubung (${tab.meta.user || tab.user || 'shell'})`;
+				return t('terminal.status.connected', { user: tab.meta.user || tab.user || 'shell' });
 			case 'connecting':
-				return 'Menghubungkan...';
+				return t('terminal.status.connecting');
 			case 'exited':
 				return typeof tab.meta.exitCode === 'number'
-					? `Selesai (exit ${tab.meta.exitCode})`
-					: 'Sesi ditutup';
+					? t('terminal.status.exitedCode', { code: tab.meta.exitCode })
+					: t('terminal.status.closed');
 			case 'error':
-				return tab.meta.error || 'Terputus';
+				return tab.meta.error || t('terminal.status.disconnected');
 		}
 	}
 
@@ -315,7 +316,7 @@
 		if (!iso) return '—';
 		const d = new Date(iso);
 		if (Number.isNaN(d.getTime())) return iso;
-		return d.toLocaleString('id-ID', {
+		return i18n.formatDateTime(d, {
 			day: '2-digit',
 			month: 'short',
 			hour: '2-digit',
@@ -332,7 +333,7 @@
 			if (!selectedUser) selectedUser = res.default_user || res.user;
 		} catch (err) {
 			infoError =
-				err instanceof ApiError || err instanceof Error ? err.message : 'Gagal memuat info terminal';
+				err instanceof ApiError || err instanceof Error ? err.message : t('terminal.toast.infoFailed');
 		} finally {
 			infoLoaded = true;
 		}
@@ -379,7 +380,7 @@
 	<div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
 		<div>
 			<div class="flex flex-wrap items-center gap-2">
-				<h1 class="text-2xl font-bold tracking-tight">Terminal SSH (PTY)</h1>
+				<h1 class="text-2xl font-bold tracking-tight">{t('terminal.title')}</h1>
 				{#if info}
 					<Badge variant="outline" class="font-mono text-xs">
 						{info.hostname}
@@ -388,22 +389,24 @@
 						{info.os_name}
 					</Badge>
 					<Badge variant="outline" class="text-xs">
-						Auto-Lock Idle: {idleMinutes}m
+						{t('terminal.autoLockBadge', { minutes: idleMinutes })}
 					</Badge>
 				{/if}
 			</div>
 			<p class="text-muted-foreground text-sm">
-				Sesi shell interaktif penuh dengan pemisahan hak akses non-root default, verifikasi sandi untuk root, idle auto-close, dan audit log.
+				{t('terminal.subtitle')}
 			</p>
 		</div>
 
 		<div class="flex flex-wrap items-center gap-2">
 			{#if info && info.available_users.length > 0}
 				<div class="w-48">
-					<NativeSelect.Root bind:value={selectedUser} aria-label="Pilih akun OS untuk tab baru">
+					<NativeSelect.Root bind:value={selectedUser} aria-label={t('terminal.selectUserAria')}>
 						{#each info.available_users as u (u.username)}
 							<NativeSelect.Option value={u.username}>
-								{u.is_root ? `${u.username} (Root Penuh)` : `${u.username} (Non-Root)`}
+								{u.is_root
+									? t('terminal.userRootOption', { username: u.username })
+									: t('terminal.userNonRootOption', { username: u.username })}
 							</NativeSelect.Option>
 						{/each}
 					</NativeSelect.Root>
@@ -412,7 +415,7 @@
 
 			{#if info && info.available_shells.length > 0}
 				<div class="w-36">
-					<NativeSelect.Root bind:value={selectedShell} aria-label="Pilih shell untuk tab baru">
+					<NativeSelect.Root bind:value={selectedShell} aria-label={t('terminal.selectShellAria')}>
 						{#each info.available_shells as sh (sh)}
 							<NativeSelect.Option value={sh}>{sh}</NativeSelect.Option>
 						{/each}
@@ -423,13 +426,13 @@
 			{#if info?.root_unlocked}
 				<Button variant="destructive" size="sm" onclick={handleLockRoot}>
 					<LockIcon class="size-4" />
-					Kunci Root
+					{t('terminal.lockRoot')}
 				</Button>
 			{/if}
 
 			<Button variant="outline" size="sm" onclick={openAuditDialog}>
 				<HistoryIcon class="size-4" />
-				Audit Sesi
+				{t('terminal.auditSession')}
 			</Button>
 
 			<Button
@@ -438,7 +441,7 @@
 				href={currentFileMgrPath ? `/files?path=${encodeURIComponent(currentFileMgrPath)}` : '/files'}
 			>
 				<FolderOpenIcon class="size-4" />
-				File Manager
+				{t('terminal.fileManager')}
 			</Button>
 
 			<Button
@@ -447,7 +450,7 @@
 				onclick={() => createTab(activeTab?.meta.cwd || info?.home_dir || '', selectedShell, selectedUser)}
 			>
 				<PlusIcon class="size-4" />
-				Tab Shell Baru
+				{t('terminal.newTabBtn')}
 			</Button>
 		</div>
 	</div>
@@ -455,14 +458,13 @@
 	{#if showNonTLSWarning}
 		<Alert variant="destructive">
 			<TriangleAlertIcon class="size-4" />
-			<AlertTitle>Peringatan Keamanan: Akses HTTP Tanpa Enkripsi TLS</AlertTitle>
+			<AlertTitle>{t('terminal.tlsWarningTitle')}</AlertTitle>
 			<AlertDescription class="flex flex-wrap items-center justify-between gap-2 text-xs">
 				<span>
-					Daemon berjalan sebagai <strong>root</strong> dan saat ini Anda mengakses panel lewat HTTP biasa (<code class="font-mono">http://</code>).
-					Ikat panel ke domain HTTPS atau akses via NetBird VPN untuk mencegah penyadapan sesi &amp; ketikan terminal.
+					{t('terminal.tlsWarningDescPart1')} <strong>root</strong> {t('terminal.tlsWarningDescPart2')}<code class="font-mono">http://</code>{t('terminal.tlsWarningDescPart3')}
 				</span>
 				<Button variant="outline" size="sm" class="h-7 shrink-0 text-xs" onclick={() => authStore.openPanelDomain()}>
-					Ikat Domain &amp; HTTPS
+					{t('terminal.bindDomainHttps')}
 				</Button>
 			</AlertDescription>
 		</Alert>
@@ -503,7 +505,7 @@
 							<button
 								type="button"
 								class="text-muted-foreground hover:text-foreground ml-1 rounded p-0.5"
-								title="Tutup tab"
+								title={t('terminal.closeTabTitle')}
 								onclick={() => closeTab(tab.id)}
 							>
 								<XIcon class="size-3" />
@@ -516,7 +518,7 @@
 						size="icon-sm"
 						class="h-7 w-7"
 						disabled={!infoLoaded}
-						title="Tambah tab terminal"
+						title={t('terminal.addTabTitle')}
 						onclick={() => createTab(activeTab?.meta.cwd || info?.home_dir || '', selectedShell, selectedUser)}
 					>
 						<PlusIcon class="size-3.5" />
@@ -529,10 +531,10 @@
 						<Badge variant={activeTab.isRoot ? 'destructive' : 'secondary'} class="gap-1 text-[11px]">
 							{#if activeTab.isRoot}
 								<ShieldAlertIcon class="size-3" />
-								ROOT
+								{t('terminal.badgeRoot')}
 							{:else}
 								<ShieldCheckIcon class="size-3" />
-								Non-Root
+								{t('terminal.badgeNonRoot')}
 							{/if}
 						</Badge>
 
@@ -546,7 +548,7 @@
 						<button
 							type="button"
 							class="hover:bg-muted px-2 py-1 text-xs font-medium"
-							title="Perkecil font"
+							title={t('terminal.fontDecreaseTitle')}
 							onclick={() => (fontSize = Math.max(11, fontSize - 1))}
 						>
 							A-
@@ -555,7 +557,7 @@
 						<button
 							type="button"
 							class="hover:bg-muted px-2 py-1 text-xs font-medium"
-							title="Perbesar font"
+							title={t('terminal.fontIncreaseTitle')}
 							onclick={() => (fontSize = Math.min(22, fontSize + 1))}
 						>
 							A+
@@ -566,7 +568,7 @@
 						variant="outline"
 						size="icon-sm"
 						class="h-7 w-7"
-						title={expanded ? 'Ukuran normal' : 'Perbesar area terminal'}
+						title={expanded ? t('terminal.normalSizeTitle') : t('terminal.expandTitle')}
 						onclick={() => (expanded = !expanded)}
 					>
 						{#if expanded}
@@ -583,10 +585,10 @@
 				<div class="flex flex-wrap items-center justify-between gap-2 text-xs">
 					<div class="text-muted-foreground min-w-0 truncate font-mono text-[11px]">
 						{#if activeTab.meta.cwd || activeTab.cwd}
-							CWD: <span class="text-foreground">{activeTab.meta.cwd || activeTab.cwd}</span>
+							{t('terminal.cwdLabel')} <span class="text-foreground">{activeTab.meta.cwd || activeTab.cwd}</span>
 						{/if}
 						{#if activeTab.meta.shell || activeTab.shell}
-							<span class="mx-1.5">•</span> Shell: <span class="text-foreground">{activeTab.meta.shell || activeTab.shell}</span>
+							<span class="mx-1.5">•</span> {t('terminal.shellLabel')} <span class="text-foreground">{activeTab.meta.shell || activeTab.shell}</span>
 						{/if}
 					</div>
 
@@ -596,7 +598,7 @@
 								variant="ghost"
 								size="sm"
 								class="h-6 px-2 font-mono text-[11px]"
-								title="Kirim Ctrl+C (SIGINT)"
+								title={t('terminal.sendCtrlCTitle')}
 								onclick={() => activePane?.sendText('\x03')}
 							>
 								Ctrl+C
@@ -605,7 +607,7 @@
 								variant="ghost"
 								size="sm"
 								class="h-6 px-2 font-mono text-[11px]"
-								title="Kirim Tab"
+								title={t('terminal.sendTabTitle')}
 								onclick={() => activePane?.sendText('\t')}
 							>
 								Tab
@@ -614,7 +616,7 @@
 								variant="ghost"
 								size="sm"
 								class="h-6 px-2 font-mono text-[11px]"
-								title="Kirim Esc"
+								title={t('terminal.sendEscTitle')}
 								onclick={() => activePane?.sendText('\x1b')}
 							>
 								Esc
@@ -626,7 +628,7 @@
 								onclick={() => activePane?.copySelection()}
 							>
 								<CopyIcon class="size-3" />
-								Copy
+								{t('terminal.copyBtn')}
 							</Button>
 							<Button
 								variant="outline"
@@ -635,7 +637,7 @@
 								onclick={() => activePane?.pasteClipboard()}
 							>
 								<ClipboardIcon class="size-3" />
-								Paste
+								{t('terminal.pasteBtn')}
 							</Button>
 							<Button
 								variant="outline"
@@ -644,7 +646,7 @@
 								onclick={() => activePane?.clear()}
 							>
 								<EraserIcon class="size-3" />
-								Clear
+								{t('terminal.clearBtn')}
 							</Button>
 							<Button
 								variant="outline"
@@ -653,7 +655,7 @@
 								onclick={() => activePane?.reconnect()}
 							>
 								<RotateCcwIcon class="size-3" />
-								Reconnect
+								{t('terminal.reconnectBtn')}
 							</Button>
 						</div>
 					{/if}
@@ -665,7 +667,7 @@
 			<div class={expanded ? 'h-[calc(100dvh-10rem)] min-h-[520px]' : 'h-[calc(100dvh-17rem)] min-h-[440px]'}>
 				{#if !infoLoaded}
 					<div class="flex h-full items-center justify-center bg-[#0b101b] text-slate-300 text-sm">
-						<Spinner class="mr-2 size-4" /> Memeriksa kebijakan keamanan terminal...
+						<Spinner class="mr-2 size-4" /> {t('terminal.checkingPolicy')}
 					</div>
 				{:else}
 					{#each tabs as tab (tab.id)}
@@ -682,10 +684,10 @@
 											</div>
 											<div>
 												<h2 class="text-base font-semibold">
-													Verifikasi Password Terminal ({tab.user || 'root'})
+													{t('terminal.unlock.title', { user: tab.user || 'root' })}
 												</h2>
 												<p class="text-muted-foreground mt-0.5 text-xs">
-													Demi keamanan server, akses shell <code class="font-mono font-semibold">{tab.user || 'root'}</code> memerlukan konfirmasi ulang kata sandi admin panel <code class="font-mono">wdev</code>.
+													{t('terminal.unlock.descPrefix')} <code class="font-mono font-semibold">{tab.user || 'root'}</code> {t('terminal.unlock.descMiddle')} <code class="font-mono">wdev</code> {t('terminal.unlock.descSuffix')}
 												</p>
 											</div>
 										</div>
@@ -697,23 +699,23 @@
 										{/if}
 
 										<Field>
-											<FieldLabel for={`term-unlock-pass-${tab.id}`}>Kata Sandi Panel Admin</FieldLabel>
+											<FieldLabel for={`term-unlock-pass-${tab.id}`}>{t('terminal.unlock.passwordLabel')}</FieldLabel>
 											<Input
 												id={`term-unlock-pass-${tab.id}`}
 												type="password"
 												bind:value={unlockPassword}
-												placeholder="Masukkan kata sandi admin panel..."
+												placeholder={t('terminal.unlock.passwordPlaceholder')}
 												required
 												autofocus
 											/>
 											<FieldDescription>
-												Target folder: <code class="font-mono">{tab.cwd || info?.home_dir || '/'}</code>
+												{t('terminal.unlock.targetFolder')} <code class="font-mono">{tab.cwd || info?.home_dir || '/'}</code>
 											</FieldDescription>
 										</Field>
 
 										<label class="flex items-center gap-2 text-xs">
 											<Checkbox bind:checked={unlockRemember} />
-											<span>Ingat verifikasi di sesi ini selama 10 menit</span>
+											<span>{t('terminal.unlock.rememberLabel')}</span>
 										</label>
 
 										<div class="flex items-center justify-end gap-2 pt-1">
@@ -737,15 +739,15 @@
 														);
 													}}
 												>
-													Masuk sebagai {safeUser.username} (Non-Root)
+													{t('terminal.unlock.enterAsNonRoot', { user: safeUser.username })}
 												</Button>
 											{/if}
 											<Button type="submit" size="sm" disabled={unlockBusy || !unlockPassword}>
 												{#if unlockBusy}
 													<Spinner class="size-4" />
-													Memverifikasi...
+													{t('terminal.unlock.verifying')}
 												{:else}
-													Buka Terminal {tab.user || 'root'}
+													{t('terminal.unlock.openTerminal', { user: tab.user || 'root' })}
 												{/if}
 											</Button>
 										</div>
@@ -778,53 +780,53 @@
 <Dialog bind:open={auditOpen}>
 	<DialogContent class="flex max-h-[85dvh] flex-col sm:max-w-4xl">
 		<DialogHeader>
-			<DialogTitle>Riwayat Audit Sesi Terminal PTY</DialogTitle>
+			<DialogTitle>{t('terminal.audit.title')}</DialogTitle>
 			<DialogDescription>
-				Catatan 50 sesi terminal interaktif terakhir (akun OS target, IP klien, folder awal, dan status penutupan).
+				{t('terminal.audit.description')}
 			</DialogDescription>
 		</DialogHeader>
 
 		<div class="min-h-0 flex-1 overflow-y-auto">
 			{#if auditLoading}
 				<div class="flex items-center justify-center py-8 text-sm">
-					<Spinner class="mr-2 size-4" /> Memuat riwayat audit...
+					<Spinner class="mr-2 size-4" /> {t('terminal.audit.loading')}
 				</div>
 			{:else if auditRecords.length === 0}
-				<p class="text-muted-foreground py-8 text-center text-sm">Belum ada sesi terminal yang tercatat.</p>
+				<p class="text-muted-foreground py-8 text-center text-sm">{t('terminal.audit.empty')}</p>
 			{:else}
 				<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
-					<ResponsiveTableWrapper label="Riwayat Audit Terminal PTY" class="rounded-none border-0 bg-transparent">
+					<ResponsiveTableWrapper label={t('terminal.audit.tableAria')} class="rounded-none border-0 bg-transparent">
 						<Table>
 							<TableHeader>
 								<TableRow>
-									<TableHead>User OS</TableHead>
-									<TableHead>User Panel</TableHead>
-									<TableHead>IP Klien</TableHead>
-									<TableHead>CWD / Shell</TableHead>
-									<TableHead>Status</TableHead>
-									<TableHead>Mulai</TableHead>
-									<TableHead>Selesai</TableHead>
+									<TableHead>{t('terminal.audit.colOsUser')}</TableHead>
+									<TableHead>{t('terminal.audit.colPanelUser')}</TableHead>
+									<TableHead>{t('terminal.audit.colClientIp')}</TableHead>
+									<TableHead>{t('terminal.audit.colCwdShell')}</TableHead>
+									<TableHead>{t('terminal.audit.colStatus')}</TableHead>
+									<TableHead>{t('terminal.audit.colStarted')}</TableHead>
+									<TableHead>{t('terminal.audit.colEnded')}</TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>
 								{#each paginatedAuditRecords as rec (rec.id)}
 									<TableRow>
-										<TableCell data-label="User OS">
+										<TableCell data-label={t('terminal.audit.colOsUser')}>
 											<Badge variant={rec.target_user === 'root' ? 'destructive' : 'secondary'} class="font-mono text-xs">
 												{rec.target_user || 'unknown'}
 											</Badge>
 										</TableCell>
-										<TableCell data-label="User Panel" class="font-mono text-xs">
+										<TableCell data-label={t('terminal.audit.colPanelUser')} class="font-mono text-xs">
 											{rec.panel_user || '-'}
 										</TableCell>
-										<TableCell data-label="IP Klien" class="font-mono text-xs">
+										<TableCell data-label={t('terminal.audit.colClientIp')} class="font-mono text-xs">
 											{rec.client_ip || '-'}
 										</TableCell>
-										<TableCell data-label="CWD / Shell" class="font-mono text-xs">
+										<TableCell data-label={t('terminal.audit.colCwdShell')} class="font-mono text-xs">
 											<div class="max-w-56 truncate" title={rec.cwd}>{rec.cwd}</div>
 											<div class="text-muted-foreground text-[11px]">{rec.shell}</div>
 										</TableCell>
-										<TableCell data-label="Status">
+										<TableCell data-label={t('terminal.audit.colStatus')}>
 											<Badge
 												variant={rec.status === 'active' ? 'default' : rec.status === 'idle_timeout' ? 'secondary' : 'outline'}
 												class="text-xs"
@@ -833,10 +835,10 @@
 												{#if rec.status !== 'active'}(exit {rec.exit_code}){/if}
 											</Badge>
 										</TableCell>
-										<TableCell data-label="Mulai" class="text-xs whitespace-nowrap">
+										<TableCell data-label={t('terminal.audit.colStarted')} class="text-xs whitespace-nowrap">
 											{formatTime(rec.started_at)}
 										</TableCell>
-										<TableCell data-label="Selesai" class="text-muted-foreground text-xs whitespace-nowrap">
+										<TableCell data-label={t('terminal.audit.colEnded')} class="text-muted-foreground text-xs whitespace-nowrap">
 											{formatTime(rec.ended_at)}
 										</TableCell>
 									</TableRow>
@@ -848,7 +850,7 @@
 						bind:page={auditPage}
 						totalItems={auditRecords.length}
 						pageSize={AUDIT_PAGE_SIZE}
-						itemLabel="sesi audit"
+						itemLabel={t('terminal.audit.itemLabel')}
 						class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
 					/>
 				</div>

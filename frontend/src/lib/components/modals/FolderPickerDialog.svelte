@@ -6,6 +6,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { api, ApiError } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import type { FileEntry, FileRootInfo } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
@@ -32,10 +33,13 @@
 	let {
 		open = $bindable(false),
 		initialPath = '',
-		title = 'Pilih Folder Document Root',
-		description = 'Telusuri direktori server yang tersedia atau buat folder baru untuk dijadikan Document Root.',
+		title,
+		description,
 		onSelect
 	}: Props = $props();
+
+	const resolvedTitle = $derived(title ?? t('webstack.folderPicker.defaultTitle'));
+	const resolvedDescription = $derived(description ?? t('webstack.folderPicker.defaultDesc'));
 
 	let currentPath = $state('');
 	let parentPath = $state('');
@@ -115,7 +119,7 @@
 			loadError =
 				lastErr instanceof ApiError || lastErr instanceof Error
 					? lastErr.message
-					: 'Gagal membaca direktori server.';
+					: t('webstack.folderPicker.readDirFailed');
 		} finally {
 			loading = false;
 		}
@@ -125,19 +129,19 @@
 		const name = newFolderName.trim().replace(/^\/+|\/+$/g, '');
 		if (!name || !currentPath) return;
 		if (name.includes('/')) {
-			toast.warning('Masukkan nama satu folder tanpa garis miring (/).');
+			toast.warning(t('webstack.folderPicker.singleFolderWarning'));
 			return;
 		}
 		const target = `${currentPath === '/' ? '' : currentPath}/${name}`;
 		creatingFolder = true;
 		try {
 			await api.mkdirFile(target);
-			toast.success(`Folder ${name} berhasil dibuat.`);
+			toast.success(t('webstack.folderPicker.createdToast', { name }));
 			newFolderName = '';
 			creatingOpen = false;
 			await browse(target);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal membuat folder baru');
+			toast.error(err instanceof Error ? err.message : t('webstack.folderPicker.createFailed'));
 		} finally {
 			creatingFolder = false;
 		}
@@ -165,14 +169,14 @@
 		<Dialog.Header class="pr-8">
 			<Dialog.Title class="flex items-center gap-2">
 				<FolderOpenIcon class="size-4 shrink-0 text-primary" />
-				<span class="leading-snug">{title}</span>
+				<span class="leading-snug">{resolvedTitle}</span>
 			</Dialog.Title>
-			<Dialog.Description>{description}</Dialog.Description>
+			<Dialog.Description>{resolvedDescription}</Dialog.Description>
 		</Dialog.Header>
 
 		{#if quickRoots.length > 0}
 			<div class="flex items-center gap-1.5 overflow-x-auto overscroll-x-contain pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
-				<span class="shrink-0 text-xs text-muted-foreground">Lokasi cepat:</span>
+				<span class="shrink-0 text-xs text-muted-foreground">{t('webstack.folderPicker.quickLocations')}</span>
 				{#each quickRoots as root (root.path)}
 					{@const active = currentPath === root.path}
 					<Button
@@ -230,21 +234,21 @@
 					variant="outline"
 					size="xs"
 					class="fm-touch-btn"
-					title="Naik ke folder induk"
-					aria-label="Naik ke folder induk"
+					title={t('webstack.folderPicker.upTitle')}
+					aria-label={t('webstack.folderPicker.upTitle')}
 					disabled={loading || !canGoUp || !parentPath}
 					onclick={() => parentPath && browse(parentPath)}
 				>
 					<ArrowUpIcon data-icon="inline-start" />
-					<span class="sr-only sm:not-sr-only">Naik</span>
+					<span class="sr-only sm:not-sr-only">{t('webstack.folderPicker.upShort')}</span>
 				</Button>
 				<Button
 					type="button"
 					variant={creatingOpen ? 'secondary' : 'outline'}
 					size="xs"
 					class="fm-touch-btn"
-					title="Buat folder baru di lokasi ini"
-					aria-label="Buat folder baru di lokasi ini"
+					title={t('webstack.folderPicker.newFolderTitle')}
+					aria-label={t('webstack.folderPicker.newFolderTitle')}
 					disabled={loading || !currentPath}
 					onclick={() => {
 						creatingOpen = !creatingOpen;
@@ -252,15 +256,15 @@
 					}}
 				>
 					<FolderPlusIcon data-icon="inline-start" />
-					<span class="sr-only sm:not-sr-only">Folder Baru</span>
+					<span class="sr-only sm:not-sr-only">{t('webstack.folderPicker.newFolderShort')}</span>
 				</Button>
 				<Button
 					type="button"
 					variant="outline"
 					size="xs"
 					class="fm-touch-btn"
-					title="Muat ulang folder"
-					aria-label="Muat ulang folder"
+					title={t('webstack.folderPicker.reloadTitle')}
+					aria-label={t('webstack.folderPicker.reloadTitle')}
 					disabled={loading}
 					onclick={() => browse(currentPath)}
 				>
@@ -272,7 +276,7 @@
 		{#if creatingOpen}
 			<div class="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 p-2">
 				<Input
-					placeholder={`Nama folder baru di ${currentPath}`}
+					placeholder={t('webstack.folderPicker.newFolderPlaceholder', { path: currentPath })}
 					autocorrect="off"
 					autocapitalize="none"
 					spellcheck={false}
@@ -295,14 +299,14 @@
 					{#if creatingFolder}
 						<Spinner data-icon="inline-start" />
 					{/if}
-					Buat
+					{t('webstack.folderPicker.createBtn')}
 				</Button>
 				<Button
 					type="button"
 					variant="ghost"
 					size="xs"
 					class="fm-touch-btn"
-					aria-label="Tutup form folder baru"
+					aria-label={t('webstack.folderPicker.closeNewFolderAria')}
 					onclick={() => {
 						creatingOpen = false;
 						newFolderName = '';
@@ -320,8 +324,8 @@
 			</InputGroup.Addon>
 			<InputGroup.Input
 				type="search"
-				placeholder="Saring subfolder di lokasi ini..."
-				aria-label="Cari folder"
+				placeholder={t('webstack.folderPicker.filterPlaceholder')}
+				aria-label={t('webstack.folderPicker.filterAria')}
 				bind:value={filterQuery}
 			/>
 		</InputGroup.Root>
@@ -339,7 +343,7 @@
 				<div class="flex h-full min-h-48 flex-col items-center justify-center gap-2 p-4 text-center text-xs text-destructive">
 					<p>{loadError}</p>
 					<Button type="button" variant="outline" size="xs" class="fm-touch-btn" onclick={() => browse('')}>
-						Kembali ke Root Default
+						{t('webstack.folderPicker.backToDefaultRoot')}
 					</Button>
 				</div>
 			{:else if filteredFolders.length === 0}
@@ -347,10 +351,10 @@
 					<FolderIcon class="size-7 opacity-40" />
 					<p>
 						{folders.length === 0
-							? 'Tidak ada subfolder di dalam direktori ini.'
-							: 'Tidak ada subfolder yang cocok dengan pencarian.'}
+							? t('webstack.folderPicker.emptyDir')
+							: t('webstack.folderPicker.noMatchingSubfolder')}
 					</p>
-					<p class="text-[11px]">Anda dapat langsung memilih folder saat ini atau membuat folder baru.</p>
+					<p class="text-[11px]">{t('webstack.folderPicker.pickCurrentOrCreateHint')}</p>
 				</div>
 			{:else}
 				<ul class="divide-y divide-border/60">
@@ -372,7 +376,7 @@
 								onclick={() => choosePath(dir.path)}
 							>
 								<CheckIcon data-icon="inline-start" />
-								Pilih
+								{t('webstack.folderPicker.selectBtn')}
 							</Button>
 						</li>
 					{/each}
@@ -382,16 +386,16 @@
 
 		<Dialog.Footer class="flex-col gap-2 pb-[env(safe-area-inset-bottom,0px)] sm:flex-row sm:items-center sm:justify-between sm:pb-0">
 			<div class="min-w-0 flex-1 text-left text-xs text-muted-foreground">
-				<span>Dipilih:</span>
+				<span>{t('webstack.folderPicker.selectedLabel')}</span>
 				<code class="ml-1 inline-block max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-foreground align-bottom">
 					{currentPath || '-'}
 				</code>
 			</div>
 			<div class="flex shrink-0 items-center justify-end gap-2">
-				<Button type="button" variant="outline" class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial" onclick={() => (open = false)}>Batal</Button>
+				<Button type="button" variant="outline" class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial" onclick={() => (open = false)}>{t('webstack.folderPicker.cancelBtn')}</Button>
 				<Button type="button" class="min-h-10 flex-1 sm:min-h-0 sm:flex-initial" disabled={loading || !currentPath} onclick={() => choosePath(currentPath)}>
 					<CheckIcon data-icon="inline-start" />
-					Pilih Folder Ini
+					{t('webstack.folderPicker.chooseCurrentBtn')}
 				</Button>
 			</div>
 		</Dialog.Footer>

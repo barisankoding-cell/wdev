@@ -4,10 +4,12 @@
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
+	import LanguageSwitcher from '#lib/components/shared/LanguageSwitcher.svelte';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
-	import { modeStore } from '#lib/stores/mode.svelte.js';
+	import { modeStore, MODE_LABELS } from '#lib/stores/mode.svelte.js';
 	import { themeStore, type ThemePreference } from '#lib/stores/theme.svelte.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { getPageMeta } from '#lib/page-meta.js';
 	import { cn } from '#lib/utils.js';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
@@ -26,11 +28,11 @@
 
 	const pageTitle = $derived(getPageMeta(page.url.pathname, modeStore.mode).title);
 
-	const themeOptions: { value: ThemePreference; label: string }[] = [
-		{ value: 'system', label: 'Ikuti Sistem' },
-		{ value: 'light', label: 'Mode Terang' },
-		{ value: 'dark', label: 'Mode Gelap' }
-	];
+	const themeOptions = $derived<{ value: ThemePreference; label: string }[]>([
+		{ value: 'system', label: t('common.theme.system') },
+		{ value: 'light', label: t('common.theme.light') },
+		{ value: 'dark', label: t('common.theme.dark') }
+	]);
 </script>
 
 <header
@@ -48,20 +50,20 @@
 			size="sm"
 			onclick={() => modeStore.openModal()}
 			class="hidden sm:inline-flex gap-1.5 px-2.5 h-8 text-xs font-medium border-primary/30 hover:border-primary"
-			aria-label="Pilih Mode Operasional Server"
+			aria-label={t('layout.topbar.selectModeAria')}
 		>
 			{#if modeStore.mode === 'vps'}
 				<ServerIcon class="size-3.5 text-primary" />
-				<span class="hidden sm:inline">Mode:</span>
-				<span class="font-semibold text-primary">Full VPS</span>
+				<span class="hidden sm:inline">{t('layout.topbar.modePrefix')}</span>
+				<span class="font-semibold text-primary">{MODE_LABELS.vps}</span>
 			{:else if modeStore.mode === 'local'}
 				<LaptopIcon class="size-3.5 text-primary" />
-				<span class="hidden sm:inline">Mode:</span>
-				<span class="font-semibold text-primary">Lokal</span>
+				<span class="hidden sm:inline">{t('layout.topbar.modePrefix')}</span>
+				<span class="font-semibold text-primary">{t('layout.nav.footer.modeLocalShort')}</span>
 			{:else}
 				<NetworkIcon class="size-3.5 text-primary" />
-				<span class="hidden sm:inline">Mode:</span>
-				<span class="font-semibold text-primary">Edge Gateway</span>
+				<span class="hidden sm:inline">{t('layout.topbar.modePrefix')}</span>
+				<span class="font-semibold text-primary">{MODE_LABELS.edge}</span>
 			{/if}
 		</Button>
 
@@ -70,10 +72,10 @@
 			size="sm"
 			onclick={() => authStore.openPanelDomain()}
 			class="hidden sm:inline-flex gap-1.5"
-			title="Ikat Domain Panel, Forward HTTPS & Blokir IP"
+			title={t('layout.topbar.panelDomainTitle')}
 		>
 			<GlobeIcon class="size-3.5 text-primary" />
-			<span class="hidden md:inline">Domain Panel</span>
+			<span class="hidden md:inline">{t('layout.topbar.panelDomainBtn')}</span>
 		</Button>
 
 		<Button
@@ -81,22 +83,24 @@
 			size="sm"
 			onclick={() => cp.openTerminal()}
 			class="relative"
-			aria-label="Buka Live Terminal Console"
+			aria-label={t('layout.topbar.openTerminalAria')}
 		>
 			<TerminalIcon data-icon="inline-start" />
-			<span class="hidden sm:inline">Terminal</span>
+			<span class="hidden sm:inline">{t('layout.topbar.terminalBtn')}</span>
 			{#if cp.isTaskRunning}
 				<span
 					class="ml-1 inline-block size-2 animate-pulse rounded-full bg-success"
-					aria-label="Tugas sedang berjalan"
+					aria-label={t('layout.topbar.taskRunningAria')}
 				></span>
 			{/if}
 		</Button>
 
+		<LanguageSwitcher size="sm" class="h-8 px-2" />
+
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
 				{#snippet child({ props })}
-					<Button variant="outline" size="icon-sm" aria-label="Pilih tema tampilan" {...props}>
+					<Button variant="outline" size="icon-sm" aria-label={t('common.theme.ariaLabel')} {...props}>
 						{#if themeStore.resolved === 'dark'}
 							<MoonIcon />
 						{:else}
@@ -107,7 +111,7 @@
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Content align="end">
 				<DropdownMenu.Group>
-					<DropdownMenu.Label>Tema Tampilan</DropdownMenu.Label>
+					<DropdownMenu.Label>{t('common.theme.label')}</DropdownMenu.Label>
 					<DropdownMenu.Separator />
 					{#each themeOptions as opt (opt.value)}
 						<DropdownMenu.Item onclick={() => themeStore.setPreference(opt.value)}>
@@ -141,21 +145,21 @@
 				<DropdownMenu.Content align="end" class="w-48">
 					<DropdownMenu.Group>
 						<DropdownMenu.Label class="text-xs text-muted-foreground">
-							Masuk sebagai <strong class="text-foreground">{authStore.username}</strong>
+							{t('layout.topbar.signedInAs')} <strong class="text-foreground">{authStore.username}</strong>
 						</DropdownMenu.Label>
 						<DropdownMenu.Separator />
 						<DropdownMenu.Item onclick={() => authStore.openChangeCreds()}>
 							<KeyRoundIcon class="size-4" />
-							<span>Ubah Kredensial</span>
+							<span>{t('layout.topbar.changeCreds')}</span>
 						</DropdownMenu.Item>
 						<DropdownMenu.Item onclick={() => authStore.openPanelDomain()}>
 							<GlobeIcon class="size-4" />
-							<span>Domain &amp; HTTPS Panel</span>
+							<span>{t('layout.topbar.panelDomainHttps')}</span>
 						</DropdownMenu.Item>
 						<DropdownMenu.Separator />
 						<DropdownMenu.Item onclick={() => authStore.logout()} class="text-destructive focus:text-destructive">
 							<LogOutIcon class="size-4" />
-							<span>Keluar Panel</span>
+							<span>{t('layout.topbar.signOut')}</span>
 						</DropdownMenu.Item>
 					</DropdownMenu.Group>
 				</DropdownMenu.Content>
@@ -172,7 +176,7 @@
 			}}
 		>
 			<RefreshCwIcon data-icon="inline-start" class={cn(cp.statusLoading && 'animate-spin')} />
-			<span class="hidden sm:inline">Segarkan</span>
+			<span class="hidden sm:inline">{t('common.actions.refresh')}</span>
 		</Button>
 	</div>
 </header>

@@ -1,4 +1,5 @@
 import { api, ApiError } from '#lib/api/client.js';
+import { t } from '#lib/i18n/index.svelte.js';
 import { toast } from 'svelte-sonner';
 
 export interface LoginResult {
@@ -22,14 +23,14 @@ class AuthStore {
 			window.addEventListener('wdev:unauthorized', () => {
 				if (this.authEnabled && this.isAuthenticated) {
 					this.isAuthenticated = false;
-					toast.error('Sesi Berakhir', {
-						description: 'Sesi login Anda telah berakhir. Silakan login kembali.'
+					toast.error(t('auth.store.sessionExpiredTitle'), {
+						description: t('auth.store.sessionExpiredDesc')
 					});
 				}
 			});
 			window.addEventListener('wdev:domain_required', () => {
-				toast.error('Akses via IP Diblokir', {
-					description: 'Panel telah diikat ke domain resmi HTTPS. Silakan akses memakai URL domain panel.'
+				toast.error(t('auth.store.ipBlockedTitle'), {
+					description: t('auth.store.ipBlockedDesc')
 				});
 			});
 		}
@@ -45,7 +46,7 @@ class AuthStore {
 			this.authChecked = true;
 			return this.isAuthenticated;
 		} catch (err) {
-			console.error('Gagal memeriksa status auth:', err);
+			console.error('Failed to check auth status:', err);
 			this.authChecked = true;
 			this.isAuthenticated = false;
 			return false;
@@ -58,13 +59,12 @@ class AuthStore {
 			const res = await api.login({ username: user, password: pass });
 			this.username = res.username;
 			this.isAuthenticated = true;
-			toast.success('Login berhasil', { description: `Selamat datang kembali, ${res.username}.` });
+			toast.success(t('auth.store.loginSuccessTitle'), {
+				description: t('auth.store.loginSuccessDesc', { username: res.username })
+			});
 			return { ok: true };
 		} catch (err) {
-			const msg =
-				err instanceof ApiError
-					? err.message
-					: 'Tidak dapat terhubung ke server wdev. Periksa koneksi jaringan atau status layanan.';
+			const msg = err instanceof ApiError ? err.message : t('auth.store.networkError');
 			const status = err instanceof ApiError ? err.status : 0;
 			return { ok: false, error: msg, status };
 		} finally {
@@ -79,7 +79,7 @@ class AuthStore {
 			// ignore
 		}
 		this.isAuthenticated = false;
-		toast.info('Sesi Ditutup', { description: 'Anda telah berhasil logout dari panel.' });
+		toast.info(t('auth.store.logoutTitle'), { description: t('auth.store.logoutDesc') });
 	}
 
 	openChangeCreds() {

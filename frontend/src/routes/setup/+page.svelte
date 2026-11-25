@@ -11,6 +11,7 @@
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import { api } from '#lib/api/client.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore, MODE_LABELS, type ServerMode } from '#lib/stores/mode.svelte.js';
 	import type { SetupComponentStatus, TaskRecord } from '#lib/types/api.js';
@@ -21,22 +22,22 @@
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import LayersIcon from '@lucide/svelte/icons/layers';
 
-	const fullSetupSteps = [
-		'1. Dependensi Dasar Sistem',
-		'2. Node.js LTS (Multi-versi)',
-		'3. Rust + Mold + Sccache',
-		'4. Golang Stabil Terbaru',
-		'5. OpenJDK Java (JDK 21)',
-		'6. Android SDK & CLI Tools',
-		'7. Flutter SDK Stable',
-		'8. PostgreSQL Multi-versi',
-		'9. Redis / Valkey Server',
-		'10. Nginx Web Server',
-		'11. PHP & FPM (Multi-versi)',
-		'12. Composer Package Manager',
-		'13. Local SSL (mkcert CA)',
-		'14. Oh My Zsh & Powerlevel10k'
-	];
+	const fullSetupSteps = $derived([
+		t('setup.fullSteps.s1'),
+		t('setup.fullSteps.s2'),
+		t('setup.fullSteps.s3'),
+		t('setup.fullSteps.s4'),
+		t('setup.fullSteps.s5'),
+		t('setup.fullSteps.s6'),
+		t('setup.fullSteps.s7'),
+		t('setup.fullSteps.s8'),
+		t('setup.fullSteps.s9'),
+		t('setup.fullSteps.s10'),
+		t('setup.fullSteps.s11'),
+		t('setup.fullSteps.s12'),
+		t('setup.fullSteps.s13'),
+		t('setup.fullSteps.s14')
+	]);
 
 	interface ModularItem {
 		component: string;
@@ -62,272 +63,262 @@
 		components: string[];
 	}
 
-	const modularCategories: ModularCategory[] = [
+	const modularCategories = $derived<ModularCategory[]>([
 		{
-			title: 'Core & Build Tools',
-			description: 'Runtime bahasa pemrograman dan compiler inti.',
+			title: t('setup.categories.core.title'),
+			description: t('setup.categories.core.description'),
 			items: [
 				{
 					component: 'base',
-					label: 'Dependensi Dasar',
-					description: 'Paket sistem esensial, build tools, curl, dan git.'
+					label: t('setup.items.base.label'),
+					description: t('setup.items.base.description')
 				},
 				{
 					component: 'node',
-					label: 'Node.js LTS',
-					description: 'Runtime JavaScript/TypeScript dengan npm dan pnpm.',
+					label: t('setup.items.node.label'),
+					description: t('setup.items.node.description'),
 					versions: ['24', '22', '20'],
 					defaultVersion: '22'
 				},
 				{
 					component: 'go',
-					label: 'Golang',
-					description: 'Compiler dan toolchain Go rilis stabil terbaru.'
+					label: t('setup.items.go.label'),
+					description: t('setup.items.go.description')
 				},
 				{
 					component: 'rust',
-					label: 'Rust Toolchain & Mold',
-					description: 'Rustup, Cargo, dan linker Mold berkecepatan tinggi.'
+					label: t('setup.items.rust.label'),
+					description: t('setup.items.rust.description')
 				},
 				{
 					component: 'java',
-					label: 'OpenJDK Java',
-					description: 'JDK LTS untuk service backend dan tooling Android.',
+					label: t('setup.items.java.label'),
+					description: t('setup.items.java.description'),
 					versions: ['25', '21', '17'],
 					defaultVersion: '21'
 				}
 			]
 		},
 		{
-			title: 'Hosting Web & Database',
-			description: 'Stack server web, PHP, SSL, dan penyimpanan data.',
+			title: t('setup.categories.webDb.title'),
+			description: t('setup.categories.webDb.description'),
 			items: [
 				{
 					component: 'nginx',
-					label: 'Nginx Web Server',
-					description: 'Web server dan reverse proxy berkinerja tinggi.'
+					label: t('setup.items.nginx.label'),
+					description: t('setup.items.nginx.description')
 				},
 				{
 					component: 'php',
-					label: 'PHP & PHP-FPM',
-					description: 'Runtime PHP, ekstensi web, dan service manager PHP-FPM.',
+					label: t('setup.items.php.label'),
+					description: t('setup.items.php.description'),
 					versions: ['8.4', '8.3', '8.2', '8.1'],
 					defaultVersion: '8.4'
 				},
 				{
 					component: 'composer',
-					label: 'Composer',
-					description: 'Manajer dependensi resmi untuk PHP & framework web.'
+					label: t('setup.items.composer.label'),
+					description: t('setup.items.composer.description')
 				},
 				{
 					component: 'ssl',
-					label: 'Local SSL (mkcert)',
-					description: 'Sertifikat HTTPS lokal tepercaya untuk domain dev (.test/.local).',
+					label: t('setup.items.ssl.label'),
+					description: t('setup.items.ssl.description'),
 					modes: ['local', 'edge']
 				},
 				{
 					component: 'postgres',
-					label: 'PostgreSQL Server',
-					description: 'Database relasional siap produksi dan pengembangan.',
+					label: t('setup.items.postgres.label'),
+					description: t('setup.items.postgres.description'),
 					versions: ['18', '17', '16'],
 					defaultVersion: '18'
 				},
 				{
 					component: 'redis',
-					label: 'Redis / Valkey Cache',
-					description: 'Penyimpanan cache memori dan antrean kerja cepat.'
+					label: t('setup.items.redis.label'),
+					description: t('setup.items.redis.description')
 				},
 				{
 					component: 'php-stack',
-					label: 'Bundel PHP Web Stack',
-					description: 'Pasang Nginx, PHP-FPM, Composer, dan SSL lokal sekaligus.',
+					label: t('setup.items.php-stack.label'),
+					description: t('setup.items.php-stack.description'),
 					modes: ['local']
 				},
 				{
 					component: 'docker',
-					label: 'Docker Engine & Compose v5',
-					description: 'Container runtime Docker & plugin Compose v5 dari repositori resmi Docker.'
+					label: t('setup.items.docker.label'),
+					description: t('setup.items.docker.description')
 				}
 			]
 		},
 		{
-			title: 'Mobile & SDKs',
-			description: 'Toolkit pengembangan aplikasi Android dan cross-platform.',
+			title: t('setup.categories.mobile.title'),
+			description: t('setup.categories.mobile.description'),
 			items: [
 				{
 					component: 'android',
-					label: 'Android SDK & Tools',
-					description: 'Command-line tools, platform-tools, dan build-tools.',
+					label: t('setup.items.android.label'),
+					description: t('setup.items.android.description'),
 					modes: ['local', 'edge']
 				},
 				{
 					component: 'flutter',
-					label: 'Flutter SDK',
-					description: 'Framework UI untuk Android, Web, dan Linux desktop.',
+					label: t('setup.items.flutter.label'),
+					description: t('setup.items.flutter.description'),
 					modes: ['local', 'edge']
 				}
 			]
 		},
 		{
-			title: 'Jaringan, Mail & Workspace',
-			description: 'Layanan tunnel, VPN mesh, DNS, mail server, dan shell.',
+			title: t('setup.categories.networkWorkspace.title'),
+			description: t('setup.categories.networkWorkspace.description'),
 			items: [
 				{
 					component: 'netbird',
-					label: 'NetBird Mesh VPN',
-					description: 'Tunnel WireGuard peer-to-peer antara node lokal dan VPS Edge Gateway.',
+					label: t('setup.items.netbird.label'),
+					description: t('setup.items.netbird.description'),
 					modes: ['edge']
 				},
 				{
 					component: 'pdns',
-					label: 'PowerDNS Authoritative Server',
-					description: 'Server DNS authoritative mandiri (SQLite3 + API 127.0.0.1:8081).',
+					label: t('setup.items.pdns.label'),
+					description: t('setup.items.pdns.description'),
 					modes: ['vps']
 				},
 				{
 					component: 'mail',
-					label: 'Mail Server Stack',
-					description: 'Stalwart Mail Server dengan webmail SnappyMail.',
+					label: t('setup.items.mail.label'),
+					description: t('setup.items.mail.description'),
 					modes: ['vps']
 				},
 				{
 					component: 'cloudflare',
-					label: 'Cloudflare Tunnel',
-					description: 'Publikasi layanan lewat tunnel terenkripsi cloudflared.'
+					label: t('setup.items.cloudflare.label'),
+					description: t('setup.items.cloudflare.description')
 				},
 				{
 					component: 'zsh',
-					label: 'Oh My Zsh',
-					description: 'Terminal Zsh interaktif dengan tema produktivitas.',
+					label: t('setup.items.zsh.label'),
+					description: t('setup.items.zsh.description'),
 					versions: ['powerlevel10k', 'agnoster', 'robbyrussell'],
 					defaultVersion: 'powerlevel10k'
 				},
 				{
 					component: 'orca-desktop',
-					label: 'Orca Desktop GUI',
-					description: 'Orca ADE dengan antarmuka desktop grafis lengkap.',
+					label: t('setup.items.orca-desktop.label'),
+					description: t('setup.items.orca-desktop.description'),
 					modes: ['local', 'edge']
 				},
 				{
 					component: 'orca-headless',
-					label: 'Orca Headless Server',
-					description: 'Mode daemon Orca ADE tanpa desktop untuk server remote.',
+					label: t('setup.items.orca-headless.label'),
+					description: t('setup.items.orca-headless.description'),
 					modes: ['edge', 'vps']
 				}
 			]
 		}
-	];
+	]);
 
-	const presetsByMode: Record<ServerMode, InstallPreset[]> = {
+	const presetsByMode = $derived<Record<ServerMode, InstallPreset[]>>({
 		local: [
 			{
 				id: 'local-dev',
-				title: 'Workstation Development Lengkap',
-				badge: 'Rekomendasi Lokal',
+				title: t('setup.presets.local-dev.title'),
+				badge: t('setup.presets.local-dev.badge'),
 				recommended: true,
-				description:
-					'Stack pengembangan lokal lengkap: Node.js, Go, Rust, Nginx, PHP, SSL lokal (mkcert), DB, dan Oh My Zsh tanpa PowerDNS/Mail.',
+				description: t('setup.presets.local-dev.description'),
 				components: ['base', 'node', 'go', 'rust', 'nginx', 'php', 'composer', 'ssl', 'postgres', 'redis', 'zsh']
 			},
 			{
 				id: 'local-web',
-				title: 'Web Stack & Database Lokal',
-				badge: 'Hosting Dev Lokal',
-				description:
-					'Nginx, PHP-FPM, Composer, HTTPS mkcert, PostgreSQL, dan Redis untuk proyek Laravel, WordPress, maupun PHP.',
+				title: t('setup.presets.local-web.title'),
+				badge: t('setup.presets.local-web.badge'),
+				description: t('setup.presets.local-web.description'),
 				components: ['base', 'nginx', 'php', 'composer', 'ssl', 'postgres', 'redis']
 			},
 			{
 				id: 'local-cf',
-				title: 'Web Lokal + Cloudflare Tunnel',
-				badge: 'Ringan + Tunnel',
-				description:
-					'Komponen web inti (Nginx, PHP, Composer, mkcert) dengan cloudflared untuk preview/ekspos sementara tanpa VPS.',
+				title: t('setup.presets.local-cf.title'),
+				badge: t('setup.presets.local-cf.badge'),
+				description: t('setup.presets.local-cf.description'),
 				components: ['base', 'nginx', 'php', 'composer', 'ssl', 'cloudflare']
 			},
 			{
 				id: 'local-mobile',
-				title: 'Mobile & Cross-Platform',
-				badge: 'Android & Flutter',
-				description:
-					'Lingkungan build aplikasi mobile lengkap dengan OpenJDK Java, Node.js, Android SDK, dan Flutter.',
+				title: t('setup.presets.local-mobile.title'),
+				badge: t('setup.presets.local-mobile.badge'),
+				description: t('setup.presets.local-mobile.description'),
 				components: ['base', 'java', 'node', 'android', 'flutter']
 			}
 		],
 		edge: [
 			{
 				id: 'edge-client',
-				title: 'Edge Node Web & Database',
-				badge: 'Rekomendasi Edge',
+				title: t('setup.presets.edge-client.title'),
+				badge: t('setup.presets.edge-client.badge'),
 				recommended: true,
-				description:
-					'Komponen inti Edge Client: NetBird VPN untuk tunnel ke VPS Edge Gateway, Nginx, PHP-FPM, Composer, PostgreSQL, dan Redis.',
+				description: t('setup.presets.edge-client.description'),
 				components: ['base', 'netbird', 'nginx', 'php', 'composer', 'postgres', 'redis']
 			},
 			{
 				id: 'edge-dev',
-				title: 'Edge Workstation Developer + Tunnel',
-				badge: 'Dev + Tunnel',
-				description:
-					'Lingkungan dev lengkap (Node.js, Go, Rust, Web Stack, DB, Zsh) yang langsung terekspos via NetBird ke VPS Edge.',
+				title: t('setup.presets.edge-dev.title'),
+				badge: t('setup.presets.edge-dev.badge'),
+				description: t('setup.presets.edge-dev.description'),
 				components: ['base', 'netbird', 'node', 'go', 'rust', 'nginx', 'php', 'composer', 'postgres', 'redis', 'zsh']
 			},
 			{
 				id: 'edge-lite',
-				title: 'Edge Web Ringan (Tanpa DB)',
-				badge: 'Minimal Edge',
-				description:
-					'Hanya dependensi dasar, NetBird VPN, Nginx, PHP-FPM, dan Composer bila database berada di server terpisah.',
+				title: t('setup.presets.edge-lite.title'),
+				badge: t('setup.presets.edge-lite.badge'),
+				description: t('setup.presets.edge-lite.description'),
 				components: ['base', 'netbird', 'nginx', 'php', 'composer']
 			},
 			{
 				id: 'edge-mobile',
-				title: 'Mobile & Cross-Platform',
-				badge: 'Android & Flutter',
-				description:
-					'Toolkit build aplikasi mobile dengan OpenJDK Java, Node.js, Android SDK, dan Flutter.',
+				title: t('setup.presets.edge-mobile.title'),
+				badge: t('setup.presets.edge-mobile.badge'),
+				description: t('setup.presets.edge-mobile.description'),
 				components: ['base', 'java', 'node', 'android', 'flutter']
 			}
 		],
 		vps: [
 			{
 				id: 'vps-complete',
-				title: 'Full VPS Hosting (Web + DB + DNS + Mail)',
-				badge: 'Rekomendasi VPS',
+				title: t('setup.presets.vps-complete.title'),
+				badge: t('setup.presets.vps-complete.badge'),
 				recommended: true,
-				description:
-					'Hosting VPS mandiri ala aaPanel: Nginx, PHP-FPM, Composer, PostgreSQL, Redis, PowerDNS Authoritative, dan Mail Server Stalwart.',
+				description: t('setup.presets.vps-complete.description'),
 				components: ['base', 'nginx', 'php', 'composer', 'postgres', 'redis', 'pdns', 'mail']
 			},
 			{
 				id: 'vps-hosting',
-				title: 'Produksi VPS (Web + Database)',
-				badge: 'Hosting Web',
-				description:
-					'Siap melayani situs produksi PHP, Laravel, WordPress, Node/Go, dan database tanpa DNS & Mail Server lokal.',
+				title: t('setup.presets.vps-hosting.title'),
+				badge: t('setup.presets.vps-hosting.badge'),
+				description: t('setup.presets.vps-hosting.description'),
 				components: ['base', 'nginx', 'php', 'composer', 'postgres', 'redis']
 			},
 			{
 				id: 'vps-dns-mail',
-				title: 'DNS Authoritative & Mail Server VPS',
-				badge: 'PowerDNS + Mail',
-				description:
-					'Pasang PowerDNS Authoritative lokal (port 53/8081) dan Mail Server Stalwart + Webmail SnappyMail di VPS.',
+				title: t('setup.presets.vps-dns-mail.title'),
+				badge: t('setup.presets.vps-dns-mail.badge'),
+				description: t('setup.presets.vps-dns-mail.description'),
 				components: ['base', 'pdns', 'mail']
 			},
 			{
 				id: 'vps-web-lite',
-				title: 'Web Server VPS Ringan (Nginx + PHP)',
-				badge: 'Ringan',
-				description:
-					'Hanya web server Nginx, PHP-FPM, dan Composer bagi VPS yang memakai managed database eksternal.',
+				title: t('setup.presets.vps-web-lite.title'),
+				badge: t('setup.presets.vps-web-lite.badge'),
+				description: t('setup.presets.vps-web-lite.description'),
 				components: ['base', 'nginx', 'php', 'composer']
 			}
 		]
-	};
+	});
 
-	const modularItemMap = new Map<string, ModularItem>(
-		modularCategories.flatMap((cat) => cat.items.map((item) => [item.component, item]))
+	const modularItemMap = $derived(
+		new Map<string, ModularItem>(
+			modularCategories.flatMap((cat) => cat.items.map((item) => [item.component, item]))
+		)
 	);
 
 	let componentStatuses = $state<Record<string, SetupComponentStatus>>({});
@@ -442,7 +433,6 @@
 	function applyInstalledChecklist(resetUserFlag = false) {
 		const next: Record<string, boolean> = {};
 		for (const [comp, st] of Object.entries(componentStatuses)) {
-			// Skip alias bundel php-stack di checklist default agar tidak duplikat saat memasang ulang.
 			if (comp === 'php-stack') continue;
 			if (st.installed) {
 				next[comp] = true;
@@ -502,8 +492,8 @@
 		const targets = missing.length > 0 ? missing : preset.components;
 		const title =
 			missing.length > 0 && missing.length < preset.components.length
-				? `Melengkapi Preset ${preset.title}`
-				: `Preset ${preset.title}`;
+				? t('setup.completingPresetLabel', { title: preset.title })
+				: t('setup.presetTaskLabel', { title: preset.title });
 		cp.triggerBatchInstall(title, buildPayloadItems(targets));
 	}
 
@@ -523,8 +513,8 @@
 		const label = labelPrefix
 			? labelPrefix
 			: matchedPreset
-				? `Preset ${matchedPreset.title}`
-				: `Instalasi Modular (${components.length} Komponen)`;
+				? t('setup.presetTaskLabel', { title: matchedPreset.title })
+				: t('setup.modularTaskTitle', { count: components.length });
 		cp.triggerBatchInstall(label, buildPayloadItems(components));
 	}
 
@@ -538,7 +528,7 @@
 				applyInstalledChecklist(false);
 			}
 		} catch {
-			// Biarkan modular tetap dapat dipakai jika deteksi gagal
+			// Keep modular installer usable if detection fails
 		} finally {
 			statusLoading = false;
 		}
@@ -567,8 +557,8 @@
 		}
 	});
 
-	function openTaskLog(t: TaskRecord) {
-		selectedTask = t;
+	function openTaskLog(task: TaskRecord) {
+		selectedTask = task;
 		logDialogOpen = true;
 	}
 </script>
@@ -578,66 +568,66 @@
 		<div>
 			<div class="flex flex-wrap items-center gap-2">
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">
-					Instalasi, Preset Mode &amp; Komponen
+					{t('setup.title')}
 				</h1>
 				<Badge variant="outline" class="font-medium">
-					Mode: {MODE_LABELS[activeMode]}
+					{t('setup.modeBadgePrefix')} {MODE_LABELS[activeMode]}
 				</Badge>
 			</div>
 			<p class="text-sm text-muted-foreground">
 				{#if activeMode === 'vps'}
-					Preset dan daftar komponen disesuaikan untuk server <strong>Full VPS</strong> (Hosting, PowerDNS, &amp; Mail Server).
+					{t('setup.subtitleVps')}
 				{:else if activeMode === 'edge'}
-					Preset dan daftar komponen disesuaikan untuk node <strong>Edge Gateway</strong> lewat NetBird Tunnel.
+					{t('setup.subtitleEdge')}
 				{:else}
-					Preset dan daftar komponen disesuaikan untuk mesin <strong>Lokal Standalone</strong> tanpa PowerDNS maupun Mail Server.
+					{t('setup.subtitleLocal')}
 				{/if}
 			</p>
 		</div>
 		<div class="flex flex-wrap items-center gap-2">
 			<Button variant="outline" size="sm" onclick={() => modeStore.openModal()}>
-				Ganti Mode
+				{t('setup.switchModeBtn')}
 			</Button>
 			<Button variant="outline" size="sm" disabled={statusLoading} onclick={refreshAll}>
 				{#if statusLoading}
 					<Spinner data-icon="inline-start" />
-					Memeriksa...
+					{t('setup.checkingBtn')}
 				{:else}
 					<RefreshCwIcon data-icon="inline-start" />
-					Periksa Terpasang
+					{t('setup.checkInstalledBtn')}
 				{/if}
 			</Button>
 		</div>
 	</div>
 
-	<!-- Preset & Modular Installer (Prioritas Sesuai Mode) -->
+	<!-- Mode Presets & Modular Installer -->
 	<Card.Root>
 		<Card.Header>
 			<div class="flex flex-wrap items-start justify-between gap-2">
 				<div>
-					<Card.Title>Preset Mode {MODE_LABELS[activeMode]} &amp; Komponen Modular</Card.Title>
+					<Card.Title>{t('setup.cardTitle', { mode: MODE_LABELS[activeMode] })}</Card.Title>
 					<Card.Description>
-						Komponen yang sudah terpasang otomatis diberi tanda &amp; centang default. Pilih preset sesuai kebutuhan mode atau atur checklist modular secara manual.
+						{t('setup.cardDesc')}
 					</Card.Description>
 				</div>
 				<Badge variant="secondary" class="shrink-0">
 					{#if statusLoading}
-						Memindai komponen...
+						{t('setup.scanningBadge')}
 					{:else}
-						{installedCountTotal}/{visibleComponentSet.size} terpasang
+						{t('setup.installedSummaryBadge', { installed: installedCountTotal, total: visibleComponentSet.size })}
 					{/if}
 				</Badge>
 			</div>
 		</Card.Header>
 		<Card.Content class="flex flex-col gap-8">
-			<!-- Preset Instalasi Cepat -->
+			<!-- Quick Install Presets -->
 			<section aria-labelledby="preset-heading" class="flex flex-col gap-3">
 				<div>
 					<h3 id="preset-heading" class="text-sm font-semibold text-foreground">
-						Preset Siap Pakai ({MODE_LABELS[activeMode]})
+						{t('setup.presetHeading', { mode: MODE_LABELS[activeMode] })}
 					</h3>
 					<p class="text-xs text-muted-foreground">
-						Memasang komponen yang belum terpasang dalam preset, atau muat ke daftar modular di bawah untuk menyesuaikan komponen dan versi.
+						{t('setup.presetSubheading')}
 					</p>
 				</div>
 
@@ -666,15 +656,18 @@
 												: 'border-border bg-muted text-muted-foreground'}"
 										>
 											{allPresetInstalled
-												? 'Lengkap'
-												: `${installedInPreset}/${preset.components.length} terpasang`}
+												? t('setup.presetCompleteBadge')
+												: t('setup.presetInstalledRatio', {
+														installed: installedInPreset,
+														total: preset.components.length
+													})}
 										</span>
 										<span
 											class="rounded-md border px-2 py-0.5 text-[11px] font-medium {preset.recommended
 												? 'border-primary/40 bg-primary/10 text-primary'
 												: 'border-border bg-muted text-muted-foreground'}"
 										>
-											{isActivePreset ? 'Aktif di Modular' : preset.badge}
+											{isActivePreset ? t('setup.presetActiveInModular') : preset.badge}
 										</span>
 									</div>
 								</div>
@@ -703,23 +696,23 @@
 									type="button"
 									size="sm"
 									variant={allPresetInstalled ? 'outline' : 'default'}
-									aria-label={`Pasang preset ${preset.title}`}
+									aria-label={t('setup.installPresetAria', { title: preset.title })}
 									onclick={() => installPresetDirect(preset)}
 								>
 									{allPresetInstalled
-										? 'Pasang Ulang Preset'
+										? t('setup.reinstallPresetBtn')
 										: missingInPreset.length < preset.components.length
-											? `Pasang (${missingInPreset.length} Belum Terpasang)`
-											: 'Pasang Preset'}
+											? t('setup.installMissingPresetBtn', { count: missingInPreset.length })
+											: t('setup.installPresetBtn')}
 								</Button>
 								<Button
 									type="button"
 									variant="outline"
 									size="sm"
-									aria-label={`Pilih komponen preset ${preset.title} di daftar modular`}
+									aria-label={t('setup.selectModularAria', { title: preset.title })}
 									onclick={() => applyPresetToModular(preset)}
 								>
-									Pilih di Modular
+									{t('setup.selectInModularBtn')}
 								</Button>
 							</div>
 						</div>
@@ -727,20 +720,29 @@
 				</div>
 			</section>
 
-			<!-- Pemilihan Komponen Modular -->
+			<!-- Modular Component Selection -->
 			<div id="modular-selection-anchor" class="flex flex-col gap-6 border-t border-border pt-6">
 				<div class="flex flex-col gap-3 rounded-xl border bg-muted/35 p-3.5 sm:flex-row sm:items-center sm:justify-between">
 					<div class="flex flex-col gap-0.5">
 						<span class="text-sm font-semibold text-foreground">
-							Daftar Komponen Modular
+							{t('setup.modularTitle')}
 						</span>
 						<span class="text-xs text-muted-foreground">
 							{#if selectedList.length === 0}
-								Centang komponen yang ingin dipasang, atau klik "Centang Terpasang" untuk menampilkan status aktif secara default.
+								{t('setup.modularEmptyHint')}
 							{:else if matchedPreset}
-								{selectedList.length} terpilih sesuai preset {matchedPreset.title} ({installedInSelection.length} sudah terpasang, {missingInSelection.length} baru).
+								{t('setup.modularMatchedPreset', {
+									total: selectedList.length,
+									title: matchedPreset.title,
+									installed: installedInSelection.length,
+									missing: missingInSelection.length
+								})}
 							{:else}
-								{selectedList.length} terpilih ({installedInSelection.length} sudah terpasang, {missingInSelection.length} belum terpasang).
+								{t('setup.modularSelectedSummary', {
+									total: selectedList.length,
+									installed: installedInSelection.length,
+									missing: missingInSelection.length
+								})}
 							{/if}
 						</span>
 					</div>
@@ -753,7 +755,9 @@
 								onclick={() => (showAllComponents = !showAllComponents)}
 							>
 								<LayersIcon data-icon="inline-start" />
-								{showAllComponents ? `Filter Mode ${MODE_LABELS[activeMode]}` : `Semua Komponen (+${hiddenCount})`}
+								{showAllComponents
+									? t('setup.filterModeBtn', { mode: MODE_LABELS[activeMode] })
+									: t('setup.allComponentsBtn', { count: hiddenCount })}
 							</Button>
 						{/if}
 						<Button
@@ -762,7 +766,7 @@
 							size="sm"
 							onclick={() => applyInstalledChecklist(true)}
 						>
-							Centang Terpasang
+							{t('setup.checkInstalledSelectionBtn')}
 						</Button>
 						<Button
 							type="button"
@@ -771,7 +775,7 @@
 							disabled={selectedList.length === 0}
 							onclick={clearSelection}
 						>
-							Bersihkan
+							{t('common.actions.clear')}
 						</Button>
 						{#if missingInSelection.length > 0}
 							<Button
@@ -780,10 +784,10 @@
 								onclick={() =>
 									installModularList(
 										missingInSelection,
-										`Pasang ${missingInSelection.length} Komponen Baru`
+										t('setup.installNewBtn', { count: missingInSelection.length })
 									)}
 							>
-								Pasang {missingInSelection.length} Komponen Baru
+								{t('setup.installNewBtn', { count: missingInSelection.length })}
 							</Button>
 							{#if installedInSelection.length > 0}
 								<Button
@@ -792,7 +796,7 @@
 									size="sm"
 									onclick={() => installModularList(selectedList)}
 								>
-									Pasang Ulang Semua ({selectedList.length})
+									{t('setup.reinstallAllBtn', { count: selectedList.length })}
 								</Button>
 							{/if}
 						{:else}
@@ -804,12 +808,12 @@
 								onclick={() =>
 									installModularList(
 										selectedList,
-										`Perbarui / Pasang Ulang (${selectedList.length} Komponen)`
+										t('setup.updateReinstallTask', { count: selectedList.length })
 									)}
 							>
 								{selectedList.length > 0
-									? `Perbarui / Pasang Ulang (${selectedList.length})`
-									: 'Pasang Komponen Terpilih'}
+									? t('setup.updateReinstallBtn', { count: selectedList.length })
+									: t('setup.installSelectedBtn')}
 							</Button>
 						{/if}
 					</div>
@@ -854,7 +858,9 @@
 												{#if installed}
 													<StatusBadge
 														tone="success"
-														label={st?.version ? `Terpasang · ${st.version}` : 'Terpasang'}
+														label={st?.version
+															? t('setup.installedBadgeVer', { ver: st.version })
+															: t('common.status.installed')}
 													/>
 												{/if}
 											</span>
@@ -873,8 +879,8 @@
 													if (v) selectedVersions = { ...selectedVersions, [item.component]: v };
 												}}
 											>
-												<Select.Trigger class="h-7 min-w-24 text-xs" aria-label={`Versi ${item.label}`}>
-													Versi: {selectedVersions[item.component] ?? item.defaultVersion}
+												<Select.Trigger class="h-7 min-w-24 text-xs" aria-label={t('setup.versionAria', { label: item.label })}>
+													{t('setup.versionPrefix', { ver: selectedVersions[item.component] ?? item.defaultVersion ?? '' })}
 												</Select.Trigger>
 												<Select.Content>
 													<Select.Group>
@@ -885,7 +891,7 @@
 												</Select.Content>
 											</Select.Root>
 										{:else}
-											<span class="text-[11px] text-muted-foreground/80">Otomatis / Terbaru</span>
+											<span class="text-[11px] text-muted-foreground/80">{t('setup.autoLatest')}</span>
 										{/if}
 
 										<div class="flex items-center gap-1">
@@ -895,11 +901,11 @@
 													variant="ghost"
 													size="sm"
 													class="h-7 px-2 text-xs"
-													aria-label="Konfigurasi Docker Daemon"
+													aria-label={t('setup.dockerConfigAria')}
 													onclick={() => cp.openServiceConfig('docker')}
 												>
 													<SettingsIcon class="size-3.5" data-icon="inline-start" />
-													Konfigurasi
+													{t('common.actions.configure')}
 												</Button>
 											{/if}
 											<Button
@@ -907,10 +913,13 @@
 												variant="ghost"
 												size="sm"
 												class="h-7 px-2.5 text-xs"
-												aria-label={`${installed ? 'Pasang ulang' : 'Pasang'} ${item.label} saja`}
+												aria-label={t('setup.installOnlyAria', {
+													action: installed ? t('setup.reinstallVerb') : t('setup.installVerb'),
+													label: item.label
+												})}
 												onclick={() => installSingleModular(item)}
 											>
-												{installed ? 'Pasang Ulang' : 'Pasang Saja'}
+												{installed ? t('setup.reinstallOnlyBtn') : t('setup.installOnlyBtn')}
 											</Button>
 										</div>
 									</div>
@@ -923,7 +932,9 @@
 				{#if selectedList.length > 0}
 					<div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/[0.04] p-3.5">
 						<div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-							<span class="mr-1 text-xs font-medium text-foreground">Terpilih ({selectedList.length}):</span>
+							<span class="mr-1 text-xs font-medium text-foreground">
+								{t('setup.selectedCountLabel', { count: selectedList.length })}
+							</span>
 							{#each selectedList as comp (comp)}
 								{@const done = isInstalled(comp)}
 								<span
@@ -945,10 +956,10 @@
 								onclick={() =>
 									installModularList(
 										missingInSelection,
-										`Pasang ${missingInSelection.length} Komponen Baru`
+										t('setup.installNewBtn', { count: missingInSelection.length })
 									)}
 							>
-								Pasang {missingInSelection.length} Komponen Baru
+								{t('setup.installNewBtn', { count: missingInSelection.length })}
 							</Button>
 						{:else}
 							<Button
@@ -958,10 +969,10 @@
 								onclick={() =>
 									installModularList(
 										selectedList,
-										`Perbarui / Pasang Ulang (${selectedList.length} Komponen)`
+										t('setup.updateReinstallTask', { count: selectedList.length })
 									)}
 							>
-								Perbarui / Pasang Ulang ({selectedList.length})
+								{t('setup.updateReinstallBtn', { count: selectedList.length })}
 							</Button>
 						{/if}
 					</div>
@@ -970,20 +981,20 @@
 		</Card.Content>
 	</Card.Root>
 
-	<!-- Full Auto Setup (Bundel Workstation 14 Langkah) -->
+	<!-- Full Auto Setup (14-Step Workstation Bundle) -->
 	<Card.Root>
 		<Card.Header>
 			<div class="flex flex-wrap items-center justify-between gap-2">
-				<Card.Title>Instalasi Workstation Lengkap (Full Auto Setup - 14 Langkah)</Card.Title>
+				<Card.Title>{t('setup.fullSetupTitle')}</Card.Title>
 				{#if activeMode !== 'local'}
-					<Badge variant="outline">Bundel Workstation Penuh</Badge>
+					<Badge variant="outline">{t('setup.fullSetupBadge')}</Badge>
 				{/if}
 			</div>
 			<Card.Description>
 				{#if activeMode === 'vps'}
-					Bundel seluruh lingkungan pengembangan workstation (termasuk Android SDK, Flutter, Local SSL mkcert, &amp; Zsh). Untuk server produksi VPS disarankan memakai <strong>Preset Mode VPS</strong> di atas.
+					{t('setup.fullSetupDescVps')}
 				{:else}
-					Menyiapkan seluruh lingkungan pengembangan Linux secara idempoten dalam satu alur otomatis.
+					{t('setup.fullSetupDescDefault')}
 				{/if}
 			</Card.Description>
 		</Card.Header>
@@ -1004,7 +1015,7 @@
 				onclick={() => cp.triggerInstall('full-install')}
 			>
 				<ZapIcon data-icon="inline-start" />
-				Jalankan Instalasi Lengkap
+				{t('setup.runFullSetupBtn')}
 			</Button>
 		</Card.Footer>
 	</Card.Root>
@@ -1014,55 +1025,55 @@
 		<Card.Header>
 			<div class="flex flex-wrap items-start justify-between gap-3">
 				<div>
-					<Card.Title>Riwayat Eksekusi Runner</Card.Title>
-					<Card.Description>Catatan tugas instalasi, switch runtime, dan perbaikan sistem terakhir.</Card.Description>
+					<Card.Title>{t('setup.historyTitle')}</Card.Title>
+					<Card.Description>{t('setup.historyDesc')}</Card.Description>
 				</div>
 				<Button variant="outline" size="sm" class="w-full sm:w-auto" onclick={loadTaskHistory}>
 					<RefreshCwIcon data-icon="inline-start" />
-					Segarkan
+					{t('common.actions.refresh')}
 				</Button>
 			</div>
 		</Card.Header>
 		<Card.Content>
 			<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
-				<ResponsiveTableWrapper label="Tabel Riwayat Tugas Control Plane" class="rounded-none border-0 bg-transparent">
+				<ResponsiveTableWrapper label={t('setup.historyTableAria')} class="rounded-none border-0 bg-transparent">
 					<Table.Root>
 						<Table.Header>
 							<Table.Row>
-								<Table.Head>Tugas</Table.Head>
-								<Table.Head>Status</Table.Head>
-								<Table.Head>Waktu Mulai</Table.Head>
-								<Table.Head class="text-right">Log</Table.Head>
+								<Table.Head>{t('setup.taskCol')}</Table.Head>
+								<Table.Head>{t('setup.statusCol')}</Table.Head>
+								<Table.Head>{t('setup.startedAtCol')}</Table.Head>
+								<Table.Head class="text-right">{t('setup.logCol')}</Table.Head>
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
 							{#if tasks.length === 0}
 								<Table.Row>
 									<Table.Cell colspan={4} class="py-6 text-center text-muted-foreground">
-										Belum ada riwayat tugas yang terekam.
+										{t('setup.noHistory')}
 									</Table.Cell>
 								</Table.Row>
 							{:else}
-								{#each paginatedTasks as t (t.id)}
+								{#each paginatedTasks as task (task.id)}
 									<Table.Row>
-										<Table.Cell data-label="Tugas" class="font-medium">{t.command}</Table.Cell>
-										<Table.Cell data-label="Status">
+										<Table.Cell data-label={t('setup.taskCol')} class="font-medium">{task.command}</Table.Cell>
+										<Table.Cell data-label={t('setup.statusCol')}>
 											<StatusBadge
-												tone={t.status === 'success'
+												tone={task.status === 'success'
 													? 'success'
-													: t.status === 'failed'
+													: task.status === 'failed'
 														? 'destructive'
 														: 'info'}
-												label={t.status}
+												label={task.status}
 											/>
 										</Table.Cell>
-										<Table.Cell data-label="Waktu" class="font-mono text-xs text-muted-foreground">
-											{new Date(t.started_at).toLocaleString('id-ID')}
+										<Table.Cell data-label={t('setup.startedAtCol')} class="font-mono text-xs text-muted-foreground">
+											{i18n.formatDateTime(task.started_at)}
 										</Table.Cell>
-										<Table.Cell data-label="Log" class="text-right">
-											<Button variant="outline" size="xs" onclick={() => openTaskLog(t)}>
+										<Table.Cell data-label={t('setup.logCol')} class="text-right">
+											<Button variant="outline" size="xs" onclick={() => openTaskLog(task)}>
 												<FileTextIcon data-icon="inline-start" />
-												Lihat Log
+												{t('setup.viewLogBtn')}
 											</Button>
 										</Table.Cell>
 									</Table.Row>
@@ -1075,7 +1086,7 @@
 					bind:page={taskPage}
 					totalItems={tasks.length}
 					pageSize={TASK_PAGE_SIZE}
-					itemLabel="riwayat tugas"
+					itemLabel={t('setup.historyItemLabel')}
 					class="rounded-lg border bg-card sm:rounded-none sm:border-0 sm:border-t mt-3 sm:mt-0"
 				/>
 			</div>
@@ -1086,18 +1097,21 @@
 <Dialog.Root bind:open={logDialogOpen}>
 	<Dialog.Content class="flex max-h-[85dvh] flex-col gap-3 sm:max-w-3xl">
 		<Dialog.Header>
-			<Dialog.Title>{selectedTask?.command || 'Detail Log Tugas'}</Dialog.Title>
+			<Dialog.Title>{selectedTask?.command || t('setup.logDialogDefaultTitle')}</Dialog.Title>
 			{#if selectedTask}
 				<Dialog.Description class="font-mono text-xs">
-					Status: {selectedTask.status} · {new Date(selectedTask.started_at).toLocaleString('id-ID')}
+					{t('setup.logDialogStatus', {
+						status: selectedTask.status,
+						time: i18n.formatDateTime(selectedTask.started_at)
+					})}
 				</Dialog.Description>
 			{/if}
 		</Dialog.Header>
 		<pre
 			class="max-h-[55dvh] overflow-auto rounded-lg border bg-terminal p-4 font-mono text-xs leading-relaxed text-terminal-foreground whitespace-pre-wrap break-words"
-		>{selectedTask?.log_output || '(Log kosong)'}</pre>
+		>{selectedTask?.log_output || t('setup.logDialogEmpty')}</pre>
 		<Dialog.Footer>
-			<Button type="button" onclick={() => (logDialogOpen = false)}>Tutup</Button>
+			<Button type="button" onclick={() => (logDialogOpen = false)}>{t('common.actions.close')}</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>

@@ -14,6 +14,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { ComposeProject, ComposeTemplateSpec } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
@@ -134,12 +135,12 @@
 
 		const cleanName = sanitizeSlug(projectName);
 		if (!cleanName) {
-			formError = 'Nama proyek wajib diisi (huruf kecil, angka, "-" atau "_").';
+			formError = t('compose.createModal.errInvalidName');
 			return;
 		}
 		const cleanDir = dirPath.trim();
 		if (!cleanDir || !cleanDir.startsWith('/')) {
-			formError = 'Direktori proyek harus berupa path absolut (mis. /var/www/myapp).';
+			formError = t('compose.createModal.errInvalidDir');
 			return;
 		}
 
@@ -161,14 +162,14 @@
 				start_after: startAfter
 			});
 
-			toast.success(`Proyek Compose "${res.project.name}" berhasil disimpan.`);
+			toast.success(t('compose.createModal.savedToast', { name: res.project.name }));
 			open = false;
 			if (res.task_id) {
-				cp.openTerminal(`Compose Up: ${res.project.name}`);
+				cp.openTerminal(t('compose.createModal.terminalTitle', { name: res.project.name }));
 			}
 			await onCreated?.(res.project, res.task_id);
 		} catch (err) {
-			formError = err instanceof Error ? err.message : 'Gagal menyimpan proyek Compose';
+			formError = err instanceof Error ? err.message : t('compose.createModal.saveFailed');
 		} finally {
 			submitting = false;
 		}
@@ -178,9 +179,9 @@
 <Dialog.Root bind:open>
 	<Dialog.Content class="flex max-h-[90dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-0 overflow-hidden p-4 sm:max-w-[min(calc(100vw-2rem),42rem)]">
 		<Dialog.Header class="shrink-0 border-b border-border/50 pb-3 pr-8">
-			<Dialog.Title class="leading-snug">Tambah / Daftarkan Stack Docker Compose v5</Dialog.Title>
+			<Dialog.Title class="leading-snug">{t('compose.createModal.title')}</Dialog.Title>
 			<Dialog.Description class="text-xs sm:text-sm">
-				Buat proyek Compose baru dari template modern (tanpa kunci <code>version:</code> usang) atau daftarkan folder yang sudah ada.
+				{t('compose.createModal.desc1')}<code>version:</code>{t('compose.createModal.desc2')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -189,14 +190,14 @@
 				{#if formError}
 					<Alert.Root variant="destructive">
 						<AlertCircleIcon />
-						<Alert.Title>Gagal Memproses Stack</Alert.Title>
+						<Alert.Title>{t('compose.createModal.errorTitle')}</Alert.Title>
 						<Alert.Description>{formError}</Alert.Description>
 					</Alert.Root>
 				{/if}
 
 				<Field.FieldGroup class="gap-4">
 					<Field.Field class="min-w-0">
-						<Field.FieldTitle id="compose-create-mode-label">Metode Pembuatan</Field.FieldTitle>
+						<Field.FieldTitle id="compose-create-mode-label">{t('compose.createModal.modeLabel')}</Field.FieldTitle>
 						<ToggleGroup.Root
 							type="single"
 							variant="outline"
@@ -212,51 +213,51 @@
 								value="template"
 								class="h-auto min-h-10 py-1.5 text-center text-xs leading-tight whitespace-normal sm:min-h-8 sm:text-sm"
 							>
-								Buat dari Template
+								{t('compose.createModal.modeTemplate')}
 							</ToggleGroup.Item>
 							<ToggleGroup.Item
 								value="register"
 								class="h-auto min-h-10 py-1.5 text-center text-xs leading-tight whitespace-normal sm:min-h-8 sm:text-sm"
 							>
-								Daftarkan Folder
+								{t('compose.createModal.modeRegister')}
 							</ToggleGroup.Item>
 						</ToggleGroup.Root>
 					</Field.Field>
 
 					<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 						<Field.Field class="min-w-0">
-							<Field.FieldLabel for="compose-proj-name">Nama Proyek</Field.FieldLabel>
+							<Field.FieldLabel for="compose-proj-name">{t('compose.createModal.projectNameLabel')}</Field.FieldLabel>
 							<Input
 								id="compose-proj-name"
 								bind:value={projectName}
 								oninput={handleProjectNameInput}
-								placeholder="myapp-stack"
+								placeholder={t('compose.createModal.projectNamePlaceholder')}
 								class="h-10 font-mono sm:h-8"
 								required
 							/>
-							<Field.FieldDescription>Huruf kecil a-z, angka 0-9, '-' atau '_'.</Field.FieldDescription>
+							<Field.FieldDescription>{t('compose.createModal.projectNameHint')}</Field.FieldDescription>
 						</Field.Field>
 
 						<Field.Field class="min-w-0">
-							<Field.FieldLabel for="compose-file-name">Nama File Compose</Field.FieldLabel>
+							<Field.FieldLabel for="compose-file-name">{t('compose.createModal.composeFileLabel')}</Field.FieldLabel>
 							<Input
 								id="compose-file-name"
 								bind:value={composeFile}
-								placeholder={modeTab === 'register' ? 'otomatis (compose.yaml)' : 'compose.yaml'}
+								placeholder={modeTab === 'register' ? t('compose.createModal.composeFilePlaceholderAuto') : 'compose.yaml'}
 								class="h-10 font-mono sm:h-8"
 							/>
-							<Field.FieldDescription>Kosongkan untuk deteksi otomatis saat registrasi.</Field.FieldDescription>
+							<Field.FieldDescription>{t('compose.createModal.composeFileHint')}</Field.FieldDescription>
 						</Field.Field>
 					</Field.FieldGroup>
 
 					<Field.Field class="min-w-0">
-						<Field.FieldLabel for="compose-dir-path">Direktori Proyek</Field.FieldLabel>
+						<Field.FieldLabel for="compose-dir-path">{t('compose.createModal.dirPathLabel')}</Field.FieldLabel>
 						<InputGroup.Root class="h-10 sm:h-8">
 							<InputGroup.Input
 								id="compose-dir-path"
 								bind:value={dirPath}
 								oninput={() => (dirTouched = true)}
-								placeholder="/var/www/myapp-stack"
+								placeholder={t('compose.createModal.dirPathPlaceholder')}
 								class="font-mono"
 								required
 							/>
@@ -264,17 +265,17 @@
 								<InputGroup.Button
 									variant="outline"
 									class="min-h-7 sm:min-h-0"
-									aria-label="Pilih folder proyek"
+									aria-label={t('compose.createModal.pickFolderAria')}
 									onclick={() => (folderPickerOpen = true)}
 								>
 									<FolderOpenIcon data-icon="inline-start" />
-									<span class="hidden sm:inline">Pilih Folder</span>
-									<span class="sm:hidden">Pilih</span>
+									<span class="hidden sm:inline">{t('compose.createModal.pickFolder')}</span>
+									<span class="sm:hidden">{t('compose.createModal.pickFolderShort')}</span>
 								</InputGroup.Button>
 							</InputGroup.Addon>
 						</InputGroup.Root>
 						<Field.FieldDescription>
-							Lokasi yang diizinkan: <code>/var/www</code>, <code>/home</code>, <code>/srv</code>, <code>/opt</code>, atau <code>/mnt</code>.
+							{t('compose.createModal.dirPathHint1')}<code>/var/www</code>, <code>/home</code>, <code>/srv</code>, <code>/opt</code>{t('compose.createModal.dirPathHintOr')}<code>/mnt</code>.
 						</Field.FieldDescription>
 					</Field.Field>
 				</Field.FieldGroup>
@@ -284,7 +285,7 @@
 				{#if modeTab === 'template'}
 					<Field.FieldGroup class="gap-4">
 						<Field.Field class="min-w-0">
-							<Field.FieldLabel for="compose-template">Template Starter Compose v5</Field.FieldLabel>
+							<Field.FieldLabel for="compose-template">{t('compose.createModal.templateLabel')}</Field.FieldLabel>
 							<Select.Root
 								type="single"
 								value={selectedTemplate}
@@ -294,7 +295,7 @@
 									<span class="truncate">
 										{selectedTemplateMeta
 											? `${selectedTemplateMeta.name} (${selectedTemplateMeta.category})`
-											: 'Pilih template Compose'}
+											: t('compose.createModal.selectTemplatePlaceholder')}
 									</span>
 								</Select.Trigger>
 								<Select.Content>
@@ -314,7 +315,7 @@
 
 						<Field.Field class="min-w-0">
 							<Field.FieldLabel for="compose-yaml-preview">
-								<span>Isi <code>compose.yaml</code></span>
+								<span>{t('compose.createModal.yamlPreviewLabel')}<code>compose.yaml</code></span>
 							</Field.FieldLabel>
 							<Textarea
 								id="compose-yaml-preview"
@@ -327,7 +328,7 @@
 
 						<Field.Field class="min-w-0">
 							<Field.FieldLabel for="compose-env-preview">
-								<span>Isi <code>.env</code> (opsional, izin 0600)</span>
+								<span>{t('compose.createModal.envPreviewLabel1')}<code>.env</code>{t('compose.createModal.envPreviewLabel2')}</span>
 							</Field.FieldLabel>
 							<Textarea
 								id="compose-env-preview"
@@ -342,7 +343,7 @@
 							<Checkbox id="compose-overwrite-files" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={overwrite} />
 							<Field.FieldLabel for="compose-overwrite-files" class="cursor-pointer text-xs leading-snug font-normal">
 								<span>
-									Timpa <code>compose.yaml</code> &amp; <code>.env</code> jika berkas sudah ada di folder target
+									{t('compose.createModal.overwriteLabel1')}<code>compose.yaml</code> &amp; <code>.env</code>{t('compose.createModal.overwriteLabel2')}
 								</span>
 							</Field.FieldLabel>
 						</Field.Field>
@@ -350,19 +351,19 @@
 				{:else}
 					<Field.FieldGroup class="gap-4">
 						<Alert.Root>
-							<Alert.Title>Registrasi Direktori Existing</Alert.Title>
+							<Alert.Title>{t('compose.createModal.registerAlertTitle')}</Alert.Title>
 							<Alert.Description class="text-xs">
-								<code>wdev</code> akan membaca berkas <code>compose.yaml</code> / <code>docker-compose.yml</code> serta <code>.env</code> yang sudah ada di folder tanpa mengubah isinya.
+								<code>wdev</code>{t('compose.createModal.registerAlertDesc1')}<code>compose.yaml</code> / <code>docker-compose.yml</code>{t('compose.createModal.registerAlertDesc2')}<code>.env</code>{t('compose.createModal.registerAlertDesc3')}
 							</Alert.Description>
 						</Alert.Root>
 
 						<Field.Field class="min-w-0">
-							<Field.FieldLabel for="compose-desc">Catatan / Deskripsi (opsional)</Field.FieldLabel>
+							<Field.FieldLabel for="compose-desc">{t('compose.createModal.descriptionLabel')}</Field.FieldLabel>
 							<Input
 								id="compose-desc"
 								bind:value={description}
 								class="h-10 sm:h-8"
-								placeholder="Contoh: Backend API & Redis staging"
+								placeholder={t('compose.createModal.descriptionPlaceholder')}
 							/>
 						</Field.Field>
 					</Field.FieldGroup>
@@ -373,7 +374,7 @@
 						<Checkbox id="compose-start-after" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={startAfter} />
 						<Field.FieldLabel for="compose-start-after" class="cursor-pointer text-xs leading-snug font-normal">
 							<span>
-								Langsung jalankan stack (<code>docker compose up -d</code>) setelah disimpan
+								{t('compose.createModal.startAfter1')}<code>docker compose up -d</code>{t('compose.createModal.startAfter2')}
 							</span>
 						</Field.FieldLabel>
 					</Field.Field>
@@ -383,15 +384,15 @@
 
 		<Dialog.Footer class="shrink-0 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
 			<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (open = false)}>
-				Batal
+				{t('compose.createModal.cancel')}
 			</Button>
 			<Button type="submit" form="create-compose-form" class="min-h-10 sm:min-h-0" disabled={submitting}>
 				{#if submitting}
 					<Spinner data-icon="inline-start" />
-					Menyimpan...
+					{t('compose.createModal.saving')}
 				{:else}
 					<PlusIcon data-icon="inline-start" />
-					{modeTab === 'template' ? 'Buat Stack Compose' : 'Daftarkan Stack'}
+					{modeTab === 'template' ? t('compose.createModal.submitCreate') : t('compose.createModal.submitRegister')}
 				{/if}
 			</Button>
 		</Dialog.Footer>
@@ -401,7 +402,7 @@
 <FolderPickerDialog
 	bind:open={folderPickerOpen}
 	initialPath={dirPath || '/var/www'}
-	title="Pilih Direktori Proyek Compose"
-	description="Telusuri atau buat folder proyek Docker Compose."
+	title={t('compose.createModal.pickerTitle')}
+	description={t('compose.createModal.pickerDesc')}
 	onSelect={handleFolderPicked}
 />

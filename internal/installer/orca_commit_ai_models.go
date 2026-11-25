@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"wdev/internal/i18n"
 )
 
 const localCommitMessageHostKey = "local"
@@ -822,12 +824,18 @@ func buildCachedModelsByAgentMap(settings map[string]any) map[string][]OrcaCommi
 	return out
 }
 
-// DiscoverOrcaCommitAIModels mengambil daftar model untuk agent tertentu (seed + cache DB + probe CLI live).
+// DiscoverOrcaCommitAIModels mengambil daftar model untuk agent tertentu (seed + cache DB + probe CLI live) (default locale en).
 func DiscoverOrcaCommitAIModels(ctx context.Context, agentID string, forceRefresh bool) (*OrcaCommitAIModelsResult, error) {
+	return DiscoverOrcaCommitAIModelsLocale(ctx, agentID, forceRefresh, i18n.DefaultLocale)
+}
+
+// DiscoverOrcaCommitAIModelsLocale returns available models and localized validation/discovery messages for an agent.
+func DiscoverOrcaCommitAIModelsLocale(ctx context.Context, agentID string, forceRefresh bool, lang string) (*OrcaCommitAIModelsResult, error) {
+	lang = i18n.Normalize(lang)
 	agentID = strings.TrimSpace(agentID)
 	spec, ok := lookupOrcaAgentSpec(agentID)
 	if !ok {
-		return nil, fmt.Errorf("%w: agent AI tidak dikenal: %q", ErrOrcaCommitAIValidation, agentID)
+		return nil, fmt.Errorf(i18n.Pick(lang, "%w: unknown AI agent: %q", "%w: agent AI tidak dikenal: %q"), ErrOrcaCommitAIValidation, agentID)
 	}
 
 	user, home := resolveOrcaCommitUserFn()
@@ -878,7 +886,7 @@ func DiscoverOrcaCommitAIModels(ctx context.Context, agentID string, forceRefres
 				liveDiscovered = true
 			}
 		} else if forceRefresh {
-			discoveryErr = fmt.Sprintf("biner CLI %q tidak ditemukan untuk user aktif", spec.Binary)
+			discoveryErr = fmt.Sprintf(i18n.Pick(lang, "CLI binary %q not found for active user", "biner CLI %q tidak ditemukan untuk user aktif"), spec.Binary)
 		}
 	}
 

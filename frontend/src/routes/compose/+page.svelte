@@ -29,6 +29,7 @@
 		createDefaultDockerConfig
 	} from '#lib/components/modals/service-config/DockerConfigPanel.svelte';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { cn } from '#lib/utils.js';
 	import type {
@@ -134,10 +135,10 @@
 	let preconfigError = $state('');
 	let showPreconfigForm = $state(true);
 
-	const installSourceLabels: Record<'official' | 'distro', string> = {
-		official: 'Repositori Resmi Docker CE + Compose v5 (Direkomendasikan)',
-		distro: 'Repositori Bawaan Distro OS (apt / dnf)'
-	};
+	const installSourceLabels = $derived<Record<'official' | 'distro', string>>({
+		official: t('compose.install.sourceOfficial'),
+		distro: t('compose.install.sourceDistro')
+	});
 
 	let lastRefreshTick = 0;
 
@@ -207,15 +208,15 @@
 	function statusLabel(st: string): string {
 		switch (st) {
 			case 'running':
-				return 'Berjalan';
+				return t('compose.status.running');
 			case 'partial':
-				return 'Parsial';
+				return t('compose.status.partial');
 			case 'exited':
-				return 'Exited';
+				return t('compose.status.exited');
 			case 'missing':
-				return 'File Hilang';
+				return t('compose.status.missing');
 			default:
-				return 'Berhenti';
+				return t('compose.status.stopped');
 		}
 	}
 
@@ -251,7 +252,7 @@
 				...buildDockerConfigPayload(dockerInstallCfg),
 				restart: false
 			};
-			const res = await cp.runWithSudoRetry('Simpan Pra-Konfigurasi Docker', (sudoPass) =>
+			const res = await cp.runWithSudoRetry(t('compose.install.preconfigSudoPrompt'), (sudoPass) =>
 				api.saveServiceConfig<DockerConfig>('docker', {
 					...payload,
 					...(sudoPass ? { sudo_pass: sudoPass } : {})
@@ -263,10 +264,10 @@
 				dockerPreconfigLoaded = true;
 			}
 			toast.success(
-				res.message || 'Pra-konfigurasi Docker (/etc/docker/daemon.json) berhasil disimpan'
+				res.message || t('compose.install.preconfigSavedFallback')
 			);
 		} catch (e) {
-			const msg = e instanceof Error ? e.message : 'Gagal menyimpan pra-konfigurasi Docker';
+			const msg = e instanceof Error ? e.message : t('compose.install.preconfigSaveFailed');
 			preconfigError = msg;
 			toast.error(msg);
 		} finally {
@@ -305,7 +306,7 @@
 				selectedDetail = null;
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat status Docker Compose');
+			toast.error(err instanceof Error ? err.message : t('compose.toast.loadFailed'));
 		} finally {
 			loading = false;
 			refreshing = false;
@@ -325,7 +326,7 @@
 				await loadProjectLogs(name);
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : `Gagal memuat detail proyek ${name}`);
+			toast.error(err instanceof Error ? err.message : t('compose.toast.detailFailed', { name }));
 		} finally {
 			detailLoading = false;
 		}
@@ -362,7 +363,7 @@
 			initialEnvContent = res.env_content || '';
 			hasEnvFile = res.has_env_file;
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal membaca berkas Compose');
+			toast.error(err instanceof Error ? err.message : t('compose.toast.filesReadFailed'));
 		} finally {
 			filesLoading = false;
 		}
@@ -382,10 +383,10 @@
 			envContent = res.files.env_content || '';
 			initialEnvContent = res.files.env_content || '';
 			hasEnvFile = res.files.has_env_file;
-			toast.success(`Berkas ${res.files.compose_file} berhasil divalidasi dan disimpan.`);
+			toast.success(t('compose.toast.filesSaved', { file: res.files.compose_file }));
 			await loadProjectDetail(selectedDetail.name);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menyimpan berkas Compose');
+			toast.error(err instanceof Error ? err.message : t('compose.toast.filesSaveFailed'));
 		} finally {
 			filesSaving = false;
 		}
@@ -400,7 +401,7 @@
 			const res = await api.getComposeConfig(selectedDetail.name);
 			configJSONText = JSON.stringify(res.config, null, 2);
 		} catch (err) {
-			configJSONText = err instanceof Error ? err.message : 'Gagal merender konfigurasi Compose';
+			configJSONText = err instanceof Error ? err.message : t('compose.toast.configRenderFailed');
 		} finally {
 			configLoading = false;
 		}
@@ -411,9 +412,9 @@
 		logsLoading = true;
 		try {
 			const res = await api.getComposeLogs(name, logServiceFilter, logTail);
-			logsText = res.logs || '(Belum ada output log)';
+			logsText = res.logs || t('compose.logs.empty');
 		} catch (err) {
-			logsText = err instanceof Error ? err.message : 'Gagal memuat log Compose';
+			logsText = err instanceof Error ? err.message : t('compose.toast.logsLoadFailed');
 		} finally {
 			logsLoading = false;
 		}
@@ -467,7 +468,7 @@
 				...extra
 			};
 			const res = await cp.runWithSudoRetry(
-				`Operasi docker compose ${action} memerlukan hak akses administrator (sudo).`,
+				t('compose.toast.actionSudoPrompt', { action }),
 				(sudoPass) => api.runComposeAction(projName, { ...payload, sudo_pass: sudoPass })
 			);
 			if (res?.status === 'started') {
@@ -477,7 +478,7 @@
 				cp.openTerminal(label);
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : `Gagal menjalankan compose ${action}`);
+			toast.error(err instanceof Error ? err.message : t('compose.toast.actionFailed', { action }));
 		} finally {
 			actionPending = false;
 		}
@@ -494,21 +495,20 @@
 	async function handleDeleteProject() {
 		if (!selectedDetail) return;
 		const ok = await cp.confirm({
-			title: `Hapus "${selectedDetail.name}" dari Daftar Kelola?`,
-			description:
-				'Tindakan ini hanya menghapus proyek dari daftar registri wdev tanpa menghapus berkas compose.yaml di disk.',
-			confirmText: 'Hapus dari Daftar',
+			title: t('compose.toast.deleteConfirmTitle', { name: selectedDetail.name }),
+			description: t('compose.toast.deleteConfirmDesc'),
+			confirmText: t('compose.toast.deleteConfirmBtn'),
 			destructive: true
 		});
 		if (!ok) return;
 		try {
 			await api.deleteComposeProject(selectedDetail.name, false);
-			toast.success(`Proyek "${selectedDetail.name}" dihapus dari daftar wdev.`);
+			toast.success(t('compose.toast.deleted', { name: selectedDetail.name }));
 			selectedName = '';
 			selectedDetail = null;
 			await loadStatus(true);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menghapus proyek');
+			toast.error(err instanceof Error ? err.message : t('compose.toast.deleteFailed'));
 		}
 	}
 
@@ -516,10 +516,10 @@
 		daemonActionPending = true;
 		try {
 			await api.controlService('docker', action);
-			toast.success(`Daemon Docker berhasil di-${action}.`);
+			toast.success(t('compose.toast.daemonSuccess', { action }));
 			await loadStatus(true);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : `Gagal ${action} Docker daemon`);
+			toast.error(err instanceof Error ? err.message : t('compose.toast.daemonFailed', { action }));
 		} finally {
 			daemonActionPending = false;
 		}
@@ -531,7 +531,7 @@
 		try {
 			diskUsage = await api.getComposeDiskUsage();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memeriksa pemakaian disk Docker');
+			toast.error(err instanceof Error ? err.message : t('compose.toast.dfFailed'));
 		} finally {
 			dfLoading = false;
 		}
@@ -540,18 +540,18 @@
 	async function triggerPrune(target: string, label: string) {
 		const destructive = target === 'volumes' || target === 'images-all';
 		const ok = await cp.confirm({
-			title: `Bersihkan ${label}?`,
+			title: t('compose.toast.pruneConfirmTitle', { label }),
 			description:
 				target === 'volumes'
-					? 'PERHATIAN: Menghapus unused volumes dapat menghapus data database pada stack yang sedang down secara permanen.'
-					: `Jalankan docker ${target} prune untuk membebaskan ruang penyimpanan?`,
-			confirmText: 'Bersihkan Sekarang',
+					? t('compose.toast.pruneVolumesWarning')
+					: t('compose.toast.pruneConfirmDesc', { target }),
+			confirmText: t('compose.toast.pruneConfirmBtn'),
 			destructive
 		});
 		if (!ok) return;
 		try {
 			const res = await cp.runWithSudoRetry(
-				'Pembersihan Docker memerlukan hak akses administrator (sudo).',
+				t('compose.toast.pruneSudoPrompt'),
 				(sudoPass) => api.pruneComposeSystem(target, sudoPass)
 			);
 			if (res?.status === 'started') {
@@ -559,7 +559,7 @@
 				cp.openTerminal(`Docker Prune: ${label}`);
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal menjalankan docker prune');
+			toast.error(err instanceof Error ? err.message : t('compose.toast.pruneFailed'));
 		}
 	}
 
@@ -586,9 +586,9 @@
 	async function copyText(text: string, label: string) {
 		try {
 			await navigator.clipboard.writeText(text);
-			toast.success(`${label} disalin.`);
+			toast.success(t('compose.toast.copied', { label }));
 		} catch {
-			toast.error(`Gagal menyalin ${label}.`);
+			toast.error(t('compose.toast.copyFailed', { label }));
 		}
 	}
 
@@ -633,14 +633,14 @@
 	<div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
 		<div class="flex min-w-0 flex-col gap-1">
 			<div class="flex flex-wrap items-center gap-2">
-				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Docker &amp; Compose v5</h1>
+				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('compose.title')}</h1>
 				{#if engine?.docker_installed}
 					<Badge variant="secondary" class="font-mono">
-						Docker {engine.docker_version || '?'}
+						{t('compose.dockerBadge', { version: engine.docker_version || '?' })}
 					</Badge>
 					{#if engine.compose_installed}
 						<Badge variant={engine.is_compose_v5 ? 'default' : 'outline'} class="font-mono">
-							Compose v{engine.compose_version}
+							{t('compose.composeBadge', { version: engine.compose_version ?? '' })}
 							{#if engine.is_compose_v5}
 								(v5)
 							{/if}
@@ -649,23 +649,23 @@
 				{/if}
 			</div>
 			<p class="text-xs text-muted-foreground sm:text-sm">
-				Kelola stack Docker Compose v5, status container, editor <code>compose.yaml</code> &amp; <code>.env</code>, live logs, exec shell, dan eksposur VHost Nginx.
+				{t('compose.subtitle1')}<code>compose.yaml</code>{t('compose.subtitle2')}<code>.env</code>{t('compose.subtitle3')}
 			</p>
 		</div>
 
-		<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center" role="toolbar" aria-label="Aksi Docker Compose">
+		<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center" role="toolbar" aria-label={t('compose.toolbarAria')}>
 			<Button variant="outline" size="sm" class="min-h-9 sm:min-h-0" disabled={refreshing} onclick={() => loadStatus(true)}>
 				<RefreshCwIcon class={cn(refreshing && 'animate-spin')} data-icon="inline-start" />
-				Segarkan
+				{t('compose.refreshBtn')}
 			</Button>
 			<Button variant="outline" size="sm" class="min-h-9 sm:min-h-0" onclick={() => cp.openServiceConfig('docker')}>
 				<SettingsIcon data-icon="inline-start" />
-				Konfigurasi Docker
+				{t('compose.configureDockerBtn')}
 			</Button>
 			{#if engine?.docker_installed && engine.daemon_running}
 				<Button variant="outline" size="sm" class="min-h-9 sm:min-h-0" onclick={openPruneModal}>
 					<HardDriveIcon data-icon="inline-start" />
-					Disk &amp; Prune
+					{t('compose.diskPruneBtn')}
 				</Button>
 			{/if}
 			<Button
@@ -680,7 +680,7 @@
 				}}
 			>
 				<PlusIcon data-icon="inline-start" />
-				Tambah Stack
+				{t('compose.addStackBtn')}
 			</Button>
 		</div>
 	</div>
@@ -701,12 +701,12 @@
 						<ContainerIcon class="size-4 shrink-0 text-primary" />
 						<span>
 							{engine.docker_installed
-								? 'Plugin Docker Compose v5 Belum Terpasang'
-								: 'Docker Engine & Compose v5 Belum Terpasang'}
+								? t('compose.install.pluginMissingTitle')
+								: t('compose.install.engineMissingTitle')}
 						</span>
 					</Card.Title>
 					<Card.Description>
-						Pilih opsi instalasi dan sesuaikan konfigurasi <code>/etc/docker/daemon.json</code> terlebih dahulu, lalu pasang langsung atau simpan sebagai pra-konfigurasi.
+						{t('compose.install.description1')}<code>/etc/docker/daemon.json</code>{t('compose.install.description2')}
 					</Card.Description>
 					<Card.Action class="col-span-full row-start-3 mt-1 justify-self-stretch sm:col-span-1 sm:col-start-2 sm:row-span-2 sm:row-start-1 sm:mt-0 sm:justify-self-end">
 						<Button
@@ -717,18 +717,18 @@
 							onclick={() => (showPreconfigForm = !showPreconfigForm)}
 						>
 							<SettingsIcon data-icon="inline-start" />
-							{showPreconfigForm ? 'Sembunyikan Konfigurasi' : 'Atur Konfigurasi Daemon'}
+							{showPreconfigForm ? t('compose.install.hideConfig') : t('compose.install.showConfig')}
 						</Button>
 					</Card.Action>
 				</Card.Header>
 
 				<Card.Content class="flex flex-col gap-5">
 					<Field.FieldSet>
-						<Field.FieldLegend variant="label">Opsi Instalasi Paket &amp; Layanan</Field.FieldLegend>
+						<Field.FieldLegend variant="label">{t('compose.install.optionsLegend')}</Field.FieldLegend>
 						<Field.FieldGroup class="grid gap-4 rounded-lg border bg-muted/20 p-3 sm:grid-cols-2 sm:p-4">
 							<Field.Field class="min-w-0">
 								<Field.FieldLabel for="compose-docker-install-source">
-									Sumber Paket Instalasi
+									{t('compose.install.sourceLabel')}
 								</Field.FieldLabel>
 								<Select.Root
 									type="single"
@@ -743,16 +743,16 @@
 									<Select.Content>
 										<Select.Group>
 											<Select.Item value="official">
-												Repositori Resmi Docker CE + Compose v5 (Direkomendasikan)
+												{t('compose.install.sourceOfficial')}
 											</Select.Item>
 											<Select.Item value="distro">
-												Repositori Bawaan Distro OS (apt / dnf)
+												{t('compose.install.sourceDistro')}
 											</Select.Item>
 										</Select.Group>
 									</Select.Content>
 								</Select.Root>
 								<Field.FieldDescription>
-									Repositori resmi menyediakan rilis Docker Engine dan <code>docker-compose-plugin</code> v5 terbaru.
+									{t('compose.install.sourceDesc1')}<code>docker-compose-plugin</code>{t('compose.install.sourceDesc2')}
 								</Field.FieldDescription>
 							</Field.Field>
 
@@ -760,10 +760,10 @@
 								<Checkbox id="compose-docker-enable-svc" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={installEnableService} />
 								<Field.FieldContent>
 									<Field.FieldLabel for="compose-docker-enable-svc" class="cursor-pointer leading-snug font-medium">
-										<span>Aktifkan autostart <code>docker.service</code> saat boot</span>
+										<span>{t('compose.install.autostartLabel1')}<code>docker.service</code>{t('compose.install.autostartLabel2')}</span>
 									</Field.FieldLabel>
 									<Field.FieldDescription>
-										Menjalankan <code>systemctl enable --now docker</code> setelah instalasi &amp; penulisan <code>daemon.json</code> selesai.
+										{t('compose.install.autostartDesc1')}<code>systemctl enable --now docker</code>{t('compose.install.autostartDesc2')}<code>daemon.json</code>{t('compose.install.autostartDesc3')}
 									</Field.FieldDescription>
 								</Field.FieldContent>
 							</Field.Field>
@@ -782,7 +782,7 @@
 
 				<Card.Footer class="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
 					<span class="text-xs text-muted-foreground">
-						Konfigurasi <code>daemon.json</code> divalidasi dan ditulis sebelum daemon Docker dijalankan.
+						{t('compose.install.footerNote1')}<code>daemon.json</code>{t('compose.install.footerNote2')}
 					</span>
 					<div class="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:items-center">
 						<Button
@@ -795,10 +795,10 @@
 						>
 							{#if savingPreconfig}
 								<Spinner data-icon="inline-start" />
-								Menyimpan...
+								{t('compose.install.savingPreconfig')}
 							{:else}
 								<CheckIcon data-icon="inline-start" />
-								Simpan Pra-Konfigurasi Saja
+								{t('compose.install.savePreconfigOnly')}
 							{/if}
 						</Button>
 						<Button
@@ -809,8 +809,8 @@
 						>
 							<DownloadIcon data-icon="inline-start" />
 							{engine.docker_installed
-								? 'Pasang Compose v5 & Terapkan Konfigurasi'
-								: 'Pasang Docker + Compose v5 & Terapkan Konfigurasi'}
+								? t('compose.install.installComposeOnly')
+								: t('compose.install.installDockerAndCompose')}
 						</Button>
 					</div>
 				</Card.Footer>
@@ -821,16 +821,16 @@
 		{#if engine && engine.docker_installed && !engine.daemon_running}
 			<Alert.Root variant="destructive">
 				<TriangleAlertIcon />
-				<Alert.Title>Daemon Docker Tidak Aktif / Tidak Terjangkau</Alert.Title>
+				<Alert.Title>{t('compose.alerts.daemonDownTitle')}</Alert.Title>
 				<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-					<span class="text-xs">{engine.daemon_error || 'Pastikan layanan systemd docker sedang berjalan.'}</span>
+					<span class="text-xs">{engine.daemon_error || t('compose.alerts.daemonDownFallback')}</span>
 					<Button size="sm" class="min-h-9 w-full sm:min-h-0 sm:w-auto" disabled={daemonActionPending} onclick={() => handleDaemonControl('start')}>
 						{#if daemonActionPending}
 							<Spinner data-icon="inline-start" />
 						{:else}
 							<PlayIcon data-icon="inline-start" />
 						{/if}
-						Jalankan Docker
+						{t('compose.alerts.startDockerBtn')}
 					</Button>
 				</Alert.Description>
 			</Alert.Root>
@@ -838,20 +838,20 @@
 			<Alert.Root>
 				<ArrowUpCircleIcon />
 				<Alert.Title>
-					{`Terdeteksi Docker Compose v${engine.compose_version} (Disarankan v5+)`}
+					{t('compose.alerts.upgradeComposeTitle', { version: engine.compose_version ?? '' })}
 				</Alert.Title>
 				<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 					<span class="text-xs">
-						Perbarui paket resmi Docker untuk mendapatkan Docker Compose v5 terbaru dengan dukungan penuh Compose Specification modern.
+						{t('compose.alerts.upgradeComposeDesc')}
 					</span>
 					<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
 						<Button size="sm" variant="outline" class="min-h-9 w-full sm:min-h-0 sm:w-auto" onclick={() => cp.openServiceConfig('docker')}>
 							<SettingsIcon data-icon="inline-start" />
-							Konfigurasi Docker
+							{t('compose.configureDockerBtn')}
 						</Button>
 						<Button size="sm" variant="outline" class="min-h-9 w-full sm:min-h-0 sm:w-auto" onclick={() => cp.triggerInstall('docker')}>
 							<ArrowUpCircleIcon data-icon="inline-start" />
-							Perbarui ke Compose v5
+							{t('compose.alerts.upgradeComposeBtn')}
 						</Button>
 					</div>
 				</Alert.Description>
@@ -862,7 +862,7 @@
 		<div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
 			<Card.Root size="sm">
 				<Card.Header>
-					<Card.Description>Total Stack</Card.Description>
+					<Card.Description>{t('compose.kpi.total')}</Card.Description>
 				</Card.Header>
 				<Card.Content>
 					<p class="text-2xl font-bold tabular-nums">{kpiCounts.total}</p>
@@ -871,7 +871,7 @@
 
 			<Card.Root size="sm">
 				<Card.Header>
-					<Card.Description>Stack Berjalan</Card.Description>
+					<Card.Description>{t('compose.kpi.running')}</Card.Description>
 				</Card.Header>
 				<Card.Content>
 					<p class="text-2xl font-bold text-success tabular-nums">{kpiCounts.running}</p>
@@ -880,7 +880,7 @@
 
 			<Card.Root size="sm">
 				<Card.Header>
-					<Card.Description>Berhenti / Nonaktif</Card.Description>
+					<Card.Description>{t('compose.kpi.stopped')}</Card.Description>
 				</Card.Header>
 				<Card.Content>
 					<p class="text-2xl font-bold tabular-nums">{kpiCounts.stopped}</p>
@@ -889,7 +889,7 @@
 
 			<Card.Root size="sm">
 				<Card.Header>
-					<Card.Description>Peringatan Port Publik</Card.Description>
+					<Card.Description>{t('compose.kpi.warnings')}</Card.Description>
 				</Card.Header>
 				<Card.Content>
 					<p class={cn('text-2xl font-bold tabular-nums', kpiCounts.warnings > 0 && 'text-warning')}>
@@ -907,9 +907,9 @@
 							<Empty.Media variant="icon">
 								<ContainerIcon />
 							</Empty.Media>
-							<Empty.Title>Belum Ada Stack Docker Compose</Empty.Title>
+							<Empty.Title>{t('compose.empty.title')}</Empty.Title>
 							<Empty.Description>
-								Buat stack baru dari template Compose v5 atau daftarkan folder proyek yang sudah berisi <code>compose.yaml</code>.
+								{t('compose.empty.desc1')}<code>compose.yaml</code>{t('compose.empty.desc2')}
 							</Empty.Description>
 						</Empty.Header>
 						<Empty.Content>
@@ -920,7 +920,7 @@
 								}}
 							>
 								<PlusIcon data-icon="inline-start" />
-								Tambah / Buat Stack Compose
+								{t('compose.empty.cta')}
 							</Button>
 						</Empty.Content>
 					</Empty.Root>
@@ -938,8 +938,8 @@
 								</InputGroup.Addon>
 								<InputGroup.Input
 									bind:value={searchQuery}
-									placeholder="Cari proyek atau folder..."
-									aria-label="Cari proyek Compose"
+									placeholder={t('compose.sidebar.searchPlaceholder')}
+									aria-label={t('compose.sidebar.searchAria')}
 								/>
 							</InputGroup.Root>
 
@@ -953,17 +953,17 @@
 										statusFilter = v;
 									}
 								}}
-								aria-label="Filter status stack"
+								aria-label={t('compose.sidebar.filterAria')}
 								class="grid w-full grid-cols-3"
 							>
 								<ToggleGroup.Item value="all" class="min-w-0 justify-center px-1.5 text-xs">
-									<span class="truncate">Semua ({kpiCounts.total})</span>
+									<span class="truncate">{t('compose.sidebar.filterAll', { count: kpiCounts.total })}</span>
 								</ToggleGroup.Item>
 								<ToggleGroup.Item value="running" class="min-w-0 justify-center px-1.5 text-xs">
-									<span class="truncate">Aktif ({kpiCounts.running})</span>
+									<span class="truncate">{t('compose.sidebar.filterRunning', { count: kpiCounts.running })}</span>
 								</ToggleGroup.Item>
 								<ToggleGroup.Item value="stopped" class="min-w-0 justify-center px-1.5 text-xs">
-									<span class="truncate">Mati ({kpiCounts.stopped})</span>
+									<span class="truncate">{t('compose.sidebar.filterStopped', { count: kpiCounts.stopped })}</span>
 								</ToggleGroup.Item>
 							</ToggleGroup.Root>
 						</Card.Header>
@@ -975,9 +975,9 @@
 										<Empty.Media variant="icon">
 											<SearchIcon />
 										</Empty.Media>
-										<Empty.Title>Tidak Ada Stack</Empty.Title>
+										<Empty.Title>{t('compose.sidebar.noMatchTitle')}</Empty.Title>
 										<Empty.Description>
-											Tidak ada stack yang cocok dengan pencarian atau filter status.
+											{t('compose.sidebar.noMatchDesc')}
 										</Empty.Description>
 									</Empty.Header>
 									{#if searchQuery || statusFilter !== 'all'}
@@ -991,7 +991,7 @@
 													statusFilter = 'all';
 												}}
 											>
-												Reset Filter
+												{t('compose.sidebar.resetFilter')}
 											</Button>
 										</Empty.Content>
 									{/if}
@@ -1018,20 +1018,20 @@
 													<StatusBadge tone={statusTone(proj.status)} label={statusLabel(proj.status)} />
 												</div>
 												<div class="w-full min-w-0 truncate font-mono text-xs text-muted-foreground">
-													{proj.dir_path || 'Folder tidak diketahui'}
+													{proj.dir_path || t('compose.sidebar.unknownFolder')}
 												</div>
 												<div class="flex flex-wrap items-center gap-1.5 pt-0.5">
 													<Badge variant="outline" class="font-mono">
-														{proj.running_count}/{proj.services_count} services
+														{t('compose.sidebar.servicesCount', { running: proj.running_count, total: proj.services_count })}
 													</Badge>
 													{#if (proj.security_warnings?.length ?? 0) > 0}
 														<Badge variant="destructive">
-															{proj.security_warnings?.length} peringatan
+															{t('compose.sidebar.warningsCount', { count: proj.security_warnings?.length ?? 0 })}
 														</Badge>
 													{/if}
 													{#if (proj.linked_vhosts?.length ?? 0) > 0}
 														<Badge variant="secondary">
-															{proj.linked_vhosts?.length} VHost
+															{t('compose.sidebar.vhostsCount', { count: proj.linked_vhosts?.length ?? 0 })}
 														</Badge>
 													{/if}
 												</div>
@@ -1054,9 +1054,9 @@
 										<Empty.Media variant="icon">
 											<ContainerIcon />
 										</Empty.Media>
-										<Empty.Title>Pilih Stack Compose</Empty.Title>
+										<Empty.Title>{t('compose.detail.emptyTitle')}</Empty.Title>
 										<Empty.Description>
-											Pilih satu stack di panel sebelah kiri untuk mengelola container, berkas YAML, dan log.
+											{t('compose.detail.emptyDesc')}
 										</Empty.Description>
 									</Empty.Header>
 								</Empty.Root>
@@ -1079,7 +1079,7 @@
 												<span class="truncate">{selectedDetail.compose_file || 'compose.yaml'}</span>
 											</Badge>
 											{#if !selectedDetail.registered}
-												<Badge variant="secondary">Terdeteksi Otomatis</Badge>
+												<Badge variant="secondary">{t('compose.detail.autoDetected')}</Badge>
 											{/if}
 											{#if projects.length > 1}
 												<Button
@@ -1089,7 +1089,7 @@
 													class="ml-auto min-h-7 lg:hidden"
 													onclick={() => scrollElementOnMobile('compose-project-list')}
 												>
-													Daftar Stack ({projects.length})
+													{t('compose.detail.stackListMobile', { count: projects.length })}
 												</Button>
 											{/if}
 										</div>
@@ -1104,7 +1104,7 @@
 														href={`/files?path=${encodeURIComponent(selectedDetail.dir_path)}`}
 													>
 														<FolderOpenIcon data-icon="inline-start" />
-														File Manager
+														{t('compose.detail.fileManager')}
 													</Button>
 													<Button
 														variant="ghost"
@@ -1113,7 +1113,7 @@
 														href={`/terminal?cwd=${encodeURIComponent(selectedDetail.dir_path)}`}
 													>
 														<TerminalIcon data-icon="inline-start" />
-														Terminal Host
+														{t('compose.detail.hostTerminal')}
 													</Button>
 												</div>
 											{/if}
@@ -1124,7 +1124,7 @@
 									<div
 										class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-1.5"
 										role="toolbar"
-										aria-label="Aksi Stack Compose"
+										aria-label={t('compose.detail.actionsAria')}
 									>
 										<Button
 											size="sm"
@@ -1133,7 +1133,7 @@
 											onclick={() => triggerComposeAction('up')}
 										>
 											<PlayIcon data-icon="inline-start" />
-											Up -d
+											{t('compose.detail.upD')}
 										</Button>
 										<Button
 											variant="outline"
@@ -1143,7 +1143,7 @@
 											onclick={() => triggerComposeAction('up', { build: true })}
 										>
 											<HammerIcon data-icon="inline-start" />
-											Up --build
+											{t('compose.detail.upBuild')}
 										</Button>
 										<Button
 											variant="outline"
@@ -1153,7 +1153,7 @@
 											onclick={() => triggerComposeAction('restart')}
 										>
 											<RotateCwIcon data-icon="inline-start" />
-											Restart
+											{t('compose.detail.restart')}
 										</Button>
 										<Button
 											variant="outline"
@@ -1163,7 +1163,7 @@
 											onclick={() => triggerComposeAction('pull')}
 										>
 											<DownloadIcon data-icon="inline-start" />
-											Pull
+											{t('compose.detail.pull')}
 										</Button>
 										<Button
 											variant="destructive"
@@ -1176,19 +1176,19 @@
 											}}
 										>
 											<SquareIcon data-icon="inline-start" />
-											Down
+											{t('compose.detail.down')}
 										</Button>
 										{#if selectedDetail.registered}
 											<Button
 												variant="outline"
 												size="sm"
 												class="min-h-9 text-destructive sm:size-7 sm:min-h-0 sm:border-transparent sm:bg-transparent sm:px-0"
-												aria-label="Hapus dari daftar wdev"
-												title="Hapus dari daftar wdev"
+												aria-label={t('compose.detail.deleteAria')}
+												title={t('compose.detail.deleteAria')}
 												onclick={handleDeleteProject}
 											>
 												<Trash2Icon />
-												<span class="sm:sr-only">Hapus Daftar</span>
+												<span class="sm:sr-only">{t('compose.detail.deleteMobile')}</span>
 											</Button>
 										{/if}
 									</div>
@@ -1199,7 +1199,7 @@
 									<Field.FieldSet class="rounded-lg border bg-muted/30 px-3 py-2">
 										<div class="flex flex-wrap items-center gap-3">
 											<Field.FieldLegend variant="label" class="mb-0 text-xs">
-												Profiles Compose:
+												{t('compose.detail.profilesLegend')}
 											</Field.FieldLegend>
 											{#each selectedDetail.available_profiles ?? [] as prof (prof)}
 												{@const profileId = `compose-profile-${prof}`}
@@ -1221,7 +1221,7 @@
 								<!-- Linked VHosts -->
 								{#if (selectedDetail.linked_vhosts?.length ?? 0) > 0}
 									<div class="flex flex-wrap items-center gap-2 text-xs">
-										<span class="font-medium text-muted-foreground">VHost Terhubung:</span>
+										<span class="font-medium text-muted-foreground">{t('compose.detail.linkedVhosts')}</span>
 										{#each selectedDetail.linked_vhosts ?? [] as vh (vh.domain)}
 											<Badge
 												href={`${vh.ssl_enabled ? 'https' : 'http'}://${vh.domain}`}
@@ -1241,7 +1241,7 @@
 								{#if (selectedDetail.security_warnings?.length ?? 0) > 0}
 									<Alert.Root variant="destructive">
 										<TriangleAlertIcon />
-										<Alert.Title>Peringatan Keamanan Port Docker (0.0.0.0)</Alert.Title>
+										<Alert.Title>{t('compose.detail.securityWarningTitle')}</Alert.Title>
 										<Alert.Description class="flex flex-col gap-1 text-xs">
 											{#each selectedDetail.security_warnings ?? [] as warn, i (i)}
 												<p class="break-words">{warn}</p>
@@ -1257,13 +1257,13 @@
 										class="flex w-full flex-nowrap justify-start overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:inline-flex sm:w-auto"
 									>
 										<Tabs.Trigger value="services" class="flex-none shrink-0 px-2.5 text-xs sm:flex-1 sm:px-3 sm:text-sm">
-											Services &amp; Container
+											{t('compose.detail.tabServices')}
 										</Tabs.Trigger>
 										<Tabs.Trigger value="files" class="flex-none shrink-0 px-2.5 text-xs sm:flex-1 sm:px-3 sm:text-sm">
-											Editor YAML &amp; .env
+											{t('compose.detail.tabFiles')}
 										</Tabs.Trigger>
 										<Tabs.Trigger value="logs" class="flex-none shrink-0 px-2.5 text-xs sm:flex-1 sm:px-3 sm:text-sm">
-											Logs
+											{t('compose.detail.tabLogs')}
 										</Tabs.Trigger>
 									</Tabs.List>
 
@@ -1272,7 +1272,7 @@
 										{#if detailLoading}
 											<div class="flex items-center gap-2 py-6 text-sm text-muted-foreground">
 												<Spinner />
-												<span>Memuat status container &amp; metrik...</span>
+												<span>{t('compose.detail.loadingContainers')}</span>
 											</div>
 										{:else if (selectedDetail.containers?.length ?? 0) === 0 && (selectedDetail.defined_services?.length ?? 0) === 0}
 											<Empty.Root class="border py-10">
@@ -1280,9 +1280,9 @@
 													<Empty.Media variant="icon">
 														<ContainerIcon />
 													</Empty.Media>
-													<Empty.Title>Belum Ada Service Terdefinisi</Empty.Title>
+													<Empty.Title>{t('compose.detail.noDefinedTitle')}</Empty.Title>
 													<Empty.Description>
-														Periksa isi <code>{selectedDetail.compose_file}</code> atau jalankan stack terlebih dahulu.
+														{t('compose.detail.noDefinedDesc1')}<code>{selectedDetail.compose_file}</code>{t('compose.detail.noDefinedDesc2')}
 													</Empty.Description>
 												</Empty.Header>
 											</Empty.Root>
@@ -1290,22 +1290,22 @@
 											<!-- Live Containers -->
 											{#if (selectedDetail.containers?.length ?? 0) > 0}
 												<div class="flex flex-col gap-2">
-													<h3 class="text-sm font-semibold">Container Aktif / Terbuat</h3>
-													<ResponsiveTableWrapper label="Daftar Container Docker Compose">
+													<h3 class="text-sm font-semibold">{t('compose.detail.activeContainers')}</h3>
+													<ResponsiveTableWrapper label={t('compose.detail.containersTableAria')}>
 														<Table.Root>
 															<Table.Header>
 																<Table.Row>
-																	<Table.Head>Service / Container</Table.Head>
-																	<Table.Head>Status &amp; Health</Table.Head>
-																	<Table.Head>CPU / RAM</Table.Head>
-																	<Table.Head>Port &amp; Ekspos VHost</Table.Head>
-																	<Table.Head class="text-right">Aksi</Table.Head>
+																	<Table.Head>{t('compose.detail.colService')}</Table.Head>
+																	<Table.Head>{t('compose.detail.colStatus')}</Table.Head>
+																	<Table.Head>{t('compose.detail.colCpuRam')}</Table.Head>
+																	<Table.Head>{t('compose.detail.colPortExpose')}</Table.Head>
+																	<Table.Head class="text-right">{t('compose.detail.colActions')}</Table.Head>
 																</Table.Row>
 															</Table.Header>
 															<Table.Body>
 																{#each selectedDetail.containers ?? [] as cont (cont.id || cont.name)}
 																	<Table.Row>
-																		<Table.Cell data-label="Service / Container" class="align-top">
+																		<Table.Cell data-label={t('compose.detail.colService')} class="align-top">
 																			<div class="flex flex-col gap-0.5">
 																				<span class="font-mono text-xs font-semibold">{cont.service}</span>
 																				<span class="font-mono text-xs text-muted-foreground">{cont.name}</span>
@@ -1314,7 +1314,7 @@
 																				</span>
 																			</div>
 																		</Table.Cell>
-																		<Table.Cell data-label="Status & Health" class="align-top">
+																		<Table.Cell data-label={t('compose.detail.colStatus')} class="align-top">
 																			<div class="flex flex-col gap-1">
 																				<div class="flex flex-wrap items-center gap-1.5">
 																					<StatusBadge
@@ -1330,7 +1330,7 @@
 																				<span class="text-xs text-muted-foreground">{cont.status}</span>
 																			</div>
 																		</Table.Cell>
-																		<Table.Cell data-label="CPU / RAM" class="align-top font-mono text-xs">
+																		<Table.Cell data-label={t('compose.detail.colCpuRam')} class="align-top font-mono text-xs">
 																			{#if cont.cpu_perc || cont.mem_usage}
 																				<div class="flex flex-col gap-0.5">
 																					<span>CPU: {cont.cpu_perc || '-'}</span>
@@ -1340,7 +1340,7 @@
 																				<span class="text-muted-foreground">—</span>
 																			{/if}
 																		</Table.Cell>
-																		<Table.Cell data-label="Port & Ekspos VHost" class="align-top">
+																		<Table.Cell data-label={t('compose.detail.colPortExpose')} class="align-top">
 																			{#if (cont.ports?.length ?? 0) === 0}
 																				<span class="text-xs text-muted-foreground">—</span>
 																			{:else}
@@ -1361,7 +1361,7 @@
 																									onclick={() => openExposePort(pb.host_port, cont.service)}
 																								>
 																									<GlobeIcon data-icon="inline-start" />
-																									Ekspos
+																									{t('compose.detail.exposeBtn')}
 																								</Button>
 																							{/if}
 																						</div>
@@ -1369,7 +1369,7 @@
 																				</div>
 																			{/if}
 																		</Table.Cell>
-																		<Table.Cell data-label="Aksi" class="text-right align-top">
+																		<Table.Cell data-label={t('compose.detail.colActions')} class="text-right align-top">
 																			<div class="flex flex-wrap justify-end gap-1.5 sm:gap-1">
 																				{#if cont.state === 'running'}
 																					<Button
@@ -1377,10 +1377,10 @@
 																						size="xs"
 																						class="min-h-8 sm:min-h-0"
 																						onclick={() => openExecShell(cont.service)}
-																						title="Masuk shell interaktif (docker compose exec)"
+																						title={t('compose.detail.execTitle')}
 																					>
 																						<TerminalIcon data-icon="inline-start" />
-																						Exec
+																						{t('compose.detail.execBtn')}
 																					</Button>
 																					<Button
 																						variant="outline"
@@ -1389,7 +1389,7 @@
 																						onclick={() => triggerComposeAction('restart', { service: cont.service })}
 																					>
 																						<RotateCwIcon data-icon="inline-start" />
-																						Restart
+																						{t('compose.detail.restart')}
 																					</Button>
 																					<Button
 																						variant="ghost"
@@ -1397,7 +1397,7 @@
 																						class="min-h-8 sm:min-h-0"
 																						onclick={() => triggerComposeAction('stop', { service: cont.service })}
 																					>
-																						Stop
+																						{t('compose.detail.stopBtn')}
 																					</Button>
 																				{:else}
 																					<Button
@@ -1407,7 +1407,7 @@
 																						onclick={() => triggerComposeAction('start', { service: cont.service })}
 																					>
 																						<PlayIcon data-icon="inline-start" />
-																						Start
+																						{t('compose.detail.startBtn')}
 																					</Button>
 																				{/if}
 																			</div>
@@ -1424,7 +1424,7 @@
 											{#if (selectedDetail.defined_services?.length ?? 0) > 0}
 												<div class="flex flex-col gap-2.5">
 													<h3 class="text-sm font-semibold">
-														Definisi Service &amp; Job di {selectedDetail.compose_file}
+														{t('compose.detail.definedServicesHeading', { file: selectedDetail.compose_file })}
 													</h3>
 													<div class="grid gap-3 md:grid-cols-2">
 														{#each selectedDetail.defined_services ?? [] as svc (svc.name)}
@@ -1432,17 +1432,17 @@
 																<Card.Header>
 																	<Card.Title class="min-w-0 truncate font-mono">{svc.name}</Card.Title>
 																	<Card.Description class="min-w-0 truncate font-mono text-xs">
-																		{svc.image || (svc.build ? `build: ${svc.build}` : 'image tidak ditentukan')}
+																		{svc.image || (svc.build ? t('compose.detail.buildPrefix', { build: svc.build }) : t('compose.detail.imageUnspecified'))}
 																	</Card.Description>
 																	{#if svc.is_job || svc.has_healthcheck}
 																		<Card.Action class="flex flex-wrap justify-end gap-1">
 																			{#if svc.is_job}
-																				<Badge variant="secondary">Job v5.8</Badge>
+																				<Badge variant="secondary">{t('compose.detail.jobBadge')}</Badge>
 																			{/if}
 																			{#if svc.has_healthcheck}
 																				<Badge variant="outline">
 																					<ShieldCheckIcon data-icon="inline-start" class="text-success" />
-																					Healthcheck
+																					{t('compose.detail.healthcheckBadge')}
 																				</Badge>
 																			{/if}
 																		</Card.Action>
@@ -1453,12 +1453,12 @@
 																	<Card.Content class="flex flex-col gap-1 text-xs">
 																		{#if svc.schedule_cron}
 																			<div class="font-mono text-primary">
-																				Cron: {svc.schedule_cron}
+																				{t('compose.detail.cronPrefix', { cron: svc.schedule_cron })}
 																			</div>
 																		{/if}
 																		{#if (svc.depends_on?.length ?? 0) > 0}
 																			<div class="text-muted-foreground">
-																				Depends on: <span class="font-mono">{svc.depends_on?.join(', ')}</span>
+																				{t('compose.detail.dependsOn')} <span class="font-mono">{svc.depends_on?.join(', ')}</span>
 																			</div>
 																		{/if}
 																	</Card.Content>
@@ -1474,7 +1474,7 @@
 																						size="xs"
 																						variant={pb.exposed_public && pb.sensitive_port ? 'destructive' : 'outline'}
 																						class="min-h-8 max-w-full font-mono sm:min-h-0"
-																						title="Klik untuk ekspos port ini ke VHost Nginx"
+																						title={t('compose.detail.exposePortTitle')}
 																						onclick={() => openExposePort(pb.host_port, svc.name)}
 																					>
 																						<GlobeIcon data-icon="inline-start" />
@@ -1495,7 +1495,7 @@
 																				onclick={() => triggerComposeAction('run-job', { service: svc.name })}
 																			>
 																				<PlayIcon data-icon="inline-start" />
-																				Run Job
+																				{t('compose.detail.runJobBtn')}
 																			</Button>
 																		{/if}
 																	</Card.Footer>
@@ -1514,16 +1514,16 @@
 											<div class="flex flex-wrap items-center gap-2">
 												<Badge variant="outline" class="font-mono">{composeFileLabel}</Badge>
 												<Badge variant={hasEnvFile ? 'secondary' : 'outline'} class="font-mono">
-													{hasEnvFile ? '.env (0600)' : '.env (baru)'}
+													{hasEnvFile ? '.env (0600)' : t('compose.files.envNew')}
 												</Badge>
 												{#if filesDirty}
-													<Badge>Belum Disimpan</Badge>
+													<Badge>{t('compose.files.unsaved')}</Badge>
 												{/if}
 											</div>
 											<div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
 												<Button variant="outline" size="sm" class="min-h-9 sm:min-h-0" onclick={openResolvedConfigModal}>
 													<FileCodeIcon data-icon="inline-start" />
-													<span class="truncate">Inspect Config</span>
+													<span class="truncate">{t('compose.files.inspectConfig')}</span>
 												</Button>
 												<Button
 													variant="outline"
@@ -1532,7 +1532,7 @@
 													disabled={filesLoading}
 													onclick={() => selectedDetail && loadProjectFiles(selectedDetail.name)}
 												>
-													Muat Ulang
+													{t('compose.files.reload')}
 												</Button>
 												<Button
 													size="sm"
@@ -1542,9 +1542,9 @@
 												>
 													{#if filesSaving}
 														<Spinner data-icon="inline-start" />
-														Memvalidasi &amp; Menyimpan...
+														{t('compose.files.validatingSaving')}
 													{:else}
-														Validasi &amp; Simpan
+														{t('compose.files.validateSave')}
 													{/if}
 												</Button>
 											</div>
@@ -1553,7 +1553,7 @@
 										{#if filesLoading}
 											<div class="flex items-center gap-2 py-8 text-sm text-muted-foreground">
 												<Spinner />
-												<span>Membaca berkas proyek...</span>
+												<span>{t('compose.files.loadingFiles')}</span>
 											</div>
 										{:else}
 											<Field.FieldGroup class="grid gap-4 xl:grid-cols-12">
@@ -1563,7 +1563,7 @@
 															{composeFileLabel}
 														</Field.FieldLabel>
 														<span class="text-xs text-muted-foreground">
-															Divalidasi via YAML parser + <code>docker compose config --quiet</code>
+															{t('compose.files.validatedViaPrefix')} <code>docker compose config --quiet</code>
 														</span>
 													</div>
 													<Textarea
@@ -1588,10 +1588,10 @@
 														>
 															{#if maskEnvValues}
 																<EyeIcon data-icon="inline-start" />
-																Tampilkan Nilai
+																{t('compose.files.showValues')}
 															{:else}
 																<EyeOffIcon data-icon="inline-start" />
-																Sembunyikan
+																{t('compose.files.hideValues')}
 															{/if}
 														</Button>
 													</div>
@@ -1602,10 +1602,10 @@
 															readonly
 															rows={18}
 															class="max-h-[50dvh] min-h-40 resize-y overflow-y-auto bg-muted/40 font-mono text-xs leading-relaxed sm:min-h-72"
-															placeholder="# File .env kosong"
+															placeholder={t('compose.files.envEmptyPlaceholder')}
 														/>
 														<Field.FieldDescription>
-															Klik <strong>Tampilkan Nilai</strong> untuk mengedit variabel rahasia di <code>.env</code>.
+															{t('compose.files.envMaskHint1')} <strong>{t('compose.files.envMaskHintBold')}</strong> {t('compose.files.envMaskHint2')} <code>.env</code>.
 														</Field.FieldDescription>
 													{:else}
 														<Textarea
@@ -1613,7 +1613,7 @@
 															bind:value={envContent}
 															rows={18}
 															class="max-h-[50dvh] min-h-40 resize-y overflow-y-auto font-mono text-xs leading-relaxed sm:min-h-72"
-															placeholder="KEY=value"
+															placeholder={t('compose.files.envPlaceholder')}
 															spellcheck={false}
 														/>
 													{/if}
@@ -1639,12 +1639,12 @@
 														}
 													}}
 												>
-													<Select.Trigger size="sm" class="h-9 w-full min-w-0 sm:h-7 sm:w-44" aria-label="Filter service log">
-														<span class="truncate">{logServiceFilter || 'Semua Service'}</span>
+													<Select.Trigger size="sm" class="h-9 w-full min-w-0 sm:h-7 sm:w-44" aria-label={t('compose.logs.filterServiceAria')}>
+														<span class="truncate">{logServiceFilter || t('compose.logs.allServices')}</span>
 													</Select.Trigger>
 													<Select.Content>
 														<Select.Group>
-															<Select.Item value="">Semua Service</Select.Item>
+															<Select.Item value="">{t('compose.logs.allServices')}</Select.Item>
 															{#each selectedDetail.defined_services ?? [] as svc (svc.name)}
 																<Select.Item value={svc.name}>{svc.name}</Select.Item>
 															{/each}
@@ -1663,14 +1663,14 @@
 														}
 													}}
 												>
-													<Select.Trigger size="sm" class="h-9 w-full min-w-0 sm:h-7 sm:w-32" aria-label="Jumlah baris log">
-														<span class="truncate">{logTail} baris</span>
+													<Select.Trigger size="sm" class="h-9 w-full min-w-0 sm:h-7 sm:w-32" aria-label={t('compose.logs.lineCountAria')}>
+														<span class="truncate">{t('compose.logs.linesCount', { count: logTail })}</span>
 													</Select.Trigger>
 													<Select.Content>
 														<Select.Group>
-															<Select.Item value="100">100 baris</Select.Item>
-															<Select.Item value="200">200 baris</Select.Item>
-															<Select.Item value="500">500 baris</Select.Item>
+															<Select.Item value="100">{t('compose.logs.linesCount', { count: 100 })}</Select.Item>
+															<Select.Item value="200">{t('compose.logs.linesCount', { count: 200 })}</Select.Item>
+															<Select.Item value="500">{t('compose.logs.linesCount', { count: 500 })}</Select.Item>
 														</Select.Group>
 													</Select.Content>
 												</Select.Root>
@@ -1685,10 +1685,10 @@
 												>
 													{#if liveFollow}
 														<SquareIcon data-icon="inline-start" />
-														<span class="truncate">Stop</span>
+														<span class="truncate">{t('compose.logs.stop')}</span>
 													{:else}
 														<PlayIcon data-icon="inline-start" />
-														<span class="truncate">Live</span>
+														<span class="truncate">{t('compose.logs.live')}</span>
 													{/if}
 												</Button>
 												<Button
@@ -1699,23 +1699,23 @@
 													onclick={() => selectedDetail && loadProjectLogs(selectedDetail.name)}
 												>
 													<RefreshCwIcon class={cn(logsLoading && 'animate-spin')} data-icon="inline-start" />
-													<span class="truncate">Refresh</span>
+													<span class="truncate">{t('compose.logs.refresh')}</span>
 												</Button>
 												<Button
 													variant="outline"
 													size="sm"
 													class="min-h-9 sm:min-h-0"
-													onclick={() => copyText(logsText, 'Log Compose')}
+													onclick={() => copyText(logsText, t('compose.logs.copyLabel'))}
 												>
 													<CopyIcon data-icon="inline-start" />
-													<span class="truncate">Salin</span>
+													<span class="truncate">{t('compose.logs.copy')}</span>
 												</Button>
 											</div>
 										</div>
 
 										<pre
 											class="max-h-[52dvh] min-h-52 overflow-auto overscroll-contain rounded-lg border bg-terminal p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-terminal-foreground sm:max-h-[460px] sm:min-h-[260px]"
-										>{logsLoading && !logsText ? 'Memuat log container...' : logsText || '(Belum ada output log)'}</pre>
+										>{logsLoading && !logsText ? t('compose.logs.loading') : logsText || t('compose.logs.empty')}</pre>
 									</Tabs.Content>
 								</Tabs.Root>
 							</Card.Content>
@@ -1751,9 +1751,9 @@
 <Dialog.Root bind:open={downOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-0 overflow-hidden p-4 sm:max-w-[min(calc(100vw-2rem),28rem)]">
 		<Dialog.Header class="shrink-0 border-b border-border/50 pb-3 pr-8">
-			<Dialog.Title class="leading-snug break-words">Hentikan Stack "{selectedDetail?.name}"?</Dialog.Title>
+			<Dialog.Title class="leading-snug break-words">{t('compose.downDialog.title', { name: selectedDetail?.name ?? '' })}</Dialog.Title>
 			<Dialog.Description class="text-xs sm:text-sm">
-				Menjalankan <code>docker compose down</code> akan menghentikan dan menghapus container serta jaringan stack.
+				{t('compose.downDialog.desc1')}<code>docker compose down</code>{t('compose.downDialog.desc2')}
 			</Dialog.Description>
 		</Dialog.Header>
 		<div class="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 py-4">
@@ -1761,7 +1761,7 @@
 				<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
 					<Checkbox id="compose-down-orphans" class="mt-0.5 shrink-0 sm:mt-0" bind:checked={downOrphans} />
 					<Field.FieldLabel for="compose-down-orphans" class="cursor-pointer text-xs leading-snug font-normal">
-						<span>Bersihkan container orphan (<code>--remove-orphans</code>)</span>
+						<span>{t('compose.downDialog.orphans1')}<code>--remove-orphans</code>{t('compose.downDialog.orphans2')}</span>
 					</Field.FieldLabel>
 				</Field.Field>
 				<Field.Field orientation="horizontal" class="items-start gap-2.5 sm:items-center">
@@ -1770,15 +1770,15 @@
 						for="compose-down-volumes"
 						class="cursor-pointer text-xs leading-snug font-normal text-destructive"
 					>
-						<span>Hapus juga named volumes (<code>--volumes</code> — data DB dapat hilang permanen!)</span>
+						<span>{t('compose.downDialog.volumes1')}<code>--volumes</code>{t('compose.downDialog.volumes2')}</span>
 					</Field.FieldLabel>
 				</Field.Field>
 			</Field.FieldGroup>
 		</div>
 		<Dialog.Footer class="shrink-0 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
-			<Button variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (downOpen = false)}>Batal</Button>
+			<Button variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (downOpen = false)}>{t('compose.downDialog.cancel')}</Button>
 			<Button variant="destructive" class="min-h-10 sm:min-h-0" onclick={confirmDownSubmit}>
-				Jalankan Compose Down
+				{t('compose.downDialog.confirm')}
 			</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
@@ -1788,16 +1788,16 @@
 <Dialog.Root bind:open={configModalOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-0 overflow-hidden p-4 sm:max-w-[min(calc(100vw-2rem),48rem)]">
 		<Dialog.Header class="shrink-0 border-b border-border/50 pb-3 pr-8">
-			<Dialog.Title class="leading-snug">Resolved Compose Config (JSON)</Dialog.Title>
+			<Dialog.Title class="leading-snug">{t('compose.configDialog.title')}</Dialog.Title>
 			<Dialog.Description class="text-xs sm:text-sm">
-				Hasil akhir <code>docker compose config --format json</code> setelah interpolasi variabel <code>.env</code> dan <code>include</code>.
+				{t('compose.configDialog.desc1')}<code>docker compose config --format json</code>{t('compose.configDialog.desc2')}<code>.env</code>{t('compose.configDialog.desc3')}<code>include</code>{t('compose.configDialog.desc4')}
 			</Dialog.Description>
 		</Dialog.Header>
 		<div class="my-3 min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain rounded-lg border bg-muted/40 p-3">
 			{#if configLoading}
 				<div class="flex items-center gap-2 py-8 text-sm">
 					<Spinner />
-					<span>Merender konfigurasi Compose...</span>
+					<span>{t('compose.configDialog.rendering')}</span>
 				</div>
 			{:else}
 				<pre class="font-mono text-xs leading-relaxed whitespace-pre">{configJSONText}</pre>
@@ -1807,12 +1807,12 @@
 			<Button
 				variant="outline"
 				class="min-h-10 sm:min-h-0"
-				onclick={() => copyText(configJSONText, 'Config JSON')}
+				onclick={() => copyText(configJSONText, t('compose.configDialog.copyLabel'))}
 			>
 				<CopyIcon data-icon="inline-start" />
-				Salin JSON
+				{t('compose.configDialog.copyJson')}
 			</Button>
-			<Button class="min-h-10 sm:min-h-0" onclick={() => (configModalOpen = false)}>Tutup</Button>
+			<Button class="min-h-10 sm:min-h-0" onclick={() => (configModalOpen = false)}>{t('compose.configDialog.close')}</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
@@ -1821,9 +1821,9 @@
 <Dialog.Root bind:open={pruneModalOpen}>
 	<Dialog.Content class="flex max-h-[90dvh] max-w-[calc(100vw-1.5rem)] flex-col gap-0 overflow-hidden p-4 sm:max-w-[min(calc(100vw-2rem),36rem)]">
 		<Dialog.Header class="shrink-0 border-b border-border/50 pb-3 pr-8">
-			<Dialog.Title class="leading-snug">Penggunaan Disk &amp; Pembersihan Docker</Dialog.Title>
+			<Dialog.Title class="leading-snug">{t('compose.pruneDialog.title')}</Dialog.Title>
 			<Dialog.Description class="text-xs sm:text-sm">
-				Pantau ukuran image, container, volume, dan build cache lewat <code>docker system df</code>.
+				{t('compose.pruneDialog.desc1')}<code>docker system df</code>{t('compose.pruneDialog.desc2')}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -1831,7 +1831,7 @@
 			{#if dfLoading}
 				<div class="flex items-center gap-2 py-6 text-sm">
 					<Spinner />
-					<span>Menghitung pemakaian disk Docker...</span>
+					<span>{t('compose.pruneDialog.loading')}</span>
 				</div>
 			{:else if diskUsage?.items?.length}
 				<!-- Mobile compact cards -->
@@ -1846,15 +1846,15 @@
 							</Card.Header>
 							<Card.Content class="grid grid-cols-3 gap-2 text-xs">
 								<div class="flex flex-col gap-0.5">
-									<span class="text-[11px] text-muted-foreground">Total</span>
+									<span class="text-[11px] text-muted-foreground">{t('compose.pruneDialog.total')}</span>
 									<span class="font-mono font-medium">{item.total_count}</span>
 								</div>
 								<div class="flex flex-col gap-0.5">
-									<span class="text-[11px] text-muted-foreground">Aktif</span>
+									<span class="text-[11px] text-muted-foreground">{t('compose.pruneDialog.active')}</span>
 									<span class="font-mono font-medium">{item.active}</span>
 								</div>
 								<div class="flex flex-col gap-0.5">
-									<span class="text-[11px] text-muted-foreground">Dibersihkan</span>
+									<span class="text-[11px] text-muted-foreground">{t('compose.pruneDialog.reclaimable')}</span>
 									<span class="font-mono font-medium">{item.reclaimable}</span>
 								</div>
 							</Card.Content>
@@ -1864,25 +1864,25 @@
 
 				<!-- Desktop table -->
 				<div class="hidden sm:block">
-					<ResponsiveTableWrapper label="Ringkasan Penggunaan Disk Docker" stackOnMobile={false}>
+					<ResponsiveTableWrapper label={t('compose.pruneDialog.tableAria')} stackOnMobile={false}>
 						<Table.Root>
 							<Table.Header>
 								<Table.Row>
-									<Table.Head>Tipe</Table.Head>
-									<Table.Head>Total</Table.Head>
-									<Table.Head>Aktif</Table.Head>
-									<Table.Head>Ukuran</Table.Head>
-									<Table.Head>Dapat Dibersihkan</Table.Head>
+									<Table.Head>{t('compose.pruneDialog.colType')}</Table.Head>
+									<Table.Head>{t('compose.pruneDialog.colTotal')}</Table.Head>
+									<Table.Head>{t('compose.pruneDialog.colActive')}</Table.Head>
+									<Table.Head>{t('compose.pruneDialog.colSize')}</Table.Head>
+									<Table.Head>{t('compose.pruneDialog.colReclaimable')}</Table.Head>
 								</Table.Row>
 							</Table.Header>
 							<Table.Body>
 								{#each diskUsage.items as item (item.type)}
 									<Table.Row>
-										<Table.Cell data-label="Tipe" class="font-medium">{item.type}</Table.Cell>
-										<Table.Cell data-label="Total" class="font-mono text-xs">{item.total_count}</Table.Cell>
-										<Table.Cell data-label="Aktif" class="font-mono text-xs">{item.active}</Table.Cell>
-										<Table.Cell data-label="Ukuran" class="font-mono text-xs">{item.size}</Table.Cell>
-										<Table.Cell data-label="Dapat Dibersihkan" class="font-mono text-xs">{item.reclaimable}</Table.Cell>
+										<Table.Cell data-label={t('compose.pruneDialog.colType')} class="font-medium">{item.type}</Table.Cell>
+										<Table.Cell data-label={t('compose.pruneDialog.colTotal')} class="font-mono text-xs">{item.total_count}</Table.Cell>
+										<Table.Cell data-label={t('compose.pruneDialog.colActive')} class="font-mono text-xs">{item.active}</Table.Cell>
+										<Table.Cell data-label={t('compose.pruneDialog.colSize')} class="font-mono text-xs">{item.size}</Table.Cell>
+										<Table.Cell data-label={t('compose.pruneDialog.colReclaimable')} class="font-mono text-xs">{item.reclaimable}</Table.Cell>
 									</Table.Row>
 								{/each}
 							</Table.Body>
@@ -1895,9 +1895,9 @@
 						<Empty.Media variant="icon">
 							<HardDriveIcon />
 						</Empty.Media>
-						<Empty.Title>Data Disk Tidak Tersedia</Empty.Title>
+						<Empty.Title>{t('compose.pruneDialog.emptyTitle')}</Empty.Title>
 						<Empty.Description>
-							Tidak ada data penggunaan disk yang dilaporkan oleh daemon Docker.
+							{t('compose.pruneDialog.emptyDesc')}
 						</Empty.Description>
 					</Empty.Header>
 				</Empty.Root>
@@ -1906,47 +1906,47 @@
 			<Separator />
 
 			<div class="flex flex-col gap-2">
-				<span class="text-xs font-medium text-muted-foreground">Aksi Pembersihan (Prune)</span>
+				<span class="text-xs font-medium text-muted-foreground">{t('compose.pruneDialog.pruneSection')}</span>
 				<div class="grid grid-cols-1 gap-2 min-[380px]:grid-cols-2">
 					<Button
 						variant="outline"
 						size="sm"
 						class="min-h-9 sm:min-h-0"
-						onclick={() => triggerPrune('containers', 'Stopped Containers')}
+						onclick={() => triggerPrune('containers', t('compose.pruneDialog.pruneContainersLabel'))}
 					>
-						Prune Containers
+						{t('compose.pruneDialog.pruneContainers')}
 					</Button>
 					<Button
 						variant="outline"
 						size="sm"
 						class="min-h-9 sm:min-h-0"
-						onclick={() => triggerPrune('images', 'Dangling Images')}
+						onclick={() => triggerPrune('images', t('compose.pruneDialog.pruneImagesLabel'))}
 					>
-						Prune Dangling Images
+						{t('compose.pruneDialog.pruneImages')}
 					</Button>
 					<Button
 						variant="outline"
 						size="sm"
 						class="min-h-9 sm:min-h-0"
-						onclick={() => triggerPrune('builder', 'Build Cache')}
+						onclick={() => triggerPrune('builder', t('compose.pruneDialog.pruneBuilderLabel'))}
 					>
-						Prune Build Cache
+						{t('compose.pruneDialog.pruneBuilder')}
 					</Button>
 					<Button
 						variant="outline"
 						size="sm"
 						class="min-h-9 sm:min-h-0"
-						onclick={() => triggerPrune('networks', 'Unused Networks')}
+						onclick={() => triggerPrune('networks', t('compose.pruneDialog.pruneNetworksLabel'))}
 					>
-						Prune Networks
+						{t('compose.pruneDialog.pruneNetworks')}
 					</Button>
 					<Button
 						variant="destructive"
 						size="sm"
 						class="min-h-9 min-[380px]:col-span-2 sm:min-h-0"
-						onclick={() => triggerPrune('volumes', 'Unused Volumes')}
+						onclick={() => triggerPrune('volumes', t('compose.pruneDialog.pruneVolumesLabel'))}
 					>
-						Prune Unused Volumes
+						{t('compose.pruneDialog.pruneVolumes')}
 					</Button>
 				</div>
 			</div>
@@ -1954,7 +1954,7 @@
 
 		<Dialog.Footer class="shrink-0 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
 			<Button variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (pruneModalOpen = false)}>
-				Tutup
+				{t('compose.pruneDialog.close')}
 			</Button>
 		</Dialog.Footer>
 	</Dialog.Content>

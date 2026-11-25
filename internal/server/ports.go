@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"wdev/internal/i18n"
 	"wdev/internal/monitor"
 	"wdev/internal/pdns"
 	"wdev/internal/serviceconfig"
@@ -170,12 +171,13 @@ var (
 )
 
 func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
+	lang := i18n.FromRequest(r)
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeError(w, http.StatusMethodNotAllowed, i18n.Pick(lang, "Method not allowed", "Method tidak diizinkan"))
 		return
 	}
 	refresh := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
-	report := s.collectPortDiagnostics(r.Context(), refresh)
+	report := s.collectPortDiagnostics(r.Context(), refresh, lang)
 	writeJSON(w, http.StatusOK, report)
 }
 
@@ -230,7 +232,8 @@ type portCandidate struct {
 	remediationHint   string
 }
 
-func (s *Server) collectPortDiagnostics(ctx context.Context, forceRefresh bool) PortStatusReport {
+func (s *Server) collectPortDiagnostics(ctx context.Context, forceRefresh bool, lang string) PortStatusReport {
+	loc := i18n.Normalize(lang)
 	deps := s.activePortDeps()
 
 	probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
@@ -246,10 +249,17 @@ func (s *Server) collectPortDiagnostics(ctx context.Context, forceRefresh bool) 
 		defer wgMeta.Done()
 		sockets = deps.readSocketsFn()
 	}()
-	go func() {
-		defer wgMeta.Done()
-		fw = deps.detectFirewallFn(probeCtx)
-	}()
+	if s.portDeps != nil {
+		go func() {
+			defer wgMeta.Done()
+			fw = deps.detectFirewallFn(probeCtx)
+		}()
+	} else {
+		go func() {
+			defer wgMeta.Done()
+			fw = detectHostFirewallLocale(probeCtx, loc)
+		}()
+	}
 
 	mode := "local"
 	var pdnsCfg pdns.EdgeConfig
@@ -302,7 +312,7 @@ func (s *Server) collectPortDiagnostics(ctx context.Context, forceRefresh bool) 
 		Firewall:      fw.info,
 	}
 
-	candidates := s.buildPortCandidates(probeCtx, deps, netCtx, pdnsCfg)
+	candidates := s.buildPortCandidates(probeCtx, deps, netCtx, pdnsCfg, loc)
 	entries := make([]PortEntry, len(candidates))
 
 	// Jalankan probe koneksi secara paralel dengan batas wajar agar cepat selesai.
@@ -314,7 +324,7 @@ func (s *Server) collectPortDiagnostics(ctx context.Context, forceRefresh bool) 
 			defer wgPorts.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			entries[idx] = evaluatePortCandidate(candidates[idx], netCtx, sockets, fw, deps, forceRefresh)
+			entries[idx] = evaluatePortCandidateLocale(candidates[idx], netCtx, sockets, fw, deps, forceRefresh, loc)
 		}(i)
 	}
 	wgPorts.Wait()
@@ -352,6 +362,7 @@ func (s *Server) buildPortCandidates(
 	deps portProbeDeps,
 	netCtx PortNetworkContext,
 	pdnsCfg pdns.EdgeConfig,
+	lang string,
 ) []portCandidate {
 	panelPort := s.panelPortNumber()
 	httpHost := "0.0.0.0"
@@ -367,17 +378,20 @@ func (s *Server) buildPortCandidates(
 
 	panelScope := "public"
 	panelAllowPub := true
-	panelDesc := "Antarmuka web & API control panel wdev."
+	panelDesc := i18n.Pick(lang, "wdev control panel web interface & API.", "Antarmuka web & API control panel wdev.")
 	panelHint := fmt.Sprintf("host=%s", httpHost)
 	if isLoopbackAddrStr(httpHost) {
 		panelScope = "local"
 		panelAllowPub = false
-		panelDesc = "Panel wdev dikonfigurasi hanya listen di localhost (127.0.0.1)."
+		panelDesc = i18n.Pick(lang, "wdev panel is configured to listen on localhost (127.0.0.1) only.", "Panel wdev dikonfigurasi hanya listen di localhost (127.0.0.1).")
 	} else if blockDirectIP && panelDomain != "" {
 		panelScope = "internal"
 		panelAllowPub = false
-		panelHint = fmt.Sprintf("domain=%s (blokir IP aktif)", panelDomain)
-		panelDesc = fmt.Sprintf("Panel diakses lewat domain resmi (%s) pada port 80/443; akses IP langsung diblokir aplikasi.", panelDomain)
+		panelHint = fmt.Sprintf(i18n.Pick(lang, "domain=%s (IP block active)", "domain=%s (blokir IP aktif)"), panelDomain)
+		panelDesc = fmt.Sprintf(i18n.Pick(lang,
+			"Panel is accessed via official domain (%s) on ports 80/443; direct IP access is blocked by the application.",
+			"Panel diakses lewat domain resmi (%s) pada port 80/443; akses IP langsung diblokir aplikasi.",
+		), panelDomain)
 	} else if netCtx.Mode == "local" {
 		panelScope = "vpn"
 		panelAllowPub = false
@@ -389,7 +403,10 @@ func (s *Server) buildPortCandidates(
 		panelAllowPub = false
 	} else if panelDomain != "" {
 		panelHint = "domain=" + panelDomain
-		panelDesc = fmt.Sprintf("Antarmuka web panel wdev (domain %s aktif di port 80/443; port direct panel opsional).", panelDomain)
+		panelDesc = fmt.Sprintf(i18n.Pick(lang,
+			"wdev web panel interface (domain %s active on ports 80/443; direct panel port optional).",
+			"Antarmuka web panel wdev (domain %s aktif di port 80/443; port direct panel opsional).",
+		), panelDomain)
 	}
 
 	sshPort, sshInstalled := deps.detectSSHPortFn()
@@ -437,7 +454,7 @@ func (s *Server) buildPortCandidates(
 	}
 	pgHint := fmt.Sprintf("listen_addresses='%s' · mode=%s", pgListen, pgRemoteMode)
 	if pgCfg == nil && pgInstalled {
-		pgHint = "deteksi socket aktif"
+		pgHint = i18n.Pick(lang, "active socket detection", "deteksi socket aktif")
 	}
 
 	// Redis / Valkey
@@ -488,52 +505,58 @@ func (s *Server) buildPortCandidates(
 
 	stalwartInstalled := isStalwartInstalled()
 
+	catPanel := i18n.Pick(lang, "Panel & Access", "Panel & Akses")
+	catWeb := i18n.Pick(lang, "Web & Proxy", "Web & Proxy")
+	catDB := i18n.Pick(lang, "Database & Cache", "Database & Cache")
+	catDNS := i18n.Pick(lang, "DNS & Edge Gateway", "DNS & Edge Gateway")
+	catMail := i18n.Pick(lang, "Mail Server (Stalwart)", "Mail Server (Stalwart)")
+
 	candidates := []portCandidate{
 		{
-			id:            "wdev-panel",
-			port:          panelPort,
-			protocol:      "TCP",
-			service:       "wdev",
-			name:          "wdev Web Dashboard",
-			category:      "system",
-			categoryLabel: "Panel & Akses",
-			installed:     true,
-			expectedScope: panelScope,
-			configHint:    panelHint,
-			allowPublic:   panelAllowPub,
-			allowVPN:      !isLoopbackAddrStr(httpHost),
-			description:   panelDesc,
-			remediationHint: "Periksa flag '--host' pada service wdev atau rule firewall untuk port panel.",
+			id:              "wdev-panel",
+			port:            panelPort,
+			protocol:        "TCP",
+			service:         "wdev",
+			name:            "wdev Web Dashboard",
+			category:        "system",
+			categoryLabel:   catPanel,
+			installed:       true,
+			expectedScope:   panelScope,
+			configHint:      panelHint,
+			allowPublic:     panelAllowPub,
+			allowVPN:        !isLoopbackAddrStr(httpHost),
+			description:     panelDesc,
+			remediationHint: i18n.Pick(lang, "Check '--host' flag on the wdev service or firewall rules for the panel port.", "Periksa flag '--host' pada service wdev atau rule firewall untuk port panel."),
 		},
 		{
-			id:            "ssh",
-			port:          sshPort,
-			protocol:      "TCP",
-			service:       "sshd",
-			name:          "OpenSSH Server",
-			category:      "system",
-			categoryLabel: "Panel & Akses",
-			installed:     sshInstalled,
-			expectedScope: "public",
-			allowPublic:   netCtx.Mode == "vps" || netCtx.Mode == "edge",
-			allowVPN:      true,
-			description:   "Akses remote SSH terminal & SFTP ke server host.",
-			remediationHint: "Pastikan sshd aktif dan jangan pernah menutup port SSH saat mengaktifkan firewall.",
+			id:              "ssh",
+			port:            sshPort,
+			protocol:        "TCP",
+			service:         "sshd",
+			name:            "OpenSSH Server",
+			category:        "system",
+			categoryLabel:   catPanel,
+			installed:       sshInstalled,
+			expectedScope:   "public",
+			allowPublic:     netCtx.Mode == "vps" || netCtx.Mode == "edge",
+			allowVPN:        true,
+			description:     i18n.Pick(lang, "Remote SSH terminal & SFTP access to the host server.", "Akses remote SSH terminal & SFTP ke server host."),
+			remediationHint: i18n.Pick(lang, "Ensure sshd is running and never block the SSH port when enabling the firewall.", "Pastikan sshd aktif dan jangan pernah menutup port SSH saat mengaktifkan firewall."),
 		},
 		{
-			id:            "nginx-http",
-			port:          80,
-			protocol:      "TCP",
-			service:       "nginx",
-			name:          "Nginx HTTP",
-			category:      "web",
-			categoryLabel: "Web & Proxy",
-			installed:     nginxInstalled,
-			expectedScope: "public",
-			allowPublic:   netCtx.Mode != "local",
-			allowVPN:      true,
-			description:   "Web server utama untuk HTTP, challenge ACME Let's Encrypt, dan reverse proxy.",
-			remediationHint: "Buka port 80/tcp di firewall / Security Group agar domain publik & SSL Let's Encrypt dapat diakses.",
+			id:              "nginx-http",
+			port:            80,
+			protocol:        "TCP",
+			service:         "nginx",
+			name:            "Nginx HTTP",
+			category:        "web",
+			categoryLabel:   catWeb,
+			installed:       nginxInstalled,
+			expectedScope:   "public",
+			allowPublic:     netCtx.Mode != "local",
+			allowVPN:        true,
+			description:     i18n.Pick(lang, "Primary web server for HTTP, Let's Encrypt ACME challenges, and reverse proxy.", "Web server utama untuk HTTP, challenge ACME Let's Encrypt, dan reverse proxy."),
+			remediationHint: i18n.Pick(lang, "Open port 80/tcp in the firewall / Security Group so public domains & Let's Encrypt SSL are reachable.", "Buka port 80/tcp di firewall / Security Group agar domain publik & SSL Let's Encrypt dapat diakses."),
 		},
 		{
 			id:                "nginx-https",
@@ -542,15 +565,15 @@ func (s *Server) buildPortCandidates(
 			service:           "nginx",
 			name:              "Nginx HTTPS / SSL",
 			category:          "web",
-			categoryLabel:     "Web & Proxy",
+			categoryLabel:     catWeb,
 			installed:         nginxInstalled,
 			expectedScope:     "public",
 			allowPublic:       netCtx.Mode != "local",
 			allowVPN:          true,
 			edgeTerminatedSSL: netCtx.Mode == "edge",
 			sslOptionalIdle:   !hasSSL,
-			description:       "Endpoint HTTPS (TLS) untuk seluruh website dan panel wdev.",
-			remediationHint:   "Aktifkan SSL pada minimal satu situs dan buka port 443/tcp pada firewall / Security Group.",
+			description:       i18n.Pick(lang, "HTTPS (TLS) endpoint for all websites and the wdev panel.", "Endpoint HTTPS (TLS) untuk seluruh website dan panel wdev."),
+			remediationHint:   i18n.Pick(lang, "Enable SSL on at least one site and open port 443/tcp in the firewall / Security Group.", "Aktifkan SSL pada minimal satu situs dan buka port 443/tcp pada firewall / Security Group."),
 		},
 		{
 			id:              "postgresql",
@@ -559,16 +582,16 @@ func (s *Server) buildPortCandidates(
 			service:         "postgresql",
 			name:            "PostgreSQL Database",
 			category:        "database",
-			categoryLabel:   "Database & Cache",
+			categoryLabel:   catDB,
 			installed:       pgInstalled,
 			expectedScope:   pgExpected,
 			configHint:      pgHint,
 			allowPublic:     pgAllowPub,
 			allowVPN:        pgAllowVPN,
 			preferPrivate:   pgPreferPriv,
-			localBindHint:   "Saat ini hanya listen lokal (127.0.0.1). Ubah mode akses ke LAN & VPN di Pengaturan PostgreSQL jika ingin terhubung via NetBird.",
-			description:     "Server database relasional PostgreSQL.",
-			remediationHint: "Buka Menu Status -> Konfigurasi PostgreSQL lalu pilih 'Semua IP Privat (LAN & NetBird VPN)' agar listen_addresses='*' dan firewall tersinkron.",
+			localBindHint:   i18n.Pick(lang, "Currently listening on localhost (127.0.0.1) only. Switch access mode to LAN & VPN in PostgreSQL Settings to connect via NetBird.", "Saat ini hanya listen lokal (127.0.0.1). Ubah mode akses ke LAN & VPN di Pengaturan PostgreSQL jika ingin terhubung via NetBird."),
+			description:     i18n.Pick(lang, "PostgreSQL relational database server.", "Server database relasional PostgreSQL."),
+			remediationHint: i18n.Pick(lang, "Open Status Menu -> PostgreSQL Config and select 'All Private IPs (LAN & NetBird VPN)' to set listen_addresses='*' and sync firewall rules.", "Buka Menu Status -> Konfigurasi PostgreSQL lalu pilih 'Semua IP Privat (LAN & NetBird VPN)' agar listen_addresses='*' dan firewall tersinkron."),
 		},
 		{
 			id:              "redis",
@@ -577,16 +600,16 @@ func (s *Server) buildPortCandidates(
 			service:         "redis",
 			name:            "Redis / Valkey Cache",
 			category:        "database",
-			categoryLabel:   "Database & Cache",
+			categoryLabel:   catDB,
 			installed:       redisInstalled,
 			expectedScope:   redisExpected,
 			configHint:      "bind " + redisBind,
 			allowPublic:     redisAllowPub,
 			allowVPN:        redisAllowVPN,
 			preferPrivate:   redisPreferPriv,
-			localBindHint:   "Saat ini bind lokal (127.0.0.1). Pertahankan lokal demi keamanan, atau tambahkan IP NetBird di Pengaturan Redis jika dibutuhkan jarak jauh.",
-			description:     "In-memory cache & message broker Redis/Valkey.",
-			remediationHint: "Periksa parameter 'bind' dan firewall host jika Redis/Valkey perlu diakses melalui NetBird VPN.",
+			localBindHint:   i18n.Pick(lang, "Currently bound locally (127.0.0.1). Keep local for security, or add a NetBird IP in Redis Settings for remote access.", "Saat ini bind lokal (127.0.0.1). Pertahankan lokal demi keamanan, atau tambahkan IP NetBird di Pengaturan Redis jika dibutuhkan jarak jauh."),
+			description:     i18n.Pick(lang, "Redis/Valkey in-memory cache & message broker.", "In-memory cache & message broker Redis/Valkey."),
+			remediationHint: i18n.Pick(lang, "Check the 'bind' parameter and host firewall if Redis/Valkey needs access via NetBird VPN.", "Periksa parameter 'bind' dan firewall host jika Redis/Valkey perlu diakses melalui NetBird VPN."),
 		},
 	}
 
@@ -604,18 +627,18 @@ func (s *Server) buildPortCandidates(
 			}
 			seenSitePorts[st.ProxyPort] = true
 			candidates = append(candidates, portCandidate{
-				id:            fmt.Sprintf("site-proxy-%d", st.ProxyPort),
-				port:          st.ProxyPort,
-				protocol:      "TCP",
-				service:       "app-proxy",
-				name:          fmt.Sprintf("Upstream App (%s)", st.Domain),
-				category:      "web",
-				categoryLabel: "Web & Proxy",
-				installed:     true,
-				expectedScope: "internal",
-				configHint:    "proxy_pass -> 127.0.0.1:" + strconv.Itoa(st.ProxyPort),
-				description:   fmt.Sprintf("Port proses aplikasi backend untuk domain %s (diproxy oleh Nginx).", st.Domain),
-				remediationHint: fmt.Sprintf("Pastikan aplikasi backend untuk %s sedang berjalan dan listen di port %d.", st.Domain, st.ProxyPort),
+				id:              fmt.Sprintf("site-proxy-%d", st.ProxyPort),
+				port:            st.ProxyPort,
+				protocol:        "TCP",
+				service:         "app-proxy",
+				name:            fmt.Sprintf("Upstream App (%s)", st.Domain),
+				category:        "web",
+				categoryLabel:   catWeb,
+				installed:       true,
+				expectedScope:   "internal",
+				configHint:      "proxy_pass -> 127.0.0.1:" + strconv.Itoa(st.ProxyPort),
+				description:     fmt.Sprintf(i18n.Pick(lang, "Backend application process port for domain %s (proxied by Nginx).", "Port proses aplikasi backend untuk domain %s (diproxy oleh Nginx)."), st.Domain),
+				remediationHint: fmt.Sprintf(i18n.Pick(lang, "Ensure the backend app for %s is running and listening on port %d.", "Pastikan aplikasi backend untuk %s sedang berjalan dan listen di port %d."), st.Domain, st.ProxyPort),
 			})
 		}
 	}
@@ -629,20 +652,20 @@ func (s *Server) buildPortCandidates(
 	}
 	candidates = append(candidates,
 		portCandidate{
-			id:            "pdns-dns",
-			port:          53,
-			protocol:      "TCP/UDP",
-			service:       "pdns",
-			name:          "PowerDNS Authoritative",
-			category:      "dns",
-			categoryLabel: "DNS & Edge Gateway",
-			installed:     pdnsInstalled,
-			expectedScope: dnsExpected,
-			configHint:    condStr(netCtx.Mode == "edge", "VPS Edge DNS", "Local PowerDNS"),
-			allowPublic:   netCtx.Mode != "local",
-			allowVPN:      true,
-			description:   "Nameserver authoritative DNS (TCP & UDP 53) untuk domain yang dikelola PowerDNS.",
-			remediationHint: "Pastikan systemd-resolved tidak bentrok dengan port 53 dan buka port 53 TCP/UDP pada firewall.",
+			id:              "pdns-dns",
+			port:            53,
+			protocol:        "TCP/UDP",
+			service:         "pdns",
+			name:            "PowerDNS Authoritative",
+			category:        "dns",
+			categoryLabel:   catDNS,
+			installed:       pdnsInstalled,
+			expectedScope:   dnsExpected,
+			configHint:      condStr(netCtx.Mode == "edge", "VPS Edge DNS", "Local PowerDNS"),
+			allowPublic:     netCtx.Mode != "local",
+			allowVPN:        true,
+			description:     i18n.Pick(lang, "Authoritative DNS nameserver (TCP & UDP 53) for PowerDNS-managed domains.", "Nameserver authoritative DNS (TCP & UDP 53) untuk domain yang dikelola PowerDNS."),
+			remediationHint: i18n.Pick(lang, "Ensure systemd-resolved does not conflict with port 53 and open port 53 TCP/UDP in the firewall.", "Pastikan systemd-resolved tidak bentrok dengan port 53 dan buka port 53 TCP/UDP pada firewall."),
 		},
 		portCandidate{
 			id:               "pdns-api",
@@ -651,14 +674,14 @@ func (s *Server) buildPortCandidates(
 			service:          "pdns-api",
 			name:             "PowerDNS HTTP API",
 			category:         "dns",
-			categoryLabel:    "DNS & Edge Gateway",
+			categoryLabel:    catDNS,
 			installed:        pdnsInstalled,
 			expectedScope:    condStr(netCtx.Mode == "edge", "edge_remote", "internal"),
-			configHint:       condStr(netCtx.Mode == "edge", "NetBird VPN Only", "127.0.0.1 Internal"),
+			configHint:       condStr(netCtx.Mode == "edge", "NetBird VPN Only", i18n.Pick(lang, "127.0.0.1 Internal", "127.0.0.1 Internal")),
 			allowVPN:         netCtx.Mode == "edge",
 			securityAPIGuard: true,
-			description:      "REST API internal PowerDNS untuk sinkronisasi zone dan record DNS otomatis.",
-			remediationHint:  "API PowerDNS harus dibatasi hanya pada localhost atau subnet NetBird (100.64.0.0/10).",
+			description:      i18n.Pick(lang, "Internal PowerDNS REST API for automated DNS zone and record syncing.", "REST API internal PowerDNS untuk sinkronisasi zone dan record DNS otomatis."),
+			remediationHint:  i18n.Pick(lang, "PowerDNS API must be restricted to localhost or the NetBird subnet (100.64.0.0/10).", "API PowerDNS harus dibatasi hanya pada localhost atau subnet NetBird (100.64.0.0/10)."),
 		},
 		portCandidate{
 			id:               "edge-agent",
@@ -667,14 +690,14 @@ func (s *Server) buildPortCandidates(
 			service:          "edge-agent",
 			name:             "wdev Edge Gateway Agent",
 			category:         "dns",
-			categoryLabel:    "DNS & Edge Gateway",
+			categoryLabel:    catDNS,
 			installed:        agentInstalled,
 			expectedScope:    "edge_remote",
 			configHint:       "NetBird VPN Only",
 			allowVPN:         true,
 			securityAPIGuard: true,
-			description:      "Agen orkestrasi di VPS Edge Gateway untuk sinkronisasi reverse proxy & SSL Let's Encrypt lewat NetBird.",
-			remediationHint:  "Pastikan wdev-edge-agent aktif di VPS Edge dan hanya diizinkan dari subnet NetBird 100.64.0.0/10.",
+			description:      i18n.Pick(lang, "Orchestration agent on Edge Gateway VPS for reverse proxy & Let's Encrypt SSL sync via NetBird.", "Agen orkestrasi di VPS Edge Gateway untuk sinkronisasi reverse proxy & SSL Let's Encrypt lewat NetBird."),
+			remediationHint:  i18n.Pick(lang, "Ensure wdev-edge-agent is active on Edge VPS and allowed only from NetBird subnet 100.64.0.0/10.", "Pastikan wdev-edge-agent aktif di VPS Edge dan hanya diizinkan dari subnet NetBird 100.64.0.0/10."),
 		},
 	)
 
@@ -686,41 +709,41 @@ func (s *Server) buildPortCandidates(
 		desc     string
 		internal bool
 	}{
-		{25, "mail-smtp", "SMTP Inbound", "Jalur masuk email server-to-server (MX) antar domain internet.", false},
-		{465, "mail-smtps", "SMTPS (Implicit TLS)", "Pengiriman email terenkripsi TLS langsung oleh aplikasi mail client.", false},
-		{587, "mail-submission", "SMTP Submission (STARTTLS)", "Otentikasi pengiriman email client (Outlook, Thunderbird, Webmail).", false},
-		{993, "mail-imaps", "IMAPS (Mailbox SSL)", "Pengambilan & sinkronisasi folder inbox aman oleh klien email & SnappyMail.", false},
-		{8080, "mail-admin", "Stalwart Admin UI", "Antarmuka web admin internal Stalwart (diproxy aman lewat Nginx).", true},
+		{25, "mail-smtp", "SMTP Inbound", i18n.Pick(lang, "Server-to-server inbound email delivery (MX) across internet domains.", "Jalur masuk email server-to-server (MX) antar domain internet."), false},
+		{465, "mail-smtps", "SMTPS (Implicit TLS)", i18n.Pick(lang, "TLS-encrypted outgoing mail submission directly from mail clients.", "Pengiriman email terenkripsi TLS langsung oleh aplikasi mail client."), false},
+		{587, "mail-submission", "SMTP Submission (STARTTLS)", i18n.Pick(lang, "Authenticated mail client submission (Outlook, Thunderbird, Webmail).", "Otentikasi pengiriman email client (Outlook, Thunderbird, Webmail)."), false},
+		{993, "mail-imaps", "IMAPS (Mailbox SSL)", i18n.Pick(lang, "Secure inbox fetching & syncing by email clients and SnappyMail.", "Pengambilan & sinkronisasi folder inbox aman oleh klien email & SnappyMail."), false},
+		{8080, "mail-admin", "Stalwart Admin UI", i18n.Pick(lang, "Stalwart internal admin web interface (securely proxied via Nginx).", "Antarmuka web admin internal Stalwart (diproxy aman lewat Nginx)."), true},
 	}
 	for _, m := range mailDefs {
 		expected := "public"
 		allowPub := netCtx.Mode != "local"
-		hint := "Layanan Mail Publik"
+		hint := i18n.Pick(lang, "Public Mail Service", "Layanan Mail Publik")
 		if m.internal {
 			expected = "internal"
 			allowPub = false
-			hint = "Internal Saja (127.0.0.1 Proxy)"
+			hint = i18n.Pick(lang, "Internal Only (127.0.0.1 Proxy)", "Internal Saja (127.0.0.1 Proxy)")
 		}
-		rem := "Buka port pada firewall host / Security Group VPS."
+		rem := i18n.Pick(lang, "Open port in host firewall / VPS Security Group.", "Buka port pada firewall host / Security Group VPS.")
 		if m.port == 25 {
-			rem = "Port 25 sering diblokir ISP/cloud (AWS/GCP/Alibaba/DO). Gunakan SMTP Relay (Resend/Brevo) jika outbound port 25 terblokir."
+			rem = i18n.Pick(lang, "Port 25 is often blocked by ISPs/cloud providers (AWS/GCP/Alibaba/DO). Use an SMTP Relay (Resend/Brevo) if outbound port 25 is blocked.", "Port 25 sering diblokir ISP/cloud (AWS/GCP/Alibaba/DO). Gunakan SMTP Relay (Resend/Brevo) jika outbound port 25 terblokir.")
 		} else if m.internal {
-			rem = "Diakses secara internal oleh Nginx reverse proxy; jangan diekspos langsung ke publik."
+			rem = i18n.Pick(lang, "Accessed internally by Nginx reverse proxy; do not expose publicly.", "Diakses secara internal oleh Nginx reverse proxy; jangan diekspos langsung ke publik.")
 		}
 		candidates = append(candidates, portCandidate{
-			id:            m.id,
-			port:          m.port,
-			protocol:      "TCP",
-			service:       "stalwart",
-			name:          m.name,
-			category:      "mail",
-			categoryLabel: "Mail Server (Stalwart)",
-			installed:     stalwartInstalled,
-			expectedScope: expected,
-			configHint:    hint,
-			allowPublic:   allowPub,
-			allowVPN:      !m.internal,
-			description:   m.desc,
+			id:              m.id,
+			port:            m.port,
+			protocol:        "TCP",
+			service:         "stalwart",
+			name:            m.name,
+			category:        "mail",
+			categoryLabel:   catMail,
+			installed:       stalwartInstalled,
+			expectedScope:   expected,
+			configHint:      hint,
+			allowPublic:     allowPub,
+			allowVPN:        !m.internal,
+			description:     m.desc,
 			remediationHint: rem,
 		})
 	}
@@ -745,6 +768,18 @@ func evaluatePortCandidate(
 	deps portProbeDeps,
 	forceRefresh bool,
 ) PortEntry {
+	return evaluatePortCandidateLocale(c, netCtx, sockets, fw, deps, forceRefresh, i18n.DefaultLocale)
+}
+
+func evaluatePortCandidateLocale(
+	c portCandidate,
+	netCtx PortNetworkContext,
+	sockets socketBindings,
+	fw firewallSnapshot,
+	deps portProbeDeps,
+	forceRefresh bool,
+	lang string,
+) PortEntry {
 	entry := PortEntry{
 		ID:            c.id,
 		Port:          c.port,
@@ -763,20 +798,20 @@ func evaluatePortCandidate(
 		naDetail := PortScopeDetail{
 			Status: "na",
 			Color:  "neutral",
-			Label:  "Belum Terpasang",
+			Label:  i18n.Pick(lang, "Not Installed", "Belum Terpasang"),
 		}
 		entry.Local = naDetail
 		entry.VPN = naDetail
 		entry.VPS = naDetail
 		entry.OverallStatus = "not_installed"
 		entry.OverallColor = "neutral"
-		entry.OverallLabel = "Belum Terpasang"
+		entry.OverallLabel = i18n.Pick(lang, "Not Installed", "Belum Terpasang")
 		return entry
 	}
 
 	// Khusus layanan remote VPS Edge Gateway (Mode Edge: PowerDNS 53, PDNS API 8081, Edge Agent 8082)
 	if c.expectedScope == "edge_remote" {
-		return evaluateEdgeRemotePort(entry, c, netCtx, deps)
+		return evaluateEdgeRemotePort(entry, c, netCtx, deps, lang)
 	}
 
 	// Analisis socket binding lokal pada host ini
@@ -801,16 +836,16 @@ func evaluatePortCandidate(
 			entry.Local = PortScopeDetail{
 				Status:  "blocked",
 				Color:   "yellow",
-				Label:   "TCP Aktif · UDP Mati",
+				Label:   i18n.Pick(lang, "TCP Active · UDP Down", "TCP Aktif · UDP Mati"),
 				Target:  "127.0.0.1:" + strconv.Itoa(c.port),
-				Detail:  "Socket TCP aktif tetapi UDP 53 tidak listen",
+				Detail:  i18n.Pick(lang, "TCP socket is active but UDP 53 is not listening", "Socket TCP aktif tetapi UDP 53 tidak listen"),
 				Checked: true,
 			}
 		} else {
 			entry.Local = PortScopeDetail{
 				Status:  "open",
 				Color:   "green",
-				Label:   "Listening (Aktif)",
+				Label:   i18n.Pick(lang, "Listening (Active)", "Listening (Aktif)"),
 				Target:  "127.0.0.1:" + strconv.Itoa(c.port),
 				Detail:  detailTxt,
 				Checked: true,
@@ -820,32 +855,32 @@ func evaluatePortCandidate(
 		entry.Local = PortScopeDetail{
 			Status:  "internal",
 			Color:   "neutral",
-			Label:   "Terminasi di VPS Edge",
+			Label:   i18n.Pick(lang, "Terminated on Edge VPS", "Terminasi di VPS Edge"),
 			Target:  "127.0.0.1:" + strconv.Itoa(c.port),
-			Detail:  "Mode Edge menerminasi TLS di VPS lalu meneruskan HTTP :80 lewat NetBird",
+			Detail:  i18n.Pick(lang, "Edge mode terminates TLS on the VPS and forwards HTTP :80 via NetBird", "Mode Edge menerminasi TLS di VPS lalu meneruskan HTTP :80 lewat NetBird"),
 			Checked: true,
 		}
 	} else if c.sslOptionalIdle {
 		entry.Local = PortScopeDetail{
 			Status:  "na",
 			Color:   "neutral",
-			Label:   "Siaga (Belum Ada SSL)",
+			Label:   i18n.Pick(lang, "Standby (No SSL Yet)", "Siaga (Belum Ada SSL)"),
 			Target:  "127.0.0.1:" + strconv.Itoa(c.port),
-			Detail:  "Nginx akan otomatis listen di port 443 setelah minimal 1 situs SSL aktif",
+			Detail:  i18n.Pick(lang, "Nginx will automatically listen on port 443 once at least 1 SSL site is enabled", "Nginx akan otomatis listen di port 443 setelah minimal 1 situs SSL aktif"),
 			Checked: true,
 		}
 	} else {
 		entry.Local = PortScopeDetail{
 			Status:  "closed",
 			Color:   "red",
-			Label:   "Mati (Tidak Listen)",
+			Label:   i18n.Pick(lang, "Down (Not Listening)", "Mati (Tidak Listen)"),
 			Target:  "127.0.0.1:" + strconv.Itoa(c.port),
-			Detail:  "Tidak ada proses yang listen pada port " + strconv.Itoa(c.port),
+			Detail:  i18n.Pick(lang, "No process is listening on port ", "Tidak ada proses yang listen pada port ") + strconv.Itoa(c.port),
 			Checked: true,
 		}
 	}
 
-	fwDec := evaluateFirewallForPort(fw, c.port, "tcp", netCtx.VPNIP)
+	fwDec := evaluateFirewallForPortLocale(fw, c.port, "tcp", netCtx.VPNIP, lang)
 
 	// 2. Cek VPN (NetBird wt0 / 100.64.0.0/10)
 	vpnTarget := ""
@@ -858,23 +893,23 @@ func evaluatePortCandidate(
 			entry.VPN = PortScopeDetail{
 				Status:  "internal",
 				Color:   "neutral",
-				Label:   "Lewat Tunnel HTTP :80",
+				Label:   i18n.Pick(lang, "Via HTTP :80 Tunnel", "Lewat Tunnel HTTP :80"),
 				Target:  vpnTarget,
-				Detail:  "Traffic HTTPS dari VPS diteruskan ke port 80 lokal lewat NetBird",
+				Detail:  i18n.Pick(lang, "HTTPS traffic from the VPS is forwarded to local port 80 over NetBird", "Traffic HTTPS dari VPS diteruskan ke port 80 lokal lewat NetBird"),
 				Checked: true,
 			}
 		} else if c.sslOptionalIdle {
 			entry.VPN = PortScopeDetail{
 				Status: "na",
 				Color:  "neutral",
-				Label:  "Siaga (Belum Ada SSL)",
+				Label:  i18n.Pick(lang, "Standby (No SSL Yet)", "Siaga (Belum Ada SSL)"),
 				Target: vpnTarget,
 			}
 		} else {
 			entry.VPN = PortScopeDetail{
 				Status:  "closed",
 				Color:   "red",
-				Label:   "Layanan Mati",
+				Label:   i18n.Pick(lang, "Service Down", "Layanan Mati"),
 				Target:  vpnTarget,
 				Checked: true,
 			}
@@ -883,17 +918,17 @@ func evaluatePortCandidate(
 		entry.VPN = PortScopeDetail{
 			Status:  "internal",
 			Color:   "neutral",
-			Label:   "Internal Saja",
+			Label:   i18n.Pick(lang, "Internal Only", "Internal Saja"),
 			Target:  vpnTarget,
-			Detail:  "Hanya diakses internal oleh Nginx / loopback host",
+			Detail:  i18n.Pick(lang, "Only accessed internally by Nginx / host loopback", "Hanya diakses internal oleh Nginx / loopback host"),
 			Checked: true,
 		}
 	case netCtx.VPNIP == "":
 		entry.VPN = PortScopeDetail{
 			Status:  "na",
 			Color:   "neutral",
-			Label:   "NetBird Tidak Aktif",
-			Detail:  "Interface VPN NetBird (wt0) tidak ditemukan pada host ini",
+			Label:   i18n.Pick(lang, "NetBird Inactive", "NetBird Tidak Aktif"),
+			Detail:  i18n.Pick(lang, "NetBird VPN interface (wt0) was not found on this host", "Interface VPN NetBird (wt0) tidak ditemukan pada host ini"),
 			Checked: false,
 		}
 	default:
@@ -905,18 +940,18 @@ func evaluatePortCandidate(
 				entry.VPN = PortScopeDetail{
 					Status:  "internal",
 					Color:   "neutral",
-					Label:   "Hanya Lokal (127.0.0.1)",
+					Label:   i18n.Pick(lang, "Local Only (127.0.0.1)", "Hanya Lokal (127.0.0.1)"),
 					Target:  vpnTarget,
-					Detail:  condStr(c.localBindHint != "", c.localBindHint, "Socket hanya bind pada localhost; koneksi ke IP NetBird akan ditolak (Connection refused)."),
+					Detail:  condStr(c.localBindHint != "", c.localBindHint, i18n.Pick(lang, "Socket binds to localhost only; connections to the NetBird IP will be refused.", "Socket hanya bind pada localhost; koneksi ke IP NetBird akan ditolak (Connection refused).")),
 					Checked: true,
 				}
 			} else {
 				entry.VPN = PortScopeDetail{
 					Status:  "blocked",
 					Color:   "yellow",
-					Label:   "Ditolak (Bind 127.0.0.1)",
+					Label:   i18n.Pick(lang, "Refused (Bind 127.0.0.1)", "Ditolak (Bind 127.0.0.1)"),
 					Target:  vpnTarget,
-					Detail:  fmt.Sprintf("Layanan aktif di localhost namun %s menolak koneksi karena tidak listen di wildcard/wt0.", vpnTarget),
+					Detail:  fmt.Sprintf(i18n.Pick(lang, "Service is active on localhost, but %s refuses connections because it is not listening on wildcard/wt0.", "Layanan aktif di localhost namun %s menolak koneksi karena tidak listen di wildcard/wt0."), vpnTarget),
 					Checked: true,
 				}
 			}
@@ -924,20 +959,20 @@ func evaluatePortCandidate(
 			entry.VPN = PortScopeDetail{
 				Status:  "blocked",
 				Color:   "yellow",
-				Label:   "Terblokir Firewall Host",
+				Label:   i18n.Pick(lang, "Blocked by Host Firewall", "Terblokir Firewall Host"),
 				Target:  vpnTarget,
-				Detail:  fmt.Sprintf("Socket listen di %s, tetapi %s memblokir akses dari subnet VPN (100.64.0.0/10).", vpnTarget, strings.ToUpper(fw.info.Engine)),
+				Detail:  fmt.Sprintf(i18n.Pick(lang, "Socket is listening on %s, but %s blocks access from the VPN subnet (100.64.0.0/10).", "Socket listen di %s, tetapi %s memblokir akses dari subnet VPN (100.64.0.0/10)."), vpnTarget, strings.ToUpper(fw.info.Engine)),
 				Checked: true,
 			}
 		} else {
-			detailMsg := fmt.Sprintf("Port aktif dan menerima koneksi dari %s", vpnTarget)
+			detailMsg := fmt.Sprintf(i18n.Pick(lang, "Port active and accepting connections on %s", "Port aktif dan menerima koneksi dari %s"), vpnTarget)
 			if fw.info.Active && !fwDec.known {
-				detailMsg += " (rule firewall tidak terbaca non-root)"
+				detailMsg += i18n.Pick(lang, " (firewall rules unreadable as non-root)", " (rule firewall tidak terbaca non-root)")
 			}
 			entry.VPN = PortScopeDetail{
 				Status:  "open",
 				Color:   "green",
-				Label:   "Terbuka via VPN",
+				Label:   i18n.Pick(lang, "Open via VPN", "Terbuka via VPN"),
 				Target:  vpnTarget,
 				Detail:  detailMsg,
 				Checked: true,
@@ -960,9 +995,9 @@ func evaluatePortCandidate(
 					entry.VPS = PortScopeDetail{
 						Status:  "blocked",
 						Color:   "yellow",
-						Label:   "Terbuka ke Publik (Berisiko)",
+						Label:   i18n.Pick(lang, "Publicly Exposed (Risk)", "Terbuka ke Publik (Berisiko)"),
 						Target:  vpsTarget,
-						Detail:  "Port internal/API ini seharusnya dibatasi ke localhost atau NetBird VPN.",
+						Detail:  i18n.Pick(lang, "This internal/API port should be restricted to localhost or NetBird VPN.", "Port internal/API ini seharusnya dibatasi ke localhost atau NetBird VPN."),
 						Checked: true,
 					}
 					break
@@ -972,9 +1007,9 @@ func evaluatePortCandidate(
 		entry.VPS = PortScopeDetail{
 			Status:  "internal",
 			Color:   "neutral",
-			Label:   "Internal Saja",
+			Label:   i18n.Pick(lang, "Internal Only", "Internal Saja"),
 			Target:  vpsTarget,
-			Detail:  "Tidak perlu dibuka langsung ke internet publik",
+			Detail:  i18n.Pick(lang, "Does not need direct exposure to the public internet", "Tidak perlu dibuka langsung ke internet publik"),
 			Checked: true,
 		}
 
@@ -982,8 +1017,8 @@ func evaluatePortCandidate(
 		entry.VPS = PortScopeDetail{
 			Status:  "internal",
 			Color:   "neutral",
-			Label:   "Mode Lokal (Non-Publik)",
-			Detail:  "Server berjalan di mode Lokal Standalone tanpa IP VPS publik",
+			Label:   i18n.Pick(lang, "Local Mode (Non-Public)", "Mode Lokal (Non-Publik)"),
+			Detail:  i18n.Pick(lang, "Server is running in Local Standalone mode without a public VPS IP", "Server berjalan di mode Lokal Standalone tanpa IP VPS publik"),
 			Checked: true,
 		}
 
@@ -992,14 +1027,14 @@ func evaluatePortCandidate(
 			entry.VPS = PortScopeDetail{
 				Status: "na",
 				Color:  "neutral",
-				Label:  "Siaga (Belum Ada SSL)",
+				Label:  i18n.Pick(lang, "Standby (No SSL Yet)", "Siaga (Belum Ada SSL)"),
 				Target: vpsTarget,
 			}
 		} else {
 			entry.VPS = PortScopeDetail{
 				Status:  "closed",
 				Color:   "red",
-				Label:   "Tertutup (Layanan Mati)",
+				Label:   i18n.Pick(lang, "Closed (Service Down)", "Tertutup (Layanan Mati)"),
 				Target:  vpsTarget,
 				Checked: true,
 			}
@@ -1009,9 +1044,9 @@ func evaluatePortCandidate(
 		entry.VPS = PortScopeDetail{
 			Status:  "internal",
 			Color:   "neutral",
-			Label:   "Hanya Lokal (127.0.0.1)",
+			Label:   i18n.Pick(lang, "Local Only (127.0.0.1)", "Hanya Lokal (127.0.0.1)"),
 			Target:  vpsTarget,
-			Detail:  "Layanan sengaja hanya bind ke loopback agar tidak terekspos ke IP VPS",
+			Detail:  i18n.Pick(lang, "Service intentionally binds to loopback only so it is not exposed on the VPS IP", "Layanan sengaja hanya bind ke loopback agar tidak terekspos ke IP VPS"),
 			Checked: true,
 		}
 
@@ -1021,9 +1056,9 @@ func evaluatePortCandidate(
 			entry.VPS = PortScopeDetail{
 				Status:  "internal",
 				Color:   "neutral",
-				Label:   "Dibatasi Khusus VPN/LAN",
+				Label:   i18n.Pick(lang, "Restricted to VPN/LAN", "Dibatasi Khusus VPN/LAN"),
 				Target:  vpsTarget,
-				Detail:  "Firewall memblokir akses publik dan hanya mengizinkan jaringan privat / NetBird",
+				Detail:  i18n.Pick(lang, "Firewall blocks public access and only allows private / NetBird networks", "Firewall memblokir akses publik dan hanya mengizinkan jaringan privat / NetBird"),
 				Checked: true,
 			}
 		} else if netCtx.VPSPublicIP != "" {
@@ -1032,27 +1067,27 @@ func evaluatePortCandidate(
 				entry.VPS = PortScopeDetail{
 					Status:  "blocked",
 					Color:   "yellow",
-					Label:   "Terbuka ke Publik (Periksa Firewall)",
+					Label:   i18n.Pick(lang, "Publicly Exposed (Check Firewall)", "Terbuka ke Publik (Periksa Firewall)"),
 					Target:  vpsTarget,
-					Detail:  fmt.Sprintf("Kebijakan adalah LAN & VPN, tetapi %s masih dapat dijangkau dari luar. Aktifkan UFW / Security Group.", vpsTarget),
+					Detail:  fmt.Sprintf(i18n.Pick(lang, "Policy is LAN & VPN, yet %s is still reachable externally. Enable UFW / Security Group.", "Kebijakan adalah LAN & VPN, tetapi %s masih dapat dijangkau dari luar. Aktifkan UFW / Security Group."), vpsTarget),
 					Checked: true,
 				}
 			} else if checked {
 				entry.VPS = PortScopeDetail{
 					Status:  "internal",
 					Color:   "neutral",
-					Label:   "Tertutup dari Publik (Aman)",
+					Label:   i18n.Pick(lang, "Closed from Public (Safe)", "Tertutup dari Publik (Aman)"),
 					Target:  vpsTarget,
-					Detail:  "Tidak terjangkau dari internet publik; akses diarahkan lewat VPN NetBird",
+					Detail:  i18n.Pick(lang, "Unreachable from the public internet; access is routed via NetBird VPN", "Tidak terjangkau dari internet publik; akses diarahkan lewat VPN NetBird"),
 					Checked: true,
 				}
 			} else {
 				entry.VPS = PortScopeDetail{
 					Status:  "unverified",
 					Color:   "yellow",
-					Label:   "Belum Terverifikasi",
+					Label:   i18n.Pick(lang, "Unverified", "Belum Terverifikasi"),
 					Target:  vpsTarget,
-					Detail:  "Tidak ada firewall host aktif; pastikan Security Group cloud memblokir akses publik port ini",
+					Detail:  i18n.Pick(lang, "No active host firewall; ensure the cloud Security Group blocks public access to this port", "Tidak ada firewall host aktif; pastikan Security Group cloud memblokir akses publik port ini"),
 					Checked: false,
 				}
 			}
@@ -1060,7 +1095,7 @@ func evaluatePortCandidate(
 			entry.VPS = PortScopeDetail{
 				Status: "internal",
 				Color:  "neutral",
-				Label:  "Khusus VPN/LAN",
+				Label:  i18n.Pick(lang, "VPN/LAN Only", "Khusus VPN/LAN"),
 			}
 		}
 
@@ -1070,7 +1105,7 @@ func evaluatePortCandidate(
 			entry.VPS = PortScopeDetail{
 				Status:  "blocked",
 				Color:   "yellow",
-				Label:   fmt.Sprintf("Terblokir Firewall (%s)", strings.ToUpper(fw.info.Engine)),
+				Label:   fmt.Sprintf(i18n.Pick(lang, "Blocked by Firewall (%s)", "Terblokir Firewall (%s)"), strings.ToUpper(fw.info.Engine)),
 				Target:  vpsTarget,
 				Detail:  fwDec.note,
 				Checked: true,
@@ -1081,8 +1116,8 @@ func evaluatePortCandidate(
 			entry.VPS = PortScopeDetail{
 				Status:  "unverified",
 				Color:   "yellow",
-				Label:   "IP VPS Belum Tersedia",
-				Detail:  "Alamat IP VPS publik belum terkonfigurasi atau tidak terdeteksi",
+				Label:   i18n.Pick(lang, "VPS IP Unavailable", "IP VPS Belum Tersedia"),
+				Detail:  i18n.Pick(lang, "Public VPS IP address is not configured or could not be detected", "Alamat IP VPS publik belum terkonfigurasi atau tidak terdeteksi"),
 				Checked: false,
 			}
 			break
@@ -1092,33 +1127,33 @@ func evaluatePortCandidate(
 			entry.VPS = PortScopeDetail{
 				Status:  "unverified",
 				Color:   "yellow",
-				Label:   "Belum Terverifikasi",
+				Label:   i18n.Pick(lang, "Unverified", "Belum Terverifikasi"),
 				Target:  vpsTarget,
-				Detail:  "Uji konektivitas eksternal ke " + vpsTarget + " gagal diselesaikan (timeout/jaringan)",
+				Detail:  fmt.Sprintf(i18n.Pick(lang, "External connectivity test to %s failed to complete (timeout/network)", "Uji konektivitas eksternal ke %s gagal diselesaikan (timeout/jaringan)"), vpsTarget),
 				Checked: false,
 			}
 		} else if reach {
 			entry.VPS = PortScopeDetail{
 				Status:  "open",
 				Color:   "green",
-				Label:   "Terbuka Penuh",
+				Label:   i18n.Pick(lang, "Fully Open", "Terbuka Penuh"),
 				Target:  vpsTarget,
-				Detail:  "Terjangkau dari internet melalui IP VPS " + vpsTarget,
+				Detail:  i18n.Pick(lang, "Reachable from the internet via VPS IP ", "Terjangkau dari internet melalui IP VPS ") + vpsTarget,
 				Checked: true,
 			}
 		} else {
 			entry.VPS = PortScopeDetail{
 				Status:  "blocked",
 				Color:   "yellow",
-				Label:   "Terblokir Firewall / ISP",
+				Label:   i18n.Pick(lang, "Blocked by Firewall / ISP", "Terblokir Firewall / ISP"),
 				Target:  vpsTarget,
-				Detail:  fmt.Sprintf("Layanan aktif di server, tetapi %s terblokir dari internet (cek Firewall VPS / Security Group / ISP)", vpsTarget),
+				Detail:  fmt.Sprintf(i18n.Pick(lang, "Service is running on the server, but %s is blocked from the internet (check VPS Firewall / Security Group / ISP)", "Layanan aktif di server, tetapi %s terblokir dari internet (cek Firewall VPS / Security Group / ISP)"), vpsTarget),
 				Checked: true,
 			}
 		}
 	}
 
-	finalizeOverallPortStatus(&entry, c, netCtx)
+	finalizeOverallPortStatus(&entry, c, netCtx, lang)
 	return entry
 }
 
@@ -1127,12 +1162,13 @@ func evaluateEdgeRemotePort(
 	c portCandidate,
 	netCtx PortNetworkContext,
 	deps portProbeDeps,
+	lang string,
 ) PortEntry {
 	entry.Local = PortScopeDetail{
 		Status:  "na",
 		Color:   "neutral",
-		Label:   "Di VPS Edge Gateway",
-		Detail:  "Layanan ini berjalan di VPS Edge, bukan di mesin lokal",
+		Label:   i18n.Pick(lang, "On Edge Gateway VPS", "Di VPS Edge Gateway"),
+		Detail:  i18n.Pick(lang, "This service runs on the Edge VPS rather than the local machine", "Layanan ini berjalan di VPS Edge, bukan di mesin lokal"),
 		Checked: true,
 	}
 
@@ -1142,18 +1178,18 @@ func evaluateEdgeRemotePort(
 			entry.VPN = PortScopeDetail{
 				Status:  "open",
 				Color:   "green",
-				Label:   "Terhubung via NetBird",
+				Label:   i18n.Pick(lang, "Connected via NetBird", "Terhubung via NetBird"),
 				Target:  vpnTarget,
-				Detail:  "Terjangkau lewat tunnel NetBird ke VPS Edge",
+				Detail:  i18n.Pick(lang, "Reachable over the NetBird tunnel to Edge VPS", "Terjangkau lewat tunnel NetBird ke VPS Edge"),
 				Checked: true,
 			}
 		} else {
 			entry.VPN = PortScopeDetail{
 				Status:  "closed",
 				Color:   "red",
-				Label:   "VPN Tidak Terjangkau",
+				Label:   i18n.Pick(lang, "VPN Unreachable", "VPN Tidak Terjangkau"),
 				Target:  vpnTarget,
-				Detail:  "Gagal terhubung ke " + vpnTarget + " lewat NetBird",
+				Detail:  fmt.Sprintf(i18n.Pick(lang, "Failed to connect to %s via NetBird", "Gagal terhubung ke %s lewat NetBird"), vpnTarget),
 				Checked: true,
 			}
 		}
@@ -1161,8 +1197,8 @@ func evaluateEdgeRemotePort(
 		entry.VPN = PortScopeDetail{
 			Status:  "na",
 			Color:   "neutral",
-			Label:   "VPS Edge Belum Terhubung",
-			Detail:  "IP NetBird VPS Edge belum dikonfigurasi",
+			Label:   i18n.Pick(lang, "Edge VPS Not Connected", "VPS Edge Belum Terhubung"),
+			Detail:  i18n.Pick(lang, "Edge VPS NetBird IP is not configured yet", "IP NetBird VPS Edge belum dikonfigurasi"),
 			Checked: false,
 		}
 	}
@@ -1175,18 +1211,18 @@ func evaluateEdgeRemotePort(
 				entry.VPS = PortScopeDetail{
 					Status:  "blocked",
 					Color:   "yellow",
-					Label:   "Terbuka ke Publik (Risiko)",
+					Label:   i18n.Pick(lang, "Publicly Exposed (Risk)", "Terbuka ke Publik (Risiko)"),
 					Target:  vpsTarget,
-					Detail:  "Port API/Agent ini terbuka ke internet publik! Sebaiknya batasi di firewall VPS khusus subnet 100.64.0.0/10.",
+					Detail:  i18n.Pick(lang, "This API/Agent port is exposed to the public internet! Restrict it in VPS firewall to subnet 100.64.0.0/10.", "Port API/Agent ini terbuka ke internet publik! Sebaiknya batasi di firewall VPS khusus subnet 100.64.0.0/10."),
 					Checked: true,
 				}
 			} else {
 				entry.VPS = PortScopeDetail{
 					Status:  "internal",
 					Color:   "neutral",
-					Label:   "Tertutup Aman (Khusus VPN)",
+					Label:   i18n.Pick(lang, "Safely Closed (VPN Only)", "Tertutup Aman (Khusus VPN)"),
 					Target:  vpsTarget,
-					Detail:  "Diblokir dari IP publik dan hanya dapat diakses lewat NetBird VPN",
+					Detail:  i18n.Pick(lang, "Blocked on the public IP and accessible only through NetBird VPN", "Diblokir dari IP publik dan hanya dapat diakses lewat NetBird VPN"),
 					Checked: true,
 				}
 			}
@@ -1195,18 +1231,18 @@ func evaluateEdgeRemotePort(
 				entry.VPS = PortScopeDetail{
 					Status:  "open",
 					Color:   "green",
-					Label:   "Terbuka Penuh",
+					Label:   i18n.Pick(lang, "Fully Open", "Terbuka Penuh"),
 					Target:  vpsTarget,
-					Detail:  "DNS publik VPS Edge merespons koneksi eksternal",
+					Detail:  i18n.Pick(lang, "Edge VPS public DNS responds to external connections", "DNS publik VPS Edge merespons koneksi eksternal"),
 					Checked: true,
 				}
 			} else {
 				entry.VPS = PortScopeDetail{
 					Status:  "blocked",
 					Color:   "yellow",
-					Label:   "Terblokir / Mati di VPS",
+					Label:   i18n.Pick(lang, "Blocked / Down on VPS", "Terblokir / Mati di VPS"),
 					Target:  vpsTarget,
-					Detail:  "Tidak dapat terhubung ke " + vpsTarget + " dari luar",
+					Detail:  fmt.Sprintf(i18n.Pick(lang, "Cannot reach %s externally", "Tidak dapat terhubung ke %s dari luar"), vpsTarget),
 					Checked: true,
 				}
 			}
@@ -1215,7 +1251,7 @@ func evaluateEdgeRemotePort(
 		entry.VPS = PortScopeDetail{
 			Status: "na",
 			Color:  "neutral",
-			Label:  "IP Publik VPS Belum Ada",
+			Label:  i18n.Pick(lang, "No VPS Public IP", "IP Publik VPS Belum Ada"),
 		}
 	}
 
@@ -1223,7 +1259,7 @@ func evaluateEdgeRemotePort(
 	case entry.VPN.Color == "red":
 		entry.OverallStatus = "closed"
 		entry.OverallColor = "red"
-		entry.OverallLabel = "VPN Edge Terputus"
+		entry.OverallLabel = i18n.Pick(lang, "Edge VPN Disconnected", "VPN Edge Terputus")
 		entry.Recommendation = c.remediationHint
 	case entry.VPS.Color == "yellow":
 		entry.OverallStatus = "blocked"
@@ -1234,19 +1270,19 @@ func evaluateEdgeRemotePort(
 		entry.OverallStatus = "open"
 		entry.OverallColor = "green"
 		if c.securityAPIGuard {
-			entry.OverallLabel = "Terhubung Aman (VPN)"
+			entry.OverallLabel = i18n.Pick(lang, "Securely Connected (VPN)", "Terhubung Aman (VPN)")
 		} else {
-			entry.OverallLabel = "Terbuka Penuh"
+			entry.OverallLabel = i18n.Pick(lang, "Fully Open", "Terbuka Penuh")
 		}
 	default:
 		entry.OverallStatus = "internal"
 		entry.OverallColor = "neutral"
-		entry.OverallLabel = "Menunggu Koneksi Edge"
+		entry.OverallLabel = i18n.Pick(lang, "Awaiting Edge Connection", "Menunggu Koneksi Edge")
 	}
 	return entry
 }
 
-func finalizeOverallPortStatus(entry *PortEntry, c portCandidate, netCtx PortNetworkContext) {
+func finalizeOverallPortStatus(entry *PortEntry, c portCandidate, netCtx PortNetworkContext, lang string) {
 	hasYellow := entry.Local.Color == "yellow" || entry.VPN.Color == "yellow" || entry.VPS.Color == "yellow"
 	hasRed := entry.Local.Color == "red" || (c.edgeTerminatedSSL && entry.VPS.Color == "red")
 
@@ -1254,57 +1290,57 @@ func finalizeOverallPortStatus(entry *PortEntry, c portCandidate, netCtx PortNet
 	case hasRed:
 		entry.OverallStatus = "closed"
 		entry.OverallColor = "red"
-		entry.OverallLabel = "Mati / Tertutup"
+		entry.OverallLabel = i18n.Pick(lang, "Down / Closed", "Mati / Tertutup")
 		entry.Recommendation = c.remediationHint
 	case hasYellow:
 		entry.OverallStatus = "blocked"
 		entry.OverallColor = "yellow"
 		switch {
 		case entry.VPN.Color == "yellow":
-			entry.OverallLabel = "Terbatas · VPN Terkendala"
+			entry.OverallLabel = i18n.Pick(lang, "Restricted · VPN Issue", "Terbatas · VPN Terkendala")
 			if entry.VPN.Status == "blocked" && strings.Contains(entry.VPN.Label, "Bind") && c.localBindHint != "" {
 				entry.Recommendation = c.remediationHint
 			} else {
 				entry.Recommendation = entry.VPN.Detail
 			}
 		case entry.VPS.Status == "unverified":
-			entry.OverallLabel = "Aktif · Belum Terverifikasi"
+			entry.OverallLabel = i18n.Pick(lang, "Active · Unverified", "Aktif · Belum Terverifikasi")
 			entry.Recommendation = c.remediationHint
 		default:
-			entry.OverallLabel = "Terbuka Lokal · Terblokir Publik"
+			entry.OverallLabel = i18n.Pick(lang, "Open Locally · Publicly Blocked", "Terbuka Lokal · Terblokir Publik")
 			entry.Recommendation = c.remediationHint
 		}
 	case c.expectedScope == "internal":
 		entry.OverallStatus = "internal"
 		entry.OverallColor = "neutral"
-		entry.OverallLabel = "Internal Saja"
+		entry.OverallLabel = i18n.Pick(lang, "Internal Only", "Internal Saja")
 	case c.sslOptionalIdle && entry.Local.Status == "na" && !c.edgeTerminatedSSL:
 		entry.OverallStatus = "internal"
 		entry.OverallColor = "neutral"
-		entry.OverallLabel = "Siaga (Belum Ada SSL)"
+		entry.OverallLabel = i18n.Pick(lang, "Standby (No SSL Yet)", "Siaga (Belum Ada SSL)")
 	case c.edgeTerminatedSSL && entry.VPS.Color == "green":
 		entry.OverallStatus = "open"
 		entry.OverallColor = "green"
-		entry.OverallLabel = "Terbuka via VPS Edge"
+		entry.OverallLabel = i18n.Pick(lang, "Open via Edge VPS", "Terbuka via VPS Edge")
 	case netCtx.Mode != "local" && entry.VPS.Color == "green" && entry.Local.Color == "green":
 		entry.OverallStatus = "open"
 		entry.OverallColor = "green"
-		entry.OverallLabel = "Terbuka Penuh"
+		entry.OverallLabel = i18n.Pick(lang, "Fully Open", "Terbuka Penuh")
 	case entry.Local.Color == "green" && entry.VPN.Color == "green":
 		entry.OverallStatus = "open"
 		entry.OverallColor = "green"
-		entry.OverallLabel = "Terbuka (Lokal & VPN)"
+		entry.OverallLabel = i18n.Pick(lang, "Open (Local & VPN)", "Terbuka (Lokal & VPN)")
 	case entry.Local.Color == "green":
 		entry.OverallStatus = "open"
 		entry.OverallColor = "green"
-		entry.OverallLabel = "Aktif (Lokal Saja)"
+		entry.OverallLabel = i18n.Pick(lang, "Active (Local Only)", "Aktif (Lokal Saja)")
 		if c.localBindHint != "" && c.expectedScope == "local" {
 			entry.Recommendation = c.localBindHint
 		}
 	default:
 		entry.OverallStatus = "internal"
 		entry.OverallColor = "neutral"
-		entry.OverallLabel = "Internal Saja"
+		entry.OverallLabel = i18n.Pick(lang, "Internal Only", "Internal Saja")
 	}
 }
 
@@ -1546,6 +1582,10 @@ func formatBindAddresses(tcpBinds, udpBinds []net.IP, includeUDP bool) []string 
 }
 
 func detectHostFirewall(ctx context.Context) firewallSnapshot {
+	return detectHostFirewallLocale(ctx, i18n.DefaultLocale)
+}
+
+func detectHostFirewallLocale(ctx context.Context, lang string) firewallSnapshot {
 	runFW := func(bin string, args ...string) (string, error) {
 		cctx, cancel := context.WithTimeout(ctx, 1800*time.Millisecond)
 		defer cancel()
@@ -1563,7 +1603,7 @@ func detectHostFirewall(ctx context.Context) firewallSnapshot {
 
 	if ufwBin, err := exec.LookPath("ufw"); err == nil {
 		out, err := runFW(ufwBin, "status", "verbose")
-		snap := parseUFWStatus(out, err)
+		snap := parseUFWStatusLocale(out, err, lang)
 		if snap.info.Engine == "ufw" {
 			return snap
 		}
@@ -1573,7 +1613,7 @@ func detectHostFirewall(ctx context.Context) firewallSnapshot {
 		stateOut, sErr := runFW(fwdBin, "--state")
 		if sErr == nil && strings.EqualFold(strings.TrimSpace(stateOut), "running") {
 			listOut, lErr := runFW(fwdBin, "--list-all")
-			return parseFirewalldZone(listOut, lErr)
+			return parseFirewalldZoneLocale(listOut, lErr, lang)
 		}
 		if sErr != nil && os.Geteuid() != 0 {
 			return firewallSnapshot{
@@ -1581,7 +1621,7 @@ func detectHostFirewall(ctx context.Context) firewallSnapshot {
 					Engine:       "firewalld",
 					Active:       false,
 					RulesChecked: false,
-					Summary:      "firewalld terpasang (butuh hak root untuk membaca status)",
+					Summary:      i18n.Pick(lang, "firewalld installed (root access required to read status)", "firewalld terpasang (butuh hak root untuk membaca status)"),
 					RulesError:   strings.TrimSpace(stateOut),
 				},
 			}
@@ -1593,12 +1633,16 @@ func detectHostFirewall(ctx context.Context) firewallSnapshot {
 			Engine:       "none",
 			Active:       false,
 			RulesChecked: true,
-			Summary:      "Tidak ada firewall host (UFW/firewalld) yang aktif",
+			Summary:      i18n.Pick(lang, "No active host firewall (UFW/firewalld)", "Tidak ada firewall host (UFW/firewalld) yang aktif"),
 		},
 	}
 }
 
 func parseUFWStatus(output string, cmdErr error) firewallSnapshot {
+	return parseUFWStatusLocale(output, cmdErr, i18n.DefaultLocale)
+}
+
+func parseUFWStatusLocale(output string, cmdErr error, lang string) firewallSnapshot {
 	low := strings.ToLower(output)
 	if cmdErr != nil && (strings.Contains(low, "need to be root") || strings.Contains(low, "permission denied")) {
 		return firewallSnapshot{
@@ -1606,7 +1650,7 @@ func parseUFWStatus(output string, cmdErr error) firewallSnapshot {
 				Engine:       "ufw",
 				Active:       false,
 				RulesChecked: false,
-				Summary:      "UFW terpasang, tetapi status rule membutuhkan hak akses root",
+				Summary:      i18n.Pick(lang, "UFW installed, but root access is required to inspect rules", "UFW terpasang, tetapi status rule membutuhkan hak akses root"),
 				RulesError:   "permission_denied",
 			},
 		}
@@ -1617,7 +1661,7 @@ func parseUFWStatus(output string, cmdErr error) firewallSnapshot {
 				Engine:       "ufw",
 				Active:       false,
 				RulesChecked: true,
-				Summary:      "UFW terpasang (Nonaktif)",
+				Summary:      i18n.Pick(lang, "UFW installed (Inactive)", "UFW terpasang (Nonaktif)"),
 			},
 		}
 	}
@@ -1666,7 +1710,7 @@ func parseUFWStatus(output string, cmdErr error) firewallSnapshot {
 			Active:          true,
 			DefaultIncoming: defaultIncoming,
 			RulesChecked:    true,
-			Summary:         fmt.Sprintf("UFW aktif (default incoming: %s)", defaultIncoming),
+			Summary:         fmt.Sprintf(i18n.Pick(lang, "UFW active (default incoming: %s)", "UFW aktif (default incoming: %s)"), defaultIncoming),
 		},
 		defaultDeny: defaultDeny,
 		rules:       rules,
@@ -1770,13 +1814,17 @@ var (
 )
 
 func parseFirewalldZone(output string, cmdErr error) firewallSnapshot {
+	return parseFirewalldZoneLocale(output, cmdErr, i18n.DefaultLocale)
+}
+
+func parseFirewalldZoneLocale(output string, cmdErr error, lang string) firewallSnapshot {
 	if cmdErr != nil {
 		return firewallSnapshot{
 			info: PortFirewallInfo{
 				Engine:       "firewalld",
 				Active:       true,
 				RulesChecked: false,
-				Summary:      "firewalld aktif (rule gagal dibaca)",
+				Summary:      i18n.Pick(lang, "firewalld active (failed to read rules)", "firewalld aktif (rule gagal dibaca)"),
 				RulesError:   strings.TrimSpace(cmdErr.Error()),
 			},
 			defaultDeny: true,
@@ -1890,7 +1938,7 @@ func parseFirewalldZone(output string, cmdErr error) firewallSnapshot {
 			Active:          true,
 			DefaultIncoming: defaultIncoming,
 			RulesChecked:    true,
-			Summary:         fmt.Sprintf("firewalld aktif (target: %s)", defaultIncoming),
+			Summary:         fmt.Sprintf(i18n.Pick(lang, "firewalld active (target: %s)", "firewalld aktif (target: %s)"), defaultIncoming),
 		},
 		defaultDeny: defaultDeny,
 		rules:       rules,
@@ -1898,6 +1946,10 @@ func parseFirewalldZone(output string, cmdErr error) firewallSnapshot {
 }
 
 func evaluateFirewallForPort(fw firewallSnapshot, port int, proto, vpnIP string) fwDecision {
+	return evaluateFirewallForPortLocale(fw, port, proto, vpnIP, i18n.DefaultLocale)
+}
+
+func evaluateFirewallForPortLocale(fw firewallSnapshot, port int, proto, vpnIP, lang string) fwDecision {
 	if !fw.info.RulesChecked {
 		return fwDecision{known: false, publicAllowed: true, vpnAllowed: true}
 	}
@@ -1935,8 +1987,10 @@ func evaluateFirewallForPort(fw firewallSnapshot, port int, proto, vpnIP string)
 
 	note := ""
 	if !pubAllowed {
-		note = fmt.Sprintf("Tidak ada rule izin publik untuk port %d/%s pada %s (default incoming: %s)",
-			port, proto, strings.ToUpper(fw.info.Engine), fw.info.DefaultIncoming)
+		note = fmt.Sprintf(i18n.Pick(lang,
+			"No public allow rule for port %d/%s in %s (default incoming: %s)",
+			"Tidak ada rule izin publik untuk port %d/%s pada %s (default incoming: %s)",
+		), port, proto, strings.ToUpper(fw.info.Engine), fw.info.DefaultIncoming)
 	}
 	return fwDecision{
 		known:         true,

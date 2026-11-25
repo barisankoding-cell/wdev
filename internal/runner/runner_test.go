@@ -53,6 +53,10 @@ func TestRunnerReplayAndActiveSnapshot(t *testing.T) {
 		t.Fatalf("expected first replayed event to be start with Replay=true, got %+v", replayAll[0])
 	}
 
+	if !strings.Contains(replayAll[0].Message, "Starting:") {
+		t.Fatalf("expected default start message to use English 'Starting:', got %q", replayAll[0].Message)
+	}
+
 	// Subscriber resuming with matching instanceID + lastSeq skips already-seen events
 	lastSeq := replayAll[1].Seq
 	replayDelta, chDelta := r.SubscribeFrom(r.InstanceID(), lastSeq)

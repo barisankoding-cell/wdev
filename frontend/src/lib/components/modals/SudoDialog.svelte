@@ -4,6 +4,7 @@
 	import * as InputGroup from '#lib/components/ui/input-group/index.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import EyeIcon from '@lucide/svelte/icons/eye';
@@ -48,17 +49,17 @@
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				<KeyRoundIcon class="size-4 text-primary" />
-				<span>Akses Sudo Diperlukan</span>
+				<span>{t('modals.sudo.title')}</span>
 			</Dialog.Title>
 			<Dialog.Description>
-				{cp.sudoMessage || 'Operasi ini memerlukan hak akses administrator (sudo).'}
+				{cp.sudoMessage || t('modals.sudo.defaultMessage')}
 			</Dialog.Description>
 		</Dialog.Header>
 
 		{#if cp.sudoError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Autentikasi Gagal</Alert.Title>
+				<Alert.Title>{t('modals.sudo.authFailedTitle')}</Alert.Title>
 				<Alert.Description>{cp.sudoError}</Alert.Description>
 			</Alert.Root>
 		{/if}
@@ -66,14 +67,14 @@
 		<form onsubmit={handleSubmit} class="flex flex-col gap-4">
 			<Field.FieldGroup>
 				<Field.Field data-invalid={hasValidationError ? 'true' : undefined}>
-					<Field.FieldLabel for="wdev-sudo-password">Password Sudo</Field.FieldLabel>
+					<Field.FieldLabel for="wdev-sudo-password">{t('modals.sudo.passwordLabel')}</Field.FieldLabel>
 					<InputGroup.Root>
 						<InputGroup.Input
 							id="wdev-sudo-password"
 							name="sudo_password"
 							type={showPassword ? 'text' : 'password'}
 							autocomplete="current-password"
-							placeholder="Masukkan password sudo..."
+							placeholder={t('modals.sudo.passwordPlaceholder')}
 							aria-invalid={hasValidationError ? 'true' : undefined}
 							bind:value={password}
 							onblur={() => (touched = true)}
@@ -88,7 +89,7 @@
 								variant="ghost"
 								size="icon-xs"
 								aria-pressed={showPassword}
-								aria-label={showPassword ? 'Sembunyikan password' : 'Tampilkan password'}
+								aria-label={showPassword ? t('modals.sudo.hidePasswordAria') : t('modals.sudo.showPasswordAria')}
 								onclick={() => (showPassword = !showPassword)}
 							>
 								{#if showPassword}
@@ -100,14 +101,14 @@
 						</InputGroup.Addon>
 					</InputGroup.Root>
 					{#if hasValidationError}
-						<Field.FieldError errors={[{ message: 'Password sudo wajib diisi.' }]} />
+						<Field.FieldError errors={[{ message: t('modals.sudo.passwordRequired') }]} />
 					{/if}
 				</Field.Field>
 			</Field.FieldGroup>
 
 			<Dialog.Footer>
-				<Button type="button" variant="outline" onclick={handleCancel}>Batal</Button>
-				<Button type="submit">Lanjutkan</Button>
+				<Button type="button" variant="outline" onclick={handleCancel}>{t('common.actions.cancel')}</Button>
+				<Button type="submit">{t('common.actions.continue')}</Button>
 			</Dialog.Footer>
 		</form>
 	</Dialog.Content>

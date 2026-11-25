@@ -50,6 +50,7 @@
 		registerDismissableMenu
 	} from '#lib/modal-overlay.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
+	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import type { FileEntry, FileListResult, FileRootInfo } from '#lib/types/api.js';
 	import ArrowDownIcon from '@lucide/svelte/icons/arrow-down';
 	import ArrowUpDownIcon from '@lucide/svelte/icons/arrow-up-down';
@@ -392,7 +393,7 @@
 	function formatModTime(iso: string): string {
 		const d = new Date(iso);
 		if (Number.isNaN(d.getTime())) return iso;
-		return d.toLocaleString('id-ID', {
+		return i18n.formatDateTime(d, {
 			day: '2-digit',
 			month: 'short',
 			year: 'numeric',
@@ -404,7 +405,7 @@
 	function formatCompactModTime(iso: string): string {
 		const d = new Date(iso);
 		if (Number.isNaN(d.getTime())) return iso;
-		return d.toLocaleString('id-ID', {
+		return i18n.formatDateTime(d, {
 			day: '2-digit',
 			month: 'short',
 			hour: '2-digit',
@@ -478,7 +479,7 @@
 			pathEditMode = false;
 		} catch (err) {
 			if (serial !== loadSerial) return;
-			errorMsg = formatErr(err, 'Gagal membaca direktori');
+			errorMsg = formatErr(err, t('files.page.toast.loadDirFailed'));
 		} finally {
 			if (serial === loadSerial) {
 				loading = false;
@@ -522,7 +523,7 @@
 			searchResults = res.entries ?? [];
 			activeSearchQuery = q;
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal mencari berkas'));
+			toast.error(formatErr(err, t('files.page.toast.searchFailed')));
 		} finally {
 			searching = false;
 		}
@@ -603,7 +604,9 @@
 		};
 		selectedPaths = [];
 		toast.success(
-			`${paths.length} item ditandai untuk ${mode === 'copy' ? 'disalin' : 'dipindahkan'}. Buka folder tujuan lalu klik Tempel.`
+			mode === 'copy'
+				? t('files.page.toast.clipboardSetCopy', { count: paths.length })
+				: t('files.page.toast.clipboardSetMove', { count: paths.length })
 		);
 	}
 
@@ -614,15 +617,15 @@
 		try {
 			if (mode === 'copy') {
 				const res = await api.copyFiles(paths, currentPath);
-				toast.success(`${res.count} item berhasil disalin.`);
+				toast.success(t('files.page.toast.copiedCount', { count: res.count }));
 			} else {
 				const res = await api.moveFiles(paths, currentPath);
-				toast.success(`${res.count} item berhasil dipindahkan.`);
+				toast.success(t('files.page.toast.movedCount', { count: res.count }));
 				clipboard = null;
 			}
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal menempel item'));
+			toast.error(formatErr(err, t('files.page.toast.pasteFailed')));
 		} finally {
 			bulkBusy = false;
 		}
@@ -631,11 +634,13 @@
 	async function confirmDelete(paths: string[]) {
 		if (paths.length === 0 || bulkBusy) return;
 		const label =
-			paths.length === 1 ? `"${paths[0].split('/').pop() || paths[0]}"` : `${paths.length} item`;
+			paths.length === 1
+				? `"${paths[0].split('/').pop() || paths[0]}"`
+				: t('files.page.toast.deleteConfirmItemMulti', { count: paths.length });
 		const ok = await cp.confirm({
-			title: 'Hapus Berkas / Folder',
-			description: `Anda yakin ingin menghapus permanen ${label}? Tindakan ini tidak dapat dibatalkan.`,
-			confirmText: 'Hapus Permanen',
+			title: t('files.page.toast.deleteConfirmTitle'),
+			description: t('files.page.toast.deleteConfirmDesc', { label }),
+			confirmText: t('files.page.toast.deleteConfirmBtn'),
 			destructive: true
 		});
 		if (!ok) return;
@@ -643,7 +648,7 @@
 		bulkBusy = true;
 		try {
 			const res = await api.deleteFiles(paths);
-			toast.success(`${res.count} item berhasil dihapus.`);
+			toast.success(t('files.page.toast.deletedCount', { count: res.count }));
 			selectedPaths = selectedPaths.filter((p) => !paths.includes(p));
 			if (clipboard) {
 				const remaining = clipboard.paths.filter((p) => !paths.includes(p));
@@ -651,7 +656,7 @@
 			}
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal menghapus berkas'));
+			toast.error(formatErr(err, t('files.page.toast.deleteFailed')));
 		} finally {
 			bulkBusy = false;
 		}
@@ -669,7 +674,7 @@
 		const name = newFileName.trim();
 		if (!name || !currentPath || newFileBusy) return;
 		if (name.includes('/')) {
-			toast.error('Masukkan nama file saja tanpa garis miring.');
+			toast.error(t('files.page.toast.invalidFileNameNoSlash'));
 			return;
 		}
 		const targetPath = joinChildPath(currentPath, name);
@@ -677,7 +682,7 @@
 		try {
 			await api.writeFileContent(targetPath, '');
 			newFileOpen = false;
-			toast.success(`File "${name}" dibuat.`);
+			toast.success(t('files.page.toast.fileCreated', { name }));
 			await loadDirectory(currentPath);
 			if (newFileOpenAfter) {
 				const created = listing?.entries.find((item) => item.path === targetPath);
@@ -686,7 +691,7 @@
 				}
 			}
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal membuat file baru'));
+			toast.error(formatErr(err, t('files.page.toast.createFileFailed')));
 		} finally {
 			newFileBusy = false;
 		}
@@ -703,17 +708,17 @@
 		const name = newFolderName.trim();
 		if (!name || !currentPath || newFolderBusy) return;
 		if (name.includes('/')) {
-			toast.error('Masukkan nama folder saja tanpa garis miring.');
+			toast.error(t('files.page.toast.invalidFolderNameNoSlash'));
 			return;
 		}
 		newFolderBusy = true;
 		try {
 			await api.mkdirFile(joinChildPath(currentPath, name));
 			newFolderOpen = false;
-			toast.success(`Folder "${name}" dibuat.`);
+			toast.success(t('files.page.toast.folderCreated', { name }));
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal membuat folder'));
+			toast.error(formatErr(err, t('files.page.toast.createFolderFailed')));
 		} finally {
 			newFolderBusy = false;
 		}
@@ -874,13 +879,13 @@
 			if (uploadFolderInputRef) uploadFolderInputRef.value = '';
 			const skippedCount = res.skipped_count ?? 0;
 			if (skippedCount > 0) {
-				toast.success(`${res.count} berkas diunggah (${skippedCount} dilewati karena sudah ada).`);
+				toast.success(t('files.page.toast.uploadedSkipped', { count: res.count, skipped: skippedCount }));
 			} else {
-				toast.success(`${res.count} berkas berhasil diunggah ke ${currentPath}.`);
+				toast.success(t('files.page.toast.uploadedSuccess', { count: res.count, path: currentPath }));
 			}
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal mengunggah berkas'));
+			toast.error(formatErr(err, t('files.page.toast.uploadFailed')));
 		} finally {
 			uploading = false;
 			uploadAbortCtrl = null;
@@ -895,10 +900,10 @@
 		try {
 			const res = await api.fetchFileFromURL(currentPath, targetURL, fetchFilename.trim(), fetchOverwrite);
 			uploadOpen = false;
-			toast.success(`"${res.entry.name}" (${formatBytes(res.entry.size)}) berhasil diunduh ke ${currentPath}.`);
+			toast.success(t('files.page.toast.fetchedFromUrl', { name: res.entry.name, size: formatBytes(res.entry.size), path: currentPath }));
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal mengunduh berkas dari URL'));
+			toast.error(formatErr(err, t('files.page.toast.fetchUrlFailed')));
 		} finally {
 			fetchingUrl = false;
 		}
@@ -955,10 +960,10 @@
 		try {
 			await api.renameFile(target.path, nextName);
 			renameOpen = false;
-			toast.success(`Diubah menjadi "${nextName}".`);
+			toast.success(t('files.page.toast.renamed', { name: nextName }));
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal mengubah nama'));
+			toast.error(formatErr(err, t('files.page.toast.renameFailed')));
 		} finally {
 			renameBusy = false;
 		}
@@ -986,17 +991,17 @@
 		if (chmodTargets.length === 0 || chmodBusy) return;
 		const modeClean = chmodMode.trim();
 		if (!/^[0-7]{3,4}$/.test(modeClean)) {
-			toast.error('Mode octal harus berupa 3 atau 4 digit angka 0-7 (contoh: 0755 atau 644).');
+			toast.error(t('files.page.toast.invalidOctal'));
 			return;
 		}
 		chmodBusy = true;
 		try {
 			await api.chmodFiles(chmodTargets, modeClean, chmodRecursive, chmodWebOwner);
 			chmodOpen = false;
-			toast.success('Permission berhasil diperbarui.');
+			toast.success(t('files.page.toast.chmodUpdated'));
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal mengubah permission'));
+			toast.error(formatErr(err, t('files.page.toast.chmodFailed')));
 		} finally {
 			chmodBusy = false;
 		}
@@ -1009,7 +1014,7 @@
 		const baseName =
 			paths.length === 1
 				? `${paths[0].split('/').pop() || 'archive'}.zip`
-				: `arsip-${new Date().toISOString().slice(0, 10)}.zip`;
+				: `${t('files.page.dialogs.archivePrefixName')}-${new Date().toISOString().slice(0, 10)}.zip`;
 		compressOutput = joinChildPath(currentPath || getParentPath(paths[0]), baseName);
 		compressOpen = true;
 	}
@@ -1022,10 +1027,10 @@
 			const res = await api.compressFiles(compressTargets, compressOutput.trim());
 			compressOpen = false;
 			selectedPaths = [];
-			toast.success(`Arsip "${res.entry.name}" berhasil dibuat.`);
+			toast.success(t('files.page.toast.compressed', { name: res.entry.name }));
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal membuat arsip ZIP'));
+			toast.error(formatErr(err, t('files.page.toast.compressFailed')));
 		} finally {
 			compressBusy = false;
 		}
@@ -1045,10 +1050,10 @@
 		try {
 			const res = await api.extractFile(extractEntry.path, extractDest.trim());
 			extractOpen = false;
-			toast.success(`${res.count} entri berhasil diekstrak.`);
+			toast.success(t('files.page.toast.extracted', { count: res.count }));
 			await refreshCurrent();
 		} catch (err) {
-			toast.error(formatErr(err, 'Gagal mengekstrak arsip'));
+			toast.error(formatErr(err, t('files.page.toast.extractFailed')));
 		} finally {
 			extractBusy = false;
 		}
@@ -1154,9 +1159,9 @@
 	<!-- Page Header -->
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div class="min-w-0">
-			<h1 class="text-xl font-bold tracking-tight text-balance sm:text-2xl">File Manager</h1>
+			<h1 class="text-xl font-bold tracking-tight text-balance sm:text-2xl">{t('files.page.title')}</h1>
 			<p class="text-muted-foreground text-xs sm:text-sm">
-				Kelola berkas website, VHost document root, permission, upload, editor, dan arsip ZIP/TAR secara langsung.
+				{t('files.page.subtitle')}
 			</p>
 		</div>
 
@@ -1165,20 +1170,20 @@
 			{#if hasComposeManifest && currentPath}
 				<Button variant="secondary" size="sm" href={`/compose?dir=${encodeURIComponent(currentPath)}`}>
 					<ContainerIcon data-icon="inline-start" />
-					Kelola di Compose
+					{t('files.page.manageInCompose')}
 				</Button>
 			{/if}
 			<Button variant="outline" size="sm" onclick={() => openTerminalAt(currentPath)} disabled={!currentPath}>
 				<SquareTerminalIcon data-icon="inline-start" />
-				Open Terminal
+				{t('files.page.openTerminal')}
 			</Button>
 			<Button variant="outline" size="sm" onclick={openNewFileDialog} disabled={!currentPath || isSearchMode}>
 				<FilePlusIcon data-icon="inline-start" />
-				File Baru
+				{t('files.page.newFile')}
 			</Button>
 			<Button variant="outline" size="sm" onclick={openNewFolderDialog} disabled={!currentPath || isSearchMode}>
 				<FolderPlusIcon data-icon="inline-start" />
-				Folder Baru
+				{t('files.page.newFolder')}
 			</Button>
 			<Button
 				variant="outline"
@@ -1187,15 +1192,15 @@
 				onclick={() => triggerDownload(selectedPaths.length > 0 ? selectedPaths : [currentPath])}
 			>
 				<DownloadIcon data-icon="inline-start" />
-				{selectedPaths.length > 0 ? `Download (${selectedPaths.length})` : 'Download Folder'}
+				{selectedPaths.length > 0 ? t('files.page.downloadSelected', { count: selectedPaths.length }) : t('files.page.downloadFolder')}
 			</Button>
 			<Button size="sm" onclick={() => openUploadDialog('device')} disabled={!currentPath || isSearchMode}>
 				{#if uploading}
 					<Spinner data-icon="inline-start" />
-					Upload {uploadProgress.percent}%
+					{t('files.page.uploadProgress', { percent: uploadProgress.percent })}
 				{:else}
 					<UploadIcon data-icon="inline-start" />
-					Upload
+					{t('files.page.uploadBtn')}
 				{/if}
 			</Button>
 		</div>
@@ -1209,10 +1214,10 @@
 			>
 				{#if uploading}
 					<Spinner data-icon="inline-start" />
-					Upload {uploadProgress.percent}%
+					{t('files.page.uploadProgress', { percent: uploadProgress.percent })}
 				{:else}
 					<UploadIcon data-icon="inline-start" />
-					Upload
+					{t('files.page.uploadBtn')}
 				{/if}
 			</Button>
 			<Button
@@ -1222,13 +1227,13 @@
 				disabled={!currentPath}
 			>
 				<PlusIcon data-icon="inline-start" />
-				Baru &amp; Aksi
+				{t('files.page.newAndActionsBtn')}
 			</Button>
 			<Button
 				variant="outline"
 				size="icon-lg"
 				class="min-h-11 min-w-11 shrink-0"
-				aria-label="Open Terminal di folder ini"
+				aria-label={t('files.page.openTerminalHereAria')}
 				onclick={() => openTerminalAt(currentPath)}
 				disabled={!currentPath}
 			>
@@ -1240,10 +1245,10 @@
 	<!-- Quick Access Roots / VHosts -->
 	{#if roots.length > 0}
 		<nav
-			aria-label="Akses cepat direktori"
+			aria-label={t('files.page.quickAccessAria')}
 			class="flex items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0"
 		>
-			<span class="text-muted-foreground shrink-0 text-xs font-medium uppercase tracking-wide">Akses Cepat:</span>
+			<span class="text-muted-foreground shrink-0 text-xs font-medium uppercase tracking-wide">{t('files.page.quickAccessLabel')}</span>
 			{#each roots as root (root.path)}
 				{@const active = currentPath === root.path || currentPath.startsWith(root.path.replace(/\/+$/, '') + '/')}
 				<Button
@@ -1278,7 +1283,7 @@
 		{#if dragOver}
 			<div class="bg-background/85 pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-primary p-4 text-center backdrop-blur-[1px]">
 				<UploadIcon class="text-primary mb-2 size-10" />
-				<p class="text-sm font-semibold">Lepaskan file untuk mengunggah ke:</p>
+				<p class="text-sm font-semibold">{t('files.page.dropzoneReleaseTitle')}</p>
 				<p class="text-muted-foreground mt-1 break-all font-mono text-xs">{currentPath}</p>
 			</div>
 		{/if}
@@ -1291,8 +1296,8 @@
 						variant="outline"
 						size="icon-sm"
 						class="fm-touch-btn shrink-0"
-						title="Naik ke folder induk"
-						aria-label="Naik ke folder induk"
+						title={t('files.page.upTitle')}
+						aria-label={t('files.page.upTitle')}
 						disabled={!listing?.can_go_up || loading || isSearchMode}
 						onclick={() => listing?.parent && navigateTo(listing.parent)}
 					>
@@ -1302,8 +1307,8 @@
 						variant="outline"
 						size="icon-sm"
 						class="fm-touch-btn shrink-0"
-						title="Ke direktori awal"
-						aria-label="Ke direktori awal"
+						title={t('files.page.homeTitle')}
+						aria-label={t('files.page.homeTitle')}
 						disabled={loading}
 						onclick={() => navigateTo(roots[0]?.path ?? '')}
 					>
@@ -1313,8 +1318,8 @@
 						variant="outline"
 						size="icon-sm"
 						class="fm-touch-btn shrink-0"
-						title="Segarkan"
-						aria-label="Segarkan direktori"
+						title={t('files.page.refreshTitle')}
+						aria-label={t('files.page.refreshAria')}
 						disabled={loading || searching}
 						onclick={refreshCurrent}
 					>
@@ -1341,14 +1346,14 @@
 							<Input
 								bind:value={pathInput}
 								class="h-10 min-w-0 flex-1 font-mono text-base sm:h-8 sm:text-xs"
-								placeholder="/var/www/..."
-								aria-label="Path direktori"
+								placeholder={t('files.page.pathInputPlaceholder')}
+								aria-label={t('files.page.pathInputAria')}
 								autocapitalize="none"
 								autocorrect="off"
 								spellcheck={false}
 								autofocus
 							/>
-							<Button type="submit" size="sm" class="fm-touch-btn h-10 shrink-0 sm:h-8">Buka</Button>
+							<Button type="submit" size="sm" class="fm-touch-btn h-10 shrink-0 sm:h-8">{t('files.page.openBtn')}</Button>
 							<Button
 								type="button"
 								variant="ghost"
@@ -1358,7 +1363,7 @@
 									pathEditMode = false;
 									pathInput = currentPath;
 								}}
-								aria-label="Batal ubah path"
+								aria-label={t('files.page.cancelPathEditAria')}
 							>
 								<XIcon />
 							</Button>
@@ -1367,11 +1372,11 @@
 						<div class="bg-muted/40 flex min-h-9 min-w-0 flex-1 basis-full items-center gap-1 rounded-md border px-2 py-1 text-xs sm:min-h-8 sm:basis-0">
 							<nav
 								bind:this={breadcrumbScrollEl}
-								aria-label="Lokasi direktori"
+								aria-label={t('files.page.dirLocationAria')}
 								class="flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto overscroll-x-contain sm:flex-wrap sm:overflow-visible"
 							>
 								{#if breadcrumbs.length === 0}
-									<span class="text-muted-foreground font-mono">Memuat path...</span>
+									<span class="text-muted-foreground font-mono">{t('files.page.loadingPath')}</span>
 								{:else}
 									{#each breadcrumbs as seg, idx (seg.path)}
 										{#if idx > 0}
@@ -1400,8 +1405,8 @@
 							<button
 								type="button"
 								class="fm-touch-hit text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 shrink-0 items-center justify-center rounded sm:size-6"
-								title="Ketik path manual"
-								aria-label="Ketik path manual"
+								title={t('files.page.editPathManuallyTitle')}
+								aria-label={t('files.page.editPathManuallyTitle')}
 								onclick={() => {
 									pathInput = currentPath;
 									pathEditMode = true;
@@ -1421,14 +1426,14 @@
 						class="hidden h-8 shrink-0 gap-1.5 text-xs sm:inline-flex"
 						aria-pressed={showHidden}
 						onclick={toggleShowHidden}
-						title="Tampilkan / sembunyikan file awalan titik (.env, .htaccess, dll)"
+						title={t('files.page.toggleHiddenTitle')}
 					>
 						{#if showHidden}
 							<EyeIcon data-icon="inline-start" />
 						{:else}
 							<EyeOffIcon data-icon="inline-start" />
 						{/if}
-						Hidden (.dot)
+						{t('files.page.hiddenDotLabel')}
 					</Button>
 
 					<form
@@ -1445,8 +1450,8 @@
 							<InputGroup.Input
 								type="search"
 								bind:value={searchInput}
-								placeholder="Cari file di folder ini..."
-								aria-label="Cari file di folder ini"
+								placeholder={t('files.page.searchPlaceholder')}
+								aria-label={t('files.page.searchAria')}
 								class="h-full text-base sm:text-xs"
 							/>
 							{#if searchInput}
@@ -1455,7 +1460,7 @@
 										type="button"
 										size="icon-xs"
 										class="fm-touch-hit"
-										aria-label="Kosongkan kata kunci"
+										aria-label={t('files.page.clearSearchAria')}
 										onclick={() => (searchInput = '')}
 									>
 										<XIcon />
@@ -1467,12 +1472,12 @@
 							{#if searching}
 								<Spinner />
 							{:else}
-								Cari
+								{t('files.page.searchBtn')}
 							{/if}
 						</Button>
 						{#if isSearchMode}
 							<Button type="button" variant="ghost" size="sm" class="fm-touch-btn h-10 shrink-0 text-xs sm:h-8" onclick={clearSearch}>
-								Reset
+								{t('files.page.resetBtn')}
 							</Button>
 						{/if}
 					</form>
@@ -1489,7 +1494,7 @@
 							<ScissorsIcon class="text-primary size-4 shrink-0" />
 						{/if}
 						<span class="min-w-0">
-							<strong>{clipboard.paths.length} item</strong> siap {clipboard.mode === 'copy' ? 'disalin' : 'dipindahkan'} dari
+							<strong>{t('files.page.clipboardCountItems', { count: clipboard.paths.length })}</strong> {clipboard.mode === 'copy' ? t('files.page.clipboardBannerCopy') : t('files.page.clipboardBannerMove')} {t('files.page.clipboardBannerFrom')}
 							<code class="bg-muted rounded px-1 py-0.5 font-mono break-all">{clipboard.sourceDir}</code>
 						</span>
 					</div>
@@ -1500,10 +1505,10 @@
 							{:else}
 								<ClipboardPasteIcon data-icon="inline-start" />
 							{/if}
-							Tempel di Sini
+							{t('files.page.pasteHereBtn')}
 						</Button>
 						<Button variant="ghost" size="sm" class="h-7 text-xs" onclick={() => (clipboard = null)}>
-							Batal
+							{t('files.page.cancelBtn')}
 						</Button>
 					</div>
 				</div>
@@ -1513,31 +1518,31 @@
 			{#if selectedPaths.length > 0}
 				<div class="bg-muted/60 hidden flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs md:flex">
 					<div class="flex items-center gap-2 font-medium">
-						<Badge variant="secondary">{selectedPaths.length} dipilih</Badge>
+						<Badge variant="secondary">{t('files.page.selectedCount', { count: selectedPaths.length })}</Badge>
 						<button
 							type="button"
 							class="text-muted-foreground hover:text-foreground underline"
 							onclick={() => (selectedPaths = [])}
 						>
-							Bersihkan
+							{t('files.page.clearSelection')}
 						</button>
 					</div>
 					<div class="flex flex-wrap items-center gap-1.5">
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => setClipboard('copy', selectedPaths)}>
 							<CopyIcon data-icon="inline-start" />
-							Salin
+							{t('files.page.copyBtn')}
 						</Button>
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => setClipboard('move', selectedPaths)}>
 							<ScissorsIcon data-icon="inline-start" />
-							Pindah
+							{t('files.page.moveBtn')}
 						</Button>
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => openCompressDialog(selectedPaths)}>
 							<FileArchiveIcon data-icon="inline-start" />
-							Kompres ZIP
+							{t('files.page.compressZipBtn')}
 						</Button>
 						<Button variant="outline" size="sm" class="h-7 gap-1 text-xs" onclick={() => triggerDownload(selectedPaths)}>
 							<DownloadIcon data-icon="inline-start" />
-							Download ZIP
+							{t('files.page.downloadZipBtn')}
 						</Button>
 						<Button
 							variant="outline"
@@ -1550,7 +1555,7 @@
 								)}
 						>
 							<LockIcon data-icon="inline-start" />
-							Permission
+							{t('files.page.permissionBtn')}
 						</Button>
 						<Button
 							variant="destructive"
@@ -1560,7 +1565,7 @@
 							onclick={() => confirmDelete(selectedPaths)}
 						>
 							<Trash2Icon data-icon="inline-start" />
-							Hapus
+							{t('files.page.deleteBtn')}
 						</Button>
 					</div>
 				</div>
@@ -1572,14 +1577,14 @@
 					<div class="flex flex-wrap items-center justify-between gap-2">
 						<div class="flex min-w-0 items-center gap-2 font-medium">
 							<Spinner class="size-3.5 shrink-0" />
-							<span class="truncate">Mengunggah ke <code class="font-mono">{currentPath}</code>...</span>
+							<span class="truncate">{t('files.page.uploadingTo1')}<code class="font-mono">{currentPath}</code>{t('files.page.uploadingTo2')}</span>
 						</div>
 						<div class="flex items-center gap-2">
 							<span class="font-mono text-[11px]">
 								{uploadProgress.percent}% ({formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)})
 							</span>
 							<Button variant="ghost" size="sm" class="fm-touch-btn h-7 px-2 text-xs" onclick={cancelUpload}>
-								Batal
+								{t('files.page.cancelBtn')}
 							</Button>
 						</div>
 					</div>
@@ -1591,11 +1596,11 @@
 			<div class="flex flex-wrap items-center justify-between gap-2">
 				{#if isSearchMode}
 					<CardTitle class="text-sm font-medium">
-						Hasil pencarian "{activeSearchQuery}" ({visibleEntries.length} ditemukan)
+						{t('files.page.searchResultsHeading', { query: activeSearchQuery, count: visibleEntries.length })}
 					</CardTitle>
 				{:else if listing}
 					<CardDescription class="text-xs">
-						{listing.total_dirs} folder, {listing.total_files} file • Total: {formatBytes(listing.total_size)}<span class="fm-pointer-fine-only ml-1">• Tips: klik kanan baris untuk Open Terminal &amp; aksi cepat, atau seret file ke tabel untuk mengunggah.</span><span class="fm-pointer-coarse-only ml-1">• Ketuk berkas untuk membuka, ketuk ⋮ untuk menu aksi.</span>
+						{t('files.page.statsSummary', { dirs: listing.total_dirs, files: listing.total_files, total: formatBytes(listing.total_size) })}<span class="fm-pointer-fine-only ml-1">{t('files.page.statsTipsDesktop')}</span><span class="fm-pointer-coarse-only ml-1">{t('files.page.statsTipsMobile')}</span>
 					</CardDescription>
 				{/if}
 			</div>
@@ -1605,11 +1610,11 @@
 			{#if errorMsg}
 				<Alert variant="destructive" class="mb-4">
 					<CircleAlertIcon />
-					<AlertTitle>Gagal Memuat Direktori</AlertTitle>
+					<AlertTitle>{t('files.page.loadDirFailedTitle')}</AlertTitle>
 					<AlertDescription class="flex flex-wrap items-center justify-between gap-2">
 						<span>{errorMsg}</span>
 						<Button variant="outline" size="sm" class="fm-touch-btn" onclick={() => navigateTo(roots[0]?.path ?? '')}>
-							Kembali ke Root Awal
+							{t('files.page.returnInitialRoot')}
 						</Button>
 					</AlertDescription>
 				</Alert>
@@ -1627,12 +1632,12 @@
 						<Empty.Media variant="icon">
 							<FolderOpenIcon class="size-5" />
 						</Empty.Media>
-						<Empty.Title>{isSearchMode ? 'Tidak Ada Hasil' : 'Direktori Kosong'}</Empty.Title>
+						<Empty.Title>{isSearchMode ? t('files.page.emptySearchTitle') : t('files.page.emptyDirTitle')}</Empty.Title>
 						<Empty.Description>
 							{#if isSearchMode}
-								Tidak ditemukan berkas atau folder yang cocok dengan kata kunci "{activeSearchQuery}".
+								{t('files.page.emptySearchDesc', { query: activeSearchQuery })}
 							{:else}
-								Belum ada berkas di direktori ini. Gunakan tombol Upload atau File Baru untuk menambahkan berkas.
+								{t('files.page.emptyDirDesc')}
 							{/if}
 						</Empty.Description>
 					</Empty.Header>
@@ -1640,11 +1645,11 @@
 						<Empty.Content class="flex-row flex-wrap justify-center gap-2">
 							<Button variant="outline" size="sm" class="fm-touch-btn" onclick={openNewFileDialog}>
 								<FilePlusIcon data-icon="inline-start" />
-								Buat File Baru
+								{t('files.page.createNewFileBtn')}
 							</Button>
 							<Button size="sm" class="fm-touch-btn" onclick={() => openUploadDialog('device')}>
 								<UploadIcon data-icon="inline-start" />
-								Upload Berkas
+								{t('files.page.uploadFilesBtn')}
 							</Button>
 						</Empty.Content>
 					{/if}
@@ -1653,7 +1658,7 @@
 				<div class="fm-list-container min-h-[300px] flex-1 sm:min-h-[360px]">
 					<!-- Desktop Table View (@container >= 44rem) -->
 					<div class="fm-desktop-view">
-						<ResponsiveTableWrapper label="Daftar Berkas File Manager" stackOnMobile={false}>
+						<ResponsiveTableWrapper label={t('files.page.tableAria')} stackOnMobile={false}>
 							<Table>
 								<TableHeader>
 									<TableRow>
@@ -1662,7 +1667,7 @@
 												checked={allVisibleSelected}
 												indeterminate={someVisibleSelected}
 												onCheckedChange={(v) => toggleSelectAll(Boolean(v))}
-												aria-label="Pilih semua berkas"
+												aria-label={t('files.page.selectAllAria')}
 											/>
 										</TableHead>
 										<TableHead scope="col">
@@ -1671,7 +1676,7 @@
 												class="hover:text-foreground inline-flex items-center gap-1 font-medium"
 												onclick={() => toggleSort('name')}
 											>
-												Nama
+												{t('files.page.colName')}
 												{#if sortBy === 'name'}
 													{#if sortDir === 'asc'}
 														<ArrowUpIcon class="size-3.5" />
@@ -1689,7 +1694,7 @@
 												class="hover:text-foreground inline-flex items-center gap-1 font-medium"
 												onclick={() => toggleSort('size')}
 											>
-												Ukuran
+												{t('files.page.colSize')}
 												{#if sortBy === 'size'}
 													{#if sortDir === 'asc'}
 														<ArrowUpIcon class="size-3.5" />
@@ -1701,15 +1706,15 @@
 												{/if}
 											</button>
 										</TableHead>
-										<TableHead scope="col" class="w-36">Permission</TableHead>
-										<TableHead scope="col" class="w-36">Owner</TableHead>
+										<TableHead scope="col" class="w-36">{t('files.page.colPermission')}</TableHead>
+										<TableHead scope="col" class="w-36">{t('files.page.colOwner')}</TableHead>
 										<TableHead scope="col" class="w-40">
 											<button
 												type="button"
 												class="hover:text-foreground inline-flex items-center gap-1 font-medium"
 												onclick={() => toggleSort('mod_time')}
 											>
-												Diubah
+												{t('files.page.colModified')}
 												{#if sortBy === 'mod_time'}
 													{#if sortDir === 'asc'}
 														<ArrowUpIcon class="size-3.5" />
@@ -1721,7 +1726,7 @@
 												{/if}
 											</button>
 										</TableHead>
-										<TableHead scope="col" class="text-right">Aksi</TableHead>
+										<TableHead scope="col" class="text-right">{t('files.page.colActions')}</TableHead>
 									</TableRow>
 								</TableHeader>
 								<TableBody>
@@ -1734,14 +1739,14 @@
 											)}
 											oncontextmenu={(e) => openContextMenu(e, entry)}
 										>
-											<TableCell data-label="Pilih">
+											<TableCell data-label={t('files.page.dataSelect')}>
 												<Checkbox
 													{checked}
 													onCheckedChange={(v) => toggleSelect(entry.path, Boolean(v))}
-													aria-label={`Pilih ${entry.name}`}
+													aria-label={t('files.page.selectEntryAria', { name: entry.name })}
 												/>
 											</TableCell>
-											<TableCell data-label="Nama">
+											<TableCell data-label={t('files.page.dataName')}>
 												<div class="flex min-w-0 items-center gap-2.5">
 													{@render entryIcon(entry)}
 
@@ -1770,27 +1775,27 @@
 													</div>
 												</div>
 											</TableCell>
-											<TableCell data-label="Ukuran" class="font-mono text-xs whitespace-nowrap">
+											<TableCell data-label={t('files.page.dataSize')} class="font-mono text-xs whitespace-nowrap">
 												{entry.is_dir ? '—' : formatBytes(entry.size)}
 											</TableCell>
-											<TableCell data-label="Permission">
+											<TableCell data-label={t('files.page.dataPermission')}>
 												<button
 													type="button"
 													class="hover:bg-muted inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-xs transition-colors"
-													title="Ubah permission"
+													title={t('files.page.changePermTitle')}
 													onclick={() => openChmodDialog([entry])}
 												>
 													<span class="font-semibold">{entry.mode}</span>
 													<span class="text-muted-foreground hidden sm:inline">({entry.perm_text})</span>
 												</button>
 											</TableCell>
-											<TableCell data-label="Owner" class="text-muted-foreground font-mono text-xs whitespace-nowrap">
+											<TableCell data-label={t('files.page.dataOwner')} class="text-muted-foreground font-mono text-xs whitespace-nowrap">
 												{entry.owner}:{entry.group}
 											</TableCell>
-											<TableCell data-label="Diubah" class="text-muted-foreground text-xs whitespace-nowrap">
+											<TableCell data-label={t('files.page.dataModified')} class="text-muted-foreground text-xs whitespace-nowrap">
 												{formatModTime(entry.mod_time)}
 											</TableCell>
-											<TableCell data-label="Aksi" class="text-right">
+											<TableCell data-label={t('files.page.dataActions')} class="text-right">
 												<div class="flex justify-end">
 													<DropdownMenu.Root>
 														<DropdownMenu.Trigger>
@@ -1805,7 +1810,7 @@
 																		triggerOnClick?.(e);
 																	}}
 																>
-																	Aksi
+																	{t('files.page.actionsBtn')}
 																	<ChevronDownIcon data-icon="inline-end" />
 																</Button>
 															{/snippet}
@@ -1819,38 +1824,38 @@
 																{#if entry.is_dir}
 																	<DropdownMenu.Item onclick={() => void navigateTo(entry.path)}>
 																		<FolderOpenIcon />
-																		<span>Buka Folder</span>
+																		<span>{t('files.page.menuOpenFolder')}</span>
 																	</DropdownMenu.Item>
 																{:else if entry.editable || entry.is_image}
 																	<DropdownMenu.Item onclick={() => openEditor(entry)}>
 																		<EyeIcon />
-																		<span>{entry.editable ? 'Edit File' : 'Lihat Gambar'}</span>
+																		<span>{entry.editable ? t('files.page.menuEditFile') : t('files.page.menuViewImage')}</span>
 																	</DropdownMenu.Item>
 																{/if}
 																{#if entry.is_archive}
 																	<DropdownMenu.Item onclick={() => openExtractDialog(entry)}>
 																		<FileArchiveIcon />
-																		<span>Ekstrak Arsip</span>
+																		<span>{t('files.page.menuExtractArchive')}</span>
 																	</DropdownMenu.Item>
 																{/if}
 																<DropdownMenu.Item onclick={() => triggerDownload([entry.path])}>
 																	<DownloadIcon />
-																	<span>{entry.is_dir ? 'Download ZIP' : 'Download File'}</span>
+																	<span>{entry.is_dir ? t('files.page.menuDownloadZip') : t('files.page.menuDownloadFile')}</span>
 																</DropdownMenu.Item>
 																<DropdownMenu.Item
 																	onclick={() => openTerminalAt(entry.is_dir ? entry.path : currentPath)}
 																>
 																	<SquareTerminalIcon />
-																	<span>Open Terminal</span>
+																	<span>{t('files.page.openTerminal')}</span>
 																</DropdownMenu.Item>
 																<DropdownMenu.Separator />
 																<DropdownMenu.Item onclick={() => openRenameDialog(entry)}>
 																	<PencilIcon />
-																	<span>Ubah Nama</span>
+																	<span>{t('files.page.menuRename')}</span>
 																</DropdownMenu.Item>
 																<DropdownMenu.Item onclick={() => openChmodDialog([entry])}>
 																	<LockIcon />
-																	<span>Permission / Chmod</span>
+																	<span>{t('files.page.menuPermChmod')}</span>
 																</DropdownMenu.Item>
 																<DropdownMenu.Separator />
 																<DropdownMenu.Item
@@ -1858,7 +1863,7 @@
 																	onclick={() => confirmDelete([entry.path])}
 																>
 																	<Trash2Icon />
-																	<span>Hapus</span>
+																	<span>{t('files.page.menuDelete')}</span>
 																</DropdownMenu.Item>
 															</DropdownMenu.Group>
 														</DropdownMenu.Content>
@@ -1886,10 +1891,10 @@
 									checked={allVisibleSelected}
 									indeterminate={someVisibleSelected}
 									onCheckedChange={(v) => toggleSelectAll(Boolean(v))}
-									aria-label="Pilih semua berkas"
+									aria-label={t('files.page.selectAllAria')}
 								/>
 								<span>
-									{allVisibleSelected ? 'Batal Pilih' : 'Pilih Semua'} ({visibleEntries.length})
+									{allVisibleSelected ? t('files.page.mobileDeselectAll') : t('files.page.mobileSelectAll')} ({visibleEntries.length})
 								</span>
 							</label>
 
@@ -1897,12 +1902,12 @@
 								<NativeSelect.Root
 									bind:value={sortBy}
 									size="sm"
-									aria-label="Urutkan berkas berdasarkan"
+									aria-label={t('files.page.sortByAria')}
 									class="text-xs"
 								>
-									<NativeSelect.Option value="name">Nama</NativeSelect.Option>
-									<NativeSelect.Option value="size">Ukuran</NativeSelect.Option>
-									<NativeSelect.Option value="mod_time">Diubah</NativeSelect.Option>
+									<NativeSelect.Option value="name">{t('files.page.sortName')}</NativeSelect.Option>
+									<NativeSelect.Option value="size">{t('files.page.sortSize')}</NativeSelect.Option>
+									<NativeSelect.Option value="mod_time">{t('files.page.sortModified')}</NativeSelect.Option>
 								</NativeSelect.Root>
 								<Button
 									type="button"
@@ -1910,8 +1915,8 @@
 									size="icon-sm"
 									class="fm-touch-btn shrink-0"
 									aria-label={sortDir === 'asc'
-										? 'Urutan naik (A-Z / terkecil), ketuk untuk balikkan'
-										: 'Urutan turun (Z-A / terbesar), ketuk untuk balikkan'}
+										? t('files.page.sortAscAria')
+										: t('files.page.sortDescAria')}
 									onclick={() => (sortDir = sortDir === 'asc' ? 'desc' : 'asc')}
 								>
 									{#if sortDir === 'asc'}
@@ -1943,7 +1948,7 @@
 											id={checkId}
 											{checked}
 											onCheckedChange={(v) => toggleSelect(entry.path, Boolean(v))}
-											aria-label={`Pilih ${entry.name}`}
+											aria-label={t('files.page.selectEntryAria', { name: entry.name })}
 										/>
 									</label>
 
@@ -1959,7 +1964,7 @@
 												{@render filenameDisplay(entry)}
 											</div>
 											<div class="text-muted-foreground flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
-												<span>{entry.is_dir ? 'Folder' : formatBytes(entry.size)}</span>
+												<span>{entry.is_dir ? t('files.page.folderType') : formatBytes(entry.size)}</span>
 												<span aria-hidden="true">•</span>
 												<span class="font-mono">{entry.mode}</span>
 												<span aria-hidden="true">•</span>
@@ -1983,7 +1988,7 @@
 										variant="ghost"
 										size="icon"
 										class="fm-touch-btn text-muted-foreground shrink-0"
-										aria-label={`Menu aksi untuk ${entry.name}`}
+										aria-label={t('files.page.entryActionsAria', { name: entry.name })}
 										onclick={() => openMobileEntrySheet(entry)}
 									>
 										<EllipsisVerticalIcon />
@@ -2006,17 +2011,17 @@
 <Dialog bind:open={newFileOpen}>
 	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
-			<DialogTitle>Buat File Baru</DialogTitle>
-			<DialogDescription class="font-mono text-xs break-all">Lokasi: {currentPath}</DialogDescription>
+			<DialogTitle>{t('files.page.dialogs.newFileTitle')}</DialogTitle>
+			<DialogDescription class="font-mono text-xs break-all">{t('files.page.dialogs.locationPrefix', { path: currentPath })}</DialogDescription>
 		</DialogHeader>
 		<form onsubmit={submitNewFile} class="flex flex-col gap-4">
 			<Field>
-				<FieldLabel for="fm-new-file-name">Nama File</FieldLabel>
+				<FieldLabel for="fm-new-file-name">{t('files.page.dialogs.newFileLabel')}</FieldLabel>
 				<Input
 					id="fm-new-file-name"
 					bind:value={newFileName}
 					class="h-10 text-base sm:h-8 sm:text-sm"
-					placeholder="index.html, .env, config.php"
+					placeholder={t('files.page.dialogs.newFilePlaceholder')}
 					autocapitalize="none"
 					autocorrect="off"
 					spellcheck={false}
@@ -2026,15 +2031,15 @@
 			</Field>
 			<label for="fm-new-file-open-after" class="fm-touch-check cursor-pointer gap-2 text-sm">
 				<Checkbox id="fm-new-file-open-after" bind:checked={newFileOpenAfter} />
-				<span>Langsung buka di editor setelah dibuat</span>
+				<span>{t('files.page.dialogs.openAfterLabel')}</span>
 			</label>
 			<DialogFooter>
 				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (newFileOpen = false)} disabled={newFileBusy}>
-					Batal
+					{t('files.page.cancelBtn')}
 				</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={newFileBusy || !newFileName.trim()}>
 					{#if newFileBusy}<Spinner data-icon="inline-start" />{/if}
-					Buat File
+					{t('files.page.dialogs.createFileBtn')}
 				</Button>
 			</DialogFooter>
 		</form>
@@ -2045,17 +2050,17 @@
 <Dialog bind:open={newFolderOpen}>
 	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
-			<DialogTitle>Buat Folder Baru</DialogTitle>
-			<DialogDescription class="font-mono text-xs break-all">Lokasi: {currentPath}</DialogDescription>
+			<DialogTitle>{t('files.page.dialogs.newFolderTitle')}</DialogTitle>
+			<DialogDescription class="font-mono text-xs break-all">{t('files.page.dialogs.locationPrefix', { path: currentPath })}</DialogDescription>
 		</DialogHeader>
 		<form onsubmit={submitNewFolder} class="flex flex-col gap-4">
 			<Field>
-				<FieldLabel for="fm-new-folder-name">Nama Folder</FieldLabel>
+				<FieldLabel for="fm-new-folder-name">{t('files.page.dialogs.newFolderLabel')}</FieldLabel>
 				<Input
 					id="fm-new-folder-name"
 					bind:value={newFolderName}
 					class="h-10 text-base sm:h-8 sm:text-sm"
-					placeholder="assets, uploads, public"
+					placeholder={t('files.page.dialogs.newFolderPlaceholder')}
 					autocapitalize="none"
 					autocorrect="off"
 					spellcheck={false}
@@ -2065,11 +2070,11 @@
 			</Field>
 			<DialogFooter>
 				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (newFolderOpen = false)} disabled={newFolderBusy}>
-					Batal
+					{t('files.page.cancelBtn')}
 				</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={newFolderBusy || !newFolderName.trim()}>
 					{#if newFolderBusy}<Spinner data-icon="inline-start" />{/if}
-					Buat Folder
+					{t('files.page.dialogs.createFolderBtn')}
 				</Button>
 			</DialogFooter>
 		</form>
@@ -2080,16 +2085,16 @@
 <Dialog bind:open={uploadOpen}>
 	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-xl">
 		<DialogHeader>
-			<DialogTitle>Upload &amp; Download Berkas</DialogTitle>
+			<DialogTitle>{t('files.page.dialogs.uploadTitle')}</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">
-				Folder tujuan: {currentPath}
+				{t('files.page.dialogs.destPrefix', { path: currentPath })}
 			</DialogDescription>
 		</DialogHeader>
 
 		<Tabs.Root bind:value={uploadTab} class="flex flex-col gap-4">
 			<Tabs.List class="grid h-auto w-full grid-cols-2">
-				<Tabs.Trigger value="device" class="min-h-9 py-1.5 text-xs sm:text-sm" disabled={fetchingUrl}>Upload File / Folder</Tabs.Trigger>
-				<Tabs.Trigger value="url" class="min-h-9 py-1.5 text-xs sm:text-sm" disabled={uploading}>Download dari URL</Tabs.Trigger>
+				<Tabs.Trigger value="device" class="min-h-9 py-1.5 text-xs sm:text-sm" disabled={fetchingUrl}>{t('files.page.dialogs.tabDevice')}</Tabs.Trigger>
+				<Tabs.Trigger value="url" class="min-h-9 py-1.5 text-xs sm:text-sm" disabled={uploading}>{t('files.page.dialogs.tabUrl')}</Tabs.Trigger>
 			</Tabs.List>
 
 			<Tabs.Content value="device" class="flex flex-col gap-4">
@@ -2113,7 +2118,7 @@
 				<!-- Interactive Dropzone inside modal -->
 				<div
 					role="region"
-					aria-label="Area unggah seret dan lepas"
+					aria-label={t('files.page.dialogs.dropzoneAria')}
 					ondragover={handleUploadDropzoneDragOver}
 					ondragleave={handleUploadDropzoneDragLeave}
 					ondrop={handleUploadDropzoneDrop}
@@ -2124,9 +2129,9 @@
 				>
 					<UploadIcon class="text-muted-foreground size-7" />
 					<div class="flex flex-col gap-1">
-						<p class="text-sm font-medium">Pilih atau seret file/folder ke sini</p>
+						<p class="text-sm font-medium">{t('files.page.dialogs.dropzoneTitle')}</p>
 						<p class="text-muted-foreground text-xs">
-							Maks. 256 MB per unggahan, struktur subfolder dipertahankan.
+							{t('files.page.dialogs.dropzoneSubtitle')}
 						</p>
 					</div>
 					<div class="flex w-full flex-wrap items-center justify-center gap-2 sm:w-auto">
@@ -2139,7 +2144,7 @@
 							onclick={() => uploadFileInputRef?.click()}
 						>
 							<FilePlusIcon data-icon="inline-start" />
-							Pilih File
+							{t('files.page.dialogs.pickFile')}
 						</Button>
 						<Button
 							type="button"
@@ -2150,7 +2155,7 @@
 							onclick={() => uploadFolderInputRef?.click()}
 						>
 							<FolderPlusIcon data-icon="inline-start" />
-							Pilih Folder
+							{t('files.page.dialogs.pickFolder')}
 						</Button>
 					</div>
 				</div>
@@ -2159,7 +2164,7 @@
 					<div class="flex flex-col gap-2">
 						<div class="flex items-center justify-between text-xs">
 							<span class="font-medium">
-								{uploadQueue.length} berkas antre ({formatBytes(uploadTotalBytes)})
+								{t('files.page.dialogs.queueCount', { count: uploadQueue.length, size: formatBytes(uploadTotalBytes) })}
 							</span>
 							{#if !uploading}
 								<button
@@ -2167,7 +2172,7 @@
 									class="fm-touch-hit text-muted-foreground hover:text-foreground underline"
 									onclick={() => (uploadQueue = [])}
 								>
-									Bersihkan Antrean
+									{t('files.page.dialogs.clearQueue')}
 								</button>
 							{/if}
 						</div>
@@ -2180,8 +2185,8 @@
 										<button
 											type="button"
 											class="fm-touch-hit text-muted-foreground hover:text-destructive inline-flex size-6 items-center justify-center rounded"
-											title="Hapus dari antrean"
-											aria-label={`Hapus ${item.relativePath} dari antrean`}
+											title={t('files.page.dialogs.removeQueueTitle')}
+											aria-label={t('files.page.dialogs.removeQueueAria', { name: item.relativePath })}
 											onclick={() => removeUploadQueueIndex(idx)}
 										>
 											<XIcon class="size-3.5" />
@@ -2195,13 +2200,13 @@
 
 				<label for="fm-upload-overwrite" class="fm-touch-check cursor-pointer gap-2 text-xs">
 					<Checkbox id="fm-upload-overwrite" bind:checked={uploadOverwrite} disabled={uploading} />
-					<span>Timpa berkas yang bernama sama (Overwrite)</span>
+					<span>{t('files.page.dialogs.overwriteCheck')}</span>
 				</label>
 
 				{#if uploading}
 					<div class="flex flex-col gap-1.5 rounded-md border p-2.5 text-xs">
 						<div class="flex items-center justify-between gap-2">
-							<span class="font-medium">Mengunggah berkas...</span>
+							<span class="font-medium">{t('files.page.dialogs.uploadingLabel')}</span>
 							<span class="font-mono">
 								{uploadProgress.percent}% ({formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)})
 							</span>
@@ -2213,11 +2218,11 @@
 				<DialogFooter>
 					{#if uploading}
 						<Button type="button" variant="destructive" class="min-h-10 sm:min-h-0" onclick={cancelUpload}>
-							Batalkan Upload
+							{t('files.page.dialogs.cancelUpload')}
 						</Button>
 					{:else}
 						<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (uploadOpen = false)}>
-							Tutup
+							{t('files.page.dialogs.closeBtn')}
 						</Button>
 						<Button
 							type="button"
@@ -2226,7 +2231,7 @@
 							onclick={() => performUpload(uploadQueue)}
 						>
 							<UploadIcon data-icon="inline-start" />
-							Mulai Upload ({uploadQueue.length})
+							{t('files.page.dialogs.startUpload', { count: uploadQueue.length })}
 						</Button>
 					{/if}
 				</DialogFooter>
@@ -2235,7 +2240,7 @@
 			<Tabs.Content value="url">
 				<form onsubmit={submitFetchURL} class="flex flex-col gap-4">
 					<Field>
-						<FieldLabel for="fm-fetch-url">URL Berkas / Arsip Publik</FieldLabel>
+						<FieldLabel for="fm-fetch-url">{t('files.page.dialogs.urlLabel')}</FieldLabel>
 						<Input
 							id="fm-fetch-url"
 							type="url"
@@ -2245,16 +2250,16 @@
 							required
 						/>
 						<FieldDescription>
-							Server akan langsung mengunduh berkas HTTP/HTTPS ini ke folder aktif (maks. 256 MB).
+							{t('files.page.dialogs.urlDesc')}
 						</FieldDescription>
 					</Field>
 
 					<Field>
-						<FieldLabel for="fm-fetch-filename">Simpan Sebagai (opsional)</FieldLabel>
+						<FieldLabel for="fm-fetch-filename">{t('files.page.dialogs.saveAsLabel')}</FieldLabel>
 						<Input
 							id="fm-fetch-filename"
 							bind:value={fetchFilename}
-							placeholder="Kosongkan untuk otomatis dari URL"
+							placeholder={t('files.page.dialogs.saveAsPlaceholder')}
 							autocapitalize="none"
 							autocorrect="off"
 							spellcheck={false}
@@ -2264,20 +2269,20 @@
 
 					<label for="fm-fetch-overwrite" class="fm-touch-check cursor-pointer gap-2 text-xs">
 						<Checkbox id="fm-fetch-overwrite" bind:checked={fetchOverwrite} disabled={fetchingUrl} />
-						<span>Timpa berkas jika namanya sudah ada</span>
+						<span>{t('files.page.dialogs.fetchOverwriteLabel')}</span>
 					</label>
 
 					<DialogFooter>
 						<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (uploadOpen = false)} disabled={fetchingUrl}>
-							Batal
+							{t('files.page.cancelBtn')}
 						</Button>
 						<Button type="submit" class="min-h-10 sm:min-h-0" disabled={fetchingUrl || !fetchUrl.trim()}>
 							{#if fetchingUrl}
 								<Spinner data-icon="inline-start" />
-								Mengunduh ke Server...
+								{t('files.page.dialogs.downloadingBtn')}
 							{:else}
 								<GlobeIcon data-icon="inline-start" />
-								Download ke Folder Ini
+								{t('files.page.dialogs.downloadToFolderBtn')}
 							{/if}
 						</Button>
 					</DialogFooter>
@@ -2291,12 +2296,12 @@
 <Dialog bind:open={renameOpen}>
 	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
-			<DialogTitle>Ubah Nama</DialogTitle>
+			<DialogTitle>{t('files.page.dialogs.renameTitle')}</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">{renameEntry?.path}</DialogDescription>
 		</DialogHeader>
 		<form onsubmit={submitRename} class="flex flex-col gap-4">
 			<Field>
-				<FieldLabel for="fm-rename-input">Nama Baru</FieldLabel>
+				<FieldLabel for="fm-rename-input">{t('files.page.dialogs.newNameLabel')}</FieldLabel>
 				<Input
 					id="fm-rename-input"
 					bind:value={renameNewName}
@@ -2310,11 +2315,11 @@
 			</Field>
 			<DialogFooter>
 				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (renameOpen = false)} disabled={renameBusy}>
-					Batal
+					{t('files.page.cancelBtn')}
 				</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={renameBusy || !renameNewName.trim()}>
 					{#if renameBusy}<Spinner data-icon="inline-start" />{/if}
-					Simpan
+					{t('files.page.dialogs.saveBtn')}
 				</Button>
 			</DialogFooter>
 		</form>
@@ -2325,28 +2330,28 @@
 <Dialog bind:open={chmodOpen}>
 	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-lg">
 		<DialogHeader>
-			<DialogTitle>Permission & Kepemilikan (Chmod)</DialogTitle>
+			<DialogTitle>{t('files.page.dialogs.chmodTitle')}</DialogTitle>
 			<DialogDescription class="text-xs">
 				{#if chmodTargets.length === 1}
-					Target: <code class="font-mono break-all">{chmodTargets[0]}</code>
+					{t('files.page.dialogs.targetPrefix')} <code class="font-mono break-all">{chmodTargets[0]}</code>
 				{:else}
-					Target: <strong>{chmodTargets.length} item terpilih</strong>
+					{t('files.page.dialogs.targetPrefix')} <strong>{t('files.page.dialogs.targetMulti', { count: chmodTargets.length })}</strong>
 				{/if}
 			</DialogDescription>
 		</DialogHeader>
 
 		<form onsubmit={submitChmod} class="flex flex-col gap-4">
 			<div class="grid grid-cols-4 gap-2 rounded-lg border p-3 text-xs">
-				<div class="text-muted-foreground font-semibold">Scope</div>
-				<div class="text-center font-semibold">Read (4)</div>
-				<div class="text-center font-semibold">Write (2)</div>
-				<div class="text-center font-semibold">Exec (1)</div>
+				<div class="text-muted-foreground font-semibold">{t('files.page.dialogs.colScope')}</div>
+				<div class="text-center font-semibold">{t('files.page.dialogs.colRead')}</div>
+				<div class="text-center font-semibold">{t('files.page.dialogs.colWrite')}</div>
+				<div class="text-center font-semibold">{t('files.page.dialogs.colExec')}</div>
 
 				{#each [
-					{ label: 'Owner', shift: 6 },
-					{ label: 'Group', shift: 3 },
-					{ label: 'Public', shift: 0 }
-				] as group (group.label)}
+					{ key: 'owner', label: t('files.page.dialogs.scopeOwner'), shift: 6 },
+					{ key: 'group', label: t('files.page.dialogs.scopeGroup'), shift: 3 },
+					{ key: 'public', label: t('files.page.dialogs.scopePublic'), shift: 0 }
+				] as group (group.key)}
 					<div class="flex min-h-10 items-center font-medium sm:min-h-0">{group.label}</div>
 					{#each [4, 2, 1] as bitVal (bitVal)}
 						<div class="flex min-h-10 items-center justify-center sm:min-h-0">
@@ -2362,7 +2367,7 @@
 
 			<div class="flex flex-col gap-3 sm:flex-row sm:items-end">
 				<Field class="flex-1">
-					<FieldLabel for="fm-chmod-mode">Nilai Octal</FieldLabel>
+					<FieldLabel for="fm-chmod-mode">{t('files.page.dialogs.octalLabel')}</FieldLabel>
 					<Input
 						id="fm-chmod-mode"
 						bind:value={chmodMode}
@@ -2390,21 +2395,21 @@
 			<div class="flex flex-col gap-1 text-sm">
 				<label for="fm-chmod-recursive" class="fm-touch-check cursor-pointer gap-2">
 					<Checkbox id="fm-chmod-recursive" bind:checked={chmodRecursive} />
-					<span>Terapkan secara rekursif ke seluruh isi folder</span>
+					<span>{t('files.page.dialogs.recursiveLabel')}</span>
 				</label>
 				<label for="fm-chmod-webowner" class="fm-touch-check cursor-pointer gap-2">
 					<Checkbox id="fm-chmod-webowner" bind:checked={chmodWebOwner} />
-					<span>Samakan kepemilikan (owner/group) ke user web server (<code class="font-mono text-xs">www-data / nginx</code>)</span>
+					<span>{t('files.page.dialogs.webOwner1')}<code class="font-mono text-xs">www-data / nginx</code>{t('files.page.dialogs.webOwner2')}</span>
 				</label>
 			</div>
 
 			<DialogFooter>
 				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (chmodOpen = false)} disabled={chmodBusy}>
-					Batal
+					{t('files.page.cancelBtn')}
 				</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={chmodBusy}>
 					{#if chmodBusy}<Spinner data-icon="inline-start" />{/if}
-					Terapkan Permission
+					{t('files.page.dialogs.applyPermBtn')}
 				</Button>
 			</DialogFooter>
 		</form>
@@ -2415,14 +2420,14 @@
 <Dialog bind:open={compressOpen}>
 	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
-			<DialogTitle>Kompres ke Arsip ZIP</DialogTitle>
+			<DialogTitle>{t('files.page.dialogs.compressTitle')}</DialogTitle>
 			<DialogDescription class="text-xs">
-				Mengarsipkan <strong>{compressTargets.length} item</strong> menjadi satu file `.zip`.
+				{t('files.page.dialogs.compressDesc1')}<strong>{t('files.page.dialogs.compressDesc2', { count: compressTargets.length })}</strong>{t('files.page.dialogs.compressDesc3')}<code>.zip</code>{t('files.page.dialogs.compressDesc4')}
 			</DialogDescription>
 		</DialogHeader>
 		<form onsubmit={submitCompress} class="flex flex-col gap-4">
 			<Field>
-				<FieldLabel for="fm-compress-out">Path File Arsip ZIP Output</FieldLabel>
+				<FieldLabel for="fm-compress-out">{t('files.page.dialogs.compressOutLabel')}</FieldLabel>
 				<Input
 					id="fm-compress-out"
 					bind:value={compressOutput}
@@ -2436,11 +2441,11 @@
 			</Field>
 			<DialogFooter>
 				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (compressOpen = false)} disabled={compressBusy}>
-					Batal
+					{t('files.page.cancelBtn')}
 				</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={compressBusy || !compressOutput.trim()}>
 					{#if compressBusy}<Spinner data-icon="inline-start" />{/if}
-					Buat Arsip ZIP
+					{t('files.page.dialogs.compressBtn')}
 				</Button>
 			</DialogFooter>
 		</form>
@@ -2451,14 +2456,14 @@
 <Dialog bind:open={extractOpen}>
 	<DialogContent class="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-md">
 		<DialogHeader>
-			<DialogTitle>Ekstrak Arsip</DialogTitle>
+			<DialogTitle>{t('files.page.dialogs.extractTitle')}</DialogTitle>
 			<DialogDescription class="font-mono text-xs break-all">
-				Arsip: {extractEntry?.name}
+				{t('files.page.dialogs.extractArchiveLabel', { name: extractEntry?.name ?? '' })}
 			</DialogDescription>
 		</DialogHeader>
 		<form onsubmit={submitExtract} class="flex flex-col gap-4">
 			<Field>
-				<FieldLabel for="fm-extract-dest">Folder Tujuan Ekstraksi</FieldLabel>
+				<FieldLabel for="fm-extract-dest">{t('files.page.dialogs.extractDestLabel')}</FieldLabel>
 				<Input
 					id="fm-extract-dest"
 					bind:value={extractDest}
@@ -2469,15 +2474,15 @@
 					required
 					autofocus
 				/>
-				<FieldDescription>Mendukung format .zip, .tar.gz, .tgz, dan .tar dengan proteksi Zip-Slip.</FieldDescription>
+				<FieldDescription>{t('files.page.dialogs.extractDestDesc')}</FieldDescription>
 			</Field>
 			<DialogFooter>
 				<Button type="button" variant="outline" class="min-h-10 sm:min-h-0" onclick={() => (extractOpen = false)} disabled={extractBusy}>
-					Batal
+					{t('files.page.cancelBtn')}
 				</Button>
 				<Button type="submit" class="min-h-10 sm:min-h-0" disabled={extractBusy || !extractDest.trim()}>
 					{#if extractBusy}<Spinner data-icon="inline-start" />{/if}
-					Ekstrak Sekarang
+					{t('files.page.dialogs.extractBtn')}
 				</Button>
 			</DialogFooter>
 		</form>
@@ -2494,7 +2499,7 @@
 			<div class="mx-auto flex max-w-xl items-center justify-between gap-2">
 				<div class="flex min-w-0 items-center gap-1.5">
 					<Badge variant="secondary" class="shrink-0 font-mono">{selectedPaths.length}</Badge>
-					<span class="truncate text-xs font-medium text-muted-foreground">dipilih</span>
+					<span class="truncate text-xs font-medium text-muted-foreground">{t('files.page.selectedShortLabel')}</span>
 				</div>
 				<div class="flex shrink-0 items-center gap-1.5">
 					<Button
@@ -2505,7 +2510,7 @@
 						onclick={() => setClipboard('copy', selectedPaths)}
 					>
 						<CopyIcon data-icon="inline-start" />
-						Salin
+						{t('files.page.copyBtn')}
 					</Button>
 					<Button
 						type="button"
@@ -2515,14 +2520,14 @@
 						onclick={() => setClipboard('move', selectedPaths)}
 					>
 						<ScissorsIcon data-icon="inline-start" />
-						Pindah
+						{t('files.page.moveBtn')}
 					</Button>
 					<Button
 						type="button"
 						variant="destructive"
 						size="icon"
 						class="min-h-10 min-w-10"
-						aria-label={`Hapus ${selectedPaths.length} item terpilih`}
+						aria-label={t('files.page.deleteSelectedAria', { count: selectedPaths.length })}
 						disabled={bulkBusy}
 						onclick={() => confirmDelete(selectedPaths)}
 					>
@@ -2533,7 +2538,7 @@
 						variant="outline"
 						size="icon"
 						class="min-h-10 min-w-10"
-						aria-label="Aksi batch lainnya"
+						aria-label={t('files.page.moreBatchActionsAria')}
 						onclick={() => (mobileBulkSheetOpen = true)}
 					>
 						<EllipsisIcon />
@@ -2550,14 +2555,14 @@
 					{/if}
 					<div class="flex min-w-0 flex-col">
 						<span class="truncate font-medium">
-							{clipboard.paths.length} item siap {clipboard.mode === 'copy' ? 'disalin' : 'dipindahkan'}
+							{t('files.page.clipboardCountItems', { count: clipboard.paths.length })} {clipboard.mode === 'copy' ? t('files.page.clipboardBannerCopy') : t('files.page.clipboardBannerMove')}
 						</span>
 						<span class="truncate font-mono text-[11px] text-muted-foreground">{clipboard.sourceDir}</span>
 					</div>
 				</div>
 				<div class="flex shrink-0 items-center gap-1.5">
 					<Button type="button" variant="ghost" size="sm" class="min-h-10 text-xs" onclick={() => (clipboard = null)}>
-						Batal
+						{t('files.page.cancelBtn')}
 					</Button>
 					<Button
 						type="button"
@@ -2571,7 +2576,7 @@
 						{:else}
 							<ClipboardPasteIcon data-icon="inline-start" />
 						{/if}
-						Tempel
+						{t('files.page.pasteShortBtn')}
 					</Button>
 				</div>
 			</div>
@@ -2583,7 +2588,7 @@
 <Sheet.Root bind:open={mobileFolderSheetOpen}>
 	<Sheet.Content side="bottom" class="rounded-t-2xl pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
 		<Sheet.Header class="pr-8">
-			<Sheet.Title>Aksi Folder</Sheet.Title>
+			<Sheet.Title>{t('files.page.sheets.folderActionsTitle')}</Sheet.Title>
 			<Sheet.Description class="truncate font-mono text-xs">{currentPath || '-'}</Sheet.Description>
 		</Sheet.Header>
 		<div class="flex max-h-[65dvh] flex-col gap-1.5 overflow-y-auto overscroll-contain px-4 pb-2">
@@ -2598,7 +2603,7 @@
 				}}
 			>
 				<FilePlusIcon data-icon="inline-start" />
-				File Baru
+				{t('files.page.newFile')}
 			</Button>
 			<Button
 				type="button"
@@ -2611,7 +2616,7 @@
 				}}
 			>
 				<FolderPlusIcon data-icon="inline-start" />
-				Folder Baru
+				{t('files.page.newFolder')}
 			</Button>
 			<Button
 				type="button"
@@ -2624,7 +2629,7 @@
 				}}
 			>
 				<UploadIcon data-icon="inline-start" />
-				Upload File / Folder
+				{t('files.page.sheets.uploadFileFolder')}
 			</Button>
 			<Button
 				type="button"
@@ -2637,7 +2642,7 @@
 				}}
 			>
 				<GlobeIcon data-icon="inline-start" />
-				Download dari URL (Remote)
+				{t('files.page.sheets.downloadFromUrl')}
 			</Button>
 
 			{#if clipboard}
@@ -2651,7 +2656,7 @@
 					}}
 				>
 					<ClipboardPasteIcon data-icon="inline-start" />
-					Tempel ({clipboard.paths.length} item)
+					{t('files.page.sheets.pasteItems', { count: clipboard.paths.length })}
 				</Button>
 			{/if}
 
@@ -2667,7 +2672,7 @@
 				}}
 			>
 				<DownloadIcon data-icon="inline-start" />
-				Download Folder Ini (.zip)
+				{t('files.page.sheets.downloadFolderZip')}
 			</Button>
 			<Button
 				type="button"
@@ -2679,7 +2684,7 @@
 				}}
 			>
 				<SquareTerminalIcon data-icon="inline-start" />
-				Open Terminal di Sini
+				{t('files.page.sheets.openTerminalHere')}
 			</Button>
 			<Button
 				type="button"
@@ -2692,10 +2697,10 @@
 			>
 				{#if showHidden}
 					<EyeOffIcon data-icon="inline-start" />
-					Sembunyikan File .dot
+					{t('files.page.sheets.hideDotFiles')}
 				{:else}
 					<EyeIcon data-icon="inline-start" />
-					Tampilkan File .dot
+					{t('files.page.sheets.showDotFiles')}
 				{/if}
 			</Button>
 			<Button
@@ -2708,7 +2713,7 @@
 				}}
 			>
 				<RefreshCwIcon data-icon="inline-start" />
-				Segarkan Direktori
+				{t('files.page.sheets.refreshDir')}
 			</Button>
 		</div>
 	</Sheet.Content>
@@ -2726,7 +2731,7 @@
 					<span class="truncate font-mono text-sm">{entry.name}</span>
 				</Sheet.Title>
 				<Sheet.Description class="font-mono text-xs break-all">
-					{entry.is_dir ? 'Folder' : formatBytes(entry.size)} • {entry.mode} ({entry.perm_text}) • {entry.owner}:{entry.group}
+					{entry.is_dir ? t('files.page.folderType') : formatBytes(entry.size)} • {entry.mode} ({entry.perm_text}) • {entry.owner}:{entry.group}
 				</Sheet.Description>
 			</Sheet.Header>
 
@@ -2742,7 +2747,7 @@
 						}}
 					>
 						<FolderOpenIcon data-icon="inline-start" />
-						Buka Folder
+						{t('files.page.menuOpenFolder')}
 					</Button>
 				{:else if entry.editable || entry.is_image}
 					<Button
@@ -2755,7 +2760,7 @@
 						}}
 					>
 						<EyeIcon data-icon="inline-start" />
-						{entry.editable ? 'Edit File' : 'Lihat Gambar'}
+						{entry.editable ? t('files.page.menuEditFile') : t('files.page.menuViewImage')}
 					</Button>
 				{/if}
 
@@ -2770,7 +2775,7 @@
 						}}
 					>
 						<FolderOpenIcon data-icon="inline-start" />
-						Buka Folder Induk
+						{t('files.page.sheets.openParentFolder')}
 					</Button>
 				{/if}
 
@@ -2785,7 +2790,7 @@
 						}}
 					>
 						<FileArchiveIcon data-icon="inline-start" />
-						Ekstrak Arsip
+						{t('files.page.menuExtractArchive')}
 					</Button>
 				{/if}
 
@@ -2799,7 +2804,7 @@
 					}}
 				>
 					<SquareTerminalIcon data-icon="inline-start" />
-					{entry.is_dir ? 'Open Terminal di Sini' : 'Open Terminal di Folder Induk'}
+					{entry.is_dir ? t('files.page.sheets.openTerminalHere') : t('files.page.sheets.openTerminalParent')}
 				</Button>
 				<Button
 					type="button"
@@ -2811,7 +2816,7 @@
 					}}
 				>
 					<DownloadIcon data-icon="inline-start" />
-					{entry.is_dir ? 'Download ZIP' : 'Download File'}
+					{entry.is_dir ? t('files.page.menuDownloadZip') : t('files.page.menuDownloadFile')}
 				</Button>
 
 				<Separator class="my-1" />
@@ -2826,7 +2831,7 @@
 					}}
 				>
 					<CopyIcon data-icon="inline-start" />
-					Salin (Copy)
+					{t('files.page.sheets.copyFull')}
 				</Button>
 				<Button
 					type="button"
@@ -2838,7 +2843,7 @@
 					}}
 				>
 					<ScissorsIcon data-icon="inline-start" />
-					Pindah (Cut)
+					{t('files.page.sheets.moveFull')}
 				</Button>
 				<Button
 					type="button"
@@ -2850,7 +2855,7 @@
 					}}
 				>
 					<PencilIcon data-icon="inline-start" />
-					Ubah Nama
+					{t('files.page.menuRename')}
 				</Button>
 				<Button
 					type="button"
@@ -2862,7 +2867,7 @@
 					}}
 				>
 					<LockIcon data-icon="inline-start" />
-					Permission / Chmod
+					{t('files.page.menuPermChmod')}
 				</Button>
 				<Button
 					type="button"
@@ -2874,7 +2879,7 @@
 					}}
 				>
 					<FileArchiveIcon data-icon="inline-start" />
-					Kompres ke ZIP
+					{t('files.page.sheets.compressToZip')}
 				</Button>
 
 				<Separator class="my-1" />
@@ -2889,12 +2894,12 @@
 					}}
 				>
 					<Trash2Icon data-icon="inline-start" />
-					Hapus Permanen
+					{t('files.page.sheets.deletePermanent')}
 				</Button>
 			</div>
 		{:else}
 			<Sheet.Header>
-				<Sheet.Title>Aksi Item</Sheet.Title>
+				<Sheet.Title>{t('files.page.sheets.itemActionsTitle')}</Sheet.Title>
 			</Sheet.Header>
 		{/if}
 	</Sheet.Content>
@@ -2904,8 +2909,8 @@
 <Sheet.Root bind:open={mobileBulkSheetOpen}>
 	<Sheet.Content side="bottom" class="rounded-t-2xl pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
 		<Sheet.Header class="pr-8">
-			<Sheet.Title>Aksi Batch ({selectedPaths.length} item)</Sheet.Title>
-			<Sheet.Description class="text-xs">Terapkan operasi sekaligus ke seluruh item yang dicentang.</Sheet.Description>
+			<Sheet.Title>{t('files.page.sheets.bulkTitle', { count: selectedPaths.length })}</Sheet.Title>
+			<Sheet.Description class="text-xs">{t('files.page.sheets.bulkDesc')}</Sheet.Description>
 		</Sheet.Header>
 		<div class="flex flex-col gap-1.5 px-4 pb-2">
 			<Button
@@ -2918,7 +2923,7 @@
 				}}
 			>
 				<FileArchiveIcon data-icon="inline-start" />
-				Kompres ke ZIP
+				{t('files.page.sheets.compressToZip')}
 			</Button>
 			<Button
 				type="button"
@@ -2930,7 +2935,7 @@
 				}}
 			>
 				<DownloadIcon data-icon="inline-start" />
-				Download ZIP
+				{t('files.page.menuDownloadZip')}
 			</Button>
 			<Button
 				type="button"
@@ -2945,7 +2950,7 @@
 				}}
 			>
 				<LockIcon data-icon="inline-start" />
-				Ubah Permission (Chmod)
+				{t('files.page.sheets.changePermChmod')}
 			</Button>
 			<Separator class="my-1" />
 			<Button
@@ -2958,7 +2963,7 @@
 				}}
 			>
 				<XIcon data-icon="inline-start" />
-				Bersihkan Pilihan
+				{t('files.page.sheets.clearSelectionBtn')}
 			</Button>
 		</div>
 	</Sheet.Content>
@@ -2982,7 +2987,7 @@
 	<div
 		role="menu"
 		tabindex="-1"
-		aria-label="Menu Konteks File Manager"
+		aria-label={t('files.page.contextMenu.ariaLabel')}
 		style={`left: ${contextMenu.x}px; top: ${contextMenu.y}px;`}
 		class="bg-popover text-popover-foreground ring-foreground/10 fixed z-50 w-56 rounded-lg border p-1 shadow-lg ring-1"
 		onclick={(e) => e.stopPropagation()}
@@ -3009,7 +3014,7 @@
 					}}
 				>
 					<FolderOpenIcon class="size-3.5 text-amber-500" />
-					Buka Folder
+					{t('files.page.menuOpenFolder')}
 				</button>
 			{:else if targetEntry.editable || targetEntry.is_image}
 				<button
@@ -3022,7 +3027,7 @@
 					}}
 				>
 					<EyeIcon class="size-3.5 text-sky-500" />
-					{targetEntry.editable ? 'Edit File' : 'Lihat Gambar'}
+					{targetEntry.editable ? t('files.page.menuEditFile') : t('files.page.menuViewImage')}
 				</button>
 			{/if}
 
@@ -3037,7 +3042,7 @@
 					}}
 				>
 					<FileArchiveIcon class="size-3.5 text-orange-500" />
-					Ekstrak Arsip
+					{t('files.page.menuExtractArchive')}
 				</button>
 			{/if}
 
@@ -3048,7 +3053,7 @@
 				onclick={() => openTerminalAt(terminalDir)}
 			>
 				<SquareTerminalIcon class="size-3.5" />
-				{targetEntry.is_dir ? 'Open Terminal di Sini' : 'Open Terminal di Folder Induk'}
+				{targetEntry.is_dir ? t('files.page.sheets.openTerminalHere') : t('files.page.sheets.openTerminalParent')}
 			</button>
 
 			<div class="bg-border my-1 h-px"></div>
@@ -3063,7 +3068,7 @@
 				}}
 			>
 				<DownloadIcon class="size-3.5" />
-				{targetEntry.is_dir ? 'Download (.zip)' : 'Download'}
+				{targetEntry.is_dir ? t('files.page.contextMenu.downloadFolderShort') : t('files.page.contextMenu.downloadFileShort')}
 			</button>
 			<button
 				type="button"
@@ -3075,7 +3080,7 @@
 				}}
 			>
 				<CopyIcon class="size-3.5" />
-				Salin (Copy)
+				{t('files.page.sheets.copyFull')}
 			</button>
 			<button
 				type="button"
@@ -3087,7 +3092,7 @@
 				}}
 			>
 				<ScissorsIcon class="size-3.5" />
-				Pindah (Cut)
+				{t('files.page.sheets.moveFull')}
 			</button>
 			<button
 				type="button"
@@ -3099,7 +3104,7 @@
 				}}
 			>
 				<PencilIcon class="size-3.5" />
-				Ubah Nama
+				{t('files.page.menuRename')}
 			</button>
 			<button
 				type="button"
@@ -3111,7 +3116,7 @@
 				}}
 			>
 				<LockIcon class="size-3.5" />
-				Permission (Chmod)
+				{t('files.page.contextMenu.permShort')}
 			</button>
 			<button
 				type="button"
@@ -3123,7 +3128,7 @@
 				}}
 			>
 				<FileArchiveIcon class="size-3.5" />
-				Kompres ke ZIP
+				{t('files.page.sheets.compressToZip')}
 			</button>
 
 			<div class="bg-border my-1 h-px"></div>
@@ -3138,7 +3143,7 @@
 				}}
 			>
 				<Trash2Icon class="size-3.5" />
-				Hapus
+				{t('files.page.menuDelete')}
 			</button>
 		{:else}
 			<button
@@ -3148,7 +3153,7 @@
 				onclick={() => openTerminalAt(currentPath)}
 			>
 				<SquareTerminalIcon class="size-3.5" />
-				Open Terminal di Sini
+				{t('files.page.sheets.openTerminalHere')}
 			</button>
 			{#if clipboard}
 				<button
@@ -3162,7 +3167,7 @@
 					}}
 				>
 					<ClipboardPasteIcon class="size-3.5" />
-					Tempel ({clipboard.paths.length} item)
+					{t('files.page.sheets.pasteItems', { count: clipboard.paths.length })}
 				</button>
 			{/if}
 			<div class="bg-border my-1 h-px"></div>
@@ -3177,7 +3182,7 @@
 				}}
 			>
 				<FilePlusIcon class="size-3.5" />
-				File Baru
+				{t('files.page.newFile')}
 			</button>
 			<button
 				type="button"
@@ -3190,7 +3195,7 @@
 				}}
 			>
 				<FolderPlusIcon class="size-3.5" />
-				Folder Baru
+				{t('files.page.newFolder')}
 			</button>
 			<button
 				type="button"
@@ -3203,7 +3208,7 @@
 				}}
 			>
 				<UploadIcon class="size-3.5" />
-				Upload File / Folder
+				{t('files.page.sheets.uploadFileFolder')}
 			</button>
 			<button
 				type="button"
@@ -3216,7 +3221,7 @@
 				}}
 			>
 				<GlobeIcon class="size-3.5" />
-				Download dari URL (Remote)
+				{t('files.page.sheets.downloadFromUrl')}
 			</button>
 			<button
 				type="button"
@@ -3228,7 +3233,7 @@
 				}}
 			>
 				<DownloadIcon class="size-3.5" />
-				Download Folder Ini (.zip)
+				{t('files.page.sheets.downloadFolderZip')}
 			</button>
 			<button
 				type="button"
@@ -3240,7 +3245,7 @@
 				}}
 			>
 				<RefreshCwIcon class="size-3.5" />
-				Segarkan
+				{t('files.page.contextMenu.refreshShort')}
 			</button>
 		{/if}
 	</div>

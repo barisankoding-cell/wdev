@@ -13,13 +13,14 @@
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import PasswordInput from '#lib/components/shared/PasswordInput.svelte';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import type { RedisConfig, RedisInspectResult } from '#lib/types/api.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
-	function getActivePreset(): string {
+	function getActivePreset(): 'local' | 'cache' | 'queue' | 'custom' {
 		const port = Number.parseInt(portStr.trim(), 10);
 		const cleanBind = bind.trim();
 		const isLocalBind = cleanBind === '127.0.0.1 -::1' || cleanBind === '127.0.0.1 ::1' || cleanBind === '127.0.0.1';
@@ -36,15 +37,15 @@
 			policy === 'noeviction' &&
 			pers === 'rdb'
 		) {
-			return 'Dev Lokal';
+			return 'local';
 		}
 		if (maxmem === '256mb' && policy === 'allkeys-lru' && pers === 'none') {
-			return 'Cache LRU (256MB)';
+			return 'cache';
 		}
 		if (maxmem === '512mb' && policy === 'noeviction' && pers === 'aof') {
-			return 'Queue / Laravel Horizon';
+			return 'queue';
 		}
-		return 'Custom';
+		return 'custom';
 	}
 
 	let {
@@ -103,23 +104,23 @@
 		localError = '';
 	});
 
-	const policyOptions = [
-		{ value: 'noeviction', label: 'noeviction (Cocok untuk Queue/Job)' },
-		{ value: 'allkeys-lru', label: 'allkeys-lru (Cocok untuk Cache)' },
+	const policyOptions = $derived([
+		{ value: 'noeviction', label: t('modals.serviceConfig.redis.policyNoeviction') },
+		{ value: 'allkeys-lru', label: t('modals.serviceConfig.redis.policyAllkeysLru') },
 		{ value: 'volatile-lru', label: 'volatile-lru' },
 		{ value: 'allkeys-lfu', label: 'allkeys-lfu' },
 		{ value: 'volatile-lfu', label: 'volatile-lfu' },
 		{ value: 'volatile-ttl', label: 'volatile-ttl' },
 		{ value: 'allkeys-random', label: 'allkeys-random' },
 		{ value: 'volatile-random', label: 'volatile-random' }
-	];
+	]);
 
-	const persistenceOptions = [
-		{ value: 'rdb', label: 'RDB Snapshot (Default, hemat I/O)' },
-		{ value: 'aof', label: 'AOF (Append-Only File, durabilitas tinggi)' },
-		{ value: 'both', label: 'RDB + AOF (Durabilitas maksimal)' },
-		{ value: 'none', label: 'Nonaktif (Pure In-Memory Cache)' }
-	];
+	const persistenceOptions = $derived([
+		{ value: 'rdb', label: t('modals.serviceConfig.redis.persistRdb') },
+		{ value: 'aof', label: t('modals.serviceConfig.redis.persistAof') },
+		{ value: 'both', label: t('modals.serviceConfig.redis.persistBoth') },
+		{ value: 'none', label: t('modals.serviceConfig.redis.persistNone') }
+	]);
 
 	function applyPreset(preset: 'local' | 'cache' | 'queue') {
 		localError = '';
@@ -146,7 +147,7 @@
 		localError = '';
 		const port = parseInt(portStr.trim(), 10);
 		if (!port || port < 1 || port > 65535) {
-			localError = 'Port harus berada di antara 1 sampai 65535.';
+			localError = t('modals.serviceConfig.redis.invalidPort');
 			return;
 		}
 		onSave({
@@ -170,71 +171,71 @@
 		{#if localError || formError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Validasi / Penyimpanan Gagal</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.common.validationSaveFailed')}</Alert.Title>
 				<Alert.Description>{localError || formError}</Alert.Description>
 			</Alert.Root>
 		{/if}
 
 		<div class="flex flex-wrap items-center gap-2">
-			<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
+			<span class="text-xs font-medium text-muted-foreground">{t('modals.serviceConfig.common.quickPresets')}</span>
 			<Button
 				type="button"
-				variant={getActivePreset() === 'Dev Lokal' ? 'default' : 'outline'}
+				variant={getActivePreset() === 'local' ? 'default' : 'outline'}
 				size="xs"
 				onclick={() => applyPreset('local')}
 			>
-				Dev Lokal
+				{t('modals.serviceConfig.redis.presetLocal')}
 			</Button>
 			<Button
 				type="button"
-				variant={getActivePreset() === 'Cache LRU (256MB)' ? 'default' : 'outline'}
+				variant={getActivePreset() === 'cache' ? 'default' : 'outline'}
 				size="xs"
 				onclick={() => applyPreset('cache')}
 			>
-				Cache LRU (256MB)
+				{t('modals.serviceConfig.redis.presetCache')}
 			</Button>
 			<Button
 				type="button"
-				variant={getActivePreset() === 'Queue / Laravel Horizon' ? 'default' : 'outline'}
+				variant={getActivePreset() === 'queue' ? 'default' : 'outline'}
 				size="xs"
 				onclick={() => applyPreset('queue')}
 			>
-				Queue / Laravel Horizon
+				{t('modals.serviceConfig.redis.presetQueue')}
 			</Button>
-			{#if getActivePreset() === 'Custom'}
-				<Badge variant="outline">Custom</Badge>
+			{#if getActivePreset() === 'custom'}
+				<Badge variant="outline">{t('modals.serviceConfig.common.customBadge')}</Badge>
 			{/if}
 		</div>
 
 		<Field.FieldSet>
-			<Field.FieldLegend variant="label">Jaringan &amp; Keamanan</Field.FieldLegend>
+			<Field.FieldLegend variant="label">{t('modals.serviceConfig.redis.netSecurityLegend')}</Field.FieldLegend>
 			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 				<Field.Field>
-					<Field.FieldLabel for="redis-cfg-port">Port Layanan</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-port">{t('modals.serviceConfig.redis.portLabel')}</Field.FieldLabel>
 					<Input id="redis-cfg-port" name="port" inputmode="numeric" pattern="[0-9]+" bind:value={portStr} required />
-					<Field.FieldDescription>Standar Redis: 6379.</Field.FieldDescription>
+					<Field.FieldDescription>{t('modals.serviceConfig.redis.portDesc')}</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="redis-cfg-protected">Protected Mode</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-protected">{t('modals.serviceConfig.redis.protectedModeLabel')}</Field.FieldLabel>
 					<Select.Root type="single" bind:value={protectedMode}>
 						<Select.Trigger id="redis-cfg-protected" class="w-full">
-							{protectedMode === 'yes' ? 'yes (Direkomendasikan)' : 'no (Nonaktifkan proteksi remote)'}
+							{protectedMode === 'yes' ? t('modals.serviceConfig.redis.protectedYes') : t('modals.serviceConfig.redis.protectedNo')}
 						</Select.Trigger>
 						<Select.Content>
 							<Select.Group>
-								<Select.Item value="yes">yes (Direkomendasikan)</Select.Item>
-								<Select.Item value="no">no (Nonaktifkan proteksi remote)</Select.Item>
+								<Select.Item value="yes">{t('modals.serviceConfig.redis.protectedYes')}</Select.Item>
+								<Select.Item value="no">{t('modals.serviceConfig.redis.protectedNo')}</Select.Item>
 							</Select.Group>
 						</Select.Content>
 					</Select.Root>
 					<Field.FieldDescription>
-						Jika bind 0.0.0.0, wajib set password atau atur ke no.
+						{t('modals.serviceConfig.redis.protectedDesc')}
 					</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field class="sm:col-span-2">
-					<Field.FieldLabel for="redis-cfg-bind">Bind Address</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-bind">{t('modals.serviceConfig.redis.bindAddressLabel')}</Field.FieldLabel>
 					<Input
 						id="redis-cfg-bind"
 						name="bind"
@@ -246,44 +247,44 @@
 						required
 					/>
 					<Field.FieldDescription>
-						Gunakan 127.0.0.1 -::1 untuk akses lokal saja, atau 0.0.0.0 untuk akses LAN / NetBird VPN.
+						{t('modals.serviceConfig.redis.bindAddressDesc')}
 					</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field class="sm:col-span-2">
 					<div class="flex items-center justify-between gap-2">
-						<Field.FieldLabel for="redis-cfg-password">Password Autentikasi (requirepass)</Field.FieldLabel>
+						<Field.FieldLabel for="redis-cfg-password">{t('modals.serviceConfig.redis.passwordLabel')}</Field.FieldLabel>
 						<StatusBadge
 							tone={config.has_password ? 'success' : 'warning'}
-							label={config.has_password ? 'Password Aktif' : 'Tanpa Password'}
+							label={config.has_password ? t('modals.serviceConfig.redis.passwordActive') : t('modals.serviceConfig.redis.noPassword')}
 						/>
 					</div>
 					<PasswordInput
 						id="redis-cfg-password"
 						name="password"
 						autocomplete="new-password"
-						placeholder="Isi untuk menyetel / mengganti password..."
+						placeholder={t('modals.serviceConfig.redis.passwordPlaceholder')}
 						bind:value={password}
 					/>
 					<Field.FieldDescription>
-						Biarkan kosong untuk mempertahankan password saat ini.
+						{t('modals.serviceConfig.redis.passwordDesc')}
 					</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field orientation="horizontal" class="sm:col-span-2">
 					<Checkbox id="redis-cfg-clear-pass" bind:checked={clearPassword} />
 					<Field.FieldLabel for="redis-cfg-clear-pass" class="font-normal">
-						Hapus password autentikasi (izinkan koneksi tanpa AUTH)
+						{t('modals.serviceConfig.redis.clearPassLabel')}
 					</Field.FieldLabel>
 				</Field.Field>
 			</Field.FieldGroup>
 		</Field.FieldSet>
 
 		<Field.FieldSet>
-			<Field.FieldLegend variant="label">Memori, Persistensi &amp; Batas Koneksi</Field.FieldLegend>
+			<Field.FieldLegend variant="label">{t('modals.serviceConfig.redis.memoryLegend')}</Field.FieldLegend>
 			<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 				<Field.Field>
-					<Field.FieldLabel for="redis-cfg-maxmemory">Batas Memori (maxmemory)</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-maxmemory">{t('modals.serviceConfig.redis.maxmemoryLabel')}</Field.FieldLabel>
 					<Input
 						id="redis-cfg-maxmemory"
 						name="maxmemory"
@@ -294,11 +295,11 @@
 						bind:value={maxmemory}
 						required
 					/>
-					<Field.FieldDescription>Gunakan 0 untuk tanpa batas, atau mis. 256mb, 1gb.</Field.FieldDescription>
+					<Field.FieldDescription>{t('modals.serviceConfig.redis.maxmemoryDesc')}</Field.FieldDescription>
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="redis-cfg-policy">Eviction Policy (maxmemory-policy)</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-policy">{t('modals.serviceConfig.redis.policyLabel')}</Field.FieldLabel>
 					<Select.Root type="single" bind:value={maxmemoryPolicy}>
 						<Select.Trigger id="redis-cfg-policy" class="w-full">
 							{policyOptions.find((o) => o.value === maxmemoryPolicy)?.label ?? maxmemoryPolicy}
@@ -314,7 +315,7 @@
 				</Field.Field>
 
 				<Field.Field class="sm:col-span-2">
-					<Field.FieldLabel for="redis-cfg-persistence">Mode Persistensi Data</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-persistence">{t('modals.serviceConfig.redis.persistenceLabel')}</Field.FieldLabel>
 					<Select.Root type="single" bind:value={persistenceMode}>
 						<Select.Trigger id="redis-cfg-persistence" class="w-full">
 							{persistenceOptions.find((o) => o.value === persistenceMode)?.label ?? persistenceMode}
@@ -330,7 +331,7 @@
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="redis-cfg-maxclients">Maksimal Klien (maxclients)</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-maxclients">{t('modals.serviceConfig.redis.maxclientsLabel')}</Field.FieldLabel>
 					<Input
 						id="redis-cfg-maxclients"
 						name="maxclients"
@@ -342,7 +343,7 @@
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="redis-cfg-databases">Jumlah Logical DB (databases)</Field.FieldLabel>
+					<Field.FieldLabel for="redis-cfg-databases">{t('modals.serviceConfig.redis.databasesLabel')}</Field.FieldLabel>
 					<Input
 						id="redis-cfg-databases"
 						name="databases"
@@ -361,18 +362,18 @@
 			<Field.Field orientation="horizontal" class="w-auto">
 				<Checkbox id="redis-cfg-restart" bind:checked={restart} />
 				<Field.FieldLabel for="redis-cfg-restart" class="font-normal">
-					Restart layanan setelah simpan
+					{t('modals.serviceConfig.common.restartAfterSave')}
 				</Field.FieldLabel>
 			</Field.Field>
 
 			<div class="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:items-center">
-				<Button type="button" variant="outline" onclick={onCancel}>Batal</Button>
+				<Button type="button" variant="outline" onclick={onCancel}>{t('common.actions.cancel')}</Button>
 				<Button type="submit" disabled={saving}>
 					{#if saving}
 						<Spinner data-icon="inline-start" />
-						Menyimpan...
+						{t('common.actions.saving')}
 					{:else}
-						Simpan Konfigurasi
+						{t('modals.serviceConfig.common.saveConfigBtn')}
 					{/if}
 				</Button>
 			</div>
@@ -381,14 +382,14 @@
 {:else}
 	<div class="flex flex-col gap-4">
 		<div class="flex flex-wrap items-center justify-between gap-2">
-			<h4 class="text-sm font-semibold">Ringkasan Runtime &amp; Memori</h4>
+			<h4 class="text-sm font-semibold">{t('modals.serviceConfig.redis.inspectSummaryTitle')}</h4>
 			<Button type="button" variant="outline" size="sm" disabled={inspectLoading} onclick={onRefreshInspect}>
 				{#if inspectLoading}
 					<Spinner data-icon="inline-start" />
-					Menyegarkan...
+					{t('common.actions.refreshing')}
 				{:else}
 					<RefreshCwIcon data-icon="inline-start" />
-					Segarkan
+					{t('common.actions.refresh')}
 				{/if}
 			</Button>
 		</div>
@@ -396,51 +397,51 @@
 		{#if inspectError}
 			<Alert.Root variant="destructive">
 				<AlertCircleIcon />
-				<Alert.Title>Inspeksi Gagal</Alert.Title>
+				<Alert.Title>{t('modals.serviceConfig.redis.inspectSummaryTitle')}</Alert.Title>
 				<Alert.Description>{inspectError}</Alert.Description>
 			</Alert.Root>
 		{/if}
 
 		{#if inspectLoading && !inspectData}
-			<p class="text-sm text-muted-foreground">Mengambil statistik Redis...</p>
+			<p class="text-sm text-muted-foreground">{t('modals.serviceConfig.redis.fetchingStats')}</p>
 		{:else if inspectData}
 			<div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
 				<div class="rounded-lg border p-3">
-					<div class="text-xs text-muted-foreground">Versi / Mode</div>
+					<div class="text-xs text-muted-foreground">{t('modals.serviceConfig.redis.versionMode')}</div>
 					<div class="mt-1 font-mono text-sm font-semibold">
 						{inspectData.version || '-'} ({inspectData.mode || 'standalone'})
 					</div>
 				</div>
 				<div class="rounded-lg border p-3">
-					<div class="text-xs text-muted-foreground">Memori Terpakai</div>
+					<div class="text-xs text-muted-foreground">{t('modals.serviceConfig.redis.usedMemory')}</div>
 					<div class="mt-1 font-mono text-sm font-semibold">{inspectData.used_memory_human || '-'}</div>
 				</div>
 				<div class="rounded-lg border p-3">
-					<div class="text-xs text-muted-foreground">Peak / Max Memory</div>
+					<div class="text-xs text-muted-foreground">{t('modals.serviceConfig.redis.peakMaxMemory')}</div>
 					<div class="mt-1 font-mono text-sm font-semibold">
-						{inspectData.peak_memory_human || '-'} / {inspectData.maxmemory_human || 'Unlimited'}
+						{inspectData.peak_memory_human || '-'} / {inspectData.maxmemory_human || t('modals.serviceConfig.redis.unlimited')}
 					</div>
 				</div>
 				<div class="rounded-lg border p-3">
-					<div class="text-xs text-muted-foreground">Klien / Uptime</div>
+					<div class="text-xs text-muted-foreground">{t('modals.serviceConfig.redis.clientsUptime')}</div>
 					<div class="mt-1 font-mono text-sm font-semibold">
-						{inspectData.connected_clients || 0} klien · {Math.floor((inspectData.uptime_seconds || 0) / 60)}m
+						{t('modals.serviceConfig.redis.clientsCount', { count: inspectData.connected_clients || 0 })} · {Math.floor((inspectData.uptime_seconds || 0) / 60)}m
 					</div>
 				</div>
 				<div class="rounded-lg border p-3">
-					<div class="text-xs text-muted-foreground">Cache Hit Rate</div>
+					<div class="text-xs text-muted-foreground">{t('modals.serviceConfig.redis.hitRate')}</div>
 					<div class="mt-1 font-mono text-sm font-semibold">
 						{(inspectData.hit_rate_percent || 0).toFixed(1)}% ({inspectData.keyspace_hits || 0}/{inspectData.keyspace_misses || 0})
 					</div>
 				</div>
 				<div class="rounded-lg border p-3">
-					<div class="text-xs text-muted-foreground">Total Perintah</div>
+					<div class="text-xs text-muted-foreground">{t('modals.serviceConfig.redis.totalCommands')}</div>
 					<div class="mt-1 font-mono text-sm font-semibold">{inspectData.total_commands_processed || 0}</div>
 				</div>
 			</div>
 
-			<h4 class="text-sm font-semibold">Keyspace per Database</h4>
-			<ResponsiveTableWrapper label="Keyspace Redis per Database">
+			<h4 class="text-sm font-semibold">{t('modals.serviceConfig.redis.keyspaceTitle')}</h4>
+			<ResponsiveTableWrapper label={t('modals.serviceConfig.redis.keyspaceAria')}>
 				<Table.Root>
 					<Table.Header>
 						<Table.Row>
@@ -448,14 +449,14 @@
 							<Table.Head>Keys</Table.Head>
 							<Table.Head>Expires</Table.Head>
 							<Table.Head>Avg TTL</Table.Head>
-							<Table.Head class="text-right">Aksi</Table.Head>
+							<Table.Head class="text-right">{t('modals.serviceConfig.common.actionsCol')}</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
 						{#if !inspectData.keyspaces || inspectData.keyspaces.length === 0}
 							<Table.Row>
 								<Table.Cell colspan={5} class="py-6 text-center text-muted-foreground">
-									Belum ada key tersimpan di database mana pun.
+									{t('modals.serviceConfig.redis.noKeys')}
 								</Table.Cell>
 							</Table.Row>
 						{:else}
@@ -465,7 +466,7 @@
 									<Table.Cell data-label="Keys">{ks.keys}</Table.Cell>
 									<Table.Cell data-label="Expires">{ks.expires}</Table.Cell>
 									<Table.Cell data-label="Avg TTL">{ks.avg_ttl} ms</Table.Cell>
-									<Table.Cell data-label="Aksi" class="text-right">
+									<Table.Cell data-label={t('modals.serviceConfig.common.actionsCol')} class="text-right">
 										<div class="flex justify-end">
 											<DropdownMenu.Root>
 												<DropdownMenu.Trigger>
@@ -479,9 +480,9 @@
 														>
 															{#if flushingDB === ks.index}
 																<Spinner data-icon="inline-start" />
-																Mengosongkan...
+																{t('modals.serviceConfig.redis.flushing')}
 															{:else}
-																Aksi
+																{t('modals.serviceConfig.common.actionBtn')}
 																<ChevronDownIcon data-icon="inline-end" />
 															{/if}
 														</Button>
@@ -495,7 +496,7 @@
 															onclick={() => onFlushDB(ks.index)}
 														>
 															<Trash2Icon />
-															<span>Flush {ks.db}</span>
+															<span>{t('modals.serviceConfig.redis.flushItem', { db: ks.db })}</span>
 														</DropdownMenu.Item>
 													</DropdownMenu.Group>
 												</DropdownMenu.Content>

@@ -53,7 +53,7 @@ func writeFileMgrError(w http.ResponseWriter, err error) {
 
 func (s *Server) handleFilesRoots(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.ensureFileManager().AllowedRoots())
@@ -61,7 +61,7 @@ func (s *Server) handleFilesRoots(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -76,7 +76,7 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -92,7 +92,7 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	res, err := s.ensureFileManager().Read(r.URL.Query().Get("path"))
@@ -105,7 +105,7 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesRaw(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if err := s.ensureFileManager().ServeRaw(w, r, r.URL.Query().Get("path")); err != nil {
@@ -115,7 +115,7 @@ func (s *Server) handleFilesRaw(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	paths := r.URL.Query()["paths"]
@@ -131,7 +131,7 @@ func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -151,7 +151,7 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesMkdir(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -170,7 +170,7 @@ func (s *Server) handleFilesMkdir(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -191,7 +191,7 @@ func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -212,7 +212,7 @@ func (s *Server) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesMove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -233,7 +233,7 @@ func (s *Server) handleFilesMove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -253,7 +253,7 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesChmod(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -275,7 +275,7 @@ func (s *Server) handleFilesChmod(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
@@ -319,7 +319,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesFetchURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -349,7 +349,7 @@ func (s *Server) handleFilesFetchURL(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesCompress(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -370,7 +370,7 @@ func (s *Server) handleFilesCompress(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFilesExtract(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {

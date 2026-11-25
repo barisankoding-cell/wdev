@@ -187,7 +187,7 @@ func (s *Server) isRootTerminalUnlocked(r *http.Request) (bool, *time.Time) {
 
 func (s *Server) handleTerminalInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	info := s.ensureTerminalManager().SystemInfo()
@@ -204,7 +204,7 @@ func (s *Server) handleTerminalInfo(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTerminalUnlock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {
@@ -280,7 +280,7 @@ func (s *Server) handleTerminalUnlock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTerminalLock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	s.revokeTerminalGrantForRequest(r)
@@ -292,7 +292,7 @@ func (s *Server) handleTerminalLock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTerminalAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	limit := 50
@@ -401,7 +401,7 @@ func (s *Server) authorizeTerminalLaunch(r *http.Request, target terminal.Target
 
 func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if !checkWSOrigin(r) {

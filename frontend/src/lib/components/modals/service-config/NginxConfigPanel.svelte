@@ -7,25 +7,26 @@
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import type { NginxConfig } from '#lib/types/api.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 
-	function getActivePreset(): string {
+	function getActivePreset(): 'dev' | 'upload' | 'prod' | 'custom' {
 		const wp = workerProcesses.trim().toLowerCase();
 		const conn = Number.parseInt(workerConnectionsStr.trim(), 10);
 		const maxBody = clientMaxBodySize.trim().toLowerCase();
 		const keepalive = Number.parseInt(keepaliveTimeoutStr.trim(), 10);
 
 		if (wp === 'auto' && conn === 1024 && maxBody === '64m' && keepalive === 65 && gzip && serverTokens) {
-			return 'Dev Standar (64M)';
+			return 'dev';
 		}
 		if (wp === 'auto' && conn === 2048 && maxBody === '256m' && keepalive === 120 && gzip && !serverTokens) {
-			return 'Upload Besar (256M)';
+			return 'upload';
 		}
 		if (wp === 'auto' && conn === 4096 && maxBody === '64m' && keepalive === 65 && gzip && !serverTokens) {
-			return 'Production Hardened';
+			return 'prod';
 		}
-		return 'Custom';
+		return 'custom';
 	}
 
 	let {
@@ -103,44 +104,44 @@
 	{#if formError}
 		<Alert.Root variant="destructive">
 			<AlertCircleIcon />
-			<Alert.Title>Penyimpanan Gagal</Alert.Title>
+			<Alert.Title>{t('modals.serviceConfig.common.validationSaveFailed')}</Alert.Title>
 			<Alert.Description>{formError}</Alert.Description>
 		</Alert.Root>
 	{/if}
 
 	<div class="flex flex-wrap items-center gap-2">
-		<span class="text-xs font-medium text-muted-foreground">Preset Cepat:</span>
+		<span class="text-xs font-medium text-muted-foreground">{t('modals.serviceConfig.common.quickPresets')}</span>
 		<Button
 			type="button"
-			variant={getActivePreset() === 'Dev Standar (64M)' ? 'default' : 'outline'}
+			variant={getActivePreset() === 'dev' ? 'default' : 'outline'}
 			size="xs"
 			onclick={() => applyPreset('dev')}
 		>
-			Dev Standar (64M)
+			{t('modals.serviceConfig.nginx.presetDev')}
 		</Button>
 		<Button
 			type="button"
-			variant={getActivePreset() === 'Upload Besar (256M)' ? 'default' : 'outline'}
+			variant={getActivePreset() === 'upload' ? 'default' : 'outline'}
 			size="xs"
 			onclick={() => applyPreset('upload')}
 		>
-			Upload Besar (256M)
+			{t('modals.serviceConfig.nginx.presetUpload')}
 		</Button>
 		<Button
 			type="button"
-			variant={getActivePreset() === 'Production Hardened' ? 'default' : 'outline'}
+			variant={getActivePreset() === 'prod' ? 'default' : 'outline'}
 			size="xs"
 			onclick={() => applyPreset('prod')}
 		>
-			Production Hardened
+			{t('modals.serviceConfig.nginx.presetProd')}
 		</Button>
-		{#if getActivePreset() === 'Custom'}
-			<Badge variant="outline">Custom</Badge>
+		{#if getActivePreset() === 'custom'}
+			<Badge variant="outline">{t('modals.serviceConfig.common.customBadge')}</Badge>
 		{/if}
 	</div>
 
 	<Field.FieldSet>
-		<Field.FieldLegend variant="label">Performa Worker &amp; Batas Request</Field.FieldLegend>
+		<Field.FieldLegend variant="label">{t('modals.serviceConfig.nginx.legend')}</Field.FieldLegend>
 		<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 			<Field.Field>
 				<Field.FieldLabel for="nginx-cfg-workers">worker_processes</Field.FieldLabel>
@@ -181,12 +182,12 @@
 					required
 				/>
 				<Field.FieldDescription>
-					Samakan minimal dengan post_max_size PHP agar upload tidak error 413.
+					{t('modals.serviceConfig.nginx.bodySizeDesc')}
 				</Field.FieldDescription>
 			</Field.Field>
 
 			<Field.Field>
-				<Field.FieldLabel for="nginx-cfg-keepalive">keepalive_timeout (detik)</Field.FieldLabel>
+				<Field.FieldLabel for="nginx-cfg-keepalive">{t('modals.serviceConfig.nginx.keepaliveLabel')}</Field.FieldLabel>
 				<Input
 					id="nginx-cfg-keepalive"
 					name="keepalive_timeout"
@@ -200,14 +201,14 @@
 			<Field.Field orientation="horizontal">
 				<Checkbox id="nginx-cfg-gzip" bind:checked={gzip} />
 				<Field.FieldLabel for="nginx-cfg-gzip" class="font-normal">
-					Aktifkan Kompresi Gzip
+					{t('modals.serviceConfig.nginx.gzipLabel')}
 				</Field.FieldLabel>
 			</Field.Field>
 
 			<Field.Field orientation="horizontal">
 				<Checkbox id="nginx-cfg-tokens" bind:checked={serverTokens} />
 				<Field.FieldLabel for="nginx-cfg-tokens" class="font-normal">
-					Tampilkan Versi di Header (server_tokens)
+					{t('modals.serviceConfig.nginx.tokensLabel')}
 				</Field.FieldLabel>
 			</Field.Field>
 		</Field.FieldGroup>
@@ -219,17 +220,17 @@
 		<Field.Field orientation="horizontal" class="w-auto">
 			<Checkbox id="nginx-cfg-restart" bind:checked={restart} />
 			<Field.FieldLabel for="nginx-cfg-restart" class="font-normal">
-				Uji sintaks (nginx -t) &amp; restart Nginx
+				{t('modals.serviceConfig.nginx.testRestartLabel')}
 			</Field.FieldLabel>
 		</Field.Field>
 		<div class="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:items-center">
-			<Button type="button" variant="outline" onclick={onCancel}>Batal</Button>
+			<Button type="button" variant="outline" onclick={onCancel}>{t('common.actions.cancel')}</Button>
 			<Button type="submit" disabled={saving}>
 				{#if saving}
 					<Spinner data-icon="inline-start" />
-					Menyimpan...
+					{t('common.actions.saving')}
 				{:else}
-					Simpan Konfigurasi
+					{t('modals.serviceConfig.common.saveConfigBtn')}
 				{/if}
 			</Button>
 		</div>

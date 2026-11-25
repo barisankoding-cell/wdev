@@ -1,3 +1,4 @@
+import { i18n, t } from '#lib/i18n/index.svelte.js';
 import type {
 	AddPDNSZoneResponse,
 	AuthMeResponse,
@@ -94,6 +95,9 @@ export class ApiError extends Error {
 
 export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 	const headers = new Headers(init?.headers);
+	if (!headers.has('Accept-Language')) {
+		headers.set('Accept-Language', i18n.locale);
+	}
 	if (init?.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
 		headers.set('Content-Type', 'application/json');
 	}
@@ -783,10 +787,11 @@ export const api = {
 			const xhr = new XMLHttpRequest();
 			xhr.open('POST', '/api/files/upload');
 			xhr.withCredentials = true;
+			xhr.setRequestHeader('Accept-Language', i18n.locale);
 
 			if (options?.signal) {
 				if (options.signal.aborted) {
-					reject(new ApiError('Unggahan dibatalkan', 0));
+					reject(new ApiError(t('common.errors.uploadAborted'), 0));
 					return;
 				}
 				const onAbort = () => xhr.abort();
@@ -800,11 +805,11 @@ export const api = {
 			};
 
 			xhr.onabort = () => {
-				reject(new ApiError('Unggahan dibatalkan', 0));
+				reject(new ApiError(t('common.errors.uploadAborted'), 0));
 			};
 
 			xhr.onerror = () => {
-				reject(new ApiError('Gagal terhubung ke server saat mengunggah berkas', 0));
+				reject(new ApiError(t('common.errors.uploadNetwork'), 0));
 			};
 
 			xhr.onload = () => {
@@ -836,7 +841,7 @@ export const api = {
 						? parsed.error
 						: typeof parsed.message === 'string' && parsed.message
 							? parsed.message
-							: `Upload gagal (HTTP ${xhr.status})`;
+							: t('common.errors.uploadFailedHttp', { status: xhr.status });
 				reject(new ApiError(msg, xhr.status, parsed));
 			};
 

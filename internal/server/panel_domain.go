@@ -483,13 +483,13 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 		})
 
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 	}
 }
 
 func (s *Server) handlePanelDomainBlockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	boundDomain, _, _ := s.authMgr.PanelDomainConfig()
@@ -517,7 +517,7 @@ func (s *Server) handlePanelDomainBlockIP(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handlePanelSSL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method tidak diizinkan")
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	var payload struct {

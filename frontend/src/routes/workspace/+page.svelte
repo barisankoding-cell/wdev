@@ -12,6 +12,7 @@
 	import StatusBadge from '#lib/components/shared/StatusBadge.svelte';
 	import OrcaCommitAiModal from '#lib/components/modals/OrcaCommitAiModal.svelte';
 	import { api } from '#lib/api/client.js';
+	import { t } from '#lib/i18n/index.svelte.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import type { WorkspaceStatus } from '#lib/types/api.js';
 	import { toast } from 'svelte-sonner';
@@ -41,7 +42,7 @@
 		try {
 			workspace = await api.getWorkspaceStatus(forceRefresh);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal memuat status workspace');
+			toast.error(err instanceof Error ? err.message : t('workspace.loadFailed'));
 		} finally {
 			loading = false;
 			refreshing = false;
@@ -58,10 +59,14 @@
 		orcaActionPending = action;
 		try {
 			await api.controlService('orca', action);
-			toast.success(`Layanan Orca ADE berhasil di-${action}.`);
+			toast.success(
+				t('workspace.orcaActionSuccess', {
+					action: t(`workspace.actionVerbs.${action}`)
+				})
+			);
 			await loadWorkspace(false);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Gagal mengontrol layanan Orca');
+			toast.error(err instanceof Error ? err.message : t('workspace.orcaActionFailed'));
 		} finally {
 			orcaActionPending = null;
 		}
@@ -71,9 +76,9 @@
 		if (!val || val === '-') return;
 		try {
 			await navigator.clipboard.writeText(val);
-			toast.success(`${label} berhasil disalin ke clipboard.`);
+			toast.success(t('common.clipboard.copySuccess', { label }));
 		} catch {
-			toast.error(`Gagal menyalin ${label}.`);
+			toast.error(t('common.clipboard.copyFailed', { label }));
 		}
 	}
 
@@ -88,9 +93,9 @@
 <div class="flex flex-col gap-5 sm:gap-6">
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div>
-			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">Workspace, ADE &amp; Shell</h1>
+			<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('workspace.title')}</h1>
 			<p class="text-sm text-muted-foreground">
-				Autonomous Development Environment (Orca ADE), akses Web Client terenkripsi, dan Terminal Oh My Zsh.
+				{t('workspace.subtitle')}
 			</p>
 		</div>
 		<Button
@@ -102,10 +107,10 @@
 		>
 			{#if refreshing}
 				<Spinner data-icon="inline-start" />
-				Memuat...
+				{t('common.actions.loading')}
 			{:else}
 				<RefreshCwIcon data-icon="inline-start" />
-				Segarkan
+				{t('common.actions.refresh')}
 			{/if}
 		</Button>
 	</div>
@@ -127,22 +132,24 @@
 				<Card.Header>
 					<div class="flex flex-wrap items-start justify-between gap-2">
 						<div>
-							<Card.Title>Orca ADE</Card.Title>
-							<Card.Description>Autonomous Development Environment untuk Linux</Card.Description>
+							<Card.Title>{t('workspace.orca.title')}</Card.Title>
+							<Card.Description>{t('workspace.orca.subtitle')}</Card.Description>
 						</div>
 						<div class="flex flex-wrap items-center gap-1.5">
 							{#if orca.active}
 								<StatusBadge
 									tone="success"
-									label={`Running (${isHeadless ? 'Headless' : 'Desktop'})`}
+									label={t('workspace.orca.runningStatus', {
+										mode: isHeadless ? t('workspace.orca.modeShortHeadless') : t('workspace.orca.modeShortDesktop')
+									})}
 								/>
 							{:else if orca.installed}
-								<StatusBadge tone="destructive" label="Stopped" />
+								<StatusBadge tone="destructive" label={t('common.status.stopped')} />
 							{:else}
-								<StatusBadge tone="neutral" label="Belum Terpasang" />
+								<StatusBadge tone="neutral" label={t('common.status.notInstalled')} />
 							{/if}
 							{#if orca.has_update}
-								<StatusBadge tone="warning" label="Update Tersedia" />
+								<StatusBadge tone="warning" label={t('common.status.updateAvailable')} />
 							{/if}
 						</div>
 					</div>
@@ -150,40 +157,40 @@
 
 				<Card.Content class="flex flex-col gap-4">
 					<p class="text-xs leading-relaxed text-muted-foreground">
-						IDE &amp; Agent Workspace otonom mendukung mode Desktop GUI maupun Headless Server 24/7 dengan remote web access terenkripsi.
+						{t('workspace.orca.description')}
 					</p>
 
 					<div class="flex flex-col gap-2 rounded-md border bg-muted/40 p-3 text-xs">
 						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Versi Terpasang</span>
+							<span class="text-muted-foreground">{t('workspace.orca.installedVersion')}</span>
 							<span class="font-mono font-semibold">
-								{orca.version ? `v${orca.version}` : orca.installed ? 'Terpasang' : 'Belum Terpasang'}
+								{orca.version ? `v${orca.version}` : orca.installed ? t('common.status.installed') : t('common.status.notInstalled')}
 							</span>
 						</div>
 						<Separator />
 						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Rilis Resmi Terbaru</span>
+							<span class="text-muted-foreground">{t('workspace.orca.latestRelease')}</span>
 							<span class="font-mono font-medium">
 								{orca.latest_version ? `v${orca.latest_version}` : '-'}
 							</span>
 						</div>
 						<Separator />
 						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Mode Operasi</span>
+							<span class="text-muted-foreground">{t('workspace.orca.operationMode')}</span>
 							<span class="text-right font-medium">
-								{isHeadless ? 'Headless Server 24/7' : 'Desktop GUI'}
+								{isHeadless ? t('workspace.orca.modeHeadlessLabel') : t('workspace.orca.modeDesktopLabel')}
 							</span>
 						</div>
 						{#if orca.active}
 							<Separator />
 							<div class="flex items-center justify-between gap-2">
-								<span class="text-muted-foreground">Port WebSocket</span>
+								<span class="text-muted-foreground">{t('workspace.orca.wsPort')}</span>
 								<span class="font-mono font-semibold text-primary">{orca.port || 6768}</span>
 							</div>
 							{#if orca.pid}
 								<Separator />
 								<div class="flex items-center justify-between gap-2">
-									<span class="text-muted-foreground">PID Proses</span>
+									<span class="text-muted-foreground">{t('workspace.orca.pid')}</span>
 									<span class="font-mono">{orca.pid}</span>
 								</div>
 							{/if}
@@ -191,19 +198,19 @@
 						{#if orca.commit_ai}
 							<Separator />
 							<div class="flex items-center justify-between gap-2">
-								<span class="text-muted-foreground">Commit AI Agent</span>
+								<span class="text-muted-foreground">{t('workspace.orca.commitAiAgent')}</span>
 								<span class="text-right font-mono font-semibold">
 									{#if orca.commit_ai.enabled}
 										{orca.commit_ai.agent_label || orca.commit_ai.agent_id}
 									{:else}
-										Nonaktif
+										{t('common.status.disabled')}
 									{/if}
 								</span>
 							</div>
 							{#if orca.commit_ai.enabled && orca.commit_ai.model_id}
 								<Separator />
 								<div class="flex items-center justify-between gap-2">
-									<span class="text-muted-foreground">Model Commit AI</span>
+									<span class="text-muted-foreground">{t('workspace.orca.commitAiModel')}</span>
 									<span class="max-w-[60%] truncate text-right font-mono font-medium">
 										{orca.commit_ai.model_id}{orca.commit_ai.thinking_level ? ` (${orca.commit_ai.thinking_level})` : ''}
 									</span>
@@ -211,12 +218,12 @@
 							{/if}
 							<Separator />
 							<div class="flex items-center justify-between gap-2">
-								<span class="text-muted-foreground">Template Commit</span>
+								<span class="text-muted-foreground">{t('workspace.orca.commitTemplate')}</span>
 								<span class="text-right font-medium">
-									{orca.commit_ai.has_custom_prompt ? 'Template Kustom / Preset' : 'Default Orca'}
+									{orca.commit_ai.has_custom_prompt ? t('workspace.orca.templateCustom') : t('workspace.orca.templateDefault')}
 									{#if orca.commit_ai.repo_override_count > 0}
 										<span class="ml-1 text-amber-600 dark:text-amber-400">
-											({orca.commit_ai.repo_override_count} override repo)
+											{t('workspace.orca.repoOverrideCount', { count: orca.commit_ai.repo_override_count })}
 										</span>
 									{/if}
 								</span>
@@ -224,14 +231,14 @@
 							{#if orca.sync_status?.managed}
 								<Separator />
 								<div class="flex items-center justify-between gap-2">
-									<span class="text-muted-foreground">Sinkronisasi Commit AI</span>
+									<span class="text-muted-foreground">{t('workspace.orca.commitAiSync')}</span>
 									<span class="text-right font-medium">
 										{#if orca.sync_status.in_sync}
-											<span class="text-emerald-600 dark:text-emerald-400">Sinkron</span>
+											<span class="text-emerald-600 dark:text-emerald-400">{t('common.status.synced')}</span>
 										{:else if orca.sync_status.state === 'blocked'}
-											<span class="text-amber-600 dark:text-amber-400">Tertahan (Orca terbuka)</span>
+											<span class="text-amber-600 dark:text-amber-400">{t('workspace.orca.syncBlocked')}</span>
 										{:else}
-											<span class="text-destructive">Perlu Sinkron</span>
+											<span class="text-destructive">{t('common.status.needsSync')}</span>
 										{/if}
 									</span>
 								</div>
@@ -245,7 +252,7 @@
 						{#if orca.has_update}
 							<Button size="sm" class="col-span-2 sm:col-span-1" onclick={() => cp.triggerInstall('orca-update')}>
 								<ArrowUpCircleIcon data-icon="inline-start" />
-								Update v{orca.latest_version}
+								{t('workspace.orca.updateBtn', { version: orca.latest_version ?? '' })}
 							</Button>
 						{/if}
 						{#if orca.web_client_url}
@@ -257,12 +264,12 @@
 								rel="noopener noreferrer"
 							>
 								<ExternalLinkIcon data-icon="inline-start" />
-								Buka Web Client
+								{t('workspace.orca.openWebClient')}
 							</Button>
 						{/if}
 						<Button variant="outline" size="sm" onclick={() => (pairModalOpen = true)}>
 							<QrCodeIcon data-icon="inline-start" />
-							Info &amp; Pairing
+							{t('workspace.orca.infoPairingBtn')}
 						</Button>
 						{#if orca.active}
 							<Button
@@ -273,10 +280,10 @@
 							>
 								{#if orcaActionPending === 'restart'}
 									<Spinner data-icon="inline-start" />
-									Memulai ulang...
+									{t('workspace.orca.restarting')}
 								{:else}
 									<RotateCwIcon data-icon="inline-start" />
-									Restart
+									{t('common.actions.restart')}
 								{/if}
 							</Button>
 							<Button
@@ -287,10 +294,10 @@
 							>
 								{#if orcaActionPending === 'stop'}
 									<Spinner data-icon="inline-start" />
-									Menghentikan...
+									{t('workspace.orca.stopping')}
 								{:else}
 									<SquareIcon data-icon="inline-start" />
-									Stop
+									{t('common.actions.stop')}
 								{/if}
 							</Button>
 						{:else}
@@ -301,10 +308,10 @@
 							>
 								{#if orcaActionPending === 'start'}
 									<Spinner data-icon="inline-start" />
-									Menjalankan...
+									{t('workspace.orca.starting')}
 								{:else}
 									<PlayIcon data-icon="inline-start" />
-									Mulai Layanan
+									{t('workspace.orca.startServiceBtn')}
 								{/if}
 							</Button>
 						{/if}
@@ -314,22 +321,22 @@
 							onclick={() =>
 								cp.triggerInstall(isHeadless ? 'orca-switch-desktop' : 'orca-switch-headless')}
 						>
-							{isHeadless ? 'Mode Desktop' : 'Mode Headless'}
+							{isHeadless ? t('workspace.orca.switchToDesktop') : t('workspace.orca.switchToHeadless')}
 						</Button>
 						<Button variant="outline" size="sm" onclick={() => (commitAiModalOpen = true)}>
 							<SparklesIcon data-icon="inline-start" />
-							Commit AI
+							{t('workspace.orca.commitAiBtn')}
 						</Button>
 						<Button variant="destructive" size="sm" onclick={() => cp.triggerInstall('orca-uninstall')}>
 							<Trash2Icon data-icon="inline-start" />
-							Uninstall
+							{t('common.actions.uninstall')}
 						</Button>
 					{:else}
 						<Button size="sm" onclick={() => cp.triggerInstall('orca-headless')}>
-							Setup Headless
+							{t('workspace.orca.setupHeadless')}
 						</Button>
 						<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('orca-desktop')}>
-							Setup Desktop
+							{t('workspace.orca.setupDesktop')}
 						</Button>
 					{/if}
 				</Card.Footer>
@@ -340,48 +347,48 @@
 				<Card.Header>
 					<div class="flex flex-wrap items-start justify-between gap-2">
 						<div>
-							<Card.Title>Oh My Zsh &amp; Terminal Shell</Card.Title>
-							<Card.Description>CLI Developer Productivity &amp; Prompt Theme</Card.Description>
+							<Card.Title>{t('workspace.shell.title')}</Card.Title>
+							<Card.Description>{t('workspace.shell.subtitle')}</Card.Description>
 						</div>
 						<StatusBadge
 							tone={shell.oh_my_zsh ? 'success' : 'neutral'}
-							label={shell.oh_my_zsh ? 'Terpasang' : 'Belum Terpasang'}
+							label={shell.oh_my_zsh ? t('common.status.installed') : t('common.status.notInstalled')}
 						/>
 					</div>
 				</Card.Header>
 
 				<Card.Content class="flex flex-col gap-4">
 					<p class="text-xs leading-relaxed text-muted-foreground">
-						Shell interaktif Zsh lengkap dengan konfigurasi komunitas, autosuggestions, syntax highlighting, dan tema prompt modern.
+						{t('workspace.shell.description')}
 					</p>
 
 					<div class="flex flex-col gap-2 rounded-md border bg-muted/40 p-3 text-xs">
 						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Shell Default Pengguna</span>
+							<span class="text-muted-foreground">{t('workspace.shell.defaultUserShell')}</span>
 							<span class="truncate font-mono font-semibold">{shell.current_shell || '/bin/bash'}</span>
 						</div>
 						<Separator />
 						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Status Oh My Zsh</span>
-							<span class="text-right">{shell.oh_my_zsh ? 'Aktif di ~/.oh-my-zsh' : 'Belum Terpasang'}</span>
+							<span class="text-muted-foreground">{t('workspace.shell.omzStatus')}</span>
+							<span class="text-right">{shell.oh_my_zsh ? t('workspace.shell.omzActivePath') : t('common.status.notInstalled')}</span>
 						</div>
 						<Separator />
 						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Tema Prompt Aktif</span>
+							<span class="text-muted-foreground">{t('workspace.shell.activePromptTheme')}</span>
 							<span class="truncate font-mono font-semibold text-primary">{shell.active_theme || '-'}</span>
 						</div>
 						<Separator />
 						<div class="flex items-center justify-between gap-2">
-							<span class="text-muted-foreground">Nerd Font</span>
+							<span class="text-muted-foreground">{t('workspace.shell.nerdFont')}</span>
 							<span class="truncate font-mono font-semibold">
-								{shell.nerd_font || 'Belum Terpasang'}
+								{shell.nerd_font || t('common.status.notInstalled')}
 							</span>
 						</div>
 					</div>
 
 					<Field.FieldGroup>
 						<Field.Field>
-							<Field.FieldTitle id="zsh-theme-label">Ganti Tema Prompt</Field.FieldTitle>
+							<Field.FieldTitle id="zsh-theme-label">{t('workspace.shell.changeThemeLabel')}</Field.FieldTitle>
 							<ToggleGroup.Root
 								type="single"
 								value={selectedThemeKey}
@@ -409,7 +416,7 @@
 						onclick={() => cp.triggerInstall('zsh')}
 					>
 						<TerminalIcon data-icon="inline-start" />
-						{shell.oh_my_zsh ? 'Pasang Ulang / Sinkron Oh My Zsh' : 'Instal Oh My Zsh Lengkap'}
+						{shell.oh_my_zsh ? t('workspace.shell.reinstallOmz') : t('workspace.shell.installOmz')}
 					</Button>
 				</Card.Footer>
 			</Card.Root>
@@ -425,28 +432,28 @@
 	<Dialog.Root bind:open={pairModalOpen}>
 		<Dialog.Content class="sm:max-w-lg">
 			<Dialog.Header>
-				<Dialog.Title>Info &amp; Akses Orca ADE</Dialog.Title>
+				<Dialog.Title>{t('workspace.pairModal.title')}</Dialog.Title>
 				<Dialog.Description>
-					Gunakan URL Web Client atau Pairing URI untuk menghubungkan instance Orca ADE secara terenkripsi.
+					{t('workspace.pairModal.description')}
 				</Dialog.Description>
 			</Dialog.Header>
 
 			<Field.FieldGroup>
 				<Field.Field>
-					<Field.FieldLabel for="orca-modal-weburl">Web Client URL (Browser IDE)</Field.FieldLabel>
+					<Field.FieldLabel for="orca-modal-weburl">{t('workspace.pairModal.webUrlLabel')}</Field.FieldLabel>
 					<InputGroup.Root>
 						<InputGroup.Input id="orca-modal-weburl" value={webUrl} readonly class="font-mono text-xs" />
 						<InputGroup.Addon align="inline-end">
-							<Button type="button" variant="ghost" size="xs" onclick={() => copyText(webUrl, 'URL Web Client')}>
+							<Button type="button" variant="ghost" size="xs" onclick={() => copyText(webUrl, t('workspace.pairModal.webUrlCopyLabel'))}>
 								<CopyIcon data-icon="inline-start" />
-								Salin
+								{t('common.actions.copy')}
 							</Button>
 						</InputGroup.Addon>
 					</InputGroup.Root>
 				</Field.Field>
 
 				<Field.Field>
-					<Field.FieldLabel for="orca-modal-paircode">Pairing URI / Code (Mobile &amp; Remote App)</Field.FieldLabel>
+					<Field.FieldLabel for="orca-modal-paircode">{t('workspace.pairModal.pairingUriLabel')}</Field.FieldLabel>
 					<InputGroup.Root>
 						<InputGroup.Input
 							id="orca-modal-paircode"
@@ -460,33 +467,33 @@
 								variant="ghost"
 								size="xs"
 								disabled={!orca.pairing_url}
-								onclick={() => copyText(orca.pairing_url || '', 'Pairing URI')}
+								onclick={() => copyText(orca.pairing_url || '', t('workspace.pairModal.pairingUriCopyLabel'))}
 							>
 								<CopyIcon data-icon="inline-start" />
-								Salin
+								{t('common.actions.copy')}
 							</Button>
 						</InputGroup.Addon>
 					</InputGroup.Root>
 					<Field.FieldDescription>
-						Tempelkan URI di atas pada aplikasi Orca Mobile atau Orca Desktop.
+						{t('workspace.pairModal.pairingDesc')}
 					</Field.FieldDescription>
 				</Field.Field>
 			</Field.FieldGroup>
 
 			<div class="flex flex-col gap-2 rounded-md border bg-muted/40 p-3 text-xs">
 				<div class="flex items-center justify-between gap-2">
-					<span class="text-muted-foreground">Mode Layanan</span>
-					<span class="font-semibold">{orca.mode === 'desktop' ? 'Desktop GUI' : 'Headless Server'}</span>
+					<span class="text-muted-foreground">{t('workspace.pairModal.serviceMode')}</span>
+					<span class="font-semibold">{orca.mode === 'desktop' ? t('workspace.orca.modeDesktopLabel') : t('workspace.orca.modeShortHeadless')}</span>
 				</div>
 				<Separator />
 				<div class="flex items-center justify-between gap-2">
-					<span class="text-muted-foreground">Port WebSocket</span>
+					<span class="text-muted-foreground">{t('workspace.orca.wsPort')}</span>
 					<span class="font-mono font-semibold">{orca.port || 6768}</span>
 				</div>
 				<Separator />
 				<div class="flex items-center justify-between gap-2">
-					<span class="text-muted-foreground">Status Proses</span>
-					<span class="font-semibold">{orca.active ? 'Aktif (Running)' : 'Tidak Aktif (Stopped)'}</span>
+					<span class="text-muted-foreground">{t('workspace.pairModal.processStatus')}</span>
+					<span class="font-semibold">{orca.active ? t('workspace.pairModal.statusRunning') : t('workspace.pairModal.statusStopped')}</span>
 				</div>
 			</div>
 
@@ -500,17 +507,17 @@
 						cp.triggerInstall('orca-pair');
 					}}
 				>
-					Tampilkan Terminal QR
+					{t('workspace.pairModal.showQrBtn')}
 				</Button>
 				<div class="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
 					{#if orca.web_client_url}
 						<Button size="sm" href={orca.web_client_url} target="_blank" rel="noopener noreferrer">
 							<ExternalLinkIcon data-icon="inline-start" />
-							Buka Web Client
+							{t('workspace.orca.openWebClient')}
 						</Button>
 					{/if}
 					<Button type="button" variant="outline" size="sm" onclick={() => (pairModalOpen = false)}>
-						Tutup
+						{t('common.actions.close')}
 					</Button>
 				</div>
 			</Dialog.Footer>

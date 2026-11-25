@@ -11,6 +11,8 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { themeStore, type ThemePreference } from '#lib/stores/theme.svelte.js';
+	import { t } from '#lib/i18n/index.svelte.js';
+	import LanguageSwitcher from '#lib/components/shared/LanguageSwitcher.svelte';
 	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
 	import { cn } from '#lib/utils.js';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
@@ -28,11 +30,11 @@
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import UserIcon from '@lucide/svelte/icons/user';
 
-	const themeOptions: { value: ThemePreference; label: string }[] = [
-		{ value: 'system', label: 'Ikuti Sistem' },
-		{ value: 'light', label: 'Mode Terang' },
-		{ value: 'dark', label: 'Mode Gelap' }
-	];
+	const themeOptions = $derived<{ value: ThemePreference; label: string }[]>([
+		{ value: 'system', label: t('common.theme.system') },
+		{ value: 'light', label: t('common.theme.light') },
+		{ value: 'dark', label: t('common.theme.dark') }
+	]);
 
 	let username = $state('');
 	let password = $state('');
@@ -61,13 +63,13 @@
 	let alertRef = $state<HTMLDivElement | null>(null);
 
 	const usernameErrorText = $derived.by(() => {
-		if (!username.length) return 'Masukkan username panel Anda.';
-		if (!username.trim()) return 'Username tidak boleh hanya berisi spasi.';
+		if (!username.length) return t('auth.usernameRequired');
+		if (!username.trim()) return t('auth.usernameWhitespace');
 		return '';
 	});
 
 	const passwordErrorText = $derived.by(() => {
-		if (!password) return 'Masukkan kata sandi panel Anda.';
+		if (!password) return t('auth.passwordRequired');
 		return '';
 	});
 
@@ -114,7 +116,7 @@
 	function syncUsernameCustomValidity(val: string) {
 		if (!usernameInputRef) return;
 		if (val.length > 0 && !val.trim()) {
-			usernameInputRef.setCustomValidity('Username tidak boleh hanya berisi spasi.');
+			usernameInputRef.setCustomValidity(t('auth.usernameWhitespace'));
 		} else {
 			usernameInputRef.setCustomValidity('');
 		}
@@ -132,7 +134,7 @@
 		usernameBlurred = true;
 		syncUsernameCustomValidity(username);
 		if (usernameInvalid && usernameErrorText) {
-			scheduleFieldAnnouncement('username', 'Username', usernameErrorText);
+			scheduleFieldAnnouncement('username', t('auth.usernameLabel'), usernameErrorText);
 		}
 	}
 
@@ -147,7 +149,7 @@
 		passwordBlurred = true;
 		capsLockOn = false;
 		if (passwordInvalid && passwordErrorText) {
-			scheduleFieldAnnouncement('password', 'Kata Sandi', passwordErrorText);
+			scheduleFieldAnnouncement('password', t('auth.passwordLabel'), passwordErrorText);
 		}
 	}
 
@@ -180,8 +182,7 @@
 
 		const result = await authStore.login(username.trim(), password);
 		if (!result.ok) {
-			serverError =
-				result.error || 'Autentikasi gagal. Periksa kembali username dan kata sandi Anda.';
+			serverError = result.error || t('auth.fallbackAuthError');
 			serverErrorStatus = result.status ?? 0;
 			if (result.status === 429) {
 				recoveryOpen = true;
@@ -195,7 +196,7 @@
 <div class="login-shell grid min-h-[100dvh] w-full bg-background text-foreground lg:grid-cols-[minmax(360px,430px)_1fr]">
 	<!-- Desktop Architectural Infrastructure Rail -->
 	<aside
-		aria-label="Informasi Control Plane"
+		aria-label={t('auth.rail.ariaLabel')}
 		class="login-rail relative hidden border-r border-border bg-terminal p-8 text-terminal-foreground lg:flex lg:flex-col lg:justify-between xl:p-10"
 	>
 		<div class="relative z-10 flex flex-col gap-10">
@@ -203,22 +204,22 @@
 				<WdevLogo class="size-9" />
 				<div class="flex min-w-0 flex-col">
 					<span class="text-base font-semibold tracking-tight text-terminal-foreground">wdev</span>
-					<span class="text-xs text-terminal-foreground/70">Server Control Plane</span>
+					<span class="text-xs text-terminal-foreground/70">{t('auth.rail.subtitle')}</span>
 				</div>
 			</div>
 
 			<div class="flex flex-col gap-3">
 				<h2 class="text-xl leading-snug font-semibold tracking-tight text-balance text-terminal-foreground">
-					Satu portal kendali untuk layanan server Anda.
+					{t('auth.rail.headline')}
 				</h2>
 				<p class="max-w-[36ch] text-sm leading-relaxed text-pretty text-terminal-foreground/75">
-					Masuk menggunakan akun administrator berwenang untuk mengelola layanan dan konfigurasi sistem secara terpusat.
+					{t('auth.rail.description')}
 				</p>
 			</div>
 		</div>
 
 		<footer class="relative z-10 flex flex-col gap-1 text-xs text-terminal-foreground/65">
-			<p>Akses terbatas hanya untuk administrator yang berwenang.</p>
+			<p>{t('auth.rail.footer')}</p>
 		</footer>
 	</aside>
 
@@ -229,59 +230,63 @@
 				<WdevLogo class="size-8" />
 				<div class="flex min-w-0 flex-col">
 					<span class="text-sm leading-tight font-semibold tracking-tight">wdev</span>
-					<span class="text-xs leading-tight text-muted-foreground">Control Plane</span>
+					<span class="text-xs leading-tight text-muted-foreground">{t('auth.mobileBrandSub')}</span>
 				</div>
 			</div>
 
-			<DropdownMenu.Root>
-				<DropdownMenu.Trigger>
-					{#snippet child({ props })}
-						<Button
-							variant="outline"
-							size="sm"
-							class="min-h-9 px-3"
-							aria-label="Pilih tema tampilan"
-							{...props}
-						>
-							{#if themeStore.resolved === 'dark'}
-								<MoonIcon data-icon="inline-start" />
-							{:else}
-								<SunIcon data-icon="inline-start" />
-							{/if}
-							<span>Tema</span>
-						</Button>
-					{/snippet}
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end">
-					<DropdownMenu.Group>
-						<DropdownMenu.Label>Tema Tampilan</DropdownMenu.Label>
-						<DropdownMenu.Separator />
-						{#each themeOptions as opt (opt.value)}
-							<DropdownMenu.Item onclick={() => themeStore.setPreference(opt.value)}>
-								{#if opt.value === 'system'}
-									<MonitorIcon />
-								{:else if opt.value === 'light'}
-									<SunIcon />
+			<div class="flex items-center gap-2">
+				<LanguageSwitcher size="sm" class="min-h-9 px-2.5" />
+
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button
+								variant="outline"
+								size="sm"
+								class="min-h-9 px-3"
+								aria-label={t('common.theme.ariaLabel')}
+								{...props}
+							>
+								{#if themeStore.resolved === 'dark'}
+									<MoonIcon data-icon="inline-start" />
 								{:else}
-									<MoonIcon />
+									<SunIcon data-icon="inline-start" />
 								{/if}
-								<span>{opt.label}</span>
-								{#if themeStore.preference === opt.value}
-									<CheckIcon class="ml-auto" />
-								{/if}
-							</DropdownMenu.Item>
-						{/each}
-					</DropdownMenu.Group>
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
+								<span>{t('common.theme.shortLabel')}</span>
+							</Button>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="end">
+						<DropdownMenu.Group>
+							<DropdownMenu.Label>{t('common.theme.label')}</DropdownMenu.Label>
+							<DropdownMenu.Separator />
+							{#each themeOptions as opt (opt.value)}
+								<DropdownMenu.Item onclick={() => themeStore.setPreference(opt.value)}>
+									{#if opt.value === 'system'}
+										<MonitorIcon />
+									{:else if opt.value === 'light'}
+										<SunIcon />
+									{:else}
+										<MoonIcon />
+									{/if}
+									<span>{opt.label}</span>
+									{#if themeStore.preference === opt.value}
+										<CheckIcon class="ml-auto" />
+									{/if}
+								</DropdownMenu.Item>
+							{/each}
+						</DropdownMenu.Group>
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
 		</header>
 
 		<main class="flex min-w-0 flex-1 flex-col items-center justify-start px-4 pt-6 pb-[max(2rem,env(safe-area-inset-bottom,0px))] sm:justify-center sm:px-8 sm:py-10">
 			<div class="flex min-w-0 w-full max-w-[400px] flex-col gap-6">
 				<div class="flex flex-col gap-1.5 text-left">
-					<h1 class="text-2xl font-semibold tracking-tight text-balance">Masuk ke Panel</h1>
+					<h1 class="text-2xl font-semibold tracking-tight text-balance">{t('auth.title')}</h1>
 					<p class="text-sm leading-relaxed text-pretty text-muted-foreground">
-						Masukkan kredensial administrator untuk mengakses control plane server.
+						{t('auth.subtitle')}
 					</p>
 				</div>
 
@@ -297,7 +302,7 @@
 						{:else}
 							<AlertCircleIcon />
 						{/if}
-						<Alert.Title>{isLockedOut ? 'Akses Dikunci Sementara' : 'Autentikasi Gagal'}</Alert.Title>
+						<Alert.Title>{isLockedOut ? t('auth.lockedTitle') : t('auth.failedTitle')}</Alert.Title>
 						<Alert.Description class="text-xs leading-relaxed">
 							{serverError}
 						</Alert.Description>
@@ -311,7 +316,7 @@
 							data-disabled={authStore.loading ? 'true' : undefined}
 						>
 							<Field.FieldLabel for="login-username" class="text-sm font-medium">
-								Username <span aria-hidden="true" class="text-destructive">*</span>
+								{t('auth.usernameLabel')} <span aria-hidden="true" class="text-destructive">*</span>
 							</Field.FieldLabel>
 							<InputGroup.Root class="login-input-group min-h-11 h-auto overflow-hidden">
 								<InputGroup.Addon align="inline-start">
@@ -321,7 +326,7 @@
 									id="login-username"
 									name="username"
 									type="text"
-									placeholder="Contoh: admin"
+									placeholder={t('auth.usernamePlaceholder')}
 									bind:ref={usernameInputRef}
 									bind:value={username}
 									disabled={authStore.loading}
@@ -352,7 +357,7 @@
 						>
 							<div class="flex min-h-5 items-center justify-between gap-2">
 								<Field.FieldLabel for="login-password" class="text-sm font-medium">
-									Kata Sandi <span aria-hidden="true" class="text-destructive">*</span>
+									{t('auth.passwordLabel')} <span aria-hidden="true" class="text-destructive">*</span>
 								</Field.FieldLabel>
 								{#if capsLockOn}
 									<Badge
@@ -361,7 +366,7 @@
 										class="border-warning/50 bg-warning/15 text-foreground"
 									>
 										<TriangleAlertIcon aria-hidden="true" class="text-warning" />
-										<span>Caps Lock aktif</span>
+										<span>{t('auth.capsLockActive')}</span>
 									</Badge>
 								{/if}
 							</div>
@@ -394,7 +399,7 @@
 										disabled={authStore.loading}
 										aria-pressed={showPassword}
 										aria-controls="login-password"
-										aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+										aria-label={showPassword ? t('auth.hidePasswordAria') : t('auth.showPasswordAria')}
 										aria-describedby="login-password-visibility-note"
 										onclick={() => (showPassword = !showPassword)}
 									>
@@ -407,7 +412,7 @@
 								</InputGroup.Addon>
 							</InputGroup.Root>
 							<span id="login-password-visibility-note" class="login-visually-hidden">
-								Perhatian: mengaktifkan ini akan menampilkan kata sandi di layar.
+								{t('auth.passwordVisibilityNote')}
 							</span>
 							{#if passwordInvalid}
 								<Field.FieldError id="login-password-error" role={undefined} class="flex items-start gap-1.5 text-xs">
@@ -426,10 +431,10 @@
 					>
 						{#if authStore.loading}
 							<Spinner data-icon="inline-start" />
-							<span>Memverifikasi...</span>
+							<span>{t('auth.verifyingBtn')}</span>
 						{:else}
 							<LogInIcon data-icon="inline-start" />
-							<span>Masuk ke Panel</span>
+							<span>{t('auth.submitBtn')}</span>
 						{/if}
 					</Button>
 				</form>
@@ -448,7 +453,7 @@
 							>
 								<span class="flex min-w-0 items-center gap-2">
 									<TerminalIcon class="size-3.5 shrink-0" aria-hidden="true" />
-									<span>Lupa kredensial atau butuh pemulihan akses?</span>
+									<span>{t('auth.recoveryTrigger')}</span>
 								</span>
 								<ChevronDownIcon
 									data-icon="inline-end"
@@ -460,7 +465,7 @@
 
 					<Collapsible.Content class="min-w-0 rounded-lg border border-border bg-muted/40 p-3.5">
 						<p class="text-xs leading-relaxed text-muted-foreground">
-							Untuk alasan keamanan, pemulihan atau pengaturan ulang kredensial hanya dapat dilakukan langsung oleh administrator melalui terminal SSH server dengan hak akses root atau sudo.
+							{t('auth.recoveryNote')}
 						</p>
 					</Collapsible.Content>
 				</Collapsible.Root>
