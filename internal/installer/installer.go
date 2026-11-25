@@ -1743,7 +1743,14 @@ func (inst *Installer) InstallDockerWithOptions(ctx context.Context, cb LogCallb
 
 	if exec.CommandContext(ctx, "systemctl", "cat", "docker").Run() == nil {
 		if opts.EnableService {
-			_ = inst.runCmd(ctx, cb, "systemctl", "enable", "docker")
+			enableDockerUnits(
+				ctx,
+				cb,
+				func(unit string) bool {
+					return exec.CommandContext(ctx, "systemctl", "cat", unit).Run() == nil
+				},
+				inst.runCmd,
+			)
 		}
 		if wasActive || wroteDaemonConfig {
 			if err := inst.runCmd(ctx, cb, "systemctl", "restart", "docker"); err != nil {
@@ -1778,6 +1785,23 @@ func (inst *Installer) InstallDockerWithOptions(ctx context.Context, cb LogCallb
 		cb("✓ " + strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// enableDockerUnits memastikan containerd, docker.socket, dan docker ikut aktif otomatis saat boot.
+func enableDockerUnits(
+	ctx context.Context,
+	cb LogCallback,
+	unitExists func(string) bool,
+	runCmd func(context.Context, LogCallback, string, ...string) error,
+) {
+	for _, unit := range []string{"containerd", "docker.socket", "docker"} {
+		if unitExists != nil && !unitExists(unit) {
+			continue
+		}
+		if err := runCmd(ctx, cb, "systemctl", "enable", unit); err != nil && cb != nil {
+			cb(fmt.Sprintf("[WARN] Gagal mengaktifkan autostart %s: %v", unit, err))
+		}
+	}
 }
 
 // Full 14-Step Auto Setup

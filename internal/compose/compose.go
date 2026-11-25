@@ -178,10 +178,11 @@ func (r *defaultRunner) Stream(ctx context.Context, dir string, cb func(string),
 
 // Manager mengelola proyek Docker Compose v5 dan siklus hidup container.
 type Manager struct {
-	cfg        *config.Config
-	store      projectRegistry
-	runner     CommandRunner
-	sudoPassFn func() string
+	cfg                *config.Config
+	store              projectRegistry
+	runner             CommandRunner
+	sudoPassFn         func() string
+	dockerActivatingFn func(ctx context.Context) bool
 }
 
 // New membuat manajer Docker Compose dengan akses ke config, SQLite store, dan penyedia password sudo opsional.
@@ -191,11 +192,24 @@ func New(cfg *config.Config, s *store.Store, sudoPassFn func() string) *Manager 
 		reg = s
 	}
 	return &Manager{
-		cfg:        cfg,
-		store:      reg,
-		runner:     &defaultRunner{sudoPassFn: sudoPassFn},
-		sudoPassFn: sudoPassFn,
+		cfg:                cfg,
+		store:              reg,
+		runner:             &defaultRunner{sudoPassFn: sudoPassFn},
+		sudoPassFn:         sudoPassFn,
+		dockerActivatingFn: checkDockerSystemdActivating,
 	}
+}
+
+func checkDockerSystemdActivating(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(probeCtx, "systemctl", "is-active", "docker").Output()
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return false
+	}
+	state := strings.ToLower(fields[0])
+	return state == "activating" || state == "reloading"
 }
 
 // NewWithDeps membuat Manager dengan dependensi custom (untuk pengujian unit).
@@ -301,7 +315,7 @@ func (m *Manager) resolveComposeFile(dirPath, preferred string) string {
 
 // GetEngineInfo mendeteksi biner docker, plugin docker compose (v5), serta konektivitas daemon Docker.
 func (m *Manager) GetEngineInfo(ctx context.Context) EngineInfo {
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
 	var info EngineInfo
@@ -364,6 +378,9 @@ func (m *Manager) GetEngineInfo(ctx context.Context) EngineInfo {
 		if isDockerPermissionErr(out, err) {
 			info.NeedsSudo = true
 			info.DaemonError = "Memerlukan izin akses socket Docker (sudo atau grup docker)."
+		} else if m.dockerActivatingFn != nil && m.dockerActivatingFn(probeCtx) {
+			info.DaemonStarting = true
+			info.DaemonError = "Layanan Docker sedang memulai. Status akan diperbarui otomatis..."
 		} else {
 			info.DaemonError = msg
 		}

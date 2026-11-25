@@ -242,3 +242,41 @@ func TestHybridDiscoveryAndLifecycleAndFiles(t *testing.T) {
 		t.Fatalf("expected streamed logs from RunActionTask")
 	}
 }
+
+func TestGetEngineInfoDetectsDaemonStartingState(t *testing.T) {
+	runner := &fakeRunner{
+		runFn: func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			switch joined {
+			case "version --format {{.Client.Version}}":
+				return []byte("29.10.0\n"), nil
+			case "compose version --short":
+				return []byte("5.8.0\n"), nil
+			case "info --format {{.ServerVersion}}|{{.DockerRootDir}}":
+				return []byte("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"), fmt.Errorf("exit status 1")
+			default:
+				return nil, nil
+			}
+		},
+	}
+
+	mgr := NewWithDeps(&config.Config{}, nil, runner)
+	mgr.dockerActivatingFn = func(context.Context) bool { return true }
+
+	eng := mgr.GetEngineInfo(context.Background())
+	if eng.DaemonRunning {
+		t.Fatalf("expected DaemonRunning=false while daemon is activating")
+	}
+	if !eng.DaemonStarting {
+		t.Fatalf("expected DaemonStarting=true when systemd reports activating")
+	}
+	if !strings.Contains(eng.DaemonError, "memulai") {
+		t.Fatalf("unexpected DaemonError for starting daemon: %q", eng.DaemonError)
+	}
+
+	mgr.dockerActivatingFn = func(context.Context) bool { return false }
+	stopped := mgr.GetEngineInfo(context.Background())
+	if stopped.DaemonRunning || stopped.DaemonStarting {
+		t.Fatalf("expected stopped daemon to have DaemonRunning=false and DaemonStarting=false: %+v", stopped)
+	}
+}

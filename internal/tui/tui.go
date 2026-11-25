@@ -208,7 +208,11 @@ func (t *TUI) renderServices() {
 	for _, s := range stats.Services {
 		badge := fmt.Sprintf("%s%s● AKTIF%s", Bold, Green, Reset)
 		if !s.Active {
-			badge = fmt.Sprintf("%s%s○ NONAKTIF%s", Bold, Red, Reset)
+			if s.Starting {
+				badge = fmt.Sprintf("%s%s◐ MEMULAI%s", Bold, Yellow, Reset)
+			} else {
+				badge = fmt.Sprintf("%s%s○ NONAKTIF%s", Bold, Red, Reset)
+			}
 		}
 		portStr := ""
 		if s.Port != "" {
@@ -923,6 +927,8 @@ func (t *TUI) menuCompose() {
 			daemonStr := "Nonaktif"
 			if eng.DaemonRunning {
 				daemonStr = "Aktif"
+			} else if eng.DaemonStarting {
+				daemonStr = "Memulai..."
 			}
 			fmt.Printf("  %sDocker:%s v%s  |  %sCompose:%s v%s  |  %sDaemon:%s %s\n\n",
 				Bold, Reset, eng.DockerVersion, Bold, Reset, eng.ComposeVersion, Bold, Reset, daemonStr)

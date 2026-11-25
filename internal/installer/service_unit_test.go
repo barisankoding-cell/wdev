@@ -165,3 +165,24 @@ func TestServiceUnitNeedsSyncAt(t *testing.T) {
 		t.Fatal("unit tanpa CAROOT harus dilaporkan perlu sync")
 	}
 }
+
+func TestEnableDockerUnitsEnablesAllAvailableUnits(t *testing.T) {
+	var calls [][]string
+	enableDockerUnits(
+		context.Background(),
+		nil,
+		func(unit string) bool { return unit == "containerd" || unit == "docker.socket" || unit == "docker" },
+		func(_ context.Context, _ LogCallback, name string, args ...string) error {
+			calls = append(calls, append([]string{name}, args...))
+			return nil
+		},
+	)
+	want := [][]string{
+		{"systemctl", "enable", "containerd"},
+		{"systemctl", "enable", "docker.socket"},
+		{"systemctl", "enable", "docker"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("enableDockerUnits calls = %v, want %v", calls, want)
+	}
+}

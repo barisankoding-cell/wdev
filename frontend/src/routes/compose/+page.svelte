@@ -141,6 +141,15 @@
 	});
 
 	let lastRefreshTick = 0;
+	let backgroundPolling = false;
+	let daemonPollTimer: ReturnType<typeof setInterval> | null = null;
+
+	function stopDaemonPollTimer() {
+		if (daemonPollTimer) {
+			clearInterval(daemonPollTimer);
+			daemonPollTimer = null;
+		}
+	}
 
 	const filteredProjects = $derived.by(() => {
 		const q = searchQuery.trim().toLowerCase();
@@ -285,9 +294,15 @@
 		});
 	}
 
-	async function loadStatus(silent = false) {
-		if (!silent) loading = true;
-		else refreshing = true;
+	async function loadStatus(silent = false, quietBackground = false) {
+		if (quietBackground) {
+			if (loading || refreshing || daemonActionPending || backgroundPolling) return;
+			backgroundPolling = true;
+		} else if (!silent) {
+			loading = true;
+		} else {
+			refreshing = true;
+		}
 		try {
 			const res = await api.getComposeStatus();
 			engine = res.engine;
@@ -306,10 +321,15 @@
 				selectedDetail = null;
 			}
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : t('compose.toast.loadFailed'));
+			if (!quietBackground) {
+				toast.error(err instanceof Error ? err.message : t('compose.toast.loadFailed'));
+			}
 		} finally {
 			loading = false;
-			refreshing = false;
+			if (!quietBackground) {
+				refreshing = false;
+			}
+			backgroundPolling = false;
 		}
 	}
 
@@ -614,6 +634,23 @@
 		}
 	});
 
+	$effect(() => {
+		const shouldPoll = Boolean(engine && engine.docker_installed && !engine.daemon_running);
+		stopDaemonPollTimer();
+		if (!shouldPoll) {
+			return;
+		}
+		const intervalMs = engine?.daemon_starting ? 3000 : 5000;
+		daemonPollTimer = setInterval(() => {
+			if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+				void loadStatus(true, true);
+			}
+		}, intervalMs);
+		return () => {
+			stopDaemonPollTimer();
+		};
+	});
+
 	onMount(() => {
 		const dirParam = page.url.searchParams.get('dir')?.trim() ?? '';
 		if (dirParam) {
@@ -625,6 +662,7 @@
 
 	onDestroy(() => {
 		stopLogStream();
+		stopDaemonPollTimer();
 	});
 </script>
 
@@ -819,21 +857,31 @@
 
 		<!-- Daemon Status / Compose Upgrade Alerts -->
 		{#if engine && engine.docker_installed && !engine.daemon_running}
-			<Alert.Root variant="destructive">
-				<TriangleAlertIcon />
-				<Alert.Title>{t('compose.alerts.daemonDownTitle')}</Alert.Title>
-				<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-					<span class="text-xs">{engine.daemon_error || t('compose.alerts.daemonDownFallback')}</span>
-					<Button size="sm" class="min-h-9 w-full sm:min-h-0 sm:w-auto" disabled={daemonActionPending} onclick={() => handleDaemonControl('start')}>
-						{#if daemonActionPending}
-							<Spinner data-icon="inline-start" />
-						{:else}
-							<PlayIcon data-icon="inline-start" />
-						{/if}
-						{t('compose.alerts.startDockerBtn')}
-					</Button>
-				</Alert.Description>
-			</Alert.Root>
+			{#if engine.daemon_starting}
+				<Alert.Root>
+					<Spinner />
+					<Alert.Title>{t('compose.alerts.daemonStartingTitle')}</Alert.Title>
+					<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+						<span class="text-xs">{t('compose.alerts.daemonStartingDesc')}</span>
+					</Alert.Description>
+				</Alert.Root>
+			{:else}
+				<Alert.Root variant="destructive">
+					<TriangleAlertIcon />
+					<Alert.Title>{t('compose.alerts.daemonDownTitle')}</Alert.Title>
+					<Alert.Description class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+						<span class="text-xs">{engine.daemon_error || t('compose.alerts.daemonDownFallback')}</span>
+						<Button size="sm" class="min-h-9 w-full sm:min-h-0 sm:w-auto" disabled={daemonActionPending} onclick={() => handleDaemonControl('start')}>
+							{#if daemonActionPending}
+								<Spinner data-icon="inline-start" />
+							{:else}
+								<PlayIcon data-icon="inline-start" />
+							{/if}
+							{t('compose.alerts.startDockerBtn')}
+						</Button>
+					</Alert.Description>
+				</Alert.Root>
+			{/if}
 		{:else if engine && engine.docker_installed && engine.compose_installed && !engine.is_compose_v5}
 			<Alert.Root>
 				<ArrowUpCircleIcon />

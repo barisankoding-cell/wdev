@@ -414,6 +414,8 @@ func main() {
 			status := "NONAKTIF"
 			if s.Active {
 				status = "AKTIF"
+			} else if s.Starting {
+				status = "MEMULAI"
 			}
 			verStr := ""
 			if s.Version != "" {
@@ -491,6 +493,8 @@ func main() {
 				activeStr := "Nonaktif"
 				if st.Active {
 					activeStr = "Aktif (Running)"
+				} else if st.Starting {
+					activeStr = "Memulai (Starting)"
 				}
 				fmt.Printf("Layanan: %s (%s)\nStatus : %s\nVersi  : %s\nPort   : %s\n", st.DisplayName, st.Name, activeStr, st.Version, st.Port)
 			}

@@ -11,6 +11,7 @@ type EngineInfo struct {
 	ComposeMajor     int    `json:"compose_major"`
 	IsComposeV5      bool   `json:"is_compose_v5"`
 	DaemonRunning    bool   `json:"daemon_running"`
+	DaemonStarting   bool   `json:"daemon_starting,omitempty"`
 	DaemonError      string `json:"daemon_error,omitempty"`
 	APIVersion       string `json:"api_version,omitempty"`
 	DockerRootDir    string `json:"docker_root_dir,omitempty"`

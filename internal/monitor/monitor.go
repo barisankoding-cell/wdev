@@ -80,6 +80,7 @@ type ServiceStatus struct {
 	DisplayName      string `json:"display_name"`
 	Category         string `json:"category"`
 	Active           bool   `json:"active"`
+	Starting         bool   `json:"starting,omitempty"`
 	StatusText       string `json:"status_text"`
 	Version          string `json:"version,omitempty"`
 	Port             string `json:"port,omitempty"`
@@ -866,9 +867,53 @@ func getNetworkIPs() (lanIP string, netbirdIP string, publicIP string) {
 	return
 }
 
+// parseSystemdIsActiveOutput memetakan output `systemctl is-active` menjadi status aktif atau sedang memulai.
+func parseSystemdIsActiveOutput(out string, runErr error) (active bool, starting bool) {
+	fields := strings.Fields(out)
+	state := ""
+	if len(fields) > 0 {
+		state = strings.ToLower(fields[0])
+	}
+	switch state {
+	case "active":
+		return true, false
+	case "activating", "reloading":
+		return false, true
+	case "":
+		return runErr == nil, false
+	default:
+		return false, false
+	}
+}
+
+func systemdServiceState(serviceName string) (active bool, starting bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "is-active", serviceName).Output()
+	return parseSystemdIsActiveOutput(string(out), err)
+}
+
+func anySystemdServiceState(units ...string) (active bool, starting bool) {
+	return pickAnySystemdServiceState(systemdServiceState, units...)
+}
+
+func pickAnySystemdServiceState(probe func(string) (bool, bool), units ...string) (active bool, starting bool) {
+	anyStarting := false
+	for _, u := range units {
+		a, s := probe(u)
+		if a {
+			return true, false
+		}
+		if s {
+			anyStarting = true
+		}
+	}
+	return false, anyStarting
+}
+
 func isSystemdServiceActive(serviceName string) bool {
-	cmd := exec.Command("systemctl", "is-active", "--quiet", serviceName)
-	return cmd.Run() == nil
+	active, _ := systemdServiceState(serviceName)
+	return active
 }
 
 func IsSystemdServiceActive(serviceName string) bool {
@@ -884,11 +929,12 @@ func GetServiceStatus(serviceName string) ServiceStatus {
 			}
 		}
 	}
-	active := isSystemdServiceActive(serviceName)
+	active, starting := systemdServiceState(serviceName)
 	return ServiceStatus{
 		Name:       serviceName,
 		Active:     active,
-		StatusText: statusText(active),
+		Starting:   starting,
+		StatusText: serviceStatusText(active, starting),
 	}
 }
 
@@ -1133,7 +1179,7 @@ func getServiceStatuses() []ServiceStatus {
 	}
 
 	// 1. Nginx
-	nginxActive := isSystemdServiceActive("nginx")
+	nginxActive, nginxStarting := systemdServiceState("nginx")
 	nginxVer := getNginxVersion()
 	nginxInstalled := nginxVer != "" || fileExists("/usr/sbin/nginx") || fileExists("/usr/bin/nginx")
 	nginxLatest := cachedLatest["nginx"]
@@ -1145,7 +1191,8 @@ func getServiceStatuses() []ServiceStatus {
 		DisplayName:      "Nginx Web Server",
 		Category:         "Web Stack",
 		Active:           nginxActive,
-		StatusText:       statusText(nginxActive),
+		Starting:         nginxStarting,
+		StatusText:       serviceStatusText(nginxActive, nginxStarting),
 		Version:          nginxVer,
 		Port:             "80, 443",
 		Installed:        nginxInstalled,
@@ -1156,18 +1203,33 @@ func getServiceStatuses() []ServiceStatus {
 
 	// 2. PHP-FPM (check multiple versions + Fedora/RHEL php-fpm.service)
 	phpActive := false
+	phpStarting := false
 	phpVerActive := ""
 	for _, v := range []string{"8.4", "8.3", "8.2", "8.1"} {
-		if isSystemdServiceActive("php" + v + "-fpm") {
+		a, s := systemdServiceState("php" + v + "-fpm")
+		if a {
 			phpActive = true
+			phpStarting = false
 			phpVerActive = v
 			break
 		}
+		if s {
+			phpStarting = true
+			if phpVerActive == "" {
+				phpVerActive = v
+			}
+		}
 	}
-	if !phpActive && isSystemdServiceActive("php-fpm") {
-		phpActive = true
-		if out := runCmdStdout("php", "-r", "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;"); out != "" {
-			phpVerActive = parsePHPMajorMinor(out)
+	if !phpActive {
+		a, s := systemdServiceState("php-fpm")
+		if a {
+			phpActive = true
+			phpStarting = false
+			if out := runCmdStdout("php", "-r", "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;"); out != "" {
+				phpVerActive = parsePHPMajorMinor(out)
+			}
+		} else if s {
+			phpStarting = true
 		}
 	}
 	phpDisplayName := "PHP-FPM"
@@ -1185,7 +1247,8 @@ func getServiceStatuses() []ServiceStatus {
 		DisplayName:      phpDisplayName,
 		Category:         "Web Stack",
 		Active:           phpActive,
-		StatusText:       statusText(phpActive),
+		Starting:         phpStarting,
+		StatusText:       serviceStatusText(phpActive, phpStarting),
 		Version:          phpVer,
 		Port:             "Unix Socket",
 		Installed:        phpInstalled,
@@ -1195,12 +1258,14 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 3. PostgreSQL
-	pgActive := isSystemdServiceActive("postgresql")
+	pgUnits := make([]string, 0, 1+len(supportedPostgresMajors))
+	pgUnits = append(pgUnits, "postgresql")
+	for _, v := range supportedPostgresMajors {
+		pgUnits = append(pgUnits, "postgresql-"+v)
+	}
+	pgActive, pgStarting := anySystemdServiceState(pgUnits...)
 	pgInstalled := fileExists("/usr/bin/psql") || fileExists("/usr/bin/postgres") || dirExists("/usr/lib/postgresql")
 	for _, v := range supportedPostgresMajors {
-		if !pgActive && isSystemdServiceActive("postgresql-"+v) {
-			pgActive = true
-		}
 		if !pgInstalled && dirExists("/usr/pgsql-"+v) {
 			pgInstalled = true
 		}
@@ -1218,7 +1283,8 @@ func getServiceStatuses() []ServiceStatus {
 		DisplayName:      "PostgreSQL Database",
 		Category:         "Database",
 		Active:           pgActive,
-		StatusText:       statusText(pgActive),
+		Starting:         pgStarting,
+		StatusText:       serviceStatusText(pgActive, pgStarting),
 		Version:          pgVer,
 		Port:             "5432",
 		Installed:        pgInstalled,
@@ -1228,7 +1294,7 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 4. Redis / Valkey
-	redisActive := isSystemdServiceActive("redis-server") || isSystemdServiceActive("valkey-server") || isSystemdServiceActive("valkey") || isSystemdServiceActive("redis")
+	redisActive, redisStarting := anySystemdServiceState("redis-server", "valkey-server", "valkey", "redis")
 	redisVer := getRedisVersion()
 	redisInstalled := redisVer != "" || fileExists("/usr/bin/redis-server") || fileExists("/usr/bin/valkey-server") || fileExists("/usr/bin/valkey-cli")
 	redisLatest := cachedLatest["redis"]
@@ -1240,7 +1306,8 @@ func getServiceStatuses() []ServiceStatus {
 		DisplayName:      "Redis / Valkey Cache",
 		Category:         "Database",
 		Active:           redisActive,
-		StatusText:       statusText(redisActive),
+		Starting:         redisStarting,
+		StatusText:       serviceStatusText(redisActive, redisStarting),
 		Version:          redisVer,
 		Port:             "6379",
 		Installed:        redisInstalled,
@@ -1250,10 +1317,10 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 5. Cloudflare Tunnel
-	cfActive := isSystemdServiceActive("cloudflared")
-	if !cfActive {
-		_ = exec.Command("pgrep", "cloudflared").Run()
-		cfActive = (exec.Command("pgrep", "cloudflared").Run() == nil)
+	cfActive, cfStarting := systemdServiceState("cloudflared")
+	if !cfActive && exec.Command("pgrep", "cloudflared").Run() == nil {
+		cfActive = true
+		cfStarting = false
 	}
 	cfVer := getCloudflaredVersion()
 	cfInstalled := cfVer != "" || fileExists("/usr/local/bin/cloudflared") || fileExists("/usr/bin/cloudflared")
@@ -1266,7 +1333,8 @@ func getServiceStatuses() []ServiceStatus {
 		DisplayName:      "Cloudflare Tunnel",
 		Category:         "Network / Ingress",
 		Active:           cfActive,
-		StatusText:       statusText(cfActive),
+		Starting:         cfStarting,
+		StatusText:       serviceStatusText(cfActive, cfStarting),
 		Version:          cfVer,
 		Installed:        cfInstalled,
 		LatestVersion:    cfLatest,
@@ -1275,10 +1343,15 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 6. Netbird
-	nbActive := isSystemdServiceActive("netbird")
+	nbActive, nbStarting := systemdServiceState("netbird")
 	nbVer := getNetbirdVersion()
 	nbInstalled := nbVer != "" || fileExists("/usr/bin/netbird") || fileExists("/usr/local/bin/netbird")
-	list = append(list, buildNetbirdServiceStatus(nbActive, nbVer, nbInstalled, cachedLatest["netbird"]))
+	nbStatus := buildNetbirdServiceStatus(nbActive, nbVer, nbInstalled, cachedLatest["netbird"])
+	if !nbActive && nbStarting {
+		nbStatus.Starting = true
+		nbStatus.StatusText = serviceStatusText(false, true)
+	}
+	list = append(list, nbStatus)
 
 	// 7. PowerDNS (Local systemd or VPS Edge Gateway)
 	pdnsStatus := getPDNSServiceStatus()
@@ -1295,7 +1368,7 @@ func getServiceStatuses() []ServiceStatus {
 	list = append(list, pdnsStatus)
 
 	// 8. Stalwart Mail Server
-	stalwartActive := isSystemdServiceActive("stalwart")
+	stalwartActive, stalwartStarting := systemdServiceState("stalwart")
 	stalwartVer := getStalwartVersion()
 	stalwartInstalled := stalwartVer != "" || fileExists("/usr/local/bin/stalwart") || fileExists("/etc/systemd/system/stalwart.service")
 	stalwartLatest := cachedLatest["stalwart"]
@@ -1307,7 +1380,8 @@ func getServiceStatuses() []ServiceStatus {
 		DisplayName:      "Stalwart Mail Server",
 		Category:         "DNS & Mail",
 		Active:           stalwartActive,
-		StatusText:       statusText(stalwartActive),
+		Starting:         stalwartStarting,
+		StatusText:       serviceStatusText(stalwartActive, stalwartStarting),
 		Version:          stalwartVer,
 		Port:             "25, 465, 993, 8080",
 		Installed:        stalwartInstalled,
@@ -1317,7 +1391,7 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 9. Docker Engine & Compose v5
-	dockerActive := isSystemdServiceActive("docker")
+	dockerActive, dockerStarting := systemdServiceState("docker")
 	dockerVer := getDockerComposeOrEngineVersion()
 	dockerInstalled := dockerVer != "" || fileExists("/usr/bin/docker") || fileExists("/usr/local/bin/docker")
 	dockerLatest := cachedLatest["docker"]
@@ -1330,7 +1404,8 @@ func getServiceStatuses() []ServiceStatus {
 		DisplayName:      "Docker & Compose",
 		Category:         "Container / Runtime",
 		Active:           dockerActive,
-		StatusText:       statusText(dockerActive),
+		Starting:         dockerStarting,
+		StatusText:       serviceStatusText(dockerActive, dockerStarting),
 		Version:          dockerVer,
 		Port:             "docker.sock",
 		Installed:        dockerInstalled,
@@ -1340,17 +1415,18 @@ func getServiceStatuses() []ServiceStatus {
 	})
 
 	// 10. wdev Control Plane Service
-	wdevActive := isSystemdServiceActive("wdev")
-	if !wdevActive {
-		_ = exec.Command("pgrep", "-f", "wdev serve").Run()
-		wdevActive = (exec.Command("pgrep", "-f", "wdev serve").Run() == nil)
+	wdevActive, wdevStarting := systemdServiceState("wdev")
+	if !wdevActive && exec.Command("pgrep", "-f", "wdev serve").Run() == nil {
+		wdevActive = true
+		wdevStarting = false
 	}
 	list = append(list, ServiceStatus{
 		Name:             "wdev",
 		DisplayName:      "wdev Control Plane",
 		Category:         "Core Service",
 		Active:           wdevActive,
-		StatusText:       statusText(wdevActive),
+		Starting:         wdevStarting,
+		StatusText:       serviceStatusText(wdevActive, wdevStarting),
 		Version:          version.Version,
 		Port:             "3200",
 		Installed:        true,
@@ -1368,7 +1444,7 @@ func fileExists(p string) bool {
 }
 
 func runCmdVersion(bin string, args ...string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.CombinedOutput()
@@ -1379,7 +1455,7 @@ func runCmdVersion(bin string, args ...string) string {
 }
 
 func runCmdStdout(bin string, args ...string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.Output()
@@ -1958,11 +2034,18 @@ func buildPDNSStatusFromEdgeConf(vpsIP, port, version string, reachable bool) Se
 	}
 }
 
-func statusText(active bool) string {
+func serviceStatusText(active, starting bool) string {
 	if active {
 		return "Running"
 	}
+	if starting {
+		return "Starting"
+	}
 	return "Stopped"
+}
+
+func statusText(active bool) string {
+	return serviceStatusText(active, false)
 }
 
 func getRuntimeVersions() map[string]string {

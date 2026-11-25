@@ -46,6 +46,8 @@ export const composeEn = {
 		preconfigSaveFailed: 'Failed to save Docker pre-configuration'
 	},
 	alerts: {
+		daemonStartingTitle: 'Docker Daemon Starting Up',
+		daemonStartingDesc: 'The docker systemd service is still starting automatically. Compose status will refresh once Docker is ready.',
 		daemonDownTitle: 'Docker Daemon Inactive / Unreachable',
 		daemonDownFallback: 'Ensure the docker systemd service is running.',
 		startDockerBtn: 'Start Docker',

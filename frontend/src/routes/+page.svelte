@@ -748,8 +748,12 @@
 									/>
 								{:else}
 									<StatusBadge
-										tone={svc.active ? 'success' : 'neutral'}
-										label={svc.active ? t('common.status.active') : t('common.status.inactive')}
+										tone={svc.active ? 'success' : svc.starting ? 'info' : 'neutral'}
+										label={svc.active
+											? t('common.status.active')
+											: svc.starting
+												? t('common.status.starting')
+												: t('common.status.inactive')}
 									/>
 								{/if}
 							</div>
@@ -871,6 +875,11 @@
 											<SquareIcon data-icon="inline-start" />
 										{/if}
 										{t('common.actions.stop')}
+									</Button>
+								{:else if svc.starting}
+									<Button size="sm" variant="outline" disabled>
+										<Spinner data-icon="inline-start" />
+										{t('common.status.starting')}
 									</Button>
 								{:else}
 									<Button

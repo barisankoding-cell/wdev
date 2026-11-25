@@ -3,6 +3,7 @@ export interface ServiceStatus {
 	display_name: string;
 	category: string;
 	active: boolean;
+	starting?: boolean;
 	status_text: string;
 	version?: string;
 	port?: string;
@@ -1280,6 +1281,7 @@ export interface ComposeEngineInfo {
 	compose_major: number;
 	is_compose_v5: boolean;
 	daemon_running: boolean;
+	daemon_starting?: boolean;
 	daemon_error?: string;
 	api_version?: string;
 	docker_root_dir?: string;

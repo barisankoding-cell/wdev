@@ -49,6 +49,8 @@ export const composeId: WidenStrings<typeof composeEn> = {
 		preconfigSaveFailed: 'Gagal menyimpan pra-konfigurasi Docker'
 	},
 	alerts: {
+		daemonStartingTitle: 'Daemon Docker Sedang Memulai',
+		daemonStartingDesc: 'Layanan systemd docker masih dalam proses start otomatis. Status Compose akan diperbarui begitu Docker siap.',
 		daemonDownTitle: 'Daemon Docker Tidak Aktif / Tidak Terjangkau',
 		daemonDownFallback: 'Pastikan layanan systemd docker sedang berjalan.',
 		startDockerBtn: 'Jalankan Docker',
