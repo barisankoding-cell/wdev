@@ -604,10 +604,7 @@ func (t *TUI) menuCloudflare() {
 			t.waitEnter()
 		case "2":
 			modeChoice := t.prompt("Metode registrasi [1=Tunnel Token Zero Trust, 2=Login Browser OAuth]: ")
-			prof := t.prompt("Nama profil [default]: ")
-			if prof == "" {
-				prof = "default"
-			}
+			prof := t.prompt("Nama profil [otomatis jika kosong]: ")
 			if modeChoice == "1" {
 				tok := t.prompt("Paste Tunnel Token (atau perintah cloudflared service install ...): ")
 				if tok != "" {
@@ -633,7 +630,11 @@ func (t *TUI) menuCloudflare() {
 				for {
 					cur, _ := t.cfMgr.GetLoginSession(sess.ID)
 					if cur == nil || cur.Status == "completed" {
-						fmt.Printf("✓ Profil '%s' berhasil dibuat & diaktifkan.\n", prof)
+						resolved := prof
+						if cur != nil && cur.Profile != "" {
+							resolved = cur.Profile
+						}
+						fmt.Printf("✓ Profil '%s' berhasil dibuat & diaktifkan.\n", resolved)
 						break
 					}
 					if cur.Status == "failed" || cur.Status == "cancelled" {

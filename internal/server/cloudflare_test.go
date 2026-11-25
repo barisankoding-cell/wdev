@@ -166,4 +166,63 @@ func TestCloudflareMultiProfileAPIHandlers(t *testing.T) {
 	if recDel.Code != http.StatusOK {
 		t.Fatalf("POST /api/cloudflare/profiles/delete = %d: %s", recDel.Code, recDel.Body.String())
 	}
+
+	// 7. Daftar profil token & cert dengan name kosong -> otomatis pakai email / nama akun
+	autoAPISrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Header.Get("Authorization") == "Bearer api-tok-email" && r.URL.Path == "/user":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"u99","email":"auto.user@example.com"}}`))
+		case r.Header.Get("Authorization") == "Bearer api-tok-zone" && r.URL.Path == "/zones":
+			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"z99","name":"studioku.dev","status":"active","account":{"id":"acct-studio","name":"Studio Dev's Account"}}]}`))
+		default:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10000,"message":"Forbidden"}]}`))
+		}
+	}))
+	defer autoAPISrv.Close()
+	cfMgr.SetAPIBaseURL(autoAPISrv.URL)
+
+	autoTokBody, _ := json.Marshal(map[string]any{
+		"token":      tokenRaw,
+		"api_token":  "api-tok-email",
+		"auto_start": false,
+	})
+	reqAutoTok := httptest.NewRequest(http.MethodPost, "/api/cloudflare/profiles/token", bytes.NewReader(autoTokBody))
+	recAutoTok := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recAutoTok, reqAutoTok)
+	if recAutoTok.Code != http.StatusOK {
+		t.Fatalf("POST /api/cloudflare/profiles/token auto = %d: %s", recAutoTok.Code, recAutoTok.Body.String())
+	}
+	var autoTokResp struct {
+		Profile cloudflare.ProfileInfo `json:"profile"`
+	}
+	if err := json.Unmarshal(recAutoTok.Body.Bytes(), &autoTokResp); err != nil {
+		t.Fatalf("unmarshal auto token resp: %v", err)
+	}
+	if autoTokResp.Profile.Name != "auto-user-example-com" {
+		t.Fatalf("expected auto token profile auto-user-example-com, got %q", autoTokResp.Profile.Name)
+	}
+
+	autoCertBody, _ := json.Marshal(map[string]any{
+		"cert_pem":         "-----BEGIN ARGO TUNNEL TOKEN-----\nabc\n-----END ARGO TUNNEL TOKEN-----\n",
+		"credentials_json": `{"AccountTag":"acct-studio","TunnelSecret":"sec","TunnelID":"33333333-3333-3333-3333-333333333333"}`,
+		"api_token":        "api-tok-zone",
+		"auto_start":       false,
+	})
+	reqAutoCert := httptest.NewRequest(http.MethodPost, "/api/cloudflare/profiles/cert", bytes.NewReader(autoCertBody))
+	recAutoCert := httptest.NewRecorder()
+	srv.mux.ServeHTTP(recAutoCert, reqAutoCert)
+	if recAutoCert.Code != http.StatusOK {
+		t.Fatalf("POST /api/cloudflare/profiles/cert auto = %d: %s", recAutoCert.Code, recAutoCert.Body.String())
+	}
+	var autoCertResp struct {
+		Profile cloudflare.ProfileInfo `json:"profile"`
+	}
+	if err := json.Unmarshal(recAutoCert.Body.Bytes(), &autoCertResp); err != nil {
+		t.Fatalf("unmarshal auto cert resp: %v", err)
+	}
+	if autoCertResp.Profile.Name != "studio-dev" {
+		t.Fatalf("expected auto cert profile studio-dev, got %q", autoCertResp.Profile.Name)
+	}
 }

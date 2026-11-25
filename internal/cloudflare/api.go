@@ -780,3 +780,140 @@ func (m *Manager) CheckPublicHost(profile, publicHost, localDomain string) (*CFH
 	res.Message = fmt.Sprintf("Subdomain %q belum tercatat pada eksposur lokal.", host)
 	return res, nil
 }
+
+type cfIdentityMetadata struct {
+	Email       string
+	AccountName string
+	ZoneName    string
+	TunnelName  string
+	UserHandle  string
+}
+
+func isCFTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr *cfHTTPStatusError
+	return !errors.As(err, &statusErr)
+}
+
+// fetchIdentityMetadata mencoba mengambil email atau nama akun dari Cloudflare REST API (best-effort)
+// untuk menamai profil otomatis saat pengguna mengosongkan nama profil.
+func (m *Manager) fetchIdentityMetadata(ctx context.Context, apiToken, accountID, zoneID, tunnelID string) cfIdentityMetadata {
+	var meta cfIdentityMetadata
+	if strings.TrimSpace(apiToken) == "" {
+		return meta
+	}
+
+	// 1. Coba GET /user untuk mendapatkan email akun Cloudflare (membutuhkan User Details:Read)
+	var userResp struct {
+		Email     string `json:"email"`
+		Username  string `json:"username"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}
+	if err := m.doCFAPI(ctx, apiToken, http.MethodGet, "/user", nil, &userResp, nil); err == nil {
+		meta.Email = strings.TrimSpace(userResp.Email)
+		fullName := strings.TrimSpace(strings.TrimSpace(userResp.FirstName) + " " + strings.TrimSpace(userResp.LastName))
+		if u := strings.TrimSpace(userResp.Username); u != "" {
+			meta.UserHandle = u
+		} else if fullName != "" {
+			meta.UserHandle = fullName
+		}
+		if meta.Email != "" {
+			return meta
+		}
+	} else if isCFTransportError(err) {
+		return meta
+	}
+
+	// 2. Coba GET /accounts/{id} atau /accounts untuk mendapatkan nama akun
+	if accountID != "" {
+		var accResp struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := m.doCFAPI(ctx, apiToken, http.MethodGet, "/accounts/"+url.PathEscape(accountID), nil, &accResp, nil); err == nil {
+			meta.AccountName = strings.TrimSpace(accResp.Name)
+			if meta.AccountName != "" {
+				return meta
+			}
+		} else if isCFTransportError(err) {
+			return meta
+		}
+	} else {
+		var accList []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := m.doCFAPI(ctx, apiToken, http.MethodGet, "/accounts?per_page=5", nil, &accList, nil); err == nil {
+			if len(accList) > 0 {
+				meta.AccountName = strings.TrimSpace(accList[0].Name)
+			}
+			if meta.AccountName != "" {
+				return meta
+			}
+		} else if isCFTransportError(err) {
+			return meta
+		}
+	}
+
+	// 3. Coba GET /zones/{zoneID} atau /zones karena respons zone juga menyertakan account.name
+	if zoneID != "" {
+		var zResp cfZoneRaw
+		if err := m.doCFAPI(ctx, apiToken, http.MethodGet, "/zones/"+url.PathEscape(zoneID), nil, &zResp, nil); err == nil {
+			meta.AccountName = strings.TrimSpace(zResp.Account.Name)
+			meta.ZoneName = strings.TrimSpace(zResp.Name)
+			if meta.AccountName != "" {
+				return meta
+			}
+		} else if isCFTransportError(err) {
+			return meta
+		}
+	}
+
+	var zList []cfZoneRaw
+	if err := m.doCFAPI(ctx, apiToken, http.MethodGet, "/zones?per_page=20&page=1", nil, &zList, nil); err == nil {
+		for _, z := range zList {
+			if accountID != "" && z.Account.ID == accountID {
+				if accName := strings.TrimSpace(z.Account.Name); accName != "" {
+					meta.AccountName = accName
+				}
+				if meta.ZoneName == "" {
+					meta.ZoneName = strings.TrimSpace(z.Name)
+				}
+				if meta.AccountName != "" {
+					return meta
+				}
+			}
+		}
+		for _, z := range zList {
+			if accName := strings.TrimSpace(z.Account.Name); accName != "" {
+				meta.AccountName = accName
+				if meta.ZoneName == "" {
+					meta.ZoneName = strings.TrimSpace(z.Name)
+				}
+				return meta
+			}
+			if meta.ZoneName == "" {
+				meta.ZoneName = strings.TrimSpace(z.Name)
+			}
+		}
+	} else if isCFTransportError(err) {
+		return meta
+	}
+
+	// 4. Fallback bila token hanya memiliki izin Cloudflare Tunnel
+	if accountID != "" && tunnelID != "" {
+		var tunResp struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		endpoint := fmt.Sprintf("/accounts/%s/cfd_tunnel/%s", url.PathEscape(accountID), url.PathEscape(tunnelID))
+		if err := m.doCFAPI(ctx, apiToken, http.MethodGet, endpoint, nil, &tunResp, nil); err == nil {
+			meta.TunnelName = strings.TrimSpace(tunResp.Name)
+		}
+	}
+
+	return meta
+}

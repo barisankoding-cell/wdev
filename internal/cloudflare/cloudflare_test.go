@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -877,5 +878,258 @@ func TestCheckPublicHostAndOverwriteProtection(t *testing.T) {
 		if r.Hostname == "app1.softcuy.uk" {
 			t.Fatalf("expected orphaned rule app1.softcuy.uk removed from beta.yml when app4.test moved, found: %+v", r)
 		}
+	}
+}
+
+func TestSanitizeAndEnsureUniqueProfileName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"Budi.Santoso+cf@Gmail.COM", "budi-santoso-cf-gmail-com"},
+		{"Admin@Erposoft.my.id's Account", "admin-erposoft-my-id"},
+		{"John’s Account", "john"},
+		{"PT. Maju Jaya (Prod)", "pt-maju-jaya-prod"},
+		{"___@abc.id", "abc-id"},
+		{"---___---", ""},
+		{strings.Repeat("a", 80) + "@example.com", strings.Repeat("a", 64)},
+	}
+	for _, tc := range cases {
+		got := sanitizeAutoProfileName(tc.in)
+		if got != tc.want {
+			t.Errorf("sanitizeAutoProfileName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if got != "" && !cfProfileRe.MatchString(got) {
+			t.Errorf("sanitizeAutoProfileName(%q) = %q does not match cfProfileRe", tc.in, got)
+		}
+	}
+
+	if got := ensureUniqueProfileName("", map[string]ProfileInfo{}); got != "default" {
+		t.Fatalf("empty map fallback = %q, want default", got)
+	}
+	existing := map[string]ProfileInfo{
+		"budi-gmail-com":   {},
+		"budi-gmail-com-2": {},
+		"akun-2":           {},
+	}
+	if got := ensureUniqueProfileName("budi@gmail.com", existing); got != "budi-gmail-com-3" {
+		t.Fatalf("dedup profile = %q, want budi-gmail-com-3", got)
+	}
+	if got := ensureUniqueProfileName("", existing); got != "akun-3" {
+		t.Fatalf("empty base fallback with existing akun-2 = %q, want akun-3", got)
+	}
+	longBase := strings.Repeat("x", 64)
+	gotLong := ensureUniqueProfileName(longBase, map[string]ProfileInfo{longBase: {}})
+	if len(gotLong) > 64 || !strings.HasSuffix(gotLong, "-2") || !cfProfileRe.MatchString(gotLong) {
+		t.Fatalf("long collision = %q (len=%d), want <=64 chars ending with -2", gotLong, len(gotLong))
+	}
+}
+
+func TestAutoProfileNameFromEmailAndAccount(t *testing.T) {
+	mgr, _ := newTestCFManager(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		auth := r.Header.Get("Authorization")
+		switch auth {
+		case "Bearer tok-user":
+			if r.URL.Path == "/user" {
+				_, _ = w.Write([]byte(`{"success":true,"result":{"id":"u1","email":"Budi.Santoso@gmail.com"}}`))
+				return
+			}
+		case "Bearer tok-acct":
+			if r.URL.Path == "/accounts/acct-org" {
+				_, _ = w.Write([]byte(`{"success":true,"result":{"id":"acct-org","name":"PT Maju Jaya"}}`))
+				return
+			}
+		case "Bearer tok-zone":
+			if r.URL.Path == "/zones" {
+				_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"z-other","name":"lain.com","status":"active","account":{"id":"acct-other","name":"Other's Account"}},{"id":"z-main","name":"toko.id","status":"active","account":{"id":"acct-zone","name":"Toko@example.com's Account"}}]}`))
+				return
+			}
+		case "Bearer tok-tun":
+			if r.URL.Path == "/accounts/acct-tun/cfd_tunnel/44444444-4444-4444-4444-444444444444" {
+				_, _ = w.Write([]byte(`{"success":true,"result":{"id":"44444444-4444-4444-4444-444444444444","name":"server-jakarta"}}`))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`))
+	}))
+	defer srv.Close()
+	mgr.SetAPIBaseURL(srv.URL)
+
+	autoFalse := false
+
+	// 1. Dari email (/user)
+	p1, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Token:     makeTestToken("acct-user", "11111111-1111-1111-1111-111111111111", "sec1"),
+		APIToken:  "tok-user",
+		AutoStart: &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterTokenProfile email: %v", err)
+	}
+	if p1.Name != "budi-santoso-gmail-com" {
+		t.Fatalf("expected profile budi-santoso-gmail-com, got %q", p1.Name)
+	}
+
+	// 1b. Email sama harus ter-dedup menjadi -2 tanpa menimpa profil pertama
+	p1Dup, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Token:     makeTestToken("acct-user", "11111111-1111-1111-1111-111111111112", "sec1b"),
+		APIToken:  "tok-user",
+		AutoStart: &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterTokenProfile email dup: %v", err)
+	}
+	if p1Dup.Name != "budi-santoso-gmail-com-2" {
+		t.Fatalf("expected dedup profile budi-santoso-gmail-com-2, got %q", p1Dup.Name)
+	}
+
+	// 2. Dari /accounts/{id} ketika /user gagal
+	p2, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Token:     makeTestToken("acct-org", "22222222-2222-2222-2222-222222222222", "sec2"),
+		APIToken:  "tok-acct",
+		AutoStart: &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterTokenProfile account: %v", err)
+	}
+	if p2.Name != "pt-maju-jaya" {
+		t.Fatalf("expected profile pt-maju-jaya, got %q", p2.Name)
+	}
+
+	// 3. Dari /zones account.name sesuai AccountTag ketika /user & /accounts gagal
+	p3, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Token:     makeTestToken("acct-zone", "33333333-3333-3333-3333-333333333333", "sec3"),
+		APIToken:  "tok-zone",
+		AutoStart: &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterTokenProfile zone account: %v", err)
+	}
+	if p3.Name != "toko-example-com" {
+		t.Fatalf("expected profile toko-example-com, got %q", p3.Name)
+	}
+
+	// 4. Dari /cfd_tunnel/{id} ketika hanya izin Tunnel tersedia
+	p4, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Token:     makeTestToken("acct-tun", "44444444-4444-4444-4444-444444444444", "sec4"),
+		APIToken:  "tok-tun",
+		AutoStart: &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterTokenProfile tunnel name: %v", err)
+	}
+	if p4.Name != "server-jakarta" || p4.TunnelName != "server-jakarta" {
+		t.Fatalf("expected profile & tunnel server-jakarta, got %+v", p4)
+	}
+
+	// 5. Tanpa API token: pakai TunnelName jika diisi, atau fallback akun-N / default
+	p5, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Token:      makeTestToken("acct-raw", "55555555-5555-5555-5555-555555555555", "sec5"),
+		TunnelName: "Kantor Utama",
+		AutoStart:  &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterTokenProfile tunnel label fallback: %v", err)
+	}
+	if p5.Name != "kantor-utama" {
+		t.Fatalf("expected profile kantor-utama, got %q", p5.Name)
+	}
+
+	p6, err := mgr.RegisterTokenProfile(TokenProfileOptions{
+		Token:     makeTestToken("acct-raw2", "66666666-6666-6666-6666-666666666666", "sec6"),
+		AutoStart: &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterTokenProfile numeric fallback: %v", err)
+	}
+	if p6.Name != "akun-2" {
+		t.Fatalf("expected profile akun-2, got %q", p6.Name)
+	}
+}
+
+func TestAutoProfileNameFromCertAndBrowserLogin(t *testing.T) {
+	mgr, dir := newTestCFManager(t)
+	mgr.runCmdFn = func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+		for j := 0; j < len(args)-1; j++ {
+			if args[j] == "--cred-file" {
+				credJSON := `{"AccountTag":"acct-login","TunnelSecret":"c2Vj","TunnelID":"eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"}`
+				_ = os.WriteFile(args[j+1], []byte(credJSON), 0600)
+			}
+		}
+		return []byte("OK"), nil
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer cert-emb-tok" && r.URL.Path == "/zones/z-login" {
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"z-login","name":"domainku.id","status":"active","account":{"id":"acct-login","name":"Owner@Domainku.id's Account"}}}`))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10000,"message":"Forbidden"}]}`))
+	}))
+	defer srv.Close()
+	mgr.SetAPIBaseURL(srv.URL)
+
+	certTokenJSON := `{"zoneID":"z-login","accountID":"acct-login","apiToken":"cert-emb-tok"}`
+	certPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "ARGO TUNNEL TOKEN",
+		Bytes: []byte(certTokenJSON),
+	}))
+
+	// 1. RegisterCertProfile dengan Name kosong menggunakan token di dalam cert.pem
+	autoFalse := false
+	pCert, err := mgr.RegisterCertProfile(CertProfileOptions{
+		CertPEM:   certPEM,
+		AutoStart: &autoFalse,
+	})
+	if err != nil {
+		t.Fatalf("RegisterCertProfile auto name: %v", err)
+	}
+	if pCert.Name != "owner-domainku-id" {
+		t.Fatalf("expected auto profile owner-domainku-id, got %q", pCert.Name)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cloudflare", "accounts", "owner-domainku-id.cert")); err != nil {
+		t.Fatalf("expected owner-domainku-id.cert saved: %v", err)
+	}
+
+	// 2. StartBrowserLoginWithOptions dengan profile kosong menyelesaikan nama otomatis & mengupdate LoginSession.Profile
+	mgr.startLoginCmdFn = func(ctx context.Context, homeDir, binPath string) (io.ReadCloser, func() error, error) {
+		pr, pw := io.Pipe()
+		done := make(chan error, 1)
+		go func() {
+			_, _ = fmt.Fprintln(pw, "https://dash.cloudflare.com/argotunnel?callback=https%3A%2F%2Flogin.cloudflareaccess.org%2Fxyz")
+			cfDir := filepath.Join(homeDir, ".cloudflared")
+			_ = os.MkdirAll(cfDir, 0700)
+			_ = os.WriteFile(filepath.Join(cfDir, "cert.pem"), []byte(certPEM), 0600)
+			time.Sleep(30 * time.Millisecond)
+			_ = pw.Close()
+			done <- nil
+		}()
+		return pr, func() error { return <-done }, nil
+	}
+
+	sess, err := mgr.StartBrowserLoginWithOptions("", "", "")
+	if err != nil {
+		t.Fatalf("StartBrowserLoginWithOptions empty profile: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var latest *LoginSession
+	for time.Now().Before(deadline) {
+		latest, _ = mgr.GetLoginSession(sess.ID)
+		if latest != nil && (latest.Status == "completed" || latest.Status == "failed") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if latest == nil || latest.Status != "completed" || latest.Result == nil {
+		t.Fatalf("expected completed login session, got %+v", latest)
+	}
+	if latest.Profile != "owner-domainku-id-2" || latest.Result.Name != "owner-domainku-id-2" {
+		t.Fatalf("expected resolved profile owner-domainku-id-2, got session=%q result=%q", latest.Profile, latest.Result.Name)
 	}
 }

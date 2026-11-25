@@ -2,11 +2,13 @@ package cloudflare
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +22,13 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// ParsedOriginCert memuat metadata yang disematkan di blok ARGO TUNNEL TOKEN pada cert.pem.
+type ParsedOriginCert struct {
+	ZoneID    string `json:"zoneID"`
+	AccountID string `json:"accountID"`
+	APIToken  string `json:"apiToken"`
+}
 
 // ParsedTunnelToken memuat isi metadata hasil decode token Cloudflare Zero Trust Tunnel.
 type ParsedTunnelToken struct {
@@ -150,22 +159,224 @@ func ParseTunnelToken(input string) (*ParsedTunnelToken, error) {
 	}, nil
 }
 
-// RegisterTokenProfile mendaftarkan profil multi-akun menggunakan Tunnel Token dari Zero Trust Dashboard.
-func (m *Manager) RegisterTokenProfile(opts TokenProfileOptions) (*ProfileInfo, error) {
-	name := normalizeCFProfile(opts.Name)
-	if name == "" {
-		name = "default"
+func parseOriginCert(certPEM string) *ParsedOriginCert {
+	rest := []byte(strings.TrimSpace(certPEM))
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "ARGO TUNNEL TOKEN" {
+			continue
+		}
+		raw := bytes.TrimSpace(block.Bytes)
+		if len(raw) == 0 {
+			continue
+		}
+		var out ParsedOriginCert
+		if err := json.Unmarshal(raw, &out); err != nil {
+			for _, enc := range []*base64.Encoding{
+				base64.StdEncoding,
+				base64.RawStdEncoding,
+				base64.URLEncoding,
+				base64.RawURLEncoding,
+			} {
+				if dec, dErr := enc.DecodeString(string(raw)); dErr == nil {
+					if jErr := json.Unmarshal(bytes.TrimSpace(dec), &out); jErr == nil {
+						err = nil
+						break
+					}
+				}
+			}
+			if err != nil {
+				continue
+			}
+		}
+		out.ZoneID = strings.TrimSpace(out.ZoneID)
+		out.AccountID = strings.TrimSpace(out.AccountID)
+		out.APIToken = strings.TrimSpace(out.APIToken)
+		if out.ZoneID != "" || out.AccountID != "" || out.APIToken != "" {
+			return &out
+		}
 	}
-	if err := validateCFProfile(name); err != nil {
-		return nil, err
+	return nil
+}
+
+func sanitizeAutoProfileName(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	// Cloudflare sering menamai akun personal sebagai "<email>'s Account" atau "<nama>'s Account"
+	for _, suffix := range []string{"'s account", "’s account"} {
+		if strings.HasSuffix(s, suffix) {
+			trimmed := strings.TrimSpace(strings.TrimSuffix(s, suffix))
+			if trimmed != "" {
+				s = trimmed
+			}
+			break
+		}
 	}
 
+	var b strings.Builder
+	b.Grow(len(s))
+	lastHyphen := false
+	for _, r := range s {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastHyphen = false
+		case r == '_':
+			if b.Len() > 0 {
+				b.WriteRune('_')
+				lastHyphen = false
+			}
+		default:
+			if b.Len() > 0 && !lastHyphen {
+				b.WriteRune('-')
+				lastHyphen = true
+			}
+		}
+	}
+
+	clean := strings.Trim(b.String(), "-_")
+	if len(clean) > 64 {
+		clean = strings.TrimRight(clean[:64], "-_")
+	}
+	if !cfProfileRe.MatchString(clean) {
+		return ""
+	}
+	return clean
+}
+
+func ensureUniqueProfileName(base string, existing map[string]ProfileInfo) string {
+	clean := sanitizeAutoProfileName(base)
+	if clean == "" {
+		if len(existing) == 0 {
+			return "default"
+		}
+		for i := 2; ; i++ {
+			cand := fmt.Sprintf("akun-%d", i)
+			if _, ok := existing[cand]; !ok {
+				return cand
+			}
+		}
+	}
+	if _, ok := existing[clean]; !ok {
+		return clean
+	}
+	for i := 2; ; i++ {
+		suffix := fmt.Sprintf("-%d", i)
+		prefix := clean
+		maxPrefix := 64 - len(suffix)
+		if len(prefix) > maxPrefix {
+			prefix = strings.TrimRight(prefix[:maxPrefix], "-_")
+		}
+		if prefix == "" {
+			prefix = "akun"
+		}
+		cand := prefix + suffix
+		if _, ok := existing[cand]; !ok {
+			return cand
+		}
+	}
+}
+
+type autoProfileHints struct {
+	APIToken   string
+	CertToken  string
+	AccountID  string
+	ZoneID     string
+	TunnelID   string
+	TunnelName string
+}
+
+func (m *Manager) resolveAutoProfileName(hints autoProfileHints) (profileName string, tunnelName string) {
+	var tokens []string
+	apiTok := strings.TrimSpace(hints.APIToken)
+	if apiTok != "" {
+		tokens = append(tokens, apiTok)
+	}
+	if certTok := strings.TrimSpace(hints.CertToken); certTok != "" && certTok != apiTok {
+		tokens = append(tokens, certTok)
+	}
+
+	var merged cfIdentityMetadata
+	if len(tokens) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, tok := range tokens {
+			meta := m.fetchIdentityMetadata(ctx, tok, hints.AccountID, hints.ZoneID, hints.TunnelID)
+			if merged.Email == "" {
+				merged.Email = meta.Email
+			}
+			if merged.AccountName == "" {
+				merged.AccountName = meta.AccountName
+			}
+			if merged.UserHandle == "" {
+				merged.UserHandle = meta.UserHandle
+			}
+			if merged.ZoneName == "" {
+				merged.ZoneName = meta.ZoneName
+			}
+			if merged.TunnelName == "" {
+				merged.TunnelName = meta.TunnelName
+			}
+			if merged.Email != "" || merged.AccountName != "" {
+				break
+			}
+		}
+	}
+
+	resolvedTunnel := strings.TrimSpace(hints.TunnelName)
+	if resolvedTunnel == "" {
+		resolvedTunnel = merged.TunnelName
+	}
+
+	candidates := []string{
+		merged.Email,
+		merged.AccountName,
+		merged.UserHandle,
+		merged.ZoneName,
+		resolvedTunnel,
+	}
+	base := ""
+	for _, cand := range candidates {
+		if clean := sanitizeAutoProfileName(cand); clean != "" {
+			base = clean
+			break
+		}
+	}
+
+	existing := m.collectProfileMap()
+	return ensureUniqueProfileName(base, existing), resolvedTunnel
+}
+
+// RegisterTokenProfile mendaftarkan profil multi-akun menggunakan Tunnel Token dari Zero Trust Dashboard.
+func (m *Manager) RegisterTokenProfile(opts TokenProfileOptions) (*ProfileInfo, error) {
 	parsed, err := ParseTunnelToken(opts.Token)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := normalizeAPIToken(opts.APIToken); err != nil {
+	cleanAPITok, err := normalizeAPIToken(opts.APIToken)
+	if err != nil {
 		return nil, err
+	}
+
+	name := normalizeCFProfile(opts.Name)
+	var fetchedTunnelName string
+	if name != "" {
+		if err := validateCFProfile(name); err != nil {
+			return nil, err
+		}
+	} else {
+		name, fetchedTunnelName = m.resolveAutoProfileName(autoProfileHints{
+			APIToken:   cleanAPITok,
+			AccountID:  parsed.AccountTag,
+			TunnelID:   parsed.TunnelID,
+			TunnelName: strings.TrimSpace(opts.TunnelName),
+		})
 	}
 	if err := m.ensureDirs(); err != nil {
 		return nil, err
@@ -175,13 +386,16 @@ func (m *Manager) RegisterTokenProfile(opts TokenProfileOptions) (*ProfileInfo, 
 	if err := m.writeConfigFile(tokenPath, []byte(parsed.RawToken+"\n"), 0600); err != nil {
 		return nil, fmt.Errorf("gagal menyimpan file token: %w", err)
 	}
-	if strings.TrimSpace(opts.APIToken) != "" {
-		if err := m.saveProfileAPIToken(name, opts.APIToken); err != nil {
+	if cleanAPITok != "" {
+		if err := m.saveProfileAPIToken(name, cleanAPITok); err != nil {
 			return nil, fmt.Errorf("gagal menyimpan Cloudflare API Token: %w", err)
 		}
 	}
 
 	tunnelName := strings.TrimSpace(opts.TunnelName)
+	if tunnelName == "" && fetchedTunnelName != "" {
+		tunnelName = fetchedTunnelName
+	}
 	if tunnelName == "" {
 		tunnelName = "cf-" + name
 	}
@@ -240,14 +454,6 @@ func (m *Manager) RegisterTokenProfile(opts TokenProfileOptions) (*ProfileInfo, 
 // RegisterCertProfile mendaftarkan profil multi-akun berbasis cert.pem (Locally-Managed Tunnel).
 // Jika credentials_json tidak disertakan dan biner cloudflared tersedia, wdev otomatis membuat tunnel baru.
 func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, error) {
-	name := normalizeCFProfile(opts.Name)
-	if name == "" {
-		name = "default"
-	}
-	if err := validateCFProfile(name); err != nil {
-		return nil, err
-	}
-
 	certText := strings.TrimSpace(opts.CertPEM)
 	if certText == "" && strings.TrimSpace(opts.LocalCertPath) != "" {
 		allowed := m.detectSystemCertFiles()
@@ -281,8 +487,51 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 	if !hasCert && credText == "" {
 		return nil, errors.New("minimal cert.pem atau credentials JSON tunnel wajib disediakan")
 	}
-	if _, err := normalizeAPIToken(opts.APIToken); err != nil {
+	cleanAPITok, err := normalizeAPIToken(opts.APIToken)
+	if err != nil {
 		return nil, err
+	}
+
+	var credTunnelID, credAccountTag string
+	if credText != "" {
+		tid, tag, err := parseCredentialsJSONBytes([]byte(credText))
+		if err != nil {
+			return nil, err
+		}
+		credTunnelID = tid
+		credAccountTag = tag
+	}
+
+	certMeta := parseOriginCert(certText)
+
+	name := normalizeCFProfile(opts.Name)
+	if name != "" {
+		if err := validateCFProfile(name); err != nil {
+			return nil, err
+		}
+	} else {
+		accID := credAccountTag
+		if accID == "" && certMeta != nil {
+			accID = certMeta.AccountID
+		}
+		zoneID := ""
+		certTok := ""
+		if certMeta != nil {
+			zoneID = certMeta.ZoneID
+			certTok = certMeta.APIToken
+		}
+		tid := strings.TrimSpace(opts.TunnelID)
+		if tid == "" {
+			tid = credTunnelID
+		}
+		name, _ = m.resolveAutoProfileName(autoProfileHints{
+			APIToken:   cleanAPITok,
+			CertToken:  certTok,
+			AccountID:  accID,
+			ZoneID:     zoneID,
+			TunnelID:   tid,
+			TunnelName: strings.TrimSpace(opts.TunnelName),
+		})
 	}
 
 	if err := m.ensureDirs(); err != nil {
@@ -298,8 +547,8 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 			return nil, fmt.Errorf("gagal menyimpan %s: %w", certPath, err)
 		}
 	}
-	if strings.TrimSpace(opts.APIToken) != "" {
-		if err := m.saveProfileAPIToken(name, opts.APIToken); err != nil {
+	if cleanAPITok != "" {
+		if err := m.saveProfileAPIToken(name, cleanAPITok); err != nil {
 			return nil, fmt.Errorf("gagal menyimpan Cloudflare API Token: %w", err)
 		}
 	}
@@ -310,9 +559,13 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 		if hostName == "" {
 			hostName = "wdev"
 		}
-		tunnelName = strings.ToLower(fmt.Sprintf("%s-%s", strings.Split(hostName, ".")[0], name))
-		if !cfProfileRe.MatchString(tunnelName) {
-			tunnelName = "wdev-" + name
+		hostPrefix := sanitizeAutoProfileName(strings.Split(hostName, ".")[0])
+		if hostPrefix == "" {
+			hostPrefix = "wdev"
+		}
+		tunnelName = hostPrefix + "-" + name
+		if len(tunnelName) > 64 {
+			tunnelName = strings.TrimRight(tunnelName[:64], "-_")
 		}
 	}
 
@@ -320,14 +573,10 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 	accountTag := ""
 
 	if credText != "" {
-		tid, tag, err := parseCredentialsJSONBytes([]byte(credText))
-		if err != nil {
-			return nil, err
-		}
 		if tunnelID == "" {
-			tunnelID = tid
+			tunnelID = credTunnelID
 		}
-		accountTag = tag
+		accountTag = credAccountTag
 		if err := m.writeConfigFile(credPath, []byte(credText+"\n"), 0600); err != nil {
 			return nil, fmt.Errorf("gagal menyimpan credentials JSON: %w", err)
 		}
@@ -356,6 +605,9 @@ func (m *Manager) RegisterCertProfile(opts CertProfileOptions) (*ProfileInfo, er
 				accountTag = tag
 			}
 		}
+	}
+	if accountTag == "" && certMeta != nil {
+		accountTag = certMeta.AccountID
 	}
 
 	// Buat atau perbarui routes/<profile>.yml agar selalu memiliki tunnel + credentials-file
@@ -446,11 +698,10 @@ func (m *Manager) StartBrowserLogin(profile, tunnelName string) (*LoginSession, 
 // StartBrowserLoginWithOptions memulai proses `cloudflared tunnel login` terisolasi per profil dengan API Token opsional.
 func (m *Manager) StartBrowserLoginWithOptions(profile, tunnelName, apiToken string) (*LoginSession, error) {
 	name := normalizeCFProfile(profile)
-	if name == "" {
-		name = "default"
-	}
-	if err := validateCFProfile(name); err != nil {
-		return nil, err
+	if name != "" {
+		if err := validateCFProfile(name); err != nil {
+			return nil, err
+		}
 	}
 	cleanAPITok, err := normalizeAPIToken(apiToken)
 	if err != nil {
@@ -588,9 +839,14 @@ func (m *Manager) StartBrowserLoginWithOptions(profile, tunnelName, apiToken str
 			cur.Error = regErr.Error()
 			cur.Message = "Login berhasil, namun gagal membuat tunnel profil."
 		} else {
+			resolvedName := name
+			if res != nil && res.Name != "" {
+				resolvedName = res.Name
+			}
+			cur.Profile = resolvedName
 			cur.Status = "completed"
 			cur.Result = res
-			cur.Message = fmt.Sprintf("Profil '%s' berhasil terdaftar dan aktif.", name)
+			cur.Message = fmt.Sprintf("Profil '%s' berhasil terdaftar dan aktif.", resolvedName)
 		}
 		m.loginMu.Unlock()
 		markReady()

@@ -76,7 +76,7 @@
 	let addTab = $state<'token' | 'login' | 'cert'>('token');
 
 	// Form Token Zero Trust
-	let tokenName = $state('default');
+	let tokenName = $state('');
 	let tokenValue = $state('');
 	let tokenTunnelName = $state('');
 	let tokenApiToken = $state('');
@@ -84,7 +84,7 @@
 	let savingToken = $state(false);
 
 	// Form Browser OAuth Login
-	let loginName = $state('default');
+	let loginName = $state('');
 	let loginTunnelName = $state('');
 	let loginApiToken = $state('');
 	let loginSession = $state<CFLoginSession | null>(null);
@@ -92,7 +92,7 @@
 	let loginPollTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Form Cert.pem + Credentials JSON
-	let certName = $state('default');
+	let certName = $state('');
 	let certPEM = $state('');
 	let selectedLocalCert = $state('');
 	let certCredJSON = $state('');
@@ -369,10 +369,9 @@
 
 	function openAddProfileModal(tab: 'token' | 'login' | 'cert' = 'token') {
 		addTab = tab;
-		const suggested = profileDetails.length === 0 ? 'default' : `akun-${profileDetails.length + 1}`;
-		tokenName = suggested;
-		loginName = suggested;
-		certName = suggested;
+		tokenName = '';
+		loginName = '';
+		certName = '';
 		tokenApiToken = '';
 		loginApiToken = '';
 		certApiToken = '';
@@ -439,20 +438,21 @@
 
 	async function submitTokenProfile(e: SubmitEvent) {
 		e.preventDefault();
-		if (!tokenName.trim() || !tokenValue.trim()) {
-			toast.warning('Nama profil dan tunnel token wajib diisi.');
+		if (!tokenValue.trim()) {
+			toast.warning('Tunnel token wajib diisi.');
 			return;
 		}
 		savingToken = true;
 		try {
 			const res = await api.registerCFTokenProfile({
-				name: tokenName.trim(),
+				name: tokenName.trim() || undefined,
 				token: tokenValue.trim(),
 				tunnel_name: tokenTunnelName.trim() || undefined,
 				api_token: tokenApiToken.trim() || undefined,
 				auto_start: tokenAutoStart
 			});
 			toast.success(`Profil token '${res.profile.name}' berhasil didaftarkan.`);
+			tokenName = '';
 			tokenValue = '';
 			tokenTunnelName = '';
 			tokenApiToken = '';
@@ -469,10 +469,6 @@
 
 	async function startBrowserLoginFlow(e: SubmitEvent) {
 		e.preventDefault();
-		if (!loginName.trim()) {
-			toast.warning('Nama profil wajib diisi.');
-			return;
-		}
 		stopLoginPoll();
 		startingLogin = true;
 		try {
@@ -482,7 +478,18 @@
 				loginApiToken.trim()
 			);
 			loginSession = sess;
-			if (sess.status === 'waiting_browser' || sess.status === 'starting') {
+			if (sess.status === 'completed') {
+				const resolvedName = sess.result?.name || sess.profile;
+				toast.success(sess.message || `Profil '${resolvedName}' berhasil terdaftar.`);
+				profile = resolvedName;
+				addModalOpen = false;
+				loginSession = null;
+				loginName = '';
+				loginTunnelName = '';
+				loginApiToken = '';
+				lastZoneKey = '';
+				await loadCloudflare();
+			} else if (sess.status === 'waiting_browser' || sess.status === 'starting') {
 				loginPollTimer = setInterval(async () => {
 					if (!loginSession?.session_id) {
 						stopLoginPoll();
@@ -493,10 +500,13 @@
 						loginSession = cur;
 						if (cur.status === 'completed') {
 							stopLoginPoll();
-							toast.success(cur.message || `Profil '${cur.profile}' berhasil terdaftar.`);
-							profile = cur.profile;
+							const resolvedName = cur.result?.name || cur.profile;
+							toast.success(cur.message || `Profil '${resolvedName}' berhasil terdaftar.`);
+							profile = resolvedName;
 							addModalOpen = false;
 							loginSession = null;
+							loginName = '';
+							loginTunnelName = '';
 							loginApiToken = '';
 							lastZoneKey = '';
 							await loadCloudflare();
@@ -525,10 +535,6 @@
 
 	async function submitCertProfile(e: SubmitEvent) {
 		e.preventDefault();
-		if (!certName.trim()) {
-			toast.warning('Nama profil wajib diisi.');
-			return;
-		}
 		if (!certPEM.trim() && !selectedLocalCert && !certCredJSON.trim()) {
 			toast.warning('Isi cert.pem, pilih cert lokal yang terdeteksi, atau sertakan credentials JSON.');
 			return;
@@ -536,7 +542,7 @@
 		savingCert = true;
 		try {
 			const res = await api.registerCFCertProfile({
-				name: certName.trim(),
+				name: certName.trim() || undefined,
 				cert_pem: certPEM.trim() || undefined,
 				local_cert_path: !certPEM.trim() && selectedLocalCert ? selectedLocalCert : undefined,
 				credentials_json: certCredJSON.trim() || undefined,
@@ -545,6 +551,7 @@
 				auto_start: certAutoStart
 			});
 			toast.success(`Profil cert '${res.profile.name}' berhasil didaftarkan.`);
+			certName = '';
 			certPEM = '';
 			certCredJSON = '';
 			certTunnelName = '';
@@ -1524,15 +1531,14 @@
 				<form onsubmit={submitTokenProfile} class="flex flex-col gap-4">
 					<Field.FieldGroup>
 						<Field.Field>
-							<Field.FieldLabel for="cf-tok-name">Nama Profil</Field.FieldLabel>
+							<Field.FieldLabel for="cf-tok-name">Nama Profil (Opsional)</Field.FieldLabel>
 							<Input
 								id="cf-tok-name"
-								placeholder="contoh: default, client-a, kantor"
+								placeholder="Otomatis dari email / nama akun jika dikosongkan"
 								bind:value={tokenName}
-								required
 							/>
 							<Field.FieldDescription class="text-xs">
-								Gunakan huruf, angka, <code class="font-mono">-</code> atau <code class="font-mono">_</code>.
+								Kosongkan untuk menamai profil otomatis dari email atau nama akun Cloudflare (memerlukan API Token) maupun fallback otomatis. Karakter valid: huruf, angka, <code class="font-mono">-</code> atau <code class="font-mono">_</code>.
 							</Field.FieldDescription>
 						</Field.Field>
 
@@ -1595,8 +1601,15 @@
 					<form onsubmit={startBrowserLoginFlow} class="flex flex-col gap-4">
 						<Field.FieldGroup>
 							<Field.Field>
-								<Field.FieldLabel for="cf-login-name">Nama Profil</Field.FieldLabel>
-								<Input id="cf-login-name" placeholder="contoh: akun-1, proyek-b" bind:value={loginName} required />
+								<Field.FieldLabel for="cf-login-name">Nama Profil (Opsional)</Field.FieldLabel>
+								<Input
+									id="cf-login-name"
+									placeholder="Otomatis dari email / nama akun setelah login"
+									bind:value={loginName}
+								/>
+								<Field.FieldDescription class="text-xs">
+									Kosongkan agar nama profil dibuat otomatis berdasarkan email atau nama akun Cloudflare setelah otorisasi browser selesai.
+								</Field.FieldDescription>
 							</Field.Field>
 							<Field.Field>
 								<Field.FieldLabel for="cf-login-tunnel">Nama Tunnel Baru di Akun (Opsional)</Field.FieldLabel>
@@ -1634,7 +1647,7 @@
 					<div class="flex flex-col gap-4">
 						<Alert.Root>
 							<InfoIcon />
-							<Alert.Title>Menunggu Otorisasi Cloudflare ({loginSession.profile})</Alert.Title>
+							<Alert.Title>Menunggu Otorisasi Cloudflare ({loginSession.profile || 'Nama Profil Otomatis'})</Alert.Title>
 							<Alert.Description class="flex flex-col gap-2 text-xs">
 								<p>{loginSession.message}</p>
 								{#if loginSession.auth_url}
@@ -1691,8 +1704,15 @@
 				<form onsubmit={submitCertProfile} class="flex flex-col gap-4">
 					<Field.FieldGroup>
 						<Field.Field>
-							<Field.FieldLabel for="cf-cert-name">Nama Profil</Field.FieldLabel>
-							<Input id="cf-cert-name" placeholder="contoh: default, client-b" bind:value={certName} required />
+							<Field.FieldLabel for="cf-cert-name">Nama Profil (Opsional)</Field.FieldLabel>
+							<Input
+								id="cf-cert-name"
+								placeholder="Otomatis dari email / nama akun jika dikosongkan"
+								bind:value={certName}
+							/>
+							<Field.FieldDescription class="text-xs">
+								Kosongkan agar nama profil dibuat otomatis berdasarkan email atau nama akun Cloudflare dari <code class="font-mono">cert.pem</code> atau API Token.
+							</Field.FieldDescription>
 						</Field.Field>
 
 						{#if (cfStatus?.detected_local_certs?.length ?? 0) > 0}

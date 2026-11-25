@@ -89,9 +89,9 @@ CLOUDFLARE TUNNEL (MULTI-PROFILE):
   wdev cf login [profil] [--tunnel-name <nama>] [--api-token <tok>]
                             Login interaktif Cloudflare (isolated per profil) & buat tunnel
   wdev cf profile list      Daftar seluruh profil Cloudflare terdaftar
-  wdev cf profile add-token <profil> <token> [--tunnel-name <nama>] [--api-token <tok>] [--no-start]
+  wdev cf profile add-token [<profil>] <token> [--tunnel-name <nama>] [--api-token <tok>] [--no-start]
                             Daftarkan profil Cloudflare Tunnel dengan Tunnel Token Zero Trust
-  wdev cf profile add-cert <profil> <cert.pem> [--cred <cred.json>] [--tunnel-name <nama>] [--api-token <tok>] [--no-start]
+  wdev cf profile add-cert [<profil>] <cert.pem> [--cred <cred.json>] [--tunnel-name <nama>] [--api-token <tok>] [--no-start]
                             Daftarkan profil berbasis cert.pem (& auto-create tunnel)
   wdev cf profile api-token <profil> [<api_token> | --clear]
                             Pasang atau hapus Cloudflare API Token opsional (Zone:Read/DNS:Edit/Tunnel:Edit)
@@ -765,7 +765,7 @@ func main() {
 
 		switch args[1] {
 		case "login":
-			profile := "default"
+			profile := ""
 			tunnelName := ""
 			apiToken := ""
 			for i := 2; i < len(args); i++ {
@@ -775,11 +775,15 @@ func main() {
 				} else if args[i] == "--api-token" && i+1 < len(args) {
 					apiToken = args[i+1]
 					i++
-				} else if !strings.HasPrefix(args[i], "-") && profile == "default" {
+				} else if !strings.HasPrefix(args[i], "-") && profile == "" {
 					profile = args[i]
 				}
 			}
-			fmt.Printf("Memulai login Cloudflare terisolasi untuk profil '%s'...\n", profile)
+			if profile != "" {
+				fmt.Printf("Memulai login Cloudflare terisolasi untuk profil '%s'...\n", profile)
+			} else {
+				fmt.Println("Memulai login Cloudflare terisolasi (nama profil otomatis)...")
+			}
 			sess, err := cfMgr.StartBrowserLoginWithOptions(profile, tunnelName, apiToken)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -815,7 +819,7 @@ func main() {
 			}
 			switch args[2] {
 			case "login":
-				profile := "default"
+				profile := ""
 				tunnelName := ""
 				apiToken := ""
 				for i := 3; i < len(args); i++ {
@@ -825,7 +829,7 @@ func main() {
 					} else if args[i] == "--api-token" && i+1 < len(args) {
 						apiToken = args[i+1]
 						i++
-					} else if !strings.HasPrefix(args[i], "-") {
+					} else if !strings.HasPrefix(args[i], "-") && profile == "" {
 						profile = args[i]
 					}
 				}
@@ -840,7 +844,11 @@ func main() {
 				for {
 					cur, _ := cfMgr.GetLoginSession(sess.ID)
 					if cur == nil || cur.Status == "completed" {
-						fmt.Printf("✓ Profil '%s' siap digunakan.\n", profile)
+						resolved := profile
+						if cur != nil && cur.Profile != "" {
+							resolved = cur.Profile
+						}
+						fmt.Printf("✓ Profil '%s' siap digunakan.\n", resolved)
 						return
 					}
 					if cur.Status == "failed" || cur.Status == "cancelled" {
@@ -850,14 +858,28 @@ func main() {
 					time.Sleep(1500 * time.Millisecond)
 				}
 			case "add-token":
-				if len(args) < 5 {
-					fmt.Println("Penggunaan: wdev cf profile add-token <profil> <token> [--tunnel-name <nama>] [--api-token <tok>] [--no-start]")
+				var profName, rawToken string
+				flagStart := 0
+				isFirstArgToken := false
+				if len(args) >= 4 {
+					_, tokErr := cloudflare.ParseTunnelToken(args[3])
+					isFirstArgToken = (tokErr == nil)
+				}
+				if len(args) >= 4 && (len(args) == 4 || strings.HasPrefix(args[4], "--") || isFirstArgToken) {
+					rawToken = args[3]
+					flagStart = 4
+				} else if len(args) >= 5 {
+					profName = args[3]
+					rawToken = args[4]
+					flagStart = 5
+				} else {
+					fmt.Println("Penggunaan: wdev cf profile add-token [<profil>] <token> [--tunnel-name <nama>] [--api-token <tok>] [--no-start]")
 					os.Exit(1)
 				}
 				autoStart := true
 				tunnelName := ""
 				apiToken := ""
-				for i := 5; i < len(args); i++ {
+				for i := flagStart; i < len(args); i++ {
 					switch args[i] {
 					case "--tunnel-name":
 						if i+1 < len(args) {
@@ -874,8 +896,8 @@ func main() {
 					}
 				}
 				info, err := cfMgr.RegisterTokenProfile(cloudflare.TokenProfileOptions{
-					Name:       args[3],
-					Token:      args[4],
+					Name:       profName,
+					Token:      rawToken,
 					TunnelName: tunnelName,
 					APIToken:   apiToken,
 					AutoStart:  &autoStart,
@@ -887,20 +909,29 @@ func main() {
 				fmt.Printf("✓ Profil Token '%s' terdaftar (Tunnel ID: %s, Unit: %s)\n", info.Name, info.TunnelID, info.ServiceUnit)
 
 			case "add-cert":
-				if len(args) < 5 {
-					fmt.Println("Penggunaan: wdev cf profile add-cert <profil> <cert.pem_path> [--cred <cred.json_path>] [--tunnel-name <nama>] [--api-token <tok>] [--no-start]")
+				var profName, certFile string
+				flagStart := 0
+				if len(args) >= 4 && (len(args) == 4 || strings.HasPrefix(args[4], "--")) {
+					certFile = args[3]
+					flagStart = 4
+				} else if len(args) >= 5 {
+					profName = args[3]
+					certFile = args[4]
+					flagStart = 5
+				} else {
+					fmt.Println("Penggunaan: wdev cf profile add-cert [<profil>] <cert.pem_path> [--cred <cred.json_path>] [--tunnel-name <nama>] [--api-token <tok>] [--no-start]")
 					os.Exit(1)
 				}
-				certData, err := os.ReadFile(args[4])
+				certData, err := os.ReadFile(certFile)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error membaca %s: %v\n", args[4], err)
+					fmt.Fprintf(os.Stderr, "Error membaca %s: %v\n", certFile, err)
 					os.Exit(1)
 				}
 				credJSON := ""
 				tunnelName := ""
 				apiToken := ""
 				autoStart := true
-				for i := 5; i < len(args); i++ {
+				for i := flagStart; i < len(args); i++ {
 					switch args[i] {
 					case "--cred":
 						if i+1 < len(args) {
@@ -927,7 +958,7 @@ func main() {
 					}
 				}
 				info, err := cfMgr.RegisterCertProfile(cloudflare.CertProfileOptions{
-					Name:            args[3],
+					Name:            profName,
 					CertPEM:         string(certData),
 					CredentialsJSON: credJSON,
 					TunnelName:      tunnelName,

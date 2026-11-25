@@ -465,7 +465,7 @@ export const api = {
 			`/api/cloudflare/zones?profile=${encodeURIComponent(profile)}`
 		),
 	registerCFTokenProfile: (payload: {
-		name: string;
+		name?: string;
 		token: string;
 		tunnel_name?: string;
 		api_token?: string;
@@ -476,7 +476,7 @@ export const api = {
 			body: JSON.stringify(payload)
 		}),
 	registerCFCertProfile: (payload: {
-		name: string;
+		name?: string;
 		cert_pem?: string;
 		local_cert_path?: string;
 		credentials_json?: string;
@@ -494,11 +494,11 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ name, api_token })
 		}),
-	startCFLogin: (name: string, tunnel_name = '', api_token = '') =>
+	startCFLogin: (name = '', tunnel_name = '', api_token = '') =>
 		apiFetch<CFLoginSession>('/api/cloudflare/profiles/login/start', {
 			method: 'POST',
 			body: JSON.stringify({
-				name,
+				...(name ? { name } : {}),
 				...(tunnel_name ? { tunnel_name } : {}),
 				...(api_token ? { api_token } : {})
 			})
