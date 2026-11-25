@@ -139,11 +139,13 @@
 		return site.framework === 'nodejs' || site.framework === 'go' || site.framework === 'rust';
 	}
 
-	function frameworkBadgeLabel(fw: string): string {
-		if (fw === 'nodejs') return 'NODE.JS';
-		if (fw === 'go') return 'GO';
-		if (fw === 'rust') return 'RUST';
-		return fw.toUpperCase();
+	function frameworkBadgeLabel(fw?: string): string {
+		const normalized = (fw || '').trim().toLowerCase();
+		if (normalized === 'nodejs') return 'NODE.JS';
+		if (normalized === 'go') return 'GO';
+		if (normalized === 'rust') return 'RUST';
+		if (!normalized) return 'GENERIC';
+		return normalized.toUpperCase();
 	}
 
 	function appRuntimeTone(site: SiteRecord): 'success' | 'info' | 'destructive' | 'neutral' {
@@ -684,6 +686,7 @@
 						{@const proto = site.ssl_enabled ? 'https://' : 'http://'}
 						{@const hasLetsEncrypt = site.ssl_enabled && site.ssl_provider === 'letsencrypt'}
 						{@const sslExpiry = formatSSLExpiry(site.ssl_expires_at, site.ssl_days_left)}
+						{@const managed = isManagedApp(site)}
 						{@const primaryHref =
 							isEdge && site.exposed_to && site.domain === site.exposed_to
 								? `https://${site.exposed_to}`
@@ -706,17 +709,20 @@
 								{/if}
 							</Table.Cell>
 							<Table.Cell data-label={t('webstack.page.dataFramework')}>
-								<div class="flex flex-wrap items-center gap-1.5">
-									<Badge variant={isManagedApp(site) ? 'default' : 'secondary'} class="uppercase">
+								<div class="flex flex-col items-start gap-1">
+									<Badge variant={managed ? 'default' : 'secondary'} class="uppercase tracking-wide">
 										{frameworkBadgeLabel(site.framework)}
 									</Badge>
-									{#if isManagedApp(site)}
-										<StatusBadge tone={appRuntimeTone(site)} label={appRuntimeLabel(site)} />
-										{#if isAppRunning(site) && (site.app_status?.memory_bytes ?? 0) > 0}
-											<Badge variant="outline" class="font-mono text-[11px] font-medium">
-												{t('webstack.page.ramBadge', { ram: formatMemoryBytes(site.app_status?.memory_bytes) })}
-											</Badge>
-										{/if}
+									{#if managed}
+										{@const ramLabel = isAppRunning(site) ? formatMemoryBytes(site.app_status?.memory_bytes) : ''}
+										<div class="flex flex-wrap items-center gap-x-2 gap-y-1 sm:flex-nowrap">
+											<StatusBadge tone={appRuntimeTone(site)} label={appRuntimeLabel(site)} />
+											{#if ramLabel}
+												<span class="whitespace-nowrap font-mono text-[11px] font-medium tabular-nums text-muted-foreground">
+													{t('webstack.page.ramBadge', { ram: ramLabel })}
+												</span>
+											{/if}
+										</div>
 									{/if}
 								</div>
 							</Table.Cell>
@@ -830,7 +836,6 @@
 									Boolean(sslPending[site.domain]) ||
 									Boolean(siteDeleting[site.domain]) ||
 									Boolean(appActionPending[site.domain])}
-								{@const managed = isManagedApp(site)}
 								{@const appRunning = site.app_status?.active_state === 'active'}
 								<div class="flex flex-wrap items-center justify-end gap-1.5">
 									{#if managed}

@@ -28,6 +28,14 @@
 
 	const pageTitle = $derived(getPageMeta(page.url.pathname, modeStore.mode).title);
 
+	const activeModeLabel = $derived(
+		modeStore.mode === 'vps'
+			? MODE_LABELS.vps
+			: modeStore.mode === 'local'
+				? t('layout.nav.footer.modeLocalShort')
+				: MODE_LABELS.edge
+	);
+
 	const themeOptions = $derived<{ value: ThemePreference; label: string }[]>([
 		{ value: 'system', label: t('common.theme.system') },
 		{ value: 'light', label: t('common.theme.light') },
@@ -45,39 +53,6 @@
 	</div>
 
 	<div class="flex shrink-0 items-center gap-1.5 sm:gap-2">
-		<Button
-			variant="outline"
-			size="sm"
-			onclick={() => modeStore.openModal()}
-			class="hidden sm:inline-flex gap-1.5 px-2.5 h-8 text-xs font-medium border-primary/30 hover:border-primary"
-			aria-label={t('layout.topbar.selectModeAria')}
-		>
-			{#if modeStore.mode === 'vps'}
-				<ServerIcon class="size-3.5 text-primary" />
-				<span class="hidden sm:inline">{t('layout.topbar.modePrefix')}</span>
-				<span class="font-semibold text-primary">{MODE_LABELS.vps}</span>
-			{:else if modeStore.mode === 'local'}
-				<LaptopIcon class="size-3.5 text-primary" />
-				<span class="hidden sm:inline">{t('layout.topbar.modePrefix')}</span>
-				<span class="font-semibold text-primary">{t('layout.nav.footer.modeLocalShort')}</span>
-			{:else}
-				<NetworkIcon class="size-3.5 text-primary" />
-				<span class="hidden sm:inline">{t('layout.topbar.modePrefix')}</span>
-				<span class="font-semibold text-primary">{MODE_LABELS.edge}</span>
-			{/if}
-		</Button>
-
-		<Button
-			variant="outline"
-			size="sm"
-			onclick={() => authStore.openPanelDomain()}
-			class="hidden sm:inline-flex gap-1.5"
-			title={t('layout.topbar.panelDomainTitle')}
-		>
-			<GlobeIcon class="size-3.5 text-primary" />
-			<span class="hidden md:inline">{t('layout.topbar.panelDomainBtn')}</span>
-		</Button>
-
 		<Button
 			variant="outline"
 			size="sm"
@@ -132,51 +107,71 @@
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
 
-		{#if authStore.authEnabled}
-			<DropdownMenu.Root>
-				<DropdownMenu.Trigger>
-					{#snippet child({ props })}
-						<Button variant="outline" size="sm" class="gap-1.5 px-2.5" {...props}>
-							<UserIcon class="size-3.5 text-muted-foreground" />
-							<span class="max-w-[90px] truncate text-xs font-medium sm:max-w-none">{authStore.username}</span>
-						</Button>
-					{/snippet}
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end" class="w-48">
-					<DropdownMenu.Group>
-						<DropdownMenu.Label class="text-xs text-muted-foreground">
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<Button variant="outline" size="sm" class="gap-1.5 px-2.5" {...props}>
+						<UserIcon class="size-3.5 text-muted-foreground" />
+						<span class="max-w-[90px] truncate text-xs font-medium sm:max-w-none">
+							{authStore.authEnabled ? authStore.username : t('layout.topbar.panelMenuBtn')}
+						</span>
+					</Button>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" class="w-60">
+				<DropdownMenu.Group>
+					<DropdownMenu.Label class="text-xs text-muted-foreground">
+						{#if authStore.authEnabled}
 							{t('layout.topbar.signedInAs')} <strong class="text-foreground">{authStore.username}</strong>
-						</DropdownMenu.Label>
-						<DropdownMenu.Separator />
+						{:else}
+							{t('layout.topbar.panelSettingsLabel')}
+						{/if}
+					</DropdownMenu.Label>
+					<DropdownMenu.Separator />
+					<DropdownMenu.Item onclick={() => modeStore.openModal()}>
+						{#if modeStore.mode === 'vps'}
+							<ServerIcon class="size-4 text-primary" />
+						{:else if modeStore.mode === 'local'}
+							<LaptopIcon class="size-4 text-primary" />
+						{:else}
+							<NetworkIcon class="size-4 text-primary" />
+						{/if}
+						<span>{t('layout.topbar.serverMode')}</span>
+						<span class="ml-auto rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-semibold text-primary">
+							{activeModeLabel}
+						</span>
+					</DropdownMenu.Item>
+					<DropdownMenu.Item onclick={() => authStore.openPanelDomain()}>
+						<GlobeIcon class="size-4" />
+						<span>{t('layout.topbar.panelDomainHttps')}</span>
+					</DropdownMenu.Item>
+					{#if authStore.authEnabled}
 						<DropdownMenu.Item onclick={() => authStore.openChangeCreds()}>
 							<KeyRoundIcon class="size-4" />
 							<span>{t('layout.topbar.changeCreds')}</span>
-						</DropdownMenu.Item>
-						<DropdownMenu.Item onclick={() => authStore.openPanelDomain()}>
-							<GlobeIcon class="size-4" />
-							<span>{t('layout.topbar.panelDomainHttps')}</span>
 						</DropdownMenu.Item>
 						<DropdownMenu.Separator />
 						<DropdownMenu.Item onclick={() => authStore.logout()} class="text-destructive focus:text-destructive">
 							<LogOutIcon class="size-4" />
 							<span>{t('layout.topbar.signOut')}</span>
 						</DropdownMenu.Item>
-					</DropdownMenu.Group>
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
-		{/if}
+					{/if}
+				</DropdownMenu.Group>
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
 
 		<Button
 			variant="outline"
-			size="sm"
+			size="icon-sm"
+			aria-label={t('common.actions.refresh')}
+			title={t('common.actions.refresh')}
 			disabled={cp.statusLoading}
 			onclick={() => {
 				cp.loadStatus(false);
 				cp.refreshTick += 1;
 			}}
 		>
-			<RefreshCwIcon data-icon="inline-start" class={cn(cp.statusLoading && 'animate-spin')} />
-			<span class="hidden sm:inline">{t('common.actions.refresh')}</span>
+			<RefreshCwIcon class={cn(cp.statusLoading && 'animate-spin')} />
 		</Button>
 	</div>
 </header>

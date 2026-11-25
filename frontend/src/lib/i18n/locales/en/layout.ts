@@ -44,10 +44,9 @@ export const layoutEn = {
 		}
 	},
 	topbar: {
-		selectModeAria: 'Select Server Operational Mode',
-		modePrefix: 'Mode:',
-		panelDomainBtn: 'Panel Domain',
-		panelDomainTitle: 'Bind Panel Domain, HTTPS Forward & IP Block',
+		serverMode: 'Server Mode',
+		panelMenuBtn: 'Panel',
+		panelSettingsLabel: 'Panel Settings',
 		terminalBtn: 'Terminal',
 		openTerminalAria: 'Open Live Terminal Console',
 		taskRunningAria: 'Task is running',

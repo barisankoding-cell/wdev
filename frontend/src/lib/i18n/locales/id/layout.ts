@@ -47,10 +47,9 @@ export const layoutId: WidenStrings<typeof layoutEn> = {
 		}
 	},
 	topbar: {
-		selectModeAria: 'Pilih Mode Operasional Server',
-		modePrefix: 'Mode:',
-		panelDomainBtn: 'Domain Panel',
-		panelDomainTitle: 'Ikat Domain Panel, Forward HTTPS & Blokir IP',
+		serverMode: 'Mode Server',
+		panelMenuBtn: 'Panel',
+		panelSettingsLabel: 'Pengaturan Panel',
 		terminalBtn: 'Terminal',
 		openTerminalAria: 'Buka Live Terminal Console',
 		taskRunningAria: 'Tugas sedang berjalan',
