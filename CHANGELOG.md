@@ -1,5 +1,14 @@
 # Changelog
 
+## [v2.11.0] - 2026-11-26
+
+### 🚀 Fitur Baru
+- feat(security): tambah pemantauan serangan dan pemblokiran IP otomatis (97cae2d)
+- feat(workspace): kelompokkan aksi Orca ADE dalam menu (7ef9f2d)
+
+### 🔧 Pemeliharaan & Tooling
+- chore(web): perbarui aset statis hasil build SvelteKit (4dbadae)
+
 ## [v2.10.0] - 2026-11-25
 
 ### 🚀 Fitur Baru
