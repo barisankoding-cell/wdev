@@ -40,8 +40,10 @@ export const workspaceEn = {
 		stopping: 'Stopping...',
 		starting: 'Starting...',
 		startServiceBtn: 'Start Service',
-		switchToDesktop: 'Desktop Mode',
-		switchToHeadless: 'Headless Mode',
+		actionsBtn: 'Actions',
+		actionsMenuLabel: 'Manage Orca ADE',
+		switchToDesktop: 'Switch to Desktop Mode',
+		switchToHeadless: 'Switch to Headless Mode',
 		commitAiBtn: 'Commit AI',
 		setupHeadless: 'Setup Headless',
 		setupDesktop: 'Setup Desktop'

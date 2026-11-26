@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as Card from '#lib/components/ui/card/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
@@ -26,6 +27,8 @@
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import MonitorIcon from '@lucide/svelte/icons/monitor';
 
 	let workspace = $state<WorkspaceStatus | null>(null);
 	let loading = $state(true);
@@ -275,97 +278,142 @@
 					</div>
 				</Card.Content>
 
-				<Card.Footer class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+				<Card.Footer class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 					{#if orca.installed}
-						{#if orca.has_update}
-							<Button size="sm" class="col-span-2 sm:col-span-1" onclick={() => cp.triggerInstall('orca-update')}>
-								<ArrowUpCircleIcon data-icon="inline-start" />
-								{t('workspace.orca.updateBtn', { version: orca.latest_version ?? '' })}
+						<div class="flex min-w-0 flex-wrap items-center gap-2">
+							{#if !orca.active}
+								<Button
+									size="sm"
+									class="w-full sm:w-auto"
+									disabled={Boolean(orcaActionPending)}
+									onclick={() => controlOrca('start')}
+								>
+									{#if orcaActionPending === 'start'}
+										<Spinner data-icon="inline-start" />
+										{t('workspace.orca.starting')}
+									{:else}
+										<PlayIcon data-icon="inline-start" />
+										{t('workspace.orca.startServiceBtn')}
+									{/if}
+								</Button>
+							{:else if orca.web_client_url}
+								<Button
+									size="sm"
+									class="w-full sm:w-auto"
+									href={orca.web_client_url}
+									target="_blank"
+									rel="noopener noreferrer"
+								>
+									<ExternalLinkIcon data-icon="inline-start" />
+									{t('workspace.orca.openWebClient')}
+								</Button>
+							{/if}
+							{#if orca.has_update}
+								<Button
+									variant={!orca.active || orca.web_client_url ? 'outline' : 'default'}
+									size="sm"
+									class="flex-1 sm:flex-initial"
+									onclick={() => cp.triggerInstall('orca-update')}
+								>
+									<ArrowUpCircleIcon data-icon="inline-start" />
+									{t('workspace.orca.updateBtn', { version: orca.latest_version ?? '' })}
+								</Button>
+							{/if}
+							<Button variant="outline" size="sm" class="flex-1 sm:flex-initial" onclick={openPairModal}>
+								<QrCodeIcon data-icon="inline-start" />
+								{t('workspace.orca.infoPairingBtn')}
 							</Button>
-						{/if}
-						{#if orca.web_client_url}
-							<Button
-								size="sm"
-								class="col-span-2 sm:col-span-1"
-								href={orca.web_client_url}
-								target="_blank"
-								rel="noopener noreferrer"
-							>
-								<ExternalLinkIcon data-icon="inline-start" />
-								{t('workspace.orca.openWebClient')}
-							</Button>
-						{/if}
-						<Button variant="outline" size="sm" onclick={openPairModal}>
-							<QrCodeIcon data-icon="inline-start" />
-							{t('workspace.orca.infoPairingBtn')}
-						</Button>
-						{#if orca.active}
 							<Button
 								variant="outline"
 								size="sm"
-								disabled={Boolean(orcaActionPending)}
-								onclick={() => controlOrca('restart')}
+								class="flex-1 sm:flex-initial"
+								onclick={() => (commitAiModalOpen = true)}
 							>
-								{#if orcaActionPending === 'restart'}
-									<Spinner data-icon="inline-start" />
-									{t('workspace.orca.restarting')}
-								{:else}
-									<RotateCwIcon data-icon="inline-start" />
-									{t('common.actions.restart')}
-								{/if}
+								<SparklesIcon data-icon="inline-start" />
+								{t('workspace.orca.commitAiBtn')}
 							</Button>
-							<Button
-								variant="destructive"
-								size="sm"
-								disabled={Boolean(orcaActionPending)}
-								onclick={() => controlOrca('stop')}
-							>
-								{#if orcaActionPending === 'stop'}
-									<Spinner data-icon="inline-start" />
-									{t('workspace.orca.stopping')}
-								{:else}
-									<SquareIcon data-icon="inline-start" />
-									{t('common.actions.stop')}
-								{/if}
-							</Button>
-						{:else}
-							<Button
-								size="sm"
-								disabled={Boolean(orcaActionPending)}
-								onclick={() => controlOrca('start')}
-							>
-								{#if orcaActionPending === 'start'}
-									<Spinner data-icon="inline-start" />
-									{t('workspace.orca.starting')}
-								{:else}
-									<PlayIcon data-icon="inline-start" />
-									{t('workspace.orca.startServiceBtn')}
-								{/if}
-							</Button>
-						{/if}
-						<Button
-							variant="outline"
-							size="sm"
-							onclick={() =>
-								cp.triggerInstall(isHeadless ? 'orca-switch-desktop' : 'orca-switch-headless')}
-						>
-							{isHeadless ? t('workspace.orca.switchToDesktop') : t('workspace.orca.switchToHeadless')}
-						</Button>
-						<Button variant="outline" size="sm" onclick={() => (commitAiModalOpen = true)}>
-							<SparklesIcon data-icon="inline-start" />
-							{t('workspace.orca.commitAiBtn')}
-						</Button>
-						<Button variant="destructive" size="sm" onclick={() => cp.triggerInstall('orca-uninstall')}>
-							<Trash2Icon data-icon="inline-start" />
-							{t('common.actions.uninstall')}
-						</Button>
+						</div>
+
+						<DropdownMenu.Root>
+							<DropdownMenu.Trigger>
+								{#snippet child({ props })}
+									<Button
+										variant="outline"
+										size="sm"
+										class="w-full shrink-0 sm:ml-auto sm:w-auto"
+										disabled={Boolean(orcaActionPending)}
+										{...props}
+									>
+										{#if orcaActionPending === 'restart'}
+											<Spinner data-icon="inline-start" />
+											{t('workspace.orca.restarting')}
+										{:else if orcaActionPending === 'stop'}
+											<Spinner data-icon="inline-start" />
+											{t('workspace.orca.stopping')}
+										{:else}
+											{t('workspace.orca.actionsBtn')}
+											<ChevronDownIcon data-icon="inline-end" />
+										{/if}
+									</Button>
+								{/snippet}
+							</DropdownMenu.Trigger>
+							<DropdownMenu.Content align="end" class="w-56">
+								<DropdownMenu.Group>
+									<DropdownMenu.Label class="text-xs text-muted-foreground">
+										{t('workspace.orca.actionsMenuLabel')}
+									</DropdownMenu.Label>
+									<DropdownMenu.Separator />
+									{#if orca.active}
+										<DropdownMenu.Item
+											disabled={Boolean(orcaActionPending)}
+											onclick={() => controlOrca('restart')}
+										>
+											<RotateCwIcon />
+											<span>{t('common.actions.restart')}</span>
+										</DropdownMenu.Item>
+										<DropdownMenu.Item
+											disabled={Boolean(orcaActionPending)}
+											onclick={() => controlOrca('stop')}
+										>
+											<SquareIcon />
+											<span>{t('common.actions.stop')}</span>
+										</DropdownMenu.Item>
+										<DropdownMenu.Separator />
+									{/if}
+									<DropdownMenu.Item
+										onclick={() =>
+											cp.triggerInstall(isHeadless ? 'orca-switch-desktop' : 'orca-switch-headless')}
+									>
+										{#if isHeadless}
+											<MonitorIcon />
+											<span>{t('workspace.orca.switchToDesktop')}</span>
+										{:else}
+											<TerminalIcon />
+											<span>{t('workspace.orca.switchToHeadless')}</span>
+										{/if}
+									</DropdownMenu.Item>
+									<DropdownMenu.Separator />
+									<DropdownMenu.Item
+										variant="destructive"
+										onclick={() => cp.triggerInstall('orca-uninstall')}
+									>
+										<Trash2Icon />
+										<span>{t('common.actions.uninstall')}</span>
+									</DropdownMenu.Item>
+								</DropdownMenu.Group>
+							</DropdownMenu.Content>
+						</DropdownMenu.Root>
 					{:else}
-						<Button size="sm" onclick={() => cp.triggerInstall('orca-headless')}>
-							{t('workspace.orca.setupHeadless')}
-						</Button>
-						<Button variant="outline" size="sm" onclick={() => cp.triggerInstall('orca-desktop')}>
-							{t('workspace.orca.setupDesktop')}
-						</Button>
+						<div class="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+							<Button size="sm" class="flex-1 sm:flex-initial" onclick={() => cp.triggerInstall('orca-headless')}>
+								<TerminalIcon data-icon="inline-start" />
+								{t('workspace.orca.setupHeadless')}
+							</Button>
+							<Button variant="outline" size="sm" class="flex-1 sm:flex-initial" onclick={() => cp.triggerInstall('orca-desktop')}>
+								<MonitorIcon data-icon="inline-start" />
+								{t('workspace.orca.setupDesktop')}
+							</Button>
+						</div>
 					{/if}
 				</Card.Footer>
 			</Card.Root>

@@ -43,8 +43,10 @@ export const workspaceId: WidenStrings<typeof workspaceEn> = {
 		stopping: 'Menghentikan...',
 		starting: 'Menjalankan...',
 		startServiceBtn: 'Mulai Layanan',
-		switchToDesktop: 'Mode Desktop',
-		switchToHeadless: 'Mode Headless',
+		actionsBtn: 'Aksi',
+		actionsMenuLabel: 'Kelola Orca ADE',
+		switchToDesktop: 'Beralih ke Mode Desktop',
+		switchToHeadless: 'Beralih ke Mode Headless',
 		commitAiBtn: 'Commit AI',
 		setupHeadless: 'Setup Headless',
 		setupDesktop: 'Setup Desktop'
