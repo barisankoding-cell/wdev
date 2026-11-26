@@ -261,7 +261,26 @@ func (s *Store) migrate() error {
 			last_build_at DATETIME,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);`,
+	);`,
+	`CREATE TABLE IF NOT EXISTS security_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		source_ip TEXT NOT NULL,
+		country_code TEXT NOT NULL DEFAULT '',
+		attack_type TEXT NOT NULL,
+		severity TEXT NOT NULL,
+		target TEXT NOT NULL,
+		action_taken TEXT NOT NULL,
+		details TEXT NOT NULL DEFAULT ''
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_security_events_ip_time ON security_events(source_ip, timestamp);`,
+	`CREATE INDEX IF NOT EXISTS idx_security_events_time ON security_events(timestamp DESC);`,
+	`CREATE TABLE IF NOT EXISTS blocked_ips (
+		ip TEXT PRIMARY KEY,
+		reason TEXT NOT NULL DEFAULT '',
+		blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		expires_at DATETIME
+	);`,
 	}
 
 	for _, q := range queries {

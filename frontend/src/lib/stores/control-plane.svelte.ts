@@ -2,10 +2,10 @@ import { api, ApiError } from '#lib/api/client.js';
 import { i18n, t } from '#lib/i18n/index.svelte.js';
 import type {
 	DockerInstallOptions,
+	SecurityEventRecord,
 	ServiceConfigKey,
 	SystemStats,
 	TaskEvent,
-	TaskRecord
 } from '#lib/types/api.js';
 import { toast } from 'svelte-sonner';
 
@@ -321,6 +321,21 @@ class ControlPlaneStore {
 							return;
 						}
 						this.saveTerminalState();
+					}
+					return;
+				}
+				if ((data as unknown as { type: string }).type === 'security_attack') {
+					const sec = (data as unknown as { event: SecurityEventRecord }).event;
+					if (sec) {
+						const isBlocked = sec.action_taken === 'BLOCKED';
+						const title = `🚨 ${sec.attack_type} (${sec.severity})`;
+						const desc = `${sec.source_ip} -> ${sec.target} [${sec.action_taken}]`;
+						if (sec.severity === 'CRITICAL' || sec.severity === 'HIGH' || isBlocked) {
+							toast.error(desc, { description: title });
+						} else {
+							toast.warning(desc, { description: title });
+						}
+						this.refreshTick += 1;
 					}
 					return;
 				}

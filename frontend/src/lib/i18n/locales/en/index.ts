@@ -16,7 +16,7 @@ import { filesEn } from './files.js';
 import { powerdnsEn } from './powerdns.js';
 import { cloudflareEn } from './cloudflare.js';
 import { mailEn } from './mail.js';
-
+import { securityEn } from './security.js';
 export const enMessages = {
 	common: commonEn,
 	layout: layoutEn,
@@ -35,7 +35,8 @@ export const enMessages = {
 	files: filesEn,
 	powerdns: powerdnsEn,
 	cloudflare: cloudflareEn,
-	mail: mailEn
+	mail: mailEn,
+	security: securityEn
 };
 
 export type TranslationSchema = typeof enMessages;

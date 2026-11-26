@@ -19,6 +19,7 @@
 	import MailIcon from '@lucide/svelte/icons/mail';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
+	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import LaptopIcon from '@lucide/svelte/icons/laptop';
@@ -56,8 +57,9 @@
 			items: [
 				{ label: t('layout.nav.items.ports'), href: '/ports', icon: EthernetPortIcon },
 				{ label: t('layout.nav.items.files'), href: '/files', icon: FolderOpenIcon },
-				{ label: t('layout.nav.items.terminal'), href: '/terminal', icon: SquareTerminalIcon }
-			]
+			{ label: t('layout.nav.items.terminal'), href: '/terminal', icon: SquareTerminalIcon },
+			{ label: t('layout.nav.items.security'), href: '/security', icon: ShieldAlertIcon }
+		]
 		},
 		modeStore.mode === 'edge'
 			? {

@@ -106,8 +106,16 @@ export function getPageMeta(pathname: string, mode: ServerMode): PageMeta {
 				title,
 				seoTitle: buildSeoTitle(title),
 				description: t('layout.meta.terminal.description')
-			};
-		}
+		};
+	}
+	case '/security': {
+		const title = t('layout.meta.security.title');
+		return {
+			title,
+			seoTitle: buildSeoTitle(title),
+			description: t('layout.meta.security.description')
+		};
+	}
 		case '/powerdns': {
 			const title =
 				mode === 'edge'
@@ -171,6 +179,7 @@ const KNOWN_ROUTES = [
 	'/ports',
 	'/files',
 	'/terminal',
+	'/security',
 	'/powerdns',
 	'/cloudflare',
 	'/mail',

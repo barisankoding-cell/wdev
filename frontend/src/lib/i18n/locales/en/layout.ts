@@ -27,6 +27,7 @@ export const layoutEn = {
 			ports: 'Port & Network Status',
 			files: 'File Manager',
 			terminal: 'SSH Terminal (PTY)',
+			security: 'Security & Attacks',
 			powerdnsEdge: 'PowerDNS & Edge',
 			powerdnsVps: 'Domain & DNS Manager',
 			cloudflare: 'Cloudflare Tunnel',
@@ -116,6 +117,10 @@ export const layoutEn = {
 		setup: {
 			title: 'Installation, Mode Presets & Components',
 			description: 'Modular server component installation, operational mode presets, and task history.'
+		},
+		security: {
+			title: 'Security & Cyber Attacks',
+			description: 'Monitor cyber attacks, honeypot probes, brute force attempts, and manage blocked IP addresses.'
 		},
 		fallback: {
 			title: 'wdev Dashboard'

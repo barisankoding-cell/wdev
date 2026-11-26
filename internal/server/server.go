@@ -29,6 +29,7 @@ import (
 	"wdev/internal/monitor"
 	"wdev/internal/pdns"
 	"wdev/internal/runner"
+	"wdev/internal/security"
 	"wdev/internal/serviceconfig"
 	"wdev/internal/site"
 	"wdev/internal/siteapp"
@@ -50,8 +51,9 @@ type Server struct {
 	cfMgr          *cloudflare.Manager
 	pdnsMgr        *pdns.Manager
 	mailMgr        *mail.Manager
-	authMgr        *auth.Manager
-	svcCfgMgr      *serviceconfig.Manager
+	authMgr *auth.Manager
+	secMgr *security.Manager
+	svcCfgMgr *serviceconfig.Manager
 	fileMgr        *filemanager.Manager
 	termMgr        *terminal.Manager
 	composeMgr     *compose.Manager
@@ -103,6 +105,7 @@ func New(
 		pdnsMgr:     pdnsMgr,
 		mailMgr:     mailMgr,
 		authMgr:     authMgr,
+		secMgr:      security.New(s),
 		svcCfgMgr:   serviceconfig.New(sudoFn),
 		fileMgr:     filemanager.New(cfg, s),
 		termMgr:     terminal.New(cfg, s),
@@ -206,6 +209,7 @@ func (s *Server) routes() {
 	s.registerComposeRoutes()
 	s.registerFileManagerRoutes()
 	s.registerTerminalRoutes()
+	s.registerSecurityRoutes()
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)
 
 	// Embedded Static UI (Svelte SPA)
@@ -298,13 +302,33 @@ func (s *Server) wrapCSRF(next http.Handler) http.Handler {
 
 func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		entrance := s.authMgr.GetSecurityEntrance()
+		cleanURLPath := path.Clean("/" + r.URL.Path)
+
+		// 0. Deteksi probe honeypot / decoy URL scanner
+		if isHoneypotTarget(cleanURLPath) {
+			ip := auth.ClientIP(r)
+			if s.secMgr != nil {
+				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+					SourceIP:   ip,
+					AttackType: security.AttackHoneypot,
+					Severity:   security.SeverityCritical,
+					Target:     cleanURLPath,
+					Details:    fmt.Sprintf("Scanner hit decoy trap (User-Agent: %s)", r.UserAgent()),
+				})
+			}
+			http.NotFound(w, r)
+			return
+		}
+	if s.authMgr == nil {
+		next.ServeHTTP(w, r)
+		return
+	}
+	entrance := s.authMgr.GetSecurityEntrance()
 		if entrance == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		cleanURLPath := path.Clean("/" + r.URL.Path)
 		cleanPath := strings.Trim(cleanURLPath, "/")
 
 		// 1. Jika path cocok dengan security entrance, periksa rate limit lalu terbitkan cookie dan redirect ke /
@@ -354,10 +378,20 @@ func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
 			return
 		}
 
-		// 4. Catat percobaan tebakan path entrance non-root untuk anti-brute-force
-		if cleanPath != "" && !strings.HasPrefix(cleanURLPath, "/api/") && !strings.Contains(cleanPath, "/") {
-			s.authMgr.RecordLoginAttempt(auth.ClientIP(r), false)
+	// 4. Catat percobaan tebakan path entrance non-root untuk anti-brute-force
+	if cleanPath != "" && !strings.HasPrefix(cleanURLPath, "/api/") && !strings.Contains(cleanPath, "/") {
+		ip := auth.ClientIP(r)
+		s.authMgr.RecordLoginAttempt(ip, false)
+		if s.secMgr != nil {
+			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+				SourceIP:   ip,
+				AttackType: security.AttackSecurityEntrance,
+				Severity:   security.SeverityMedium,
+				Target:     cleanURLPath,
+				Details:    "Probing invalid security entrance path",
+			})
 		}
+	}
 
 		// 5. Pengunjung belum melewati security entrance
 		if strings.HasPrefix(cleanURLPath, "/api/") {
@@ -432,12 +466,31 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	ip := auth.ClientIP(r)
 	allowed, wait := s.authMgr.CheckRateLimit(ip)
 	if !allowed {
+		if s.secMgr != nil {
+			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+				SourceIP:    ip,
+				AttackType:  security.AttackPanelBruteForce,
+				Severity:    security.SeverityHigh,
+				Target:      "/api/auth/login",
+				ActionTaken: security.ActionRateLimited,
+				Details:     fmt.Sprintf("Rate limited: locked for %dm", int(wait.Minutes())+1),
+			})
+		}
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(i18n.Pick(lang, "Too many failed login attempts. Account temporarily locked. Try again in %d minute(s).", "Terlalu banyak percobaan login gagal. Akun dikunci sementara. Coba lagi dalam %d menit."), int(wait.Minutes())+1))
 		return
 	}
 
 	if !s.authMgr.ValidateCredentials(payload.Username, payload.Password) {
 		s.authMgr.RecordLoginAttempt(ip, false)
+		if s.secMgr != nil {
+			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+				SourceIP:   ip,
+				AttackType: security.AttackPanelBruteForce,
+				Severity:   security.SeverityMedium,
+				Target:     "/api/auth/login",
+				Details:    fmt.Sprintf("Failed login with username: %s", payload.Username),
+			})
+		}
 		writeError(w, http.StatusUnauthorized, i18n.Pick(lang, "Invalid username or password", "Username atau kata sandi salah"))
 		return
 	}
@@ -641,7 +694,7 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	handler := s.wrapSecurityHeaders(s.wrapPanelDomain(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.mux)))))
+	handler := s.wrapSecurityHeaders(s.wrapPanelDomain(s.wrapBlockedIP(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.mux))))))
 	return s.listenAndServeMux(ln, handler)
 }
 
@@ -2650,6 +2703,15 @@ func (s *Server) verifySudoPasswordWithRateLimit(w http.ResponseWriter, r *http.
 		if s.authMgr != nil {
 			s.authMgr.RecordLoginAttempt(ip, false)
 		}
+		if s.secMgr != nil {
+			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+				SourceIP:   ip,
+				AttackType: security.AttackSudoBruteForce,
+				Severity:   security.SeverityHigh,
+				Target:     "/api/sudo/verify",
+				Details:    "Incorrect sudo verification password attempt",
+			})
+		}
 		writeError(w, http.StatusUnauthorized, invalidPrefix+err.Error())
 		return false
 	}
@@ -3373,6 +3435,12 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 	replay, ch := s.runner.SubscribeFrom(clientInstanceID, lastSeq)
 	defer s.runner.Unsubscribe(ch)
 
+	var secCh <-chan security.Event
+	var secUnsub func()
+	if s.secMgr != nil {
+		secCh, secUnsub = s.secMgr.Subscribe()
+		defer secUnsub()
+	}
 	// Send initial ping with runner instance_id and replay any missed live/latest events
 	pingPayload, _ := json.Marshal(map[string]any{
 		"type":        "ping",
@@ -3404,6 +3472,18 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 			bytes, err := json.Marshal(evt)
 			if err == nil {
 				fmt.Fprintf(w, "id: %d\ndata: %s\n\n", evt.Seq, string(bytes))
+				flusher.Flush()
+			}
+		case secEvt, ok := <-secCh:
+			if !ok {
+				return
+			}
+			bytes, err := json.Marshal(map[string]any{
+				"type":  "security_attack",
+				"event": secEvt,
+			})
+			if err == nil {
+				fmt.Fprintf(w, "data: %s\n\n", string(bytes))
 				flusher.Flush()
 			}
 		}

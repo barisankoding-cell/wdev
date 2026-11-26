@@ -18,7 +18,7 @@ import { filesId } from './files.js';
 import { powerdnsId } from './powerdns.js';
 import { cloudflareId } from './cloudflare.js';
 import { mailId } from './mail.js';
-
+import { securityId } from './security.js';
 export const idMessages: WidenStrings<TranslationSchema> = {
 	common: commonId,
 	layout: layoutId,
@@ -37,5 +37,6 @@ export const idMessages: WidenStrings<TranslationSchema> = {
 	files: filesId,
 	powerdns: powerdnsId,
 	cloudflare: cloudflareId,
-	mail: mailId
+	mail: mailId,
+	security: securityId
 };

@@ -30,6 +30,7 @@ export const layoutId: WidenStrings<typeof layoutEn> = {
 			ports: 'Status Port & Jaringan',
 			files: 'File Manager',
 			terminal: 'Terminal SSH (PTY)',
+			security: 'Keamanan & Serangan',
 			powerdnsEdge: 'PowerDNS & Edge',
 			powerdnsVps: 'Domain & DNS Manager',
 			cloudflare: 'Cloudflare Tunnel',
@@ -119,6 +120,10 @@ export const layoutId: WidenStrings<typeof layoutEn> = {
 		setup: {
 			title: 'Instalasi, Preset Mode & Komponen',
 			description: 'Instalasi komponen modular server, pemilihan preset mode operasional, dan riwayat tugas.'
+		},
+		security: {
+			title: 'Keamanan & Serangan Siber',
+			description: 'Pantau aktivitas serangan siber, jebakan honeypot, brute force, dan kelola pemblokiran IP.'
 		},
 		fallback: {
 			title: 'wdev Dashboard'

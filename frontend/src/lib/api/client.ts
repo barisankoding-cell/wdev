@@ -4,6 +4,8 @@ import type {
 	AuthMeResponse,
 	BindPanelDomainPayload,
 	BindPanelDomainResponse,
+	BlockIPPayload,
+	BlockedIPsResponse,
 	CFDeleteProfileResult,
 	CFExposeResult,
 	CFHostCheckResult,
@@ -64,6 +66,8 @@ import type {
 	TerminalAuditRecord,
 	TerminalInfo,
 	TerminalUnlockResponse,
+	SecurityEventsResponse,
+	SecurityStatsReport,
 	SetupComponentStatus,
 	SetupMailPayload,
 	SiteAppEnvEntry,
@@ -999,5 +1003,39 @@ export const api = {
 
 	// Diagnostik Port & Jaringan
 	getPortStatus: (forceRefresh = false) =>
-		apiFetch<PortStatusReport>(forceRefresh ? '/api/ports?refresh=1' : '/api/ports')
+		apiFetch<PortStatusReport>(forceRefresh ? '/api/ports?refresh=1' : '/api/ports'),
+
+	// Keamanan & Serangan Siber
+	getSecurityStats: () => apiFetch<SecurityStatsReport>('/api/security/stats'),
+	getSecurityEvents: (params?: {
+		limit?: number;
+		offset?: number;
+		type?: string;
+		severity?: string;
+		search?: string;
+	}) => {
+		const sp = new URLSearchParams();
+		if (params?.limit) sp.set('limit', String(params.limit));
+		if (params?.offset) sp.set('offset', String(params.offset));
+		if (params?.type && params.type !== 'all') sp.set('type', params.type);
+		if (params?.severity && params.severity !== 'all') sp.set('severity', params.severity);
+		if (params?.search) sp.set('search', params.search);
+		const qs = sp.toString();
+		return apiFetch<SecurityEventsResponse>(qs ? `/api/security/events?${qs}` : '/api/security/events');
+	},
+	getBlockedIPs: () => apiFetch<BlockedIPsResponse>('/api/security/blocked'),
+	blockIP: (payload: BlockIPPayload) =>
+		apiFetch<{ status: string; message: string }>('/api/security/block', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
+	unblockIP: (ip: string) =>
+		apiFetch<{ status: string; message: string }>('/api/security/unblock', {
+			method: 'POST',
+			body: JSON.stringify({ ip })
+		}),
+	clearSecurityEvents: () =>
+		apiFetch<{ status: string; message: string }>('/api/security/clear', {
+			method: 'POST'
+		})
 };

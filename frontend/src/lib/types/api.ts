@@ -1461,4 +1461,53 @@ export interface ComposeStatusReport {
 	warnings: number;
 }
 
+export interface SecurityEventRecord {
+	id: number;
+	timestamp: string;
+	source_ip: string;
+	country_code: string;
+	attack_type: string;
+	severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | string;
+	target: string;
+	action_taken: 'LOGGED' | 'RATE_LIMITED' | 'BLOCKED' | string;
+	details: string;
+}
 
+export interface BlockedIPRecord {
+	ip: string;
+	reason: string;
+	blocked_at: string;
+	expires_at?: string;
+}
+
+export interface TopAttacker {
+	ip: string;
+	country_code: string;
+	count: number;
+}
+
+export interface SecurityStatsReport {
+	total_today: number;
+	total_blocked: number;
+	critical_count: number;
+	high_count: number;
+	attacks_by_type: Record<string, number>;
+	top_attacker_ips: TopAttacker[];
+}
+
+export interface SecurityEventsResponse {
+	events: SecurityEventRecord[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+export interface BlockedIPsResponse {
+	blocked_ips: BlockedIPRecord[];
+}
+
+export interface BlockIPPayload {
+	ip: string;
+	reason?: string;
+	duration_minutes?: number;
+}
