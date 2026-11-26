@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.11.1] - 2026-11-26
+
+### 🐛 Perbaikan Bug
+- fix(installer): amankan kepemilikan dan cache SDK Flutter (ce9c584)
+
 ## [v2.11.0] - 2026-11-26
 
 ### 🚀 Fitur Baru
