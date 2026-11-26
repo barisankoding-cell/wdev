@@ -24,18 +24,18 @@ import (
 )
 
 type SystemStats struct {
-	WdevVersion     string            `json:"wdev_version"`
-	Hostname        string            `json:"hostname"`
-	OSName          string            `json:"os_name"`
-	Kernel          string            `json:"kernel"`
-	KernelFull      string            `json:"kernel_full,omitempty"`
-	BootMode        string            `json:"boot_mode,omitempty"`
-	UptimeString    string            `json:"uptime_string"`
-	UptimeSeconds   int64             `json:"uptime_seconds"`
-	LoadAvg         string            `json:"load_avg"`
-	CPUCores        int               `json:"cpu_cores"`
-	CPUModel        string            `json:"cpu_model,omitempty"`
-	CPUSockets      int               `json:"cpu_sockets,omitempty"`
+	WdevVersion      string            `json:"wdev_version"`
+	Hostname         string            `json:"hostname"`
+	OSName           string            `json:"os_name"`
+	Kernel           string            `json:"kernel"`
+	KernelFull       string            `json:"kernel_full,omitempty"`
+	BootMode         string            `json:"boot_mode,omitempty"`
+	UptimeString     string            `json:"uptime_string"`
+	UptimeSeconds    int64             `json:"uptime_seconds"`
+	LoadAvg          string            `json:"load_avg"`
+	CPUCores         int               `json:"cpu_cores"`
+	CPUModel         string            `json:"cpu_model,omitempty"`
+	CPUSockets       int               `json:"cpu_sockets,omitempty"`
 	CPUUsagePercent  float64           `json:"cpu_usage_percent"`
 	CPUCoresUsage    []CPUCoreUsage    `json:"cpu_cores_usage,omitempty"`
 	LoadPercent      int               `json:"load_percent"`
@@ -62,12 +62,12 @@ type SystemStats struct {
 	DiskPercentExact float64           `json:"disk_percent_exact"`
 	MountDrives      []MountDriveInfo  `json:"mount_drives,omitempty"`
 	OtherMounts      []MountDriveInfo  `json:"other_mounts,omitempty"`
-	LanIP           string            `json:"lan_ip"`
-	NetbirdIP       string            `json:"netbird_ip"`
-	PublicIP        string            `json:"public_ip,omitempty"`
-	ServerMode      string            `json:"server_mode,omitempty"`
-	Services        []ServiceStatus   `json:"services"`
-	Runtimes        map[string]string `json:"runtimes"`
+	LanIP            string            `json:"lan_ip"`
+	NetbirdIP        string            `json:"netbird_ip"`
+	PublicIP         string            `json:"public_ip,omitempty"`
+	ServerMode       string            `json:"server_mode,omitempty"`
+	Services         []ServiceStatus   `json:"services"`
+	Runtimes         map[string]string `json:"runtimes"`
 }
 
 type CPUCoreUsage struct {
@@ -2114,19 +2114,74 @@ func getRuntimeVersions() map[string]string {
 		res["postgresql"] = "Not Installed"
 	}
 
-	// Flutter (opsional; hanya bila terpasang)
-	if out, err := runToolVersion("flutter", "--version"); err == nil {
-		for _, line := range strings.Split(out, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "Flutter ") {
-				if parts := strings.Fields(line); len(parts) >= 2 {
-					res["flutter"] = parts[1]
-				}
-				break
-			}
-		}
+	// Flutter (opsional; baca metadata read-only agar tidak mengeksekusi shared.sh sebagai root)
+	if ver := detectFlutterVersion(); ver != "" {
+		res["flutter"] = ver
 	}
 
 	return res
+}
+
+func resolveFlutterRootDir() string {
+	if envRoot := strings.TrimSpace(os.Getenv("FLUTTER_ROOT")); envRoot != "" && dirExists(envRoot) {
+		return envRoot
+	}
+	if dirExists("/usr/local/flutter") {
+		return "/usr/local/flutter"
+	}
+	if bin := toolPath("flutter"); bin != "" {
+		if real, err := filepath.EvalSymlinks(bin); err == nil {
+			root := filepath.Dir(filepath.Dir(real))
+			if dirExists(root) {
+				return root
+			}
+		}
+		root := filepath.Dir(filepath.Dir(bin))
+		if dirExists(root) {
+			return root
+		}
+	}
+	return ""
+}
+
+func detectFlutterVersion() string {
+	return detectFlutterVersionFromDir(resolveFlutterRootDir())
+}
+
+func detectFlutterVersionFromDir(flutterDir string) string {
+	if flutterDir == "" || !dirExists(flutterDir) {
+		return ""
+	}
+	versionJSON := filepath.Join(flutterDir, "bin", "cache", "flutter.version.json")
+	if data, err := os.ReadFile(versionJSON); err == nil {
+		var meta struct {
+			FlutterVersion   string `json:"flutterVersion"`
+			FrameworkVersion string `json:"frameworkVersion"`
+		}
+		if json.Unmarshal(data, &meta) == nil {
+			if v := strings.TrimSpace(meta.FlutterVersion); v != "" {
+				return v
+			}
+			if v := strings.TrimSpace(meta.FrameworkVersion); v != "" {
+				return v
+			}
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(flutterDir, "version")); err == nil {
+		if v := strings.TrimSpace(string(data)); v != "" {
+			return v
+		}
+	}
+	if dirExists(filepath.Join(flutterDir, ".git")) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, "git", "-c", "safe.directory="+flutterDir, "-C", flutterDir, "describe", "--tags").Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // isAllowedManagedService membatasi kontrol systemctl hanya ke unit layanan yang dikelola wdev.

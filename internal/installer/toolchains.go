@@ -638,33 +638,38 @@ func (inst *Installer) GetToolchainStatusesLocale(ctx context.Context, forceRefr
 	go func() {
 		defer localWg.Done()
 		flutterBin := findTool("flutter")
-		installed := flutterBin != "" || dirExists("/usr/local/flutter")
+		installed := flutterBin != "" || dirExists(defaultFlutterDir)
 		installedVer := ""
 		extra := ""
 		if installed {
-			if out, err := toolCmd(ctx, "git", "-C", "/usr/local/flutter", "describe", "--tags").CombinedOutput(); err == nil {
-				installedVer = strings.TrimSpace(string(out))
-			} else if flutterBin != "" {
-				if out, err := toolCmd(ctx, flutterBin, "--version").CombinedOutput(); err == nil {
-					lines := strings.Split(string(out), "\n")
-					if len(lines) > 0 {
-						fields := strings.Fields(lines[0])
-						if len(fields) >= 2 {
-							installedVer = fields[1]
+			flutterDir := defaultFlutterDir
+			if !dirExists(flutterDir) && flutterBin != "" {
+				flutterDir = resolveFlutterDirFromBin(flutterBin)
+			}
+			var dartVer string
+			installedVer, dartVer = readFlutterVersionMetadata(ctx, flutterDir)
+			if dartVer == "" {
+				if dartBin := findTool("dart"); dartBin != "" {
+					realDart, err := filepath.EvalSymlinks(dartBin)
+					if err != nil {
+						realDart = dartBin
+					}
+					// Hindari mengeksekusi wrapper bin/dart milik Flutter karena memicu update_engine_version.sh.
+					if !strings.HasPrefix(realDart, flutterDir+string(filepath.Separator)+"bin"+string(filepath.Separator)) {
+						if out, err := toolCmd(ctx, dartBin, "--version").CombinedOutput(); err == nil {
+							fields := strings.Fields(string(out))
+							for i, f := range fields {
+								if f == "version:" && i+1 < len(fields) {
+									dartVer = fields[i+1]
+									break
+								}
+							}
 						}
 					}
 				}
 			}
-			if dartBin := findTool("dart"); dartBin != "" {
-				if out, err := toolCmd(ctx, dartBin, "--version").CombinedOutput(); err == nil {
-					fields := strings.Fields(string(out))
-					for i, f := range fields {
-						if f == "version:" && i+1 < len(fields) {
-							extra = "Dart " + fields[i+1]
-							break
-						}
-					}
-				}
+			if dartVer != "" {
+				extra = "Dart " + dartVer
 			}
 			if extra == "" {
 				extra = "Channel stable"

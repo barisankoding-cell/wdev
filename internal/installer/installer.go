@@ -847,7 +847,7 @@ func (inst *Installer) InstallAndroidSDK(ctx context.Context, cb LogCallback) er
 		}
 	}
 
-	_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", sdkDir)
+	inst.finalizeSDKDirOwnership(ctx, cb, sdkDir)
 	inst.ensureWdevProfileEnv(ctx, cb)
 	cb("✓ Android SDK berhasil dipasang di " + sdkDir)
 	return nil
@@ -877,24 +877,28 @@ func (inst *Installer) ensureGitSafeDirectory(ctx context.Context, cb LogCallbac
 func (inst *Installer) InstallFlutter(ctx context.Context, cb LogCallback) error {
 	cb("--- [7] Memasang Flutter SDK ---")
 	inst.GuardToolchainColumns(ctx, cb, "flutter", "dart")
-	flutterDir := "/usr/local/flutter"
+	flutterDir := defaultFlutterDir
+	targetUser, userHome, _ := resolveSDKOwner()
 
 	if _, err := os.Stat(flutterDir); os.IsNotExist(err) {
 		cb("Cloning repository Flutter channel stable...")
 		if err := inst.runCmd(ctx, cb, "git", "clone", "-b", "stable", "https://github.com/flutter/flutter.git", flutterDir); err != nil {
 			return err
 		}
+		inst.finalizeSDKDirOwnership(ctx, cb, flutterDir)
 	} else {
+		inst.finalizeSDKDirOwnership(ctx, cb, flutterDir)
 		cb("Memperbarui Flutter repo...")
-		_ = inst.runCmd(ctx, cb, "git", "-c", "safe.directory="+flutterDir, "-C", flutterDir, "pull")
+		_ = inst.runAsSDKUser(ctx, cb, targetUser, userHome, "git", "-c", "safe.directory="+flutterDir, "-C", flutterDir, "pull")
 	}
 
 	inst.ensureGitSafeDirectory(ctx, cb, flutterDir)
+	inst.repairFlutterPackageConfig(ctx, cb, flutterDir, targetUser, userHome)
 	flutterBin := filepath.Join(flutterDir, "bin", "flutter")
 	cb("Menyiapkan cache Dart SDK & artefak Flutter...")
-	_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "--version")
-	_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "precache")
-	_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", flutterDir)
+	_ = inst.runAsSDKUser(ctx, cb, targetUser, userHome, flutterBin, "--suppress-analytics", "--version")
+	_ = inst.runAsSDKUser(ctx, cb, targetUser, userHome, flutterBin, "--suppress-analytics", "precache")
+	inst.repairSDKDirAndCache(ctx, cb, flutterDir)
 
 	// Symlink flutter & dart
 	_ = inst.runCmd(ctx, cb, "rm", "-f", "/usr/local/bin/flutter", "/usr/local/bin/dart")
@@ -1886,10 +1890,16 @@ func (inst *Installer) RunUpdateAll(ctx context.Context, cb LogCallback) error {
 		_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", "/usr/local/cargo", "/usr/local/rustup")
 	}
 	if flutterBin := findTool("flutter"); flutterBin != "" {
-		inst.ensureGitSafeDirectory(ctx, cb, "/usr/local/flutter")
-		_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "upgrade")
-		_ = inst.runCmd(ctx, cb, flutterBin, "--suppress-analytics", "precache")
-		_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", "/usr/local/flutter")
+		flutterDir := resolveFlutterDirFromBin(flutterBin)
+		targetUser, userHome, _ := resolveSDKOwner()
+		inst.ensureGitSafeDirectory(ctx, cb, flutterDir)
+		inst.finalizeSDKDirOwnership(ctx, cb, flutterDir)
+		_ = inst.runAsSDKUser(ctx, cb, targetUser, userHome, flutterBin, "--suppress-analytics", "upgrade")
+		_ = inst.runAsSDKUser(ctx, cb, targetUser, userHome, flutterBin, "--suppress-analytics", "precache")
+		inst.repairSDKDirAndCache(ctx, cb, flutterDir)
+	}
+	if dirExists(defaultAndroidSDKDir) {
+		inst.finalizeSDKDirOwnership(ctx, cb, defaultAndroidSDKDir)
 	}
 
 	inst.ensureWdevProfileEnv(ctx, cb)

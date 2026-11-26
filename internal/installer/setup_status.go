@@ -17,12 +17,12 @@ type SetupComponentStatus struct {
 }
 
 var (
-	findToolFn               = findTool
-	resolveSetupUserHomeFn   = func() string { _, home := ResolveTargetUserAndHome(); return home }
-	resolveSetupOrcaHomeFn   = func() (string, string) { return ResolveOrcaUser() }
-	statExistsFn             = func(p string) bool { _, err := os.Stat(p); return err == nil }
-	dirExistsSetupFn         = dirExists
-	detectOrcaVerFn          = DetectOrcaInstalledVersion
+	findToolFn             = findTool
+	resolveSetupUserHomeFn = func() string { _, home := ResolveTargetUserAndHome(); return home }
+	resolveSetupOrcaHomeFn = func() (string, string) { return ResolveOrcaUser() }
+	statExistsFn           = func(p string) bool { _, err := os.Stat(p); return err == nil }
+	dirExistsSetupFn       = dirExists
+	detectOrcaVerFn        = DetectOrcaInstalledVersion
 )
 
 // GetComponentStatuses mendeteksi komponen modular yang sudah terpasang secara lokal tanpa koneksi jaringan eksternal.
@@ -240,10 +240,14 @@ func (inst *Installer) GetComponentStatuses(ctx context.Context) map[string]Setu
 	// 13. Flutter SDK
 	runProbe(func() {
 		bin := findToolFn("flutter")
-		installed := bin != "" || dirExistsSetupFn("/usr/local/flutter")
+		installed := bin != "" || dirExistsSetupFn(defaultFlutterDir)
 		ver := ""
-		if data, err := os.ReadFile("/usr/local/flutter/version"); err == nil {
-			ver = strings.TrimSpace(string(data))
+		if installed {
+			flutterDir := defaultFlutterDir
+			if !dirExistsSetupFn(flutterDir) && bin != "" {
+				flutterDir = resolveFlutterDirFromBin(bin)
+			}
+			ver, _ = readFlutterVersionMetadata(probeCtx, flutterDir)
 		}
 		set("flutter", installed, ver)
 	})

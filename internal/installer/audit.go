@@ -258,6 +258,10 @@ func (inst *Installer) AuditToolchain(ctx context.Context, cb LogCallback) []Fin
 		findings = append(findings, *f)
 	}
 
+	if f := sdkOwnershipAndCacheFinding(defaultFlutterDir, defaultAndroidSDKDir); f != nil {
+		findings = append(findings, *f)
+	}
+
 	if f := flutterGitSafeFinding(ctx, "/usr/local/flutter"); f != nil {
 		findings = append(findings, *f)
 	}
@@ -488,6 +492,10 @@ func (inst *Installer) RepairToolchain(ctx context.Context, cb LogCallback, find
 		case "toolchain-perm", "rust-perm":
 			for _, p := range f.Paths {
 				_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", p)
+			}
+		case "sdk-ownership":
+			for _, p := range f.Paths {
+				inst.repairSDKDirAndCache(ctx, cb, p)
 			}
 		case "flutter-git-safe":
 			for _, p := range f.Paths {
