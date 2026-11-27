@@ -1,5 +1,11 @@
 # Changelog
 
+## [v2.12.0] - 2026-11-27
+
+### 🚀 Fitur Baru
+- feat(ports): tampilkan detail jangkauan jaringan per port (f994c16)
+- feat(security): perluas pemantauan dan konfigurasi perlindungan server (c98f999)
+
 ## [v2.11.2] - 2026-11-27
 
 ### 🐛 Perbaikan Bug
