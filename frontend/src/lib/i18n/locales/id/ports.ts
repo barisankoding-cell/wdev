@@ -89,6 +89,7 @@ export const portsId: WidenStrings<typeof portsEn> = {
 		ariaLabel: 'Status Port Terkait wdev',
 		colPort: 'Port',
 		colService: 'Layanan & Status',
+		colScopes: 'Akses Jaringan',
 		colLocal: 'Lokal ({ip})',
 		colVpn: 'VPN ({target})',
 		colVps: 'IP VPS ({target})',
@@ -96,13 +97,17 @@ export const portsId: WidenStrings<typeof portsEn> = {
 		colDesc: 'Keterangan & Rekomendasi',
 		dataPort: 'Port',
 		dataService: 'Layanan',
+		dataScopes: 'Akses Jaringan',
 		dataLocal: 'Lokal',
 		dataVpn: 'VPN NetBird',
 		dataVps: 'IP VPS',
 		dataDesc: 'Keterangan',
 		scopeLocal: 'Lokal',
 		scopeVpn: 'VPN',
-		scopeVps: 'IP VPS'
+		scopeVps: 'IP VPS',
+		bindPrefix: 'Bind:',
+		clickToExpand: 'Klik layanan untuk melihat detail',
+		expandRowAria: 'Buka/tutup detail untuk {name} (port {port})'
 	},
 	alerts: {
 		closedTitle: 'Layanan Terpasang Tidak Listen ({list})',

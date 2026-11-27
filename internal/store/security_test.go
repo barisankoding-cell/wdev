@@ -218,3 +218,78 @@ func TestPruneOldSecurityEvents(t *testing.T) {
 		t.Fatalf("expected only 203.0.113.20 remaining after prune, got total=%d rows=%+v (err=%v)", total, remaining, err)
 	}
 }
+
+func TestSecurityEventAndBlockTimezonePreservation(t *testing.T) {
+	wib := time.FixedZone("WIB", 7*3600)
+	prevLocal := time.Local
+	time.Local = wib
+	defer func() { time.Local = prevLocal }()
+
+	db, err := New(filepath.Join(t.TempDir(), "sec_tz.db"))
+	if err != nil {
+		t.Fatalf("failed to init store: %v", err)
+	}
+	defer db.Close()
+
+	tsWIB := time.Date(2026, 11, 27, 14, 2, 33, 0, wib)
+	if _, err := db.SaveSecurityEvent(SecurityEventRecord{
+		Timestamp:   tsWIB,
+		SourceIP:    "127.0.0.1",
+		CountryCode: "LAN",
+		AttackType:  "PANEL_BRUTE_FORCE",
+		Severity:    "MEDIUM",
+		Target:      "/api/auth/login",
+		ActionTaken: "LOGGED",
+	}); err != nil {
+		t.Fatalf("save WIB event failed: %v", err)
+	}
+
+	wibRows, _, err := db.ListSecurityEvents(10, 0, "", "", "127.0.0.1")
+	if err != nil || len(wibRows) != 1 {
+		t.Fatalf("query WIB event failed: len=%d err=%v", len(wibRows), err)
+	}
+	if wibRows[0].Timestamp.Unix() != tsWIB.Unix() {
+		t.Fatalf("security_events timezone drift! want %s (%d), got %s (%d)",
+			tsWIB.Format(time.RFC3339), tsWIB.Unix(),
+			wibRows[0].Timestamp.Format(time.RFC3339), wibRows[0].Timestamp.Unix())
+	}
+
+	expWIB := tsWIB.Add(24 * time.Hour)
+	if err := db.SaveBlockedIP(BlockedIPRecord{
+		IP:        "203.0.113.10",
+		Reason:    "Test TZ",
+		BlockedAt: tsWIB,
+		ExpiresAt: &expWIB,
+	}); err != nil {
+		t.Fatalf("SaveBlockedIP failed: %v", err)
+	}
+	if err := db.SaveBlockedIP(BlockedIPRecord{
+		IP:        "203.0.113.11",
+		Reason:    "Test TZ Permanent",
+		BlockedAt: tsWIB,
+		ExpiresAt: nil,
+	}); err != nil {
+		t.Fatalf("SaveBlockedIP permanent failed: %v", err)
+	}
+	blkRows, err := db.ListBlockedIPs()
+	if err != nil || len(blkRows) != 2 {
+		t.Fatalf("ListBlockedIPs failed: len=%d err=%v", len(blkRows), err)
+	}
+	for _, b := range blkRows {
+		if b.BlockedAt.Unix() != tsWIB.Unix() {
+			t.Fatalf("blocked_ips timezone drift for %s! want %s (%d), got %s (%d)",
+				b.IP, tsWIB.Format(time.RFC3339), tsWIB.Unix(),
+				b.BlockedAt.Format(time.RFC3339), b.BlockedAt.Unix())
+		}
+		if b.IP == "203.0.113.10" && (b.ExpiresAt == nil || b.ExpiresAt.Unix() != expWIB.Unix()) {
+			t.Fatalf("blocked_ips expires_at timezone drift! want %v, got %v", expWIB, b.ExpiresAt)
+		}
+		if b.IP == "203.0.113.11" && b.ExpiresAt != nil {
+			t.Fatalf("expected nil ExpiresAt for permanent ban, got %v", b.ExpiresAt)
+		}
+	}
+	blocked, rec, err := db.IsIPBlocked("203.0.113.10")
+	if err != nil || !blocked || rec == nil || rec.BlockedAt.Unix() != tsWIB.Unix() {
+		t.Fatalf("IsIPBlocked timezone check failed: blocked=%v rec=%+v err=%v", blocked, rec, err)
+	}
+}

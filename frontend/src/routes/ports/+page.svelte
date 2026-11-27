@@ -4,6 +4,7 @@
 	import * as Table from '#lib/components/ui/table/index.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
+	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
@@ -23,6 +24,7 @@
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import CopyIcon from '@lucide/svelte/icons/copy';
 
 	type ColorFilter = 'all' | PortColorTone;
@@ -34,6 +36,11 @@
 	let categoryFilter = $state<string>('all');
 	let colorFilter = $state<ColorFilter>('all');
 	let showNotInstalled = $state(true);
+	let expandedPortIds = $state<Record<string, boolean>>({});
+
+	function togglePortDetail(id: string) {
+		expandedPortIds[id] = !expandedPortIds[id];
+	}
 
 	const categories = $derived([
 		{ id: 'all', label: t('ports.categories.all') },
@@ -87,6 +94,34 @@
 		const targetPart = detail.target ? ` (${detail.target})` : '';
 		const msgPart = detail.detail ? ` — ${detail.detail}` : '';
 		return `${port.name} :${port.port} [${scopeName}]${targetPart}: ${detail.label}${msgPart}`;
+	}
+
+	function buildPortScopes(item: PortEntry) {
+		return [
+			{
+				key: 'local',
+				shortLabel: t('ports.table.scopeLocal'),
+				headerLabel: t('ports.table.colLocal', { ip: report?.network.local_ip || '127.0.0.1' }),
+				detail: item.local
+			},
+			{
+				key: 'vpn',
+				shortLabel: t('ports.table.scopeVpn'),
+				headerLabel: t('ports.table.colVpn', { target: report?.network.vpn_ip || report?.network.vps_vpn_ip || 'NetBird' }),
+				detail: item.vpn
+			},
+			{
+				key: 'vps',
+				shortLabel: t('ports.table.scopeVps'),
+				headerLabel: t('ports.table.colVps', {
+					target:
+						report?.network.mode === 'local'
+							? t('ports.cards.localMode')
+							: report?.network.vps_public_ip || t('ports.table.publicFallback')
+				}),
+				detail: item.vps
+			}
+		];
 	}
 
 	const allPorts = $derived(report?.ports ?? []);
@@ -151,12 +186,12 @@
 	});
 </script>
 
-<div class="space-y-6">
+<div class="min-w-0 space-y-4 sm:space-y-6">
 	<!-- Header -->
 	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-		<div class="space-y-1">
-			<div class="flex items-center gap-2">
-				<EthernetPortIcon class="size-5 text-primary" />
+		<div class="min-w-0 space-y-1">
+			<div class="flex flex-wrap items-center gap-2">
+				<EthernetPortIcon class="size-5 shrink-0 text-primary" />
 				<h1 class="text-xl font-bold tracking-tight sm:text-2xl">{t('ports.title')}</h1>
 				{#if report?.network?.mode}
 					<Badge variant="outline" class="font-mono text-xs">
@@ -164,15 +199,16 @@
 					</Badge>
 				{/if}
 			</div>
-			<p class="text-sm text-muted-foreground">
+			<p class="text-xs leading-relaxed text-muted-foreground sm:text-sm">
 				{t('ports.subtitlePrefix')} <span class="font-mono font-medium">wdev</span> {t('ports.subtitleMiddle')} <strong>{t('ports.scopeLocalBold')}</strong>, <strong>{t('ports.scopeVpnBold')}</strong>, {t('ports.andWord')} <strong>{t('ports.scopeVpsBold')}</strong>.
 			</p>
 		</div>
 
-		<div class="flex flex-wrap items-center gap-2">
+		<div class="flex flex-wrap items-center gap-2 sm:shrink-0">
 			<Button
 				variant="outline"
 				size="sm"
+				class="h-9 w-full sm:h-8 sm:w-auto"
 				disabled={refreshing || loading}
 				onclick={() => loadPorts(true)}
 			>
@@ -195,7 +231,7 @@
 	{/if}
 
 	<!-- Ringkasan Alamat Jaringan & Firewall (4 Kartu) -->
-	<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+	<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
 		<Card.Root>
 			<Card.Content class="space-y-2 p-4">
 				<div class="flex items-center justify-between">
@@ -390,8 +426,41 @@
 					{/each}
 				</div>
 
-				<!-- Filter Kategori & Warna -->
-				<div class="flex flex-col gap-2 border-t pt-3 md:flex-row md:items-center md:justify-between">
+				<!-- Mobile Filter Controls (< md) -->
+				<div class="grid grid-cols-2 gap-2 border-t pt-3 md:hidden">
+					<NativeSelect.Root
+						aria-label={t('ports.categories.all')}
+						bind:value={categoryFilter}
+						class="w-full [&>select]:h-9 [&>select]:bg-background [&>select]:text-xs"
+					>
+						{#each categories as cat (cat.id)}
+							<NativeSelect.Option value={cat.id}>{cat.label}</NativeSelect.Option>
+						{/each}
+					</NativeSelect.Root>
+
+					<NativeSelect.Root
+						aria-label={t('ports.quickMap.filterAllStatus')}
+						bind:value={colorFilter}
+						class="w-full [&>select]:h-9 [&>select]:bg-background [&>select]:text-xs"
+					>
+						<NativeSelect.Option value="all">{t('ports.quickMap.filterAllStatus')}</NativeSelect.Option>
+						<NativeSelect.Option value="green">{t('ports.quickMap.filterGreen')}</NativeSelect.Option>
+						<NativeSelect.Option value="yellow">{t('ports.quickMap.filterYellow')}</NativeSelect.Option>
+						<NativeSelect.Option value="red">{t('ports.quickMap.filterRed')}</NativeSelect.Option>
+					</NativeSelect.Root>
+
+					<Button
+						variant={showNotInstalled ? 'outline' : 'secondary'}
+						size="sm"
+						class="col-span-2 h-8 text-xs"
+						onclick={() => (showNotInstalled = !showNotInstalled)}
+					>
+						{showNotInstalled ? t('ports.quickMap.hideNotInstalled') : t('ports.quickMap.showAllPorts')}
+					</Button>
+				</div>
+
+				<!-- Desktop Filter Kategori & Warna (md+) -->
+				<div class="hidden flex-col gap-2 border-t pt-3 md:flex lg:flex-row lg:items-center lg:justify-between">
 					<div class="flex flex-wrap gap-1.5">
 						{#each categories as cat (cat.id)}
 							<Button
@@ -452,193 +521,265 @@
 		</Card.Content>
 	</Card.Root>
 
-	<!-- Tabel Detail Port: Lokal · VPN · IP VPS -->
-	<div class="rounded-lg border bg-card">
-		<div class="flex flex-col gap-1 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-			<div>
+	<!-- Tabel Detail Port: Lokal · VPN · IP VPS (Mobile Accordion Cards + Desktop Expandable Table) -->
+	<div class="flex flex-col gap-3 sm:gap-0 sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
+		<div class="flex flex-col gap-1.5 rounded-xl border bg-card px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between sm:rounded-none sm:border-0 sm:border-b sm:px-4">
+			<div class="min-w-0">
 				<h2 class="text-sm font-semibold">{t('ports.table.title')}</h2>
 				<p class="text-xs text-muted-foreground">
-					{t('ports.table.showingCount', { filtered: filteredPorts.length, total: allPorts.length })}
+					{t('ports.table.showingCount', { filtered: filteredPorts.length, total: allPorts.length })} · {t('ports.table.clickToExpand')}
 				</p>
 			</div>
 			{#if report?.checked_at}
-				<span class="font-mono text-[11px] text-muted-foreground">
+				<span class="shrink-0 font-mono text-[11px] text-muted-foreground">
 					{t('ports.table.lastChecked', { time: i18n.formatTime(report.checked_at) })}
 				</span>
 			{/if}
 		</div>
 
+		{#snippet portExpandedDetail(
+			item: PortEntry,
+			scopes: { key: string; shortLabel: string; headerLabel: string; detail: PortScopeDetail }[]
+		)}
+			<div class="space-y-3">
+				<div class="grid grid-cols-1 gap-2.5 md:grid-cols-3">
+					{#each scopes as sc (sc.key)}
+						<div class="min-w-0 space-y-1.5 rounded-md border border-border/70 bg-background/80 p-3">
+							<div class="flex flex-wrap items-center justify-between gap-2">
+								<span class="text-xs font-semibold text-muted-foreground">
+									{sc.headerLabel}
+								</span>
+								<StatusBadge
+									tone={badgeToneFromColor(sc.detail.color)}
+									label={sc.detail.label}
+								/>
+							</div>
+							{#if sc.detail.target && item.installed}
+								<div class="font-mono text-xs break-all text-foreground">
+									{sc.detail.target}
+								</div>
+							{/if}
+							{#if sc.detail.detail}
+								<p class="text-xs leading-relaxed break-words text-muted-foreground">
+									{sc.detail.detail}
+								</p>
+							{/if}
+						</div>
+					{/each}
+				</div>
+
+				<div class="min-w-0 space-y-2 rounded-md border border-border/60 bg-background/60 p-3">
+					{#if (item.bind_addresses && item.bind_addresses.length > 0) || item.config_hint}
+						<div class="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] break-all text-muted-foreground">
+							{#if item.bind_addresses && item.bind_addresses.length > 0}
+								<span>{t('ports.table.bindPrefix')} {item.bind_addresses.join(', ')}</span>
+							{/if}
+							{#if item.config_hint}
+								<span>{item.config_hint}</span>
+							{/if}
+						</div>
+					{/if}
+					<p class="text-xs leading-relaxed break-words text-muted-foreground">{item.description}</p>
+					{#if item.recommendation}
+						<p class={`rounded border px-2.5 py-1.5 text-xs leading-relaxed break-words ${
+							item.overall_color === 'red'
+								? 'border-destructive/30 bg-destructive/5 text-destructive'
+								: item.overall_color === 'yellow'
+									? 'border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400'
+									: 'border-border bg-muted/40 text-muted-foreground'
+						}`}>
+							{item.recommendation}
+						</p>
+					{/if}
+				</div>
+			</div>
+		{/snippet}
+
 		{#if loading && !report}
-			<div class="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+			<div class="flex items-center justify-center gap-2 rounded-xl border bg-card p-8 text-sm text-muted-foreground sm:rounded-none sm:border-0">
 				<Spinner class="size-4" />
 				<span>{t('ports.table.loadingList')}</span>
 			</div>
 		{:else if filteredPorts.length === 0}
-			<Empty.Root class="border-0 py-10">
-				<Empty.Header>
-					<Empty.Media variant="icon">
-						<EthernetPortIcon />
-					</Empty.Media>
-					<Empty.Title>{t('ports.table.emptyTitle')}</Empty.Title>
-					<Empty.Description>
-						{t('ports.table.emptyDesc')}
-					</Empty.Description>
-				</Empty.Header>
-				<Empty.Content>
-					<Button
-						variant="outline"
-						size="sm"
-						onclick={() => {
-							categoryFilter = 'all';
-							colorFilter = 'all';
-							showNotInstalled = true;
-						}}
-					>
-						{t('ports.table.resetFilter')}
-					</Button>
-				</Empty.Content>
-			</Empty.Root>
+			<div class="rounded-xl border bg-card sm:rounded-none sm:border-0">
+				<Empty.Root class="border-0 py-10">
+					<Empty.Header>
+						<Empty.Media variant="icon">
+							<EthernetPortIcon />
+						</Empty.Media>
+						<Empty.Title>{t('ports.table.emptyTitle')}</Empty.Title>
+						<Empty.Description>
+							{t('ports.table.emptyDesc')}
+						</Empty.Description>
+					</Empty.Header>
+					<Empty.Content>
+						<Button
+							variant="outline"
+							size="sm"
+							onclick={() => {
+								categoryFilter = 'all';
+								colorFilter = 'all';
+								showNotInstalled = true;
+							}}
+						>
+							{t('ports.table.resetFilter')}
+						</Button>
+					</Empty.Content>
+				</Empty.Root>
+			</div>
 		{:else}
-			<ResponsiveTableWrapper label={t('ports.table.ariaLabel')}>
-				<Table.Root>
-					<Table.Header>
-						<Table.Row>
-							<Table.Head class="w-[105px]">{t('ports.table.colPort')}</Table.Head>
-							<Table.Head class="min-w-[200px]">{t('ports.table.colService')}</Table.Head>
-							<Table.Head class="min-w-[165px]">
-								{t('ports.table.colLocal', { ip: report?.network.local_ip || '127.0.0.1' })}
-							</Table.Head>
-							<Table.Head class="min-w-[175px]">
-								{t('ports.table.colVpn', { target: report?.network.vpn_ip || report?.network.vps_vpn_ip || 'NetBird' })}
-							</Table.Head>
-							<Table.Head class="min-w-[180px]">
-								{t('ports.table.colVps', {
-									target:
-										report?.network.mode === 'local'
-											? t('ports.cards.localMode')
-											: report?.network.vps_public_ip || t('ports.table.publicFallback')
-								})}
-							</Table.Head>
-							<Table.Head class="min-w-[250px]">{t('ports.table.colDesc')}</Table.Head>
-						</Table.Row>
-					</Table.Header>
-					<Table.Body>
-						{#each filteredPorts as item (item.id)}
-							<Table.Row class={!item.installed ? 'opacity-70' : ''}>
-								<Table.Cell data-label={t('ports.table.dataPort')} class="align-top">
-									<div class="flex items-center gap-1.5 font-mono text-sm font-bold">
+			<!-- Mobile (< 640px): Accordion Cards -->
+			<div class="flex flex-col gap-2.5 sm:hidden" aria-label={t('ports.table.ariaLabel')}>
+				{#each filteredPorts as item (item.id)}
+					{@const isExpanded = !!expandedPortIds[item.id]}
+					{@const scopes = buildPortScopes(item)}
+					<div class={`overflow-hidden rounded-xl border bg-card transition-colors ${!item.installed ? 'opacity-75' : ''} ${isExpanded ? 'border-primary/40 ring-1 ring-primary/15' : ''}`}>
+						<button
+							type="button"
+							onclick={() => togglePortDetail(item.id)}
+							aria-expanded={isExpanded}
+							aria-label={t('ports.table.expandRowAria', { name: item.name, port: item.port })}
+							class="flex w-full flex-col gap-2.5 p-3.5 text-left transition-colors active:bg-muted/40"
+						>
+							<div class="flex items-start justify-between gap-2">
+								<div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+									<span class="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-0.5 font-mono text-xs font-bold tabular-nums">
 										<span class={`size-2 shrink-0 rounded-full ${dotClassFromColor(item.overall_color)}`}></span>
 										<span>{item.port}</span>
-									</div>
-									<div class="mt-0.5 font-mono text-[11px] text-muted-foreground">
-										{item.protocol}
-									</div>
-									{#if item.bind_addresses && item.bind_addresses.length > 0}
-										<div class="mt-0.5 font-mono text-[10px] text-muted-foreground" title={item.bind_addresses.join(', ')}>
-											{item.bind_addresses.join(', ')}
-										</div>
-									{/if}
-								</Table.Cell>
+										<span class="text-[10px] font-normal text-muted-foreground">/{item.protocol}</span>
+									</span>
+									<StatusBadge
+										tone={badgeToneFromColor(item.overall_color)}
+										label={item.overall_label}
+									/>
+								</div>
+								<ChevronDownIcon
+									class={`mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform duration-150 ${isExpanded ? 'rotate-180 text-primary' : ''}`}
+								/>
+							</div>
 
-								<Table.Cell data-label={t('ports.table.dataService')} class="align-top">
-									<div class="font-semibold">{item.name}</div>
-									<div class="mt-1 flex flex-wrap items-center gap-1">
-										<StatusBadge
-											tone={badgeToneFromColor(item.overall_color)}
-											label={item.overall_label}
-										/>
-										<Badge variant="outline" class="text-[10px] font-normal">
-											{item.category_label}
-										</Badge>
-									</div>
-									{#if item.config_hint}
-										<div class="mt-1 font-mono text-[11px] text-muted-foreground">
-											{item.config_hint}
-										</div>
-									{/if}
-								</Table.Cell>
+							<div class="flex flex-wrap items-center justify-between gap-1.5">
+								<span class="text-sm font-semibold text-foreground">{item.name}</span>
+								<Badge variant="outline" class="text-[10px] font-normal">
+									{item.category_label}
+								</Badge>
+							</div>
 
-								<Table.Cell data-label={t('ports.table.dataLocal')} class="align-top">
-									<div title={scopeTooltip(item, t('ports.table.scopeLocal'), item.local)}>
-										<StatusBadge
-											tone={badgeToneFromColor(item.local.color)}
-											label={item.local.label}
-										/>
-									</div>
-									{#if item.local.target && item.installed}
-										<div class="mt-1 font-mono text-[11px] text-muted-foreground">
-											{item.local.target}
-										</div>
-									{/if}
-									{#if item.local.detail}
-										<div class="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-											{item.local.detail}
-										</div>
-									{/if}
-								</Table.Cell>
+							<div class="flex flex-wrap items-center gap-1.5">
+								{#each scopes as sc (sc.key)}
+									<span
+										class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${pillClassFromColor(sc.detail.color)}`}
+									>
+										<span class={`size-1.5 shrink-0 rounded-full ${dotClassFromColor(sc.detail.color)}`}></span>
+										<span class="font-semibold">{sc.shortLabel}:</span>
+										<span>{sc.detail.label}</span>
+									</span>
+								{/each}
+							</div>
+						</button>
 
-								<Table.Cell data-label={t('ports.table.dataVpn')} class="align-top">
-									<div title={scopeTooltip(item, t('ports.table.scopeVpn'), item.vpn)}>
-										<StatusBadge
-											tone={badgeToneFromColor(item.vpn.color)}
-											label={item.vpn.label}
-										/>
-									</div>
-									{#if item.vpn.target && item.installed}
-										<div class="mt-1 font-mono text-[11px] text-muted-foreground">
-											{item.vpn.target}
-										</div>
-									{/if}
-									{#if item.vpn.detail}
-										<div class="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-											{item.vpn.detail}
-										</div>
-									{/if}
-								</Table.Cell>
+						{#if isExpanded}
+							<div class="border-t border-border/60 bg-muted/20 p-3.5">
+								{@render portExpandedDetail(item, scopes)}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
 
-								<Table.Cell data-label={t('ports.table.dataVps')} class="align-top">
-									<div title={scopeTooltip(item, t('ports.table.scopeVps'), item.vps)}>
-										<StatusBadge
-											tone={badgeToneFromColor(item.vps.color)}
-											label={item.vps.label}
-										/>
-									</div>
-									{#if item.vps.target && item.installed}
-										<div class="mt-1 font-mono text-[11px] text-muted-foreground">
-											{item.vps.target}
-										</div>
-									{/if}
-									{#if item.vps.detail}
-										<div class="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-											{item.vps.detail}
-										</div>
-									{/if}
-								</Table.Cell>
-
-								<Table.Cell data-label={t('ports.table.dataDesc')} class="align-top text-xs text-muted-foreground">
-									<p class="leading-relaxed">{item.description}</p>
-									{#if item.recommendation}
-										<p class={`mt-1.5 rounded border px-2 py-1 text-[11px] leading-relaxed ${
-											item.overall_color === 'red'
-												? 'border-destructive/30 bg-destructive/5 text-destructive'
-												: item.overall_color === 'yellow'
-													? 'border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400'
-													: 'border-border bg-muted/40 text-muted-foreground'
-										}`}>
-											{item.recommendation}
-										</p>
-									{/if}
-								</Table.Cell>
+			<!-- Desktop / Tablet (>= 640px): Expandable 3-Column Table -->
+			<div class="hidden sm:block">
+				<ResponsiveTableWrapper label={t('ports.table.ariaLabel')} stackOnMobile={false}>
+					<Table.Root>
+						<Table.Header>
+							<Table.Row>
+								<Table.Head class="w-[88px] whitespace-nowrap">{t('ports.table.colPort')}</Table.Head>
+								<Table.Head>{t('ports.table.colService')}</Table.Head>
+								<Table.Head>{t('ports.table.colScopes')}</Table.Head>
 							</Table.Row>
-						{/each}
-					</Table.Body>
-				</Table.Root>
-			</ResponsiveTableWrapper>
+						</Table.Header>
+						<Table.Body>
+							{#each filteredPorts as item (item.id)}
+								{@const isExpanded = !!expandedPortIds[item.id]}
+								{@const scopes = buildPortScopes(item)}
+								<Table.Row
+									onclick={() => togglePortDetail(item.id)}
+									class={`cursor-pointer transition-colors hover:bg-muted/40 ${!item.installed ? 'opacity-70' : ''} ${isExpanded ? 'bg-muted/25' : ''}`}
+								>
+									<Table.Cell data-label={t('ports.table.dataPort')} class="align-top whitespace-nowrap">
+										<div class="flex items-center gap-1.5 font-mono text-sm font-bold">
+											<span class={`size-2 shrink-0 rounded-full ${dotClassFromColor(item.overall_color)}`}></span>
+											<span>{item.port}</span>
+										</div>
+										<div class="mt-0.5 font-mono text-[11px] text-muted-foreground">
+											{item.protocol}
+										</div>
+									</Table.Cell>
+
+									<Table.Cell data-label={t('ports.table.dataService')} class="align-top">
+										<button
+											type="button"
+											onclick={(e) => {
+												e.stopPropagation();
+												togglePortDetail(item.id);
+											}}
+											aria-expanded={isExpanded}
+											aria-label={t('ports.table.expandRowAria', { name: item.name, port: item.port })}
+											class="group inline-flex items-center gap-1.5 rounded-sm text-left font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										>
+											<span>{item.name}</span>
+										</button>
+										<div class="mt-1 flex flex-wrap items-center gap-1.5">
+											<StatusBadge
+												tone={badgeToneFromColor(item.overall_color)}
+												label={item.overall_label}
+											/>
+											<Badge variant="outline" class="text-[10px] font-normal">
+												{item.category_label}
+											</Badge>
+										</div>
+									</Table.Cell>
+
+									<Table.Cell data-label={t('ports.table.dataScopes')} class="align-middle">
+										<div class="flex items-center justify-between gap-3">
+											<div class="flex flex-wrap items-center gap-1.5">
+												{#each scopes as sc (sc.key)}
+													<span
+														title={scopeTooltip(item, sc.shortLabel, sc.detail)}
+														class={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${pillClassFromColor(sc.detail.color)}`}
+													>
+														<span class={`size-1.5 shrink-0 rounded-full ${dotClassFromColor(sc.detail.color)}`}></span>
+														<span class="font-semibold">{sc.shortLabel}:</span>
+														<span>{sc.detail.label}</span>
+													</span>
+												{/each}
+											</div>
+											<ChevronDownIcon
+												class={`size-4 shrink-0 text-muted-foreground transition-transform duration-150 ${isExpanded ? 'rotate-180 text-primary' : ''}`}
+											/>
+										</div>
+									</Table.Cell>
+								</Table.Row>
+
+								{#if isExpanded}
+									<Table.Row class="bg-muted/15 hover:bg-muted/15">
+										<Table.Cell colspan={3} class="p-0">
+											<div class="border-t border-border/60 p-4">
+												{@render portExpandedDetail(item, scopes)}
+											</div>
+										</Table.Cell>
+									</Table.Row>
+								{/if}
+							{/each}
+						</Table.Body>
+					</Table.Root>
+				</ResponsiveTableWrapper>
+			</div>
 		{/if}
 
 		<!-- Ringkasan Aksi / Rekomendasi Bawah Tabel -->
 		{#if report}
-			<div class="space-y-2 border-t p-4">
+			<div class="space-y-2 rounded-xl border bg-card p-3.5 sm:rounded-none sm:border-0 sm:border-t sm:p-4">
 				{#if closedPorts.length > 0}
 					<Alert.Root variant="destructive">
 						<AlertCircleIcon />

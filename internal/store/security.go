@@ -51,6 +51,7 @@ func (s *Store) SaveSecurityEvent(rec SecurityEventRecord) (int64, error) {
 	if ts.IsZero() {
 		ts = time.Now()
 	}
+	ts = ts.Local()
 
 	res, err := s.db.Exec(
 		`INSERT INTO security_events (timestamp, source_ip, country_code, attack_type, severity, target, action_taken, details)
@@ -110,7 +111,7 @@ func (s *Store) ListSecurityEvents(limit, offset int, attackType, severity, sear
 		return nil, 0, err
 	}
 
-	selectQuery := `SELECT id, timestamp, source_ip, country_code, attack_type, severity, target, action_taken, details
+	selectQuery := `SELECT id, COALESCE(CAST(timestamp AS TEXT), ''), source_ip, country_code, attack_type, severity, target, action_taken, details
 		FROM security_events
 		WHERE ` + whereSQL + `
 		ORDER BY id DESC
@@ -199,10 +200,11 @@ func (s *Store) SaveBlockedIP(rec BlockedIPRecord) error {
 	if blockedAt.IsZero() {
 		blockedAt = time.Now()
 	}
+	blockedAt = blockedAt.Local()
 
 	var expiresVal any
 	if rec.ExpiresAt != nil && !rec.ExpiresAt.IsZero() {
-		expiresVal = rec.ExpiresAt.Format("2006-01-02 15:04:05")
+		expiresVal = rec.ExpiresAt.Local().Format("2006-01-02 15:04:05")
 	}
 
 	_, err := s.db.Exec(
@@ -233,7 +235,7 @@ func (s *Store) ListBlockedIPs() ([]BlockedIPRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT ip, reason, blocked_at, expires_at
+	rows, err := s.db.Query(`SELECT ip, reason, COALESCE(CAST(blocked_at AS TEXT), ''), CAST(expires_at AS TEXT)
 		FROM blocked_ips
 		WHERE expires_at IS NULL OR expires_at > datetime('now', 'localtime')
 		ORDER BY blocked_at DESC;`)
@@ -270,7 +272,7 @@ func (s *Store) IsIPBlocked(ip string) (bool, *BlockedIPRecord, error) {
 	var rawExpires sql.NullString
 
 	err := s.db.QueryRow(
-		`SELECT ip, reason, blocked_at, expires_at
+		`SELECT ip, reason, COALESCE(CAST(blocked_at AS TEXT), ''), CAST(expires_at AS TEXT)
 		FROM blocked_ips
 		WHERE ip = ? AND (expires_at IS NULL OR expires_at > datetime('now', 'localtime'));`,
 		strings.TrimSpace(ip),

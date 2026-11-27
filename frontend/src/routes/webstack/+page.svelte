@@ -668,13 +668,13 @@
 				<Table.Root class="sm:[&_th]:px-4 sm:[&_td]:px-4 sm:[&_td]:py-3">
 					<Table.Header>
 						<Table.Row>
-							<Table.Head scope="col" class="min-w-[160px] sm:w-[18%] text-xs font-semibold text-muted-foreground">
+							<Table.Head scope="col" class="min-w-[160px] sm:w-[22%] text-xs font-semibold text-muted-foreground">
 								{isLocal ? t('webstack.page.colDomainLocal') : t('webstack.page.colDomain')}
 							</Table.Head>
-							<Table.Head scope="col" class="min-w-[130px] sm:w-[14%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colFramework')}</Table.Head>
-							<Table.Head scope="col" class="min-w-[150px] sm:w-[16%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colTargetRuntime')}</Table.Head>
-							<Table.Head scope="col" class="min-w-[200px] sm:w-[28%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colDocRoot')}</Table.Head>
-							<Table.Head scope="col" class="min-w-[140px] sm:w-[14%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colSsl')}</Table.Head>
+							<Table.Head scope="col" class="min-w-[130px] sm:w-[16%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colFramework')}</Table.Head>
+							<Table.Head scope="col" class="min-w-[150px] sm:w-[22%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colTargetRuntime')}</Table.Head>
+							<Table.Head scope="col" class="w-[1%] whitespace-nowrap sm:text-center text-xs font-semibold text-muted-foreground">{t('webstack.page.colDocRoot')}</Table.Head>
+							<Table.Head scope="col" class="min-w-[140px] sm:w-[16%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colSsl')}</Table.Head>
 							{#if isEdge}
 								<Table.Head scope="col" class="min-w-[150px] text-xs font-semibold text-muted-foreground">{t('webstack.page.colEdgeTunnel')}</Table.Head>
 							{/if}
@@ -746,20 +746,20 @@
 										<span class="text-foreground">PHP {site.php_version || '8.4'}</span>
 									{/if}
 								</Table.Cell>
-								<Table.Cell data-label={t('webstack.page.dataRoot')} class="min-w-0">
+								<Table.Cell data-label={t('webstack.page.dataRoot')} class="sm:text-center">
 									{#if site.root_path && site.framework !== 'proxy'}
-										<a
+										<Button
 											href={`/files?path=${encodeURIComponent(site.root_path)}`}
+											variant="outline"
+											size="icon-sm"
 											title={t('webstack.page.openInFilesTitle', { path: site.root_path })}
-											class="inline-flex max-w-full sm:max-w-[22rem] md:max-w-[28rem] lg:max-w-[36rem] xl:max-w-none items-center gap-1.5 font-mono text-xs text-primary hover:underline"
+											aria-label={t('webstack.page.openInFilesTitle', { path: site.root_path })}
+											class="text-primary hover:border-primary/40 hover:bg-primary/5"
 										>
-											<FolderOpenIcon class="size-3.5 shrink-0 opacity-80" />
-											<span class="break-all sm:truncate">{site.root_path}</span>
-										</a>
+											<FolderOpenIcon class="size-3.5" />
+										</Button>
 									{:else}
-										<span class="text-xs text-muted-foreground/50 select-none font-mono" title={site.root_path || '-'}>
-											{site.root_path || '—'}
-										</span>
+										<span class="text-xs text-muted-foreground/50 select-none">—</span>
 									{/if}
 								</Table.Cell>
 								<Table.Cell data-label={t('webstack.page.dataSsl')}>

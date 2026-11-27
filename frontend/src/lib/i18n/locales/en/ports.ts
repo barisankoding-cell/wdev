@@ -86,6 +86,7 @@ export const portsEn = {
 		ariaLabel: 'wdev Related Port Status',
 		colPort: 'Port',
 		colService: 'Service & Status',
+		colScopes: 'Reachability',
 		colLocal: 'Local ({ip})',
 		colVpn: 'VPN ({target})',
 		colVps: 'VPS IP ({target})',
@@ -93,13 +94,17 @@ export const portsEn = {
 		colDesc: 'Notes & Recommendations',
 		dataPort: 'Port',
 		dataService: 'Service',
+		dataScopes: 'Reachability',
 		dataLocal: 'Local',
 		dataVpn: 'NetBird VPN',
 		dataVps: 'VPS IP',
 		dataDesc: 'Notes',
 		scopeLocal: 'Local',
 		scopeVpn: 'VPN',
-		scopeVps: 'VPS IP'
+		scopeVps: 'VPS IP',
+		bindPrefix: 'Bind:',
+		clickToExpand: 'Click service to view details',
+		expandRowAria: 'Toggle details for {name} (port {port})'
 	},
 	alerts: {
 		closedTitle: 'Installed Services Not Listening ({list})',
