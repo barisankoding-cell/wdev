@@ -134,6 +134,9 @@ server {
     {{if or .UseReverseProxy (eq .Framework "proxy")}}
     client_max_body_size 260m;
 
+    access_log /var/log/nginx/{{.Domain}}-access.log;
+    error_log  /var/log/nginx/{{.Domain}}-error.log error;
+
     location / {
         set $fe_proto $scheme;
         if ($http_x_forwarded_proto ~* "^https(,|$)") {

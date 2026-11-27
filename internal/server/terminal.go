@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 	"wdev/internal/auth"
+	"wdev/internal/security"
 	"wdev/internal/store"
 	"wdev/internal/terminal"
 
@@ -221,11 +222,30 @@ func (s *Server) handleTerminalUnlock(w http.ResponseWriter, r *http.Request) {
 	if s.authMgr != nil {
 		allowed, wait := s.authMgr.CheckRateLimit(ip)
 		if !allowed {
+			if s.secMgr != nil {
+				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+					SourceIP:    ip,
+					AttackType:  security.AttackPanelBruteForce,
+					Severity:    security.SeverityHigh,
+					Target:      "/api/terminal/unlock",
+					ActionTaken: security.ActionRateLimited,
+					Details:     fmt.Sprintf("Rate limited on terminal unlock: locked for %dm", int(wait.Minutes())+1),
+				})
+			}
 			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Terlalu banyak percobaan sandi salah. Coba lagi dalam %d menit.", int(wait.Minutes())+1))
 			return
 		}
 		if !s.authMgr.VerifyAdminPassword(payload.Password) {
 			s.authMgr.RecordLoginAttempt(ip, false)
+			if s.secMgr != nil {
+				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+					SourceIP:   ip,
+					AttackType: security.AttackPanelBruteForce,
+					Severity:   security.SeverityHigh,
+					Target:     "/api/terminal/unlock",
+					Details:    fmt.Sprintf("Incorrect panel password on terminal unlock (target user: %s)", payload.User),
+				})
+			}
 			writeError(w, http.StatusUnauthorized, "Password panel tidak cocok")
 			return
 		}

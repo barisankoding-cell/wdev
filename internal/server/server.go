@@ -304,7 +304,7 @@ func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cleanURLPath := path.Clean("/" + r.URL.Path)
 
-		// 0. Deteksi probe honeypot / decoy URL scanner
+		// 0. Deteksi probe honeypot / decoy URL scanner & path/UA web scanner
 		if isHoneypotTarget(cleanURLPath) {
 			ip := auth.ClientIP(r)
 			if s.secMgr != nil {
@@ -318,6 +318,20 @@ func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
 			}
 			http.NotFound(w, r)
 			return
+		}
+		if s.secMgr != nil && s.secMgr.GetPolicy().PanelScannerEnabled {
+			if detail, isScanner := isPanelScannerTarget(r, cleanURLPath); isScanner {
+				ip := auth.ClientIP(r)
+				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+					SourceIP:   ip,
+					AttackType: security.AttackWebScanner,
+					Severity:   security.SeverityHigh,
+					Target:     cleanURLPath,
+					Details:    detail,
+				})
+				http.NotFound(w, r)
+				return
+			}
 		}
 	if s.authMgr == nil {
 		next.ServeHTTP(w, r)
@@ -379,7 +393,10 @@ func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
 		}
 
 	// 4. Catat percobaan tebakan path entrance non-root untuk anti-brute-force
-	if cleanPath != "" && !strings.HasPrefix(cleanURLPath, "/api/") && !strings.Contains(cleanPath, "/") {
+	if cleanPath != "" && !strings.HasPrefix(cleanURLPath, "/api/") &&
+		cleanURLPath != "/favicon.ico" && cleanURLPath != "/robots.txt" &&
+		cleanURLPath != "/manifest.webmanifest" && !strings.HasPrefix(cleanURLPath, "/.well-known/") &&
+		!strings.HasPrefix(cleanURLPath, "/apple-touch-icon") {
 		ip := auth.ClientIP(r)
 		s.authMgr.RecordLoginAttempt(ip, false)
 		if s.secMgr != nil {
@@ -593,6 +610,16 @@ func (s *Server) handleAuthChangeCredentials(w http.ResponseWriter, r *http.Requ
 
 	ip := auth.ClientIP(r)
 	if allowed, wait := s.authMgr.CheckRateLimit(ip); !allowed {
+		if s.secMgr != nil {
+			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+				SourceIP:    ip,
+				AttackType:  security.AttackPanelBruteForce,
+				Severity:    security.SeverityHigh,
+				Target:      "/api/auth/change-credentials",
+				ActionTaken: security.ActionRateLimited,
+				Details:     fmt.Sprintf("Rate limited on change-credentials: locked for %dm", int(wait.Minutes())+1),
+			})
+		}
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(i18n.Pick(lang, "Too many failed attempts. Try again in %d minute(s).", "Terlalu banyak percobaan gagal. Coba lagi dalam %d menit."), int(wait.Minutes())+1))
 		return
 	}
@@ -600,6 +627,15 @@ func (s *Server) handleAuthChangeCredentials(w http.ResponseWriter, r *http.Requ
 	currentUsername := s.authMgr.GetUsername()
 	if !s.authMgr.ValidateCredentials(currentUsername, payload.OldPassword) {
 		s.authMgr.RecordLoginAttempt(ip, false)
+		if s.secMgr != nil {
+			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+				SourceIP:   ip,
+				AttackType: security.AttackPanelBruteForce,
+				Severity:   security.SeverityMedium,
+				Target:     "/api/auth/change-credentials",
+				Details:    "Failed current password verification during credential change",
+			})
+		}
 		writeError(w, http.StatusUnauthorized, i18n.Pick(lang, "Current password does not match", "Kata sandi saat ini tidak cocok"))
 		return
 	}
@@ -688,13 +724,19 @@ func (s *Server) Start() error {
 	fmt.Println("==================================================================")
 
 	s.startOrcaCommitAISyncLoop()
+	if s.secMgr != nil {
+		s.secMgr.StartWatchers(context.Background())
+	}
 	defer func() {
+		if s.secMgr != nil {
+			s.secMgr.StopWatchers()
+		}
 		if s.orcaSyncCancel != nil {
 			s.orcaSyncCancel()
 		}
 	}()
 
-	handler := s.wrapSecurityHeaders(s.wrapPanelDomain(s.wrapBlockedIP(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.mux))))))
+	handler := s.wrapSecurityHeaders(s.wrapPanelDomain(s.wrapBlockedIP(s.wrapSecurityEntrance(s.wrapAuth(s.wrapCSRF(s.wrapPanelScanner(s.mux)))))))
 	return s.listenAndServeMux(ln, handler)
 }
 

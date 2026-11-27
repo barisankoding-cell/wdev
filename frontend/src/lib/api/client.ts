@@ -67,6 +67,8 @@ import type {
 	TerminalInfo,
 	TerminalUnlockResponse,
 	SecurityEventsResponse,
+	SecurityMonitorStatusReport,
+	SecurityPolicyConfig,
 	SecurityStatsReport,
 	SetupComponentStatus,
 	SetupMailPayload,
@@ -1006,6 +1008,12 @@ export const api = {
 		apiFetch<PortStatusReport>(forceRefresh ? '/api/ports?refresh=1' : '/api/ports'),
 
 	// Keamanan & Serangan Siber
+	getSecurityStatus: () => apiFetch<SecurityMonitorStatusReport>('/api/security/status'),
+	updateSecurityConfig: (payload: SecurityPolicyConfig) =>
+		apiFetch<{ status: string; message: string; policy: SecurityPolicyConfig }>('/api/security/config', {
+			method: 'POST',
+			body: JSON.stringify(payload)
+		}),
 	getSecurityStats: () => apiFetch<SecurityStatsReport>('/api/security/stats'),
 	getSecurityEvents: (params?: {
 		limit?: number;
@@ -1037,5 +1045,10 @@ export const api = {
 	clearSecurityEvents: () =>
 		apiFetch<{ status: string; message: string }>('/api/security/clear', {
 			method: 'POST'
+		}),
+	testSecurityWebhook: (url?: string) =>
+		apiFetch<{ status: string; message: string }>('/api/security/webhook/test', {
+			method: 'POST',
+			body: JSON.stringify({ url: url || '' })
 		})
 };

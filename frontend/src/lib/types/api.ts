@@ -1488,11 +1488,75 @@ export interface TopAttacker {
 
 export interface SecurityStatsReport {
 	total_today: number;
+	total_7_days: number;
 	total_blocked: number;
 	critical_count: number;
 	high_count: number;
 	attacks_by_type: Record<string, number>;
 	top_attacker_ips: TopAttacker[];
+}
+
+export interface SecurityPolicyConfig {
+	auto_ban_enabled: boolean;
+	firewall_sync_enabled: boolean;
+	ssh_monitor_enabled: boolean;
+	nginx_monitor_enabled: boolean;
+	port_scan_monitor_enabled: boolean;
+	panel_scanner_enabled: boolean;
+	mail_monitor_enabled: boolean;
+	nginx_block_sync_enabled: boolean;
+	cloudflare_real_ip_mode: 'auto' | 'on' | 'off' | string;
+	strike_threshold: number;
+	ban_duration_hours: number;
+	critical_ban_hours: number;
+	retention_days: number;
+	alert_webhook_url: string;
+	alert_min_severity: 'CRITICAL' | 'HIGH' | string;
+	cf_block_sync_enabled: boolean;
+	cf_zone_id: string;
+	cf_api_token?: string;
+	cf_token_configured?: boolean;
+	clear_cf_token?: boolean;
+	whitelist: string[];
+}
+
+export interface SecurityFirewallStatus {
+	engine: 'ufw' | 'firewalld' | 'nftables' | 'none' | string;
+	active: boolean;
+	sync_enabled: boolean;
+	can_manage: boolean;
+	summary: string;
+	last_error?: string;
+}
+
+export interface SecurityNginxSyncStatus {
+	available: boolean;
+	blocklist_sync: boolean;
+	real_ip_mode: 'off' | 'cloudflare' | 'edge' | string;
+	blocked_entries: number;
+	blocklist_path?: string;
+	real_ip_path?: string;
+	summary: string;
+	last_error?: string;
+}
+
+export interface SecurityWatcherState {
+	id: string;
+	name: string;
+	enabled: boolean;
+	running: boolean;
+	source: string;
+	available: boolean;
+	events_count: number;
+	last_event_at?: string;
+	note?: string;
+}
+
+export interface SecurityMonitorStatusReport {
+	policy: SecurityPolicyConfig;
+	firewall: SecurityFirewallStatus;
+	nginx: SecurityNginxSyncStatus;
+	watchers: SecurityWatcherState[];
 }
 
 export interface SecurityEventsResponse {

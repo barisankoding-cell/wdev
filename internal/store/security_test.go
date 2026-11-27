@@ -61,6 +61,9 @@ func TestSecurityEventsAndStats(t *testing.T) {
 	if events[0].ID != id2 {
 		t.Fatalf("expected newest event first, got ID=%d", events[0].ID)
 	}
+	if events[0].Timestamp.Hour() != now.Hour() {
+		t.Fatalf("expected local hour %d preserved in Timestamp, got %d (%v)", now.Hour(), events[0].Timestamp.Hour(), events[0].Timestamp)
+	}
 
 	// Test Filter by attack type
 	filtered, totalF, err := db.ListSecurityEvents(10, 0, "HONEYPOT_PROBE", "", "")
@@ -116,6 +119,9 @@ func TestSecurityEventsAndStats(t *testing.T) {
 	if stats.TotalToday != 2 {
 		t.Fatalf("expected TotalToday=2, got %d", stats.TotalToday)
 	}
+	if stats.Total7Days != 2 {
+		t.Fatalf("expected Total7Days=2, got %d", stats.Total7Days)
+	}
 	if stats.TotalBlocked != 1 {
 		t.Fatalf("expected TotalBlocked=1, got %d", stats.TotalBlocked)
 	}
@@ -124,6 +130,27 @@ func TestSecurityEventsAndStats(t *testing.T) {
 	}
 	if stats.HighCount != 1 {
 		t.Fatalf("expected HighCount=1, got %d", stats.HighCount)
+	}
+
+	// Test GeoIP Country Backfill
+	_, err = db.SaveSecurityEvent(SecurityEventRecord{
+		Timestamp:   now,
+		SourceIP:    "9.9.9.9",
+		CountryCode: "EXT",
+		AttackType:  "PORT_SCAN",
+		Severity:    "HIGH",
+		Target:      "ports:22,80",
+		ActionTaken: "LOGGED",
+	})
+	if err != nil {
+		t.Fatalf("SaveSecurityEvent EXT failed: %v", err)
+	}
+	if err := db.UpdateSecurityEventCountry("9.9.9.9", "sg"); err != nil {
+		t.Fatalf("UpdateSecurityEventCountry failed: %v", err)
+	}
+	backfilled, totalBF, err := db.ListSecurityEvents(10, 0, "", "", "9.9.9.9")
+	if err != nil || totalBF != 1 || backfilled[0].CountryCode != "SG" {
+		t.Fatalf("expected CountryCode=SG after backfill, got %+v (err=%v)", backfilled, err)
 	}
 
 	// Test Unblock
@@ -142,5 +169,52 @@ func TestSecurityEventsAndStats(t *testing.T) {
 	eventsAfter, totalAfter, _ := db.ListSecurityEvents(10, 0, "", "", "")
 	if totalAfter != 0 || len(eventsAfter) != 0 {
 		t.Fatalf("expected 0 events after clear, got %d", totalAfter)
+	}
+}
+
+func TestPruneOldSecurityEvents(t *testing.T) {
+	db, err := New(filepath.Join(t.TempDir(), "sec_prune.db"))
+	if err != nil {
+		t.Fatalf("failed to init store: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	_, err = db.SaveSecurityEvent(SecurityEventRecord{
+		Timestamp:   now.Add(-45 * 24 * time.Hour),
+		SourceIP:    "203.0.113.10",
+		CountryCode: "US",
+		AttackType:  "SSH_BRUTE_FORCE",
+		Severity:    "HIGH",
+		Target:      "ssh:22",
+		ActionTaken: "LOGGED",
+	})
+	if err != nil {
+		t.Fatalf("save old event failed: %v", err)
+	}
+	_, err = db.SaveSecurityEvent(SecurityEventRecord{
+		Timestamp:   now.Add(-2 * 24 * time.Hour),
+		SourceIP:    "203.0.113.20",
+		CountryCode: "SG",
+		AttackType:  "WEB_SCANNER",
+		Severity:    "HIGH",
+		Target:      "/.env",
+		ActionTaken: "BLOCKED",
+	})
+	if err != nil {
+		t.Fatalf("save recent event failed: %v", err)
+	}
+
+	pruned, err := db.PruneOldSecurityEvents(30)
+	if err != nil {
+		t.Fatalf("PruneOldSecurityEvents failed: %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("expected 1 pruned event, got %d", pruned)
+	}
+
+	remaining, total, err := db.ListSecurityEvents(10, 0, "", "", "")
+	if err != nil || total != 1 || len(remaining) != 1 || remaining[0].SourceIP != "203.0.113.20" {
+		t.Fatalf("expected only 203.0.113.20 remaining after prune, got total=%d rows=%+v (err=%v)", total, remaining, err)
 	}
 }

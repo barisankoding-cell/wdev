@@ -6,6 +6,7 @@ import type {
 	ServiceConfigKey,
 	SystemStats,
 	TaskEvent,
+	TaskRecord
 } from '#lib/types/api.js';
 import { toast } from 'svelte-sonner';
 

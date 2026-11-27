@@ -665,190 +665,192 @@
 	{:else}
 		<div class="flex flex-col sm:overflow-hidden sm:rounded-lg sm:border sm:bg-card">
 			<ResponsiveTableWrapper label={t('webstack.page.tableAria')} class="rounded-none border-0 bg-transparent">
-				<Table.Root class="sm:[&_th]:px-3 sm:[&_td]:px-3 sm:[&_td]:py-3">
+				<Table.Root class="sm:[&_th]:px-4 sm:[&_td]:px-4 sm:[&_td]:py-3">
 					<Table.Header>
 						<Table.Row>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">
+							<Table.Head scope="col" class="min-w-[160px] sm:w-[18%] text-xs font-semibold text-muted-foreground">
 								{isLocal ? t('webstack.page.colDomainLocal') : t('webstack.page.colDomain')}
 							</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colFramework')}</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colTargetRuntime')}</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colDocRoot')}</Table.Head>
-							<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colSsl')}</Table.Head>
+							<Table.Head scope="col" class="min-w-[130px] sm:w-[14%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colFramework')}</Table.Head>
+							<Table.Head scope="col" class="min-w-[150px] sm:w-[16%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colTargetRuntime')}</Table.Head>
+							<Table.Head scope="col" class="min-w-[200px] sm:w-[28%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colDocRoot')}</Table.Head>
+							<Table.Head scope="col" class="min-w-[140px] sm:w-[14%] text-xs font-semibold text-muted-foreground">{t('webstack.page.colSsl')}</Table.Head>
 							{#if isEdge}
-								<Table.Head scope="col" class="text-xs font-semibold text-muted-foreground">{t('webstack.page.colEdgeTunnel')}</Table.Head>
+								<Table.Head scope="col" class="min-w-[150px] text-xs font-semibold text-muted-foreground">{t('webstack.page.colEdgeTunnel')}</Table.Head>
 							{/if}
-							<Table.Head scope="col" class="text-right text-xs font-semibold text-muted-foreground">{t('webstack.page.colActions')}</Table.Head>
+							<Table.Head scope="col" class="w-[1%] whitespace-nowrap text-right text-xs font-semibold text-muted-foreground">{t('webstack.page.colActions')}</Table.Head>
 						</Table.Row>
 					</Table.Header>
 					<Table.Body>
 						{#each paginatedSites as site (site.domain)}
-						{@const proto = site.ssl_enabled ? 'https://' : 'http://'}
-						{@const hasLetsEncrypt = site.ssl_enabled && site.ssl_provider === 'letsencrypt'}
-						{@const sslExpiry = formatSSLExpiry(site.ssl_expires_at, site.ssl_days_left)}
-						{@const managed = isManagedApp(site)}
-						{@const primaryHref =
-							isEdge && site.exposed_to && site.domain === site.exposed_to
-								? `https://${site.exposed_to}`
-								: `${proto}${site.domain}`}
-						<Table.Row>
-							<Table.Cell data-label={t('webstack.page.dataDomain')}>
-								<a
-									href={primaryHref}
-									target="_blank"
-									rel="noopener noreferrer"
-									class="inline-flex items-center gap-1 break-all font-semibold text-primary hover:underline"
-								>
-									<span>{site.domain}</span>
-									<ExternalLinkIcon class="size-3.5 shrink-0" />
-								</a>
-								{#if isEdge && site.exposed_to && site.exposed_to !== site.domain}
-									<div class="text-xs text-muted-foreground">
-										{t('webstack.page.publicLabel')} <span class="font-mono">{site.exposed_to}</span>
+							{@const proto = site.ssl_enabled ? 'https://' : 'http://'}
+							{@const hasLetsEncrypt = site.ssl_enabled && site.ssl_provider === 'letsencrypt'}
+							{@const sslExpiry = formatSSLExpiry(site.ssl_expires_at, site.ssl_days_left)}
+							{@const managed = isManagedApp(site)}
+							{@const primaryHref =
+								isEdge && site.exposed_to && site.domain === site.exposed_to
+									? `https://${site.exposed_to}`
+									: `${proto}${site.domain}`}
+							<Table.Row>
+								<Table.Cell data-label={t('webstack.page.dataDomain')}>
+									<div class="flex flex-col gap-0.5">
+										<a
+											href={primaryHref}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="inline-flex items-center gap-1.5 font-semibold text-primary hover:underline"
+										>
+											<span class="break-all sm:break-normal">{site.domain}</span>
+											<ExternalLinkIcon class="size-3.5 shrink-0 opacity-70" />
+										</a>
+										{#if isEdge && site.exposed_to && site.exposed_to !== site.domain}
+											<div class="text-[11px] text-muted-foreground">
+												{t('webstack.page.publicLabel')} <span class="font-mono">{site.exposed_to}</span>
+											</div>
+										{/if}
 									</div>
-								{/if}
-							</Table.Cell>
-							<Table.Cell data-label={t('webstack.page.dataFramework')}>
-								<div class="flex flex-col items-start gap-1">
-									<Badge variant={managed ? 'default' : 'secondary'} class="uppercase tracking-wide">
-										{frameworkBadgeLabel(site.framework)}
-									</Badge>
-									{#if managed}
-										{@const ramLabel = isAppRunning(site) ? formatMemoryBytes(site.app_status?.memory_bytes) : ''}
-										<div class="flex flex-wrap items-center gap-x-2 gap-y-1 sm:flex-nowrap">
-											<StatusBadge tone={appRuntimeTone(site)} label={appRuntimeLabel(site)} />
-											{#if ramLabel}
-												<span class="whitespace-nowrap font-mono text-[11px] font-medium tabular-nums text-muted-foreground">
-													{t('webstack.page.ramBadge', { ram: ramLabel })}
+								</Table.Cell>
+								<Table.Cell data-label={t('webstack.page.dataFramework')}>
+									<div class="flex flex-col items-start gap-1">
+										<Badge variant="secondary" class="uppercase tracking-wide font-medium">
+											{frameworkBadgeLabel(site.framework)}
+										</Badge>
+										{#if managed}
+											{@const ramLabel = isAppRunning(site) ? formatMemoryBytes(site.app_status?.memory_bytes) : ''}
+											<div class="flex items-center gap-1.5 whitespace-nowrap">
+												<StatusBadge tone={appRuntimeTone(site)} label={appRuntimeLabel(site)} />
+												{#if ramLabel}
+													<span class="whitespace-nowrap font-mono text-[11px] font-medium tabular-nums text-muted-foreground">
+														{t('webstack.page.ramBadge', { ram: ramLabel })}
+													</span>
+												{/if}
+											</div>
+										{/if}
+									</div>
+								</Table.Cell>
+								<Table.Cell data-label={t('webstack.page.dataTarget')} class="font-mono text-xs">
+									{#if isManagedApp(site)}
+										<div class="flex flex-col gap-0.5">
+											<span class="font-medium text-foreground">127.0.0.1:{site.proxy_port}</span>
+											{#if site.app?.service_name}
+												<span class="truncate text-[11px] text-muted-foreground max-w-[200px] sm:max-w-xs" title={`${site.app.service_name}.service`}>
+													{site.app.service_name}{isAppRunning(site) && site.app_status?.main_pid ? ` · ${t('webstack.page.pidPrefix', { pid: site.app_status.main_pid })}` : ''}
 												</span>
 											{/if}
 										</div>
-									{/if}
-								</div>
-							</Table.Cell>
-							<Table.Cell data-label={t('webstack.page.dataTarget')} class="font-mono text-xs">
-								{#if isManagedApp(site)}
-									<div class="flex flex-col gap-0.5">
-										<span>127.0.0.1:{site.proxy_port}</span>
-										{#if site.app?.service_name}
-											<span class="truncate text-[11px] text-muted-foreground" title={`${site.app.service_name}.service`}>
-												{site.app.service_name}{isAppRunning(site) && site.app_status?.main_pid ? ` · ${t('webstack.page.pidPrefix', { pid: site.app_status.main_pid })}` : ''}
-											</span>
-										{/if}
-									</div>
-								{:else if site.framework === 'proxy'}
-									{t('webstack.page.forwardPrefix', { port: site.proxy_port })}
-								{:else if site.framework === 'static'}
-									{t('webstack.page.staticHtml')}
-								{:else}
-									PHP {site.php_version || '8.4'}
-								{/if}
-							</Table.Cell>
-							<Table.Cell data-label={t('webstack.page.dataRoot')}>
-								{#if site.root_path && site.framework !== 'proxy'}
-									<a
-										href={`/files?path=${encodeURIComponent(site.root_path)}`}
-										title={t('webstack.page.openInFilesTitle', { path: site.root_path })}
-										class="inline-flex max-w-full sm:max-w-72 items-center gap-1.5 font-mono text-xs text-primary hover:underline"
-									>
-										<FolderOpenIcon class="size-3.5 shrink-0" />
-										<span class="break-all sm:truncate">{site.root_path}</span>
-									</a>
-								{:else}
-									<code class="block max-w-full sm:max-w-72 break-all sm:truncate text-xs text-muted-foreground" title={site.root_path || '-'}>
-										{site.root_path || '-'}
-									</code>
-								{/if}
-							</Table.Cell>
-							<Table.Cell data-label={t('webstack.page.dataSsl')}>
-								{#if isEdge && site.exposed_to}
-									<div class="flex flex-col items-start gap-1">
-										<StatusBadge tone="success" label={t('webstack.page.edgeHttpsBadge')} />
-										<span class="text-[11px] leading-tight text-muted-foreground">
-											{t('webstack.page.sslTerminatedVps')}
-										</span>
-									</div>
-								{:else if site.ssl_enabled}
-									<div class="flex flex-col items-start gap-1">
-										{#if sslExpiry?.expired}
-											<StatusBadge tone="destructive" label={hasLetsEncrypt ? "Let's Encrypt" : 'HTTPS'} />
-										{:else if sslExpiry?.expiringSoon}
-											<StatusBadge tone="warning" label={hasLetsEncrypt ? "Let's Encrypt" : 'HTTPS'} />
-										{:else if site.ssl_provider === 'letsencrypt'}
-											<StatusBadge tone="success" label="Let's Encrypt" />
-										{:else if isVPS && site.ssl_provider === 'local'}
-											<StatusBadge tone="warning" label={t('webstack.page.sslLocalBadge')} />
-										{:else}
-											<StatusBadge tone="success" label="HTTPS" />
-										{/if}
-										{#if sslExpiry}
-											<span
-												class="text-[11px] leading-tight {sslExpiry.expired
-													? 'font-medium text-destructive'
-													: sslExpiry.expiringSoon
-														? 'font-medium text-warning'
-														: 'text-muted-foreground'}"
-												title={t('webstack.page.expiresTitle', { date: sslExpiry.fullTitle })}
-											>
-												{sslExpiry.text}
-											</span>
-										{/if}
-									</div>
-								{:else}
-									<StatusBadge
-										tone="neutral"
-										label={isEdge ? t('webstack.page.httpInternal') : t('webstack.page.httpLabel')}
-										showIcon={false}
-									/>
-								{/if}
-							</Table.Cell>
-							{#if isEdge}
-								<Table.Cell data-label={t('webstack.page.dataEdgeTunnel')}>
-									{#if site.exposed_to}
-										<div class="flex flex-col items-start gap-1">
-											<a
-												href={`https://${site.exposed_to}`}
-												target="_blank"
-												rel="noopener noreferrer"
-												class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-											>
-												<StatusBadge tone="success" label={site.exposed_to} />
-											</a>
-											<span class="font-mono text-[11px] text-muted-foreground">
-												{modeStore.publicIP ? `VPS ${modeStore.publicIP} ⇄ ` : ''}wt0 :80
-											</span>
-										</div>
+									{:else if site.framework === 'proxy'}
+										<span class="text-foreground">{t('webstack.page.forwardPrefix', { port: site.proxy_port })}</span>
+									{:else if site.framework === 'static'}
+										<span class="text-foreground">{t('webstack.page.staticHtml')}</span>
 									{:else}
-										<Button
-											variant="outline"
-											size="xs"
-											disabled={Boolean(sslPending[site.domain])}
-											onclick={() => openExposeModal(site)}
-										>
-											<CloudUploadIcon data-icon="inline-start" />
-											{t('webstack.page.exposeTunnelBtn')}
-										</Button>
+										<span class="text-foreground">PHP {site.php_version || '8.4'}</span>
 									{/if}
 								</Table.Cell>
-							{/if}
-							<Table.Cell data-label={t('webstack.page.dataActions')} class="text-right">
-								{@const busySite =
-									Boolean(sslPending[site.domain]) ||
-									Boolean(siteDeleting[site.domain]) ||
-									Boolean(appActionPending[site.domain])}
-								{@const appRunning = site.app_status?.active_state === 'active'}
-								<div class="flex flex-wrap items-center justify-end gap-1.5">
-									{#if managed}
-										<Button
-											variant="outline"
-											size="xs"
-											disabled={busySite}
-											onclick={() => openManageApp(site)}
+								<Table.Cell data-label={t('webstack.page.dataRoot')} class="min-w-0">
+									{#if site.root_path && site.framework !== 'proxy'}
+										<a
+											href={`/files?path=${encodeURIComponent(site.root_path)}`}
+											title={t('webstack.page.openInFilesTitle', { path: site.root_path })}
+											class="inline-flex max-w-full sm:max-w-[22rem] md:max-w-[28rem] lg:max-w-[36rem] xl:max-w-none items-center gap-1.5 font-mono text-xs text-primary hover:underline"
 										>
-											<SlidersHorizontalIcon data-icon="inline-start" />
-											{t('webstack.page.manageBtn')}
-										</Button>
+											<FolderOpenIcon class="size-3.5 shrink-0 opacity-80" />
+											<span class="break-all sm:truncate">{site.root_path}</span>
+										</a>
+									{:else}
+										<span class="text-xs text-muted-foreground/50 select-none font-mono" title={site.root_path || '-'}>
+											{site.root_path || '—'}
+										</span>
 									{/if}
+								</Table.Cell>
+								<Table.Cell data-label={t('webstack.page.dataSsl')}>
+									{#if isEdge && site.exposed_to}
+										<div class="flex flex-col items-start gap-1">
+											<StatusBadge tone="success" label={t('webstack.page.edgeHttpsBadge')} />
+											<span class="text-[11px] leading-tight text-muted-foreground">
+												{t('webstack.page.sslTerminatedVps')}
+											</span>
+										</div>
+									{:else if site.ssl_enabled}
+										<div class="flex flex-col items-start gap-1">
+											{#if sslExpiry?.expired}
+												<StatusBadge tone="destructive" label={hasLetsEncrypt ? "Let's Encrypt" : 'HTTPS'} />
+											{:else if sslExpiry?.expiringSoon}
+												<StatusBadge tone="warning" label={hasLetsEncrypt ? "Let's Encrypt" : 'HTTPS'} />
+											{:else if site.ssl_provider === 'letsencrypt'}
+												<StatusBadge tone="success" label="Let's Encrypt" />
+											{:else if isVPS && site.ssl_provider === 'local'}
+												<StatusBadge tone="warning" label={t('webstack.page.sslLocalBadge')} />
+											{:else}
+												<StatusBadge tone="success" label="HTTPS" />
+											{/if}
+											{#if sslExpiry}
+												<span
+													class="text-[11px] leading-tight whitespace-nowrap {sslExpiry.expired
+														? 'font-medium text-destructive'
+														: sslExpiry.expiringSoon
+														? 'font-medium text-warning'
+														: 'text-muted-foreground'}"
+													title={t('webstack.page.expiresTitle', { date: sslExpiry.fullTitle })}
+												>
+													{sslExpiry.text}
+												</span>
+											{/if}
+										</div>
+									{:else}
+										<StatusBadge
+											tone="neutral"
+											label={isEdge ? t('webstack.page.httpInternal') : t('webstack.page.httpLabel')}
+											showIcon={false}
+										/>
+									{/if}
+								</Table.Cell>
+								{#if isEdge}
+									<Table.Cell data-label={t('webstack.page.dataEdgeTunnel')}>
+										{#if site.exposed_to}
+											<div class="flex flex-col items-start gap-1">
+												<a
+													href={`https://${site.exposed_to}`}
+													target="_blank"
+													rel="noopener noreferrer"
+													class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+												>
+													<StatusBadge tone="success" label={site.exposed_to} />
+												</a>
+												<span class="font-mono text-[11px] text-muted-foreground">
+													{modeStore.publicIP ? `VPS ${modeStore.publicIP} ⇄ ` : ''}wt0 :80
+												</span>
+											</div>
+										{:else}
+											<Button
+												variant="outline"
+												size="xs"
+												disabled={Boolean(sslPending[site.domain])}
+												onclick={() => openExposeModal(site)}
+											>
+												<CloudUploadIcon data-icon="inline-start" />
+												{t('webstack.page.exposeTunnelBtn')}
+											</Button>
+										{/if}
+									</Table.Cell>
+								{/if}
+								<Table.Cell data-label={t('webstack.page.dataActions')} class="w-[1%] whitespace-nowrap text-right">
+									{@const busySite =
+										Boolean(sslPending[site.domain]) ||
+										Boolean(siteDeleting[site.domain]) ||
+										Boolean(appActionPending[site.domain])}
+									{@const appRunning = site.app_status?.active_state === 'active'}
+									<div class="flex items-center justify-end gap-1.5 whitespace-nowrap">
+										{#if managed}
+											<Button
+												variant="outline"
+												size="xs"
+												disabled={busySite}
+												onclick={() => openManageApp(site)}
+											>
+												<SlidersHorizontalIcon data-icon="inline-start" />
+												{t('webstack.page.manageBtn')}
+											</Button>
+										{/if}
 									<DropdownMenu.Root>
 										<DropdownMenu.Trigger>
 											{#snippet child({ props })}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,6 +34,7 @@ type TopAttacker struct {
 
 type SecurityStatsRecord struct {
 	TotalToday     int            `json:"total_today"`
+	Total7Days     int            `json:"total_7_days"`
 	TotalBlocked   int            `json:"total_blocked"`
 	CriticalCount  int            `json:"critical_count"`
 	HighCount      int            `json:"high_count"`
@@ -121,7 +123,7 @@ func (s *Store) ListSecurityEvents(limit, offset int, attackType, severity, sear
 	}
 	defer rows.Close()
 
-	var events []SecurityEventRecord
+	events := make([]SecurityEventRecord, 0)
 	for rows.Next() {
 		var ev SecurityEventRecord
 		var rawTime string
@@ -145,12 +147,47 @@ func (s *Store) ListSecurityEvents(limit, offset int, attackType, severity, sear
 	return events, total, rows.Err()
 }
 
+// UpdateSecurityEventCountry memperbarui country_code event yang masih kosong atau 'EXT'
+// setelah resolusi GeoIP asinkron selesai.
+func (s *Store) UpdateSecurityEventCountry(ip, countryCode string) error {
+	cleanIP := strings.TrimSpace(ip)
+	code := strings.ToUpper(strings.TrimSpace(countryCode))
+	if cleanIP == "" || code == "" || code == "EXT" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE security_events SET country_code = ? WHERE source_ip = ? AND (country_code = '' OR country_code = 'EXT');`,
+		code, cleanIP,
+	)
+	return err
+}
+
 // ClearAllSecurityEvents membersihkan seluruh log serangan.
 func (s *Store) ClearAllSecurityEvents() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec("DELETE FROM security_events;")
 	return err
+}
+
+// PruneOldSecurityEvents menghapus log serangan yang lebih tua dari retentionDays hari.
+func (s *Store) PruneOldSecurityEvents(retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	modifier := "-" + strconv.Itoa(retentionDays) + " days"
+	res, err := s.db.Exec(
+		`DELETE FROM security_events WHERE timestamp < datetime('now', ?, 'localtime');`,
+		modifier,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // SaveBlockedIP menambahkan atau memperbarui IP yang diblokir.
@@ -205,7 +242,7 @@ func (s *Store) ListBlockedIPs() ([]BlockedIPRecord, error) {
 	}
 	defer rows.Close()
 
-	var list []BlockedIPRecord
+	list := make([]BlockedIPRecord, 0)
 	for rows.Next() {
 		var rec BlockedIPRecord
 		var rawBlocked string
@@ -271,8 +308,9 @@ func (s *Store) GetSecurityStats() (SecurityStatsRecord, error) {
 	stats.AttacksByType = make(map[string]int)
 	stats.TopAttackerIPs = make([]TopAttacker, 0)
 
-	// 1. Total hari ini
+	// 1. Total hari ini & 7 hari terakhir
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM security_events WHERE date(timestamp) = date('now', 'localtime');`).Scan(&stats.TotalToday)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM security_events WHERE timestamp >= datetime('now', '-7 days', 'localtime');`).Scan(&stats.Total7Days)
 
 	// 2. Total IP aktif terblokir
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM blocked_ips WHERE expires_at IS NULL OR expires_at > datetime('now', 'localtime');`).Scan(&stats.TotalBlocked)

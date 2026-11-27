@@ -699,6 +699,8 @@ func TestProxyVHostTemplateAndUpgradePreservesXForwardedProto(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		"access_log /var/log/nginx/panel-new.erposoft.my.id-access.log;",
+		"error_log  /var/log/nginx/panel-new.erposoft.my.id-error.log error;",
 		"proxy_pass http://127.0.0.1:3200;",
 		"set $fe_proto $scheme;",
 		`if ($http_x_forwarded_proto ~* "^https(,|$)") {`,
