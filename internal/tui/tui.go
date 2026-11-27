@@ -228,7 +228,7 @@ func (t *TUI) renderServices() {
 }
 
 func (t *TUI) renderMenu() {
-	fmt.Printf("%s%sMENU UTAMA (9 KATEGORI):%s\n", Bold, Yellow, Reset)
+	fmt.Printf("%s%sMENU UTAMA (10 KATEGORI):%s\n", Bold, Yellow, Reset)
 	fmt.Printf("  %s%s[1]%s 📊 Status & Pembaruan Sistem\n", Bold, Cyan, Reset)
 	fmt.Printf("      %s└─ Cek status layanan, cek update versi, perbarui sistem, self-check%s\n", Dim, Reset)
 	fmt.Printf("  %s%s[2]%s 🔄 Pengelola Multi-Versi Runtime (Switchers)\n", Bold, Cyan, Reset)
@@ -422,12 +422,7 @@ func (t *TUI) menuWebStack() {
 						}
 					}
 				}
-				runtimeText := "PHP " + s.PHPVersion
-				if s.Framework == "static" {
-					runtimeText = "Static HTML"
-				} else if s.Framework == "proxy" {
-					runtimeText = fmt.Sprintf("Port :%d", s.ProxyPort)
-				}
+				runtimeText := site.FormatSiteRuntime(s)
 				target := s.RootPath
 				if s.Framework == "proxy" {
 					target = fmt.Sprintf("Port :%d", s.ProxyPort)
@@ -476,7 +471,7 @@ func (t *TUI) menuToolchains() {
 		fmt.Printf("  %s[5]%s 🤖 Android SDK & Command Line Tools\n", Bold, Reset)
 		fmt.Printf("  %s[6]%s ⚡ Redis / Valkey Cache Server\n", Bold, Reset)
 		fmt.Printf("  %s[7]%s 📦 Dependensi Dasar Sistem (Build Tools & Libs)\n", Bold, Reset)
-		fmt.Printf("  %s[8]%s 📋 Buka Menu Modular Komponen Lengkap (19 Item)\n", Bold, Reset)
+		fmt.Printf(" %s[8]%s 📋 Buka Menu Modular Komponen Lengkap (22 Item)\n", Bold, Reset)
 		fmt.Printf("  %s[0]%s Kembali ke Menu Utama\n\n", Bold, Reset)
 
 		c := t.prompt("Pilih opsi [0-8]: ")
@@ -815,11 +810,11 @@ func (t *TUI) menuFullInstall() {
 	}
 }
 
-// 9. INSTALASI KOMPONEN MODULAR (20 ITEM)
+// 9. INSTALASI KOMPONEN MODULAR (22 ITEM)
 func (t *TUI) menuModularInstall() {
 	for {
 		t.Clear()
-		fmt.Printf("%s%s=== [9] INSTALASI KOMPONEN MODULAR (20 ITEM) ===%s\n\n", Bold, Blue, Reset)
+		fmt.Printf("%s%s=== [9] INSTALASI KOMPONEN MODULAR (22 ITEM) ===%s\n\n", Bold, Blue, Reset)
 		fmt.Printf("%sCore & Build Tools:%s\n", Bold, Reset)
 		fmt.Printf("  %s[1]%s  Dependensi Dasar Sistem (Build Tools, curl, git, lib)\n", Cyan, Reset)
 		fmt.Printf("  %s[2]%s  Node.js (multi-versi via wdev switch node)\n", Cyan, Reset)

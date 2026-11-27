@@ -206,36 +206,22 @@ ensure_pnpm() {
     exit 1
 }
 
+TEMP_NOTES=""
+TEMP_CHANGELOG=""
+cleanup_temp_files() {
+	rm -f "${TEMP_NOTES:-}" "${TEMP_CHANGELOG:-}"
+}
+trap cleanup_temp_files EXIT
+
 echo "=================================================================="
 echo "Memulai proses rilis $TAG (${BUMP_TYPE}) ..."
 echo "=================================================================="
 
 ensure_pnpm
 
-# 1. Update version.go
-echo "==> [1/6] Memperbarui internal/version/version.go ke $NEW_VERSION ..."
-sed -i "s/var Version = \".*\"/var Version = \"${NEW_VERSION}\"/" internal/version/version.go
-
-# 2. Generate Changelog
-echo "==> [2/6] Mengenerate changelog rilis..."
-TEMP_NOTES=$(mktemp /tmp/wdev_release_notes.XXXXXX.md)
-"$ROOT_DIR/scripts/changelog.sh" "$NEW_VERSION" > "$TEMP_NOTES"
-
-CHANGELOG_FILE="$ROOT_DIR/CHANGELOG.md"
-if [ ! -f "$CHANGELOG_FILE" ]; then
-    echo "# Changelog wdev" > "$CHANGELOG_FILE"
-    echo "" >> "$CHANGELOG_FILE"
-fi
-
-TEMP_CHANGELOG=$(mktemp /tmp/wdev_changelog.XXXXXX.md)
-head -n 2 "$CHANGELOG_FILE" > "$TEMP_CHANGELOG"
-cat "$TEMP_NOTES" >> "$TEMP_CHANGELOG"
-tail -n +3 "$CHANGELOG_FILE" >> "$TEMP_CHANGELOG"
-chmod 644 "$TEMP_CHANGELOG"
-mv "$TEMP_CHANGELOG" "$CHANGELOG_FILE"
-
-# 3. Build & Test
-echo "==> [3/6] Menjalankan test dan build frontend + binary..."
+# 1. Build Frontend & Jalankan Unit Test sebelum memodifikasi version.go / CHANGELOG.md
+# (agar kegagalan test/build tidak meninggalkan perubahan parsial yang memicu entri ganda)
+echo "==> [1/6] Menjalankan build frontend dan unit test..."
 cd "$ROOT_DIR/frontend"
 pnpm install --frozen-lockfile
 pnpm build
@@ -243,16 +229,42 @@ cd "$ROOT_DIR"
 
 go test ./...
 
+# 2. Update version.go
+echo "==> [2/6] Memperbarui internal/version/version.go ke $NEW_VERSION ..."
+sed -i "s/var Version = \".*\"/var Version = \"${NEW_VERSION}\"/" internal/version/version.go
+
+# 3. Generate Changelog (idempoten: jangan duplikasi jika section versi sudah ada)
+echo "==> [3/6] Mengenerate changelog rilis..."
+TEMP_NOTES=$(mktemp /tmp/wdev_release_notes.XXXXXX.md)
+"$ROOT_DIR/scripts/changelog.sh" "$NEW_VERSION" > "$TEMP_NOTES"
+
+CHANGELOG_FILE="$ROOT_DIR/CHANGELOG.md"
+if [ ! -f "$CHANGELOG_FILE" ]; then
+ echo "# Changelog" > "$CHANGELOG_FILE"
+ echo "" >> "$CHANGELOG_FILE"
+fi
+
+if grep -qF "## [${TAG}]" "$CHANGELOG_FILE"; then
+ echo "==> Catatan: Entri ${TAG} sudah ada di CHANGELOG.md; melewati penyisipan ulang."
+else
+ TEMP_CHANGELOG=$(mktemp /tmp/wdev_changelog.XXXXXX.md)
+ head -n 2 "$CHANGELOG_FILE" > "$TEMP_CHANGELOG"
+ cat "$TEMP_NOTES" >> "$TEMP_CHANGELOG"
+ tail -n +3 "$CHANGELOG_FILE" >> "$TEMP_CHANGELOG"
+ chmod 644 "$TEMP_CHANGELOG"
+ mv "$TEMP_CHANGELOG" "$CHANGELOG_FILE"
+ TEMP_CHANGELOG=""
+fi
+
+# 4. Build Binary Release
+echo "==> [4/6] Membangun binary rilis..."
 mkdir -p bin
 go build -trimpath -ldflags "-s -w -X wdev/internal/version.Version=${NEW_VERSION}" -o bin/wdev ./cmd/wdev
 
-# 4. Commit Release
-echo "==> [4/6] Membuat git commit rilis..."
+# 5. Commit & Tag Release
+echo "==> [5/6] Membuat git commit dan annotated git tag ${TAG}..."
 git add -A
 git commit -m "chore(release): bump version to ${TAG}" || true
-
-# 5. Tag Release
-echo "==> [5/6] Membuat annotated git tag ${TAG}..."
 git tag -a "$TAG" -F "$TEMP_NOTES"
 
 # 6. Push & Publish to GitHub
@@ -262,14 +274,12 @@ git push origin "$TAG"
 
 # Jika gh CLI terpasang dan authenticated, buat release sekarang
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    echo "==> Mendaftarkan rilis di GitHub via gh CLI..."
-    # Buat GitHub release dengan notes yang dihasilkan
-    gh release create "$TAG" \
-        --title "wdev ${TAG}" \
-        --notes-file "$TEMP_NOTES" || echo "Catatan: GitHub Actions akan melanjutkan pembuatan aset release."
+ echo "==> Mendaftarkan rilis di GitHub via gh CLI..."
+ # Buat GitHub release dengan notes yang dihasilkan
+ gh release create "$TAG" \
+ --title "wdev ${TAG}" \
+ --notes-file "$TEMP_NOTES" || echo "Catatan: GitHub Actions akan melanjutkan pembuatan aset release."
 fi
-
-rm -f "$TEMP_NOTES"
 
 echo "=================================================================="
 echo "✓ SUKSES: Rilis ${TAG} berhasil dipublikasikan ke GitHub!"

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestIsValidPGMajor(t *testing.T) {
@@ -289,10 +288,19 @@ func TestPostgresDumpTransformRestoreUserspaceIntegration(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
+	sockBase := tmp
+	// Linux membatasi panjang path Unix domain socket (sun_path <= 107 byte).
+	// Jika TMPDIR terlalu panjang (mis. di sandbox), gunakan direktori sementara pendek di /tmp.
+	if len(filepath.Join(tmp, "src-sock", ".s.PGSQL.5432")) >= 96 {
+		if shortTmp, mkErr := os.MkdirTemp("/tmp", "wdev-pgsock-*"); mkErr == nil {
+			sockBase = shortTmp
+			t.Cleanup(func() { _ = os.RemoveAll(shortTmp) })
+		}
+	}
 	srcData := filepath.Join(tmp, "src-data")
-	srcSock := filepath.Join(tmp, "src-sock")
+	srcSock := filepath.Join(sockBase, "src-sock")
 	dstData := filepath.Join(tmp, "dst-data")
-	dstSock := filepath.Join(tmp, "dst-sock")
+	dstSock := filepath.Join(sockBase, "dst-sock")
 	for _, d := range []string{srcSock, dstSock} {
 		if err := os.MkdirAll(d, 0700); err != nil {
 			t.Fatal(err)
@@ -448,6 +456,4 @@ func TestPostgresDumpTransformRestoreUserspaceIntegration(t *testing.T) {
 	if got := runPsql(dstSock, "legacy_only", "SELECT v FROM public.legacy_tbl;"); got != "still-here" {
 		t.Fatalf("legacy_only DB should have been preserved, got %q", got)
 	}
-	// Pastikan timestamp test valid (avoid unused import)
-	_ = time.Second
 }

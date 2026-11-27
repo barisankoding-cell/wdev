@@ -1063,3 +1063,23 @@ func TestManagedAppVHostProxyTemplateAndDeleteHook(t *testing.T) {
 		t.Fatalf("unexpected GetSiteApp error: %v", err)
 	}
 }
+
+func TestFormatSiteRuntime(t *testing.T) {
+	cases := []struct {
+		rec  store.SiteRecord
+		want string
+	}{
+		{store.SiteRecord{Framework: "laravel", PHPVersion: "8.4"}, "PHP 8.4"},
+		{store.SiteRecord{Framework: "generic"}, "PHP"},
+		{store.SiteRecord{Framework: "static"}, "Static HTML"},
+		{store.SiteRecord{Framework: "proxy", ProxyPort: 3221}, "Port :3221"},
+		{store.SiteRecord{Framework: "nodejs", ProxyPort: 3120}, "Node.js :3120"},
+		{store.SiteRecord{Framework: "go", ProxyPort: 8080}, "Go :8080"},
+		{store.SiteRecord{Framework: "rust", ProxyPort: 9000}, "Rust :9000"},
+	}
+	for _, tc := range cases {
+		if got := FormatSiteRuntime(tc.rec); got != tc.want {
+			t.Errorf("FormatSiteRuntime(%+v) = %q, want %q", tc.rec, got, tc.want)
+		}
+	}
+}

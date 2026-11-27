@@ -180,6 +180,39 @@ func UsesReverseProxy(framework string) bool {
 	return fw == "proxy" || store.IsManagedAppFramework(fw)
 }
 
+// FormatSiteRuntime memformat label runtime singkat untuk daftar virtual host di CLI & TUI.
+func FormatSiteRuntime(s store.SiteRecord) string {
+	fw := strings.ToLower(strings.TrimSpace(s.Framework))
+	switch {
+	case fw == "static":
+		return "Static HTML"
+	case fw == "proxy":
+		if s.ProxyPort > 0 {
+			return fmt.Sprintf("Port :%d", s.ProxyPort)
+		}
+		return "Proxy"
+	case store.IsManagedAppFramework(fw):
+		label := strings.ToUpper(fw)
+		switch fw {
+		case "nodejs":
+			label = "Node.js"
+		case "go":
+			label = "Go"
+		case "rust":
+			label = "Rust"
+		}
+		if s.ProxyPort > 0 {
+			return fmt.Sprintf("%s :%d", label, s.ProxyPort)
+		}
+		return label
+	default:
+		if ver := strings.TrimSpace(s.PHPVersion); ver != "" {
+			return "PHP " + ver
+		}
+		return "PHP"
+	}
+}
+
 func (m *Manager) resolveAndValidateTarget(opts *CreateOptions, existing *store.SiteRecord) (string, error) {
 	fw := strings.ToLower(strings.TrimSpace(opts.Framework))
 	if fw == "" {

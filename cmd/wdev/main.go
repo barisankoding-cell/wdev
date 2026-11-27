@@ -123,11 +123,13 @@ POWERDNS & VPS EDGE:
   wdev pdns unexpose <dom> [--keep-dns]    Hapus eksposur dari Edge Gateway
 
 MAIL SERVER & RELAY:
-  wdev mail status                         Status Stalwart, SnappyMail, dan relay per domain
-  wdev mail accounts [domain]              Daftar akun email dikelompokkan per domain
-  wdev mail add-account <email> <password> Buat kotak pos / akun email baru
+ wdev mail status Status Stalwart, SnappyMail, dan relay per domain
+ wdev mail setup <domain> [--relay <p>] Siapkan domain mail, DNS, dan SSL otomatis
+ wdev mail accounts [domain] Daftar akun email dikelompokkan per domain
+ wdev mail add-account <email> <password> Buat kotak pos / akun email baru
+ wdev mail change-password <email> <pw> Ubah kata sandi akun email
  wdev mail set-relay <domain|global> <provider> Setel outbound (local, resend, brevo, custom, off)
-  wdev mail admin-reset <domain>           Reset password admin Stalwart untuk domain
+ wdev mail admin-reset <domain> Reset password admin Stalwart untuk domain
  wdev mail unset-relay <domain> Hapus override relay domain (fallback default)
  wdev mail admin-cred <domain> Tampilkan kredensial admin Stalwart domain
  wdev mail repair-domain <domain> Perbaiki NS/MX/A/SPF/DMARC & routing relay domain
@@ -600,12 +602,7 @@ func main() {
 						}
 					}
 				}
-				runtimeText := "PHP " + s.PHPVersion
-				if s.Framework == "static" {
-					runtimeText = "Static HTML"
-				} else if s.Framework == "proxy" {
-					runtimeText = fmt.Sprintf("Port :%d", s.ProxyPort)
-				}
+				runtimeText := site.FormatSiteRuntime(s)
 				target := s.RootPath
 				if s.Framework == "proxy" {
 					target = fmt.Sprintf("Port :%d", s.ProxyPort)

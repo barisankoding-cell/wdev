@@ -1,6 +1,6 @@
 # wdev — Linux Developer Control Plane & Environment Manager
 
-[![Version](https://img.shields.io/badge/version-v2.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v2.12.0-blue.svg)](CHANGELOG.md)
 [![Go](https://img.shields.io/badge/Go-1.27+-00ADD8.svg)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -22,32 +22,36 @@ Seluruh automasi runtime, provisioning, installer toolchain, virtual host, DNS, 
 
 ---
 
-## Fitur Utama (`v2.5.0`)
+## Fitur Utama (`v2.12.0`)
 
 ### 1. Web UI Dashboard Tersemat (`wdev serve`)
-Antarmuka web modern dan responsif (termasuk optimasi layar sentuh/mobile) di port default `3200`, dilengkapi live streaming log task via Server-Sent Events (SSE) serta pengecekan dan pembaruan rilis GitHub otomatis dengan banner changelog dan auto-reload pasca-update:
+Antarmuka web modern dan responsif (dukungan bahasa **Inggris & Indonesia**, serta optimasi layar sentuh/mobile) di port default `3200`, dilengkapi live streaming log task via Server-Sent Events (SSE), tombol *restart* sistem dari panel, serta pengecekan dan pembaruan rilis GitHub otomatis dengan banner changelog dan auto-reload pasca-update:
 
-* **Status & Update (`/`)**: Pemantauan CPU total & per-core, load average (`1m`/`5m`/`15m`), RAM & Swap, Disk utama (`/`) serta drive eksternal / mount tambahan di `/mnt`, alamat IP (LAN, NetBird, IP publik VPS), status layanan inti, dan updater biner `wdev`.
-* **Web Stack & VHost (`/webstack`)**:
-  * Manajemen virtual host Nginx (`laravel`, `wordpress`, `ci4`, `ci3`, `symfony`, `static`, `proxy`) beserta folder picker dan sinkronisasi record A PowerDNS / eksposur Edge otomatis.
-  * Penerbitan SSL otomatis (`mkcert` lokal, Let's Encrypt via `certbot` untuk VPS, atau SSL Edge Gateway) lengkap dengan informasi masa berlaku sertifikat.
-  * **Konfigurasi & Inspeksi Layanan Inti**: Pengaturan parameter dan preset otomatis untuk **Nginx**, **PHP-FPM** (termasuk inspeksi runtime/ekstensi), **PostgreSQL** (termasuk pembuatan database dan manajemen role), serta **Redis / Valkey** (inspeksi keyspace, statistik hit-rate, dan flush DB) beserta penampil log unit systemd.
+* **Status & Update (`/`)**: Pemantauan CPU total & per-core, load average (`1m`/`5m`/`15m`), RAM & Swap, Disk utama (`/`) serta drive eksternal / mount tambahan di `/mnt`, alamat IP (LAN, NetBird, IP publik VPS), status layanan inti (termasuk status *starting* daemon Docker/layanan), dan updater biner `wdev`.
+* **Web Stack, VHost & Managed Apps (`/webstack`)**:
+ * Manajemen virtual host Nginx (`laravel`, `wordpress`, `ci4`, `ci3`, `symfony`, `static`, `proxy`) beserta folder picker, ubah konfigurasi VHost, paginasi, dan sinkronisasi record A PowerDNS / eksposur Edge otomatis.
+ * **Managed App (`nodejs`, `go`, `rust`)**: Jalankan aplikasi backend langsung di balik Nginx reverse proxy sebagai unit `systemd` terkelola dengan konfigurasi `build_command`, `start_command`, pilihan user Linux, sinkronisasi port `.env` proyek/terkelola, live log stream, serta metrik PID & penggunaan RAM.
+ * Penerbitan SSL otomatis (`mkcert` lokal, Let's Encrypt via `certbot` untuk VPS, atau SSL Edge Gateway) lengkap dengan informasi masa berlaku sertifikat.
+ * **Konfigurasi & Inspeksi Layanan Inti**: Pengaturan parameter dan preset otomatis untuk **Nginx**, **PHP-FPM** (termasuk inspeksi runtime/ekstensi), **PostgreSQL** (termasuk pembuatan database dan manajemen role), **Redis / Valkey** (inspeksi keyspace, statistik hit-rate, dan flush DB), serta **Docker** beserta penampil log unit systemd.
+* **Docker & Compose v5 (`/compose`)**: Pengelolaan proyek Docker Compose v5 (register folder atau buat dari template `nginx-static`, `postgres-redis`, `app-postgres-redis`, `wordpress`, `blank`), kontrol siklus hidup (`up`, `down`, `start`, `stop`, `restart`, `pull`, `build`, `run-job`), editor `compose.yaml` & `.env`, live logs, `df`/`prune`, peringatan port sensitif, eksposur ke VHost Nginx SSL, serta instalasi Docker Engine & pra-konfigurasi daemon.
 * **Multi-Versi Runtime (`/switchers`)**: Berpindah versi aktif **Node.js**, **PHP CLI/FPM**, **PostgreSQL** (lengkap dengan migrasi cluster database aman antar versi mayor), dan **OpenJDK Java**.
 * **Toolchains & SDKs (`/toolchains`)**: Ringkasan toolchain terpasang, pemeriksaan pembaruan, serta sinkronisasi & audit duplikat `PATH` (`/etc/profile.d/wdev.sh`).
-* **Workspace & ADE (`/workspace`)**: Manajemen **Orca ADE** (Desktop GUI / Headless Server, autostart, pairing, pembaruan versi) dan konfigurasi **Orca Commit AI** (pemilihan AI agent, model, thinking level, dan preset prompt Conventional Commits / Gitmoji).
+* **Workspace & ADE (`/workspace`)**: Manajemen **Orca ADE** (Desktop GUI / Headless Server, autostart, menu aksi terkelompok, pengaturan pairing **QR Code** dengan mode `auto`/`local`/`vpn`/`custom`, pembaruan versi) dan konfigurasi **Orca Commit AI** (pemilihan AI agent, argumen CLI agent, model discovery, thinking level, preset prompt Conventional Commits / Gitmoji, serta sinkronisasi otomatis ke database Orca).
+* **Status Port & Jaringan (`/ports`)**: Diagnostik status & keterjangkauan port layanan di cakupan **Lokal**, **VPN NetBird**, dan **VPS Publik**, ringkasan status firewall (`UFW`/`firewalld`), serta detail jangkauan jaringan per port.
+* **Keamanan & Pemantauan Serangan (`/security`)**: IDS/IPS dan perlindungan server yang memantau brute-force panel/sudo/SSH/mail, *honeypot decoy traps*, *web scanner*, dan *port scan*; auto-ban & blokir IP manual dengan sinkronisasi ke firewall host (`UFW`/`firewalld`/`nftables`), blocklist Nginx L7 & Cloudflare Real-IP, sinkronisasi Cloudflare WAF, whitelist CIDR, retensi log, serta alert webhook.
 * **File Manager (`/files`)**: Penjelajah berkas terpadu untuk Web Root (`/var/www`), direktori VHost, direktori Home, drive tambahan di `/mnt`, serta root kustom (`WDEV_FM_ROOTS`). Mendukung editor teks bawaan (hingga 4 MiB), preview gambar, pencarian file, upload (hingga 256 MiB), fetch URL remote, `chmod`, kompresi & ekstraksi arsip (`.zip`, `.tar`, `.gz`, `.tgz`).
 * **Terminal SSH / PTY (`/terminal`)**: Web terminal interaktif berbasis `xterm.js` + WebSocket PTY multi-sesi (maksimal 16 sesi, idle timeout 15 menit), pemilih user Linux & shell target, pengamanan *step-up root unlock* (berlaku 10 menit), serta audit log sesi PTY.
-* **Domain, DNS & Edge (`/powerdns`)**, **Cloudflare Tunnel (`/cloudflare`)**, **Mail Server (`/mail`)**, serta **Setup & Komponen (`/setup`)** dengan preset instalasi sesuai mode server dan instalasi batch/modular.
+* **Domain, DNS & Edge (`/powerdns`)**, **Cloudflare Tunnel (`/cloudflare`)** (multi-profil dengan mode `token` & `cert`, manajemen zona & DNS via API Token, auto-naming profil, dan overwrite exposure), **Mail Server (`/mail`)**, serta **Setup & Komponen (`/setup`)** dengan preset instalasi sesuai mode server dan instalasi batch/modular.
 
 ### 2. Keamanan Panel (`aaPanel Security Architecture`)
 * **Security Entrance**: Path akses rahasia acak (`/<entrance>`); permintaan tanpa cookie entrance yang valid otomatis menerima halaman `404 Not Found`.
-* **Autentikasi & Anti-Brute-Force**: Hashing kata sandi PBKDF2-SHA256 (`210.000` iterasi), cookie sesi `HttpOnly` bertoken hash SHA-256, proteksi CSRF (`Origin`/`Referer`/`Sec-Fetch-Site`), header keamanan HTTP (`CSP`, `X-Frame-Options: DENY`, `HSTS`), serta lockout 15 menit setelah 5 kali percobaan gagal.
+* **Autentikasi & Anti-Brute-Force**: Hashing kata sandi PBKDF2-SHA256 (`210.000` iterasi), cookie sesi `HttpOnly` bertoken hash SHA-256, proteksi CSRF (`Origin`/`Referer`/`Sec-Fetch-Site` serta dukungan reverse proxy tepercaya), header keamanan HTTP (`CSP`, `X-Frame-Options: DENY`, `HSTS`), serta lockout 15 menit setelah 5 kali percobaan gagal.
 * **Force HTTPS Port Panel (`wdev panel ssl on|off`)**: Melayani HTTP dan HTTPS di port panel yang sama menggunakan multiplexer TLS (`tls_mux`) dengan sertifikat ECDSA self-signed dan pengalihan otomatis HTTP ke HTTPS.
 * **Pengikatan Domain Panel (`wdev panel domain`)**: Ikat domain khusus (mis. `panel.domainanda.com`) via reverse proxy Nginx dengan SSL `letsencrypt`, `edge`, `local`, `external`, atau `none`, serta opsi **blokir akses langsung via IP** (`wdev panel block-ip on|off`).
 
 ### 3. TUI Terminal (`wdev tui`) & Penyimpanan SQLite
-* **TUI Terminal Dashboard (`wdev tui`)**: Menu interaktif 9 kategori di terminal dengan ringkasan sistem dan indikator status layanan.
-* **State Terpadu SQLite (`modernc.org/sqlite`)**: Menyimpan state situs, profil tunnel, pengaturan panel, audit terminal, dan riwayat task pada `/etc/wdev/wdev.db` (atau `~/.config/wdev/wdev.db` untuk pengguna non-root).
+* **TUI Terminal Dashboard (`wdev tui`)**: Menu interaktif 10 kategori di terminal (termasuk pengelolaan Docker & Compose v5) dengan ringkasan sistem dan indikator status layanan.
+* **State Terpadu SQLite (`modernc.org/sqlite`)**: Menyimpan state situs, Managed App, proyek Compose, profil tunnel, pengaturan panel, audit terminal, event keamanan/IP terblokir, dan riwayat task pada `/etc/wdev/wdev.db` (atau `~/.config/wdev/wdev.db` untuk pengguna non-root).
 
 ---
 
@@ -159,7 +163,7 @@ Target `Makefile` yang tersedia:
 | Perintah | Keterangan |
 |---|---|
 | `wdev serve [--port 3200] [--host 0.0.0.0] [--tls-cert ...] [--tls-key ...]` | Jalankan Web UI Dashboard (`alias: wdev web, wdev dashboard`) |
-| `wdev tui` | Jalankan Terminal UI interaktif (9 kategori menu) |
+| `wdev tui` | Jalankan Terminal UI interaktif (10 kategori menu) |
 | `wdev status` / `wdev check` / `wdev -c` | Ringkasan OS, uptime, load per-core, RAM, disk, IP, layanan inti, dan runtime |
 | `wdev check-updates` / `wdev -cu` | Bandingkan versi toolchain & paket OS terpasang vs terbaru |
 | `wdev mode [get \| set <local\|edge\|vps>]` | Lihat atau ubah arsitektur mode server |
@@ -205,6 +209,14 @@ wdev env status
 sudo wdev env sync
 sudo wdev install audit
 sudo wdev install audit-fix
+
+# Docker & Compose v5
+wdev compose list
+wdev compose add myapp /var/www/myapp --template app-postgres-redis --up
+wdev compose ps myapp
+wdev compose up myapp
+wdev compose logs myapp --tail 200
+wdev compose df
 ```
 
 ### Padanan Perintah Helper Lama
@@ -235,7 +247,7 @@ wdev install <komponen> [versi]  # Instal/perbarui komponen modular tertentu
 ```
 
 Komponen modular yang didukung:
-`base`, `node`, `go`, `rust`, `java`, `nginx`, `php`, `composer`, `ssl`, `postgres`, `redis`, `php-stack`, `android`, `flutter`, `netbird`, `pdns`, `mail`, `cloudflare`, `zsh`, `orca-desktop`, `orca-headless`, `orca-update`, `orca-uninstall`.
+`base`, `node`, `go`, `rust`, `java`, `nginx`, `php`, `composer`, `ssl`, `postgres`, `redis`, `php-stack`, `docker`, `android`, `flutter`, `netbird`, `pdns`, `mail`, `cloudflare`, `zsh`, `orca-desktop`, `orca-headless`, `orca-update`, `orca-uninstall`.
 
 Pilihan versi komponen:
 
@@ -272,6 +284,7 @@ Di Web UI (`/setup`), tersedia juga **Preset Instalasi per Mode** (instalasi bat
 | Composer | PHAR resmi `getcomposer.org/download/latest-stable/composer.phar` di `/usr/local/bin/composer` |
 | Local SSL | Rilis GitHub resmi `FiloSottile/mkcert` di `/usr/local/bin/mkcert` + sertifikat di `/etc/ssl/local-certs` |
 | Cloudflared | Rilis GitHub resmi `cloudflare/cloudflared` di `/usr/local/bin/cloudflared` |
+| Docker & Compose | Repo resmi Docker (`download.docker.com` — Docker Engine + Docker Compose v5 plugin) atau paket distro |
 | NetBird | Repo resmi **`pkgs.netbird.io`** (service `netbird`) |
 | PowerDNS | Paket `pdns-server` + `pdns-backend-sqlite3` (`127.0.0.1:8081` API lokal atau `8081` NetBird pada VPS Edge) |
 | Mail Stack | Rilis resmi **Stalwart Mail Server** (`/usr/local/bin/stalwart`, `stalwart-cli`) + **SnappyMail** (`/var/www/snappymail`) |
@@ -325,8 +338,10 @@ Setiap akun Cloudflare dikelola sebagai satu profil terpisah (satu proses `cloud
 ```bash
 sudo wdev install cloudflare
 wdev cf status
+wdev cf profile add-token cf1 <TUNNEL_TOKEN> --api-token <CF_API_TOKEN>
+wdev cf zones --profile cf1
 wdev cf expose myapp.test app-dev.example.com --profile cf1
-wdev cf expose myapp.test example.com --profile cf1   # apex domain
+wdev cf expose myapp.test example.com --profile cf1 --overwrite # apex domain
 wdev cf unexpose myapp.test
 ```
 
@@ -461,8 +476,8 @@ make release        # update version.go, CHANGELOG.md, test, build, commit, tag,
 Atau rilis manual via git tag:
 
 ```bash
-git add -A && git commit -m "chore(release): bump version to v2.5.1"
-git tag v2.5.1
+git add -A && git commit -m "chore(release): bump version to v2.12.1"
+git tag v2.12.1
 git push origin master --tags
 ```
 
@@ -473,32 +488,36 @@ git push origin master --tags
 ```text
 wdev/
 ├── cmd/
-│   └── wdev/
-│       └── main.go                 # Entrypoint CLI, launcher symlink Orca, & dispatch subperintah
-├── frontend/                       # Aplikasi Web UI (SvelteKit 5, Tailwind CSS v4, shadcn-svelte, xterm.js)
-│   └── src/
-│       ├── lib/                    # API client, stores, components, modals, types
-│       └── routes/                 # Halaman dashboard (webstack, switchers, files, terminal, mail, pdns, setup, dll.)
+│ └── wdev/
+│ └── main.go # Entrypoint CLI, launcher symlink Orca, & dispatch subperintah
+├── frontend/ # Aplikasi Web UI (SvelteKit 5, Tailwind CSS v4, shadcn-svelte, xterm.js)
+│ └── src/
+│ ├── lib/ # API client, stores, components, modals, types, & i18n (en/id)
+│ └── routes/ # Halaman dashboard (webstack, compose, ports, security, switchers, files, terminal, mail, pdns, setup, dll.)
 ├── internal/
-│   ├── auth/                       # Security Entrance, PBKDF2, session, rate limit, panel domain & SSL
-│   ├── cloudflare/                 # Multi-akun Cloudflare Tunnel & DNS
-│   ├── config/                     # Konfigurasi global & env vars
-│   ├── edge/                       # Provisioner & daemon agent VPS Edge Gateway
-│   ├── filemanager/                # Backend File Manager, arsip, fetch URL, drive /mnt
-│   ├── installer/                  # Installer toolchain, repo resmi, audit PATH, Orca & Commit AI, PostgreSQL switch
-│   ├── mail/                       # Stalwart Mail Server, SnappyMail, outbound relay & DNS sync
-│   ├── monitor/                    # Telemetri CPU/RAM/Disk/Mount /mnt & status layanan
-│   ├── pdns/                       # PowerDNS Authoritative, mode server, zone doctor/repair
-│   ├── runner/                     # Task runner asinkron + log streaming SSE
-│   ├── server/                     # HTTP API server, TLS mux, WebSocket PTY, CSRF & security middleware
-│   ├── serviceconfig/              # Inspeksi, preset, & konfigurasi Nginx, PHP-FPM, PostgreSQL, Redis
-│   ├── site/                       # Virtual host Nginx, mkcert, & Let's Encrypt
-│   ├── store/                      # Penyimpanan state SQLite (modernc.org/sqlite)
-│   ├── switcher/                   # Pengelola multi-versi Node.js, PHP, PostgreSQL, Java
-│   ├── terminal/                   # Manajemen sesi PTY interaktif & audit
-│   ├── tui/                        # Terminal UI interaktif (9 kategori)
-│   ├── updater/                    # Auto-updater biner dari GitHub Releases / source lokal
-│   └── version/                    # Metadata versi rilis
+│ ├── auth/ # Security Entrance, PBKDF2, session, rate limit, panel domain & SSL
+│ ├── cloudflare/ # Multi-akun Cloudflare Tunnel & DNS (cert/token & API Token)
+│ ├── compose/ # Manajer Docker Engine & Docker Compose v5
+│ ├── config/ # Konfigurasi global, env vars, & deteksi user sistem
+│ ├── edge/ # Provisioner & daemon agent VPS Edge Gateway
+│ ├── filemanager/ # Backend File Manager, arsip, fetch URL, drive /mnt
+│ ├── i18n/ # Lokalisasi respons backend (en/id)
+│ ├── installer/ # Installer toolchain, repo resmi, audit PATH, Orca & Commit AI, PostgreSQL switch
+│ ├── mail/ # Stalwart Mail Server, SnappyMail, outbound relay & DNS sync
+│ ├── monitor/ # Telemetri CPU/RAM/Disk/Mount /mnt & status layanan
+│ ├── pdns/ # PowerDNS Authoritative, mode server, zone doctor/repair
+│ ├── runner/ # Task runner asinkron + log streaming SSE
+│ ├── security/ # IDS/IPS watchers (SSH/Nginx/Mail/PortScan/Honeypot), firewall, blocklist & webhook
+│ ├── server/ # HTTP API server, TLS mux, WebSocket PTY, port diagnostics, CSRF & security middleware
+│ ├── serviceconfig/ # Inspeksi, preset, & konfigurasi Nginx, PHP-FPM, PostgreSQL, Redis, Docker
+│ ├── site/ # Virtual host Nginx, mkcert, & Let's Encrypt
+│ ├── siteapp/ # Manajer Managed App (Node.js/Go/Rust via systemd & .env)
+│ ├── store/ # Penyimpanan state SQLite (modernc.org/sqlite)
+│ ├── switcher/ # Pengelola multi-versi Node.js, PHP, PostgreSQL, Java
+│ ├── terminal/ # Manajemen sesi PTY interaktif & audit
+│ ├── tui/ # Terminal UI interaktif (10 kategori)
+│ ├── updater/ # Auto-updater biner dari GitHub Releases / source lokal
+│ └── version/ # Metadata versi rilis
 ├── scripts/                        # Otomasi SemVer, changelog, & release (next-version.sh, changelog.sh, release.sh)
 ├── web/                            # Asset hasil build frontend yang di-embed via go:embed
 ├── .github/workflows/release.yml   # CI/CD build multi-arch & GitHub Release
