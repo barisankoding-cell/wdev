@@ -569,6 +569,15 @@ func (m *Manager) UpdateSite(domain string, opts CreateOptions) error {
 			}
 		}
 	}
+	if len(opts.ServerAliases) == 0 && m.store != nil {
+		if route, found, rErr := m.store.GetCFRouteByLocalDomain(opts.Domain); rErr == nil && found {
+			pub := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(route.Hostname), "."))
+			if pub != "" && !seenAlias[pub] && ValidateDomain(pub) == nil {
+				seenAlias[pub] = true
+				cleanAliases = append(cleanAliases, pub)
+			}
+		}
+	}
 	serverNames := strings.Join(append([]string{opts.Domain}, cleanAliases...), " ")
 
 	var existingPtr *store.SiteRecord
@@ -1305,8 +1314,9 @@ func (m *Manager) EnsureProxyHTTPSForPHPVhosts() (int, error) {
 			continue
 		}
 		nextText, changedFastCGI := EnsureFastCGIProxyHTTPSInConfig(string(origBytes))
+		nextText, changedServerName := EnsureFastCGIServerNameInConfig(nextText)
 		nextText, changedProxy := EnsureProxyProtoInConfig(nextText)
-		if !changedFastCGI && !changedProxy {
+		if !changedFastCGI && !changedServerName && !changedProxy {
 			continue
 		}
 		if writeErr := m.writeFile(confPath, []byte(nextText), 0644); writeErr != nil {

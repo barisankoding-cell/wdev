@@ -33,6 +33,8 @@ func newTestCFManager(t *testing.T) (*Manager, string) {
 	mgr := New(cfg, db)
 	mgr.systemdTemplatePath = filepath.Join(dir, "systemd", "cloudflared@.service")
 	mgr.legacyConfigPath = filepath.Join(dir, "legacy-cloudflared.yml")
+	mgr.localCertsDir = filepath.Join(dir, "local-certs")
+	mgr.skipNginxExec = true
 	mgr.lookPathFn = func(name string) (string, error) {
 		if name == "cloudflared" {
 			return "/usr/local/bin/cloudflared", nil
@@ -848,8 +850,8 @@ func TestCheckPublicHostAndOverwriteProtection(t *testing.T) {
 	for _, r := range betaCfg.Ingress {
 		if r.Hostname == "app1.softcuy.uk" {
 			app1Rules++
-			if r.OriginRequest == nil || r.OriginRequest.HTTPHostHeader != "app4.test" || r.Service != "http://127.0.0.1:3000" {
-				t.Fatalf("expected updated HTTPHostHeader app4.test and Service :3000, got %+v", r)
+			if r.Service != "http://127.0.0.1:3000" || (r.OriginRequest != nil && r.OriginRequest.HTTPHostHeader != "") {
+				t.Fatalf("expected Service :3000 without rewritten HTTPHostHeader, got %+v", r)
 			}
 		}
 	}

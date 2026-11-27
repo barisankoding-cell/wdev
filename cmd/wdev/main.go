@@ -352,6 +352,9 @@ func main() {
 		if _, err := pdnsMgr.EnsureEdgeRealIPConfig(); err != nil {
 			fmt.Fprintf(os.Stderr, "Peringatan: sinkronisasi Nginx real_ip Edge gagal: %v\n", err)
 		}
+		if err := cfMgr.SyncActiveExposures(); err != nil {
+			fmt.Fprintf(os.Stderr, "Peringatan: sinkronisasi eksposur Cloudflare gagal: %v\n", err)
+		}
 
 		srv := server.New(cfg, db, runMgr, inst, siteMgr, swMgr, cfMgr, pdnsMgr, mailMgr, authMgr)
 		if err := srv.Start(); err != nil {

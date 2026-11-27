@@ -1640,6 +1640,9 @@ func (s *Server) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	siteRec, _ := s.siteMgr.GetSite(domain)
+	if s.cfMgr != nil {
+		_ = s.cfMgr.SyncSiteExposure(domain)
+	}
 	resp["site"] = s.enrichSingleSiteWithApp(r.Context(), siteRec)
 	writeJSON(w, http.StatusOK, resp)
 }

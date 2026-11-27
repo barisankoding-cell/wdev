@@ -496,16 +496,19 @@ func (m *Manager) upsertRemoteTunnelIngress(
 		cfgMap = make(map[string]any)
 	}
 
-	originReq := map[string]any{
-		"httpHostHeader": httpHostHeader,
+	originReq := make(map[string]any)
+	if httpHostHeader != "" {
+		originReq["httpHostHeader"] = httpHostHeader
 	}
 	if noTLSVerify {
 		originReq["noTLSVerify"] = true
 	}
 	newRule := map[string]any{
-		"hostname":      publicHost,
-		"service":       serviceURL,
-		"originRequest": originReq,
+		"hostname": publicHost,
+		"service":  serviceURL,
+	}
+	if len(originReq) > 0 {
+		newRule["originRequest"] = originReq
 	}
 
 	existing := extractRemoteIngressSlice(cfgMap)
@@ -538,6 +541,15 @@ func (m *Manager) upsertRemoteTunnelIngress(
 	cfgMap["ingress"] = newRules
 
 	return m.doCFAPI(ctx, apiToken, http.MethodPut, endpoint, map[string]any{"config": cfgMap}, nil, nil)
+}
+
+func (m *Manager) syncRemoteTunnelRule(
+	apiToken, accountID, tunnelID, publicHost, serviceURL, httpHostHeader string,
+	noTLSVerify bool,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return m.upsertRemoteTunnelIngress(ctx, apiToken, accountID, tunnelID, publicHost, serviceURL, httpHostHeader, noTLSVerify)
 }
 
 func (m *Manager) removeRemoteTunnelIngress(ctx context.Context, apiToken, accountID, tunnelID, publicHost, localDomain string) error {

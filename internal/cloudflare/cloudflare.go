@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +60,7 @@ type Manager struct {
 	sudoPassFn          func() string
 	systemdTemplatePath string
 	legacyConfigPath    string
+	localCertsDir       string
 	apiBaseURL          string
 	httpClient          *http.Client
 
@@ -72,6 +72,7 @@ type Manager struct {
 	anyTunnelProcFn    func() bool
 	runPrivilegedFn    func(bin string, args ...string) (string, error)
 	startLoginCmdFn    func(ctx context.Context, homeDir, binPath string) (io.ReadCloser, func() error, error)
+	skipNginxExec      bool
 
 	loginMu sync.Mutex
 	loginSessions map[string]*LoginSession
@@ -141,12 +142,13 @@ type TunnelStatus struct {
 
 // ExposeOptions mengonfigurasi pembuatan rule ingress Cloudflare untuk vhost atau layanan lokal.
 type ExposeOptions struct {
-	LocalDomain string `json:"local_domain"`
-	PublicHost  string `json:"public_host"`
-	Profile     string `json:"profile"`
-	ServiceURL  string `json:"service_url,omitempty"`
-	NoTLSVerify *bool  `json:"no_tls_verify,omitempty"`
-	Overwrite   bool   `json:"overwrite,omitempty"`
+	LocalDomain    string  `json:"local_domain"`
+	PublicHost     string  `json:"public_host"`
+	Profile        string  `json:"profile"`
+	ServiceURL     string  `json:"service_url,omitempty"`
+	HTTPHostHeader *string `json:"http_host_header,omitempty"`
+	NoTLSVerify    *bool   `json:"no_tls_verify,omitempty"`
+	Overwrite      bool    `json:"overwrite,omitempty"`
 }
 
 // ExposeResult merangkum hasil pembuatan exposure Cloudflare.
@@ -174,6 +176,7 @@ func New(cfg *config.Config, s *store.Store) *Manager {
 		store:               s,
 		systemdTemplatePath: defaultSystemdTemplatePath,
 		legacyConfigPath:    defaultLegacyConfigPath,
+		localCertsDir:       "/etc/ssl/local-certs",
 		apiBaseURL:          "https://api.cloudflare.com/client/v4",
 		httpClient:          &http.Client{Timeout: 20 * time.Second},
 		loginSessions:       make(map[string]*LoginSession),
@@ -514,32 +517,6 @@ func (m *Manager) Expose(localDomain, publicHost, profile string) error {
 	return err
 }
 
-func resolveExposeTarget(opts ExposeOptions, localDomain string) (serviceURL, httpHostHeader string, noTLSVerify bool, err error) {
-	serviceURL = strings.TrimSpace(opts.ServiceURL)
-	httpHostHeader = localDomain
-	if serviceURL == "" {
-		serviceURL = "http://127.0.0.1:80"
-		if fileExists(fmt.Sprintf("/etc/ssl/local-certs/%s.pem", localDomain)) {
-			serviceURL = "https://127.0.0.1:443"
-			noTLSVerify = true
-		}
-	} else {
-		parsed, pErr := url.Parse(serviceURL)
-		if pErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-			return "", "", false, fmt.Errorf("service_url tidak valid (harus http:// atau https://): %q", serviceURL)
-		}
-		if opts.NoTLSVerify != nil {
-			noTLSVerify = *opts.NoTLSVerify
-		} else if parsed.Scheme == "https" && (strings.HasPrefix(parsed.Host, "127.0.0.1") || strings.HasPrefix(parsed.Host, "localhost")) {
-			noTLSVerify = true
-		}
-	}
-	if opts.NoTLSVerify != nil {
-		noTLSVerify = *opts.NoTLSVerify
-	}
-	return serviceURL, httpHostHeader, noTLSVerify, nil
-}
-
 // ExposeWithOptions menambahkan atau memperbarui rute ingress Cloudflare Tunnel secara menyeluruh per profil.
 func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 	localDomain := strings.ToLower(strings.TrimSpace(opts.LocalDomain))
@@ -576,12 +553,13 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 		return nil, fmt.Errorf("gagal menyiapkan direktori cloudflare: %w", err)
 	}
 
-	serviceURL, httpHostHeader, noTLSVerify, err := resolveExposeTarget(opts, localDomain)
+	serviceURL, noTLSVerify, err := m.resolveServiceTarget(opts, localDomain)
 	if err != nil {
 		return nil, err
 	}
 
 	var staleSameProfLocals []string
+	var staleNginxAliases [][2]string
 	if !opts.Overwrite {
 		if chk, chkErr := m.CheckPublicHost(profile, publicHost, localDomain); chkErr == nil && !chk.Available {
 			return nil, fmt.Errorf("%s Pilih subdomain lain atau aktifkan opsi timpa (overwrite)", chk.Message)
@@ -599,11 +577,18 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 				_ = m.clearLocalOrRemoteRouteOnly(exp.LocalDomain, exp.Profile, exp.PublicHost)
 			} else if sameHost && !sameLocal {
 				staleSameProfLocals = append(staleSameProfLocals, exp.LocalDomain)
+				staleNginxAliases = append(staleNginxAliases, [2]string{exp.LocalDomain, exp.PublicHost})
 			} else if sameLocal && !sameHost {
 				_ = m.clearLocalOrRemoteRouteOnly(exp.LocalDomain, exp.Profile, exp.PublicHost)
 			}
 		}
 	}
+
+	vhostAdapted, adaptErr := m.adaptLocalVHostForExposure(localDomain, publicHost, serviceURL)
+	if adaptErr != nil {
+		return nil, fmt.Errorf("gagal menyesuaikan virtual host Nginx lokal: %w", adaptErr)
+	}
+	httpHostHeader := m.resolveEffectiveHTTPHostHeader(opts, localDomain, serviceURL, vhostAdapted)
 
 	// Mode Token dengan Cloudflare API Token: kelola ingress remote & DNS langsung via Cloudflare REST API
 	if profExists && profInfo.AuthMode == "token" {
@@ -628,6 +613,9 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 			})
 		}
 		m.removeLocalExposureTrackers(staleSameProfLocals)
+		for _, pair := range staleNginxAliases {
+			m.removeLocalVHostAlias(pair[0], pair[1])
+		}
 
 		dnsWarning := ""
 		if dnsErr := m.upsertCFDNSRecord(ctx, apiToken, publicHost, profInfo.TunnelID+".cfargotunnel.com"); dnsErr != nil {
@@ -666,9 +654,12 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 		}
 	}
 
-	originReq := &OriginRequestConfig{
-		HTTPHostHeader: httpHostHeader,
-		NoTLSVerify:    noTLSVerify,
+	var originReq *OriginRequestConfig
+	if httpHostHeader != "" || noTLSVerify {
+		originReq = &OriginRequestConfig{
+			HTTPHostHeader: httpHostHeader,
+			NoTLSVerify:    noTLSVerify,
+		}
 	}
 	newRule := IngressRule{
 		Hostname:      publicHost,
@@ -714,6 +705,9 @@ func (m *Manager) ExposeWithOptions(opts ExposeOptions) (*ExposeResult, error) {
 		})
 	}
 	m.removeLocalExposureTrackers(staleSameProfLocals)
+	for _, pair := range staleNginxAliases {
+		m.removeLocalVHostAlias(pair[0], pair[1])
+	}
 
 	dnsWarning := ""
 	certPath := m.certFilePath(profile)
@@ -903,6 +897,10 @@ func (m *Manager) UnexposeWithResult(localDomain, profile string) (*UnexposeResu
 		_, _ = m.runPrivileged("systemctl", "restart", "cloudflared")
 	}
 
+	if publicHost != "" {
+		m.removeLocalVHostAlias(localDomain, publicHost)
+	}
+
 	res := &UnexposeResult{
 		Status:     "unexposed",
 		Profile:    routeProfile,
@@ -984,6 +982,9 @@ func (m *Manager) clearLocalOrRemoteRouteOnly(localDomain, profile, publicHost s
 				}
 			}
 		}
+	}
+	if publicHost != "" {
+		m.removeLocalVHostAlias(localDomain, publicHost)
 	}
 	return nil
 }

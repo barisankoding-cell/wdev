@@ -89,6 +89,29 @@ func EnsureFastCGIProxyHTTPSInConfig(confText string) (string, bool) {
 	return updated, updated != confText
 }
 
+// EnsureFastCGIServerNameInConfig memastikan fastcgi_param SERVER_NAME mengikuti $host
+// sehingga virtual host dengan alias domain publik tetap meneruskan hostname permintaan
+// asli ke PHP-FPM tanpa menimpa file proyek.
+func EnsureFastCGIServerNameInConfig(confText string) (string, bool) {
+	if strings.Contains(confText, "fastcgi_param SERVER_NAME") {
+		return confText, false
+	}
+	if !includeFastCGIParamsRe.MatchString(confText) {
+		return confText, false
+	}
+	updated := includeFastCGIParamsRe.ReplaceAllStringFunc(confText, func(line string) string {
+		m := includeFastCGIParamsRe.FindStringSubmatch(line)
+		indent := ""
+		directive := strings.TrimSpace(line)
+		if len(m) > 2 {
+			indent = m[1]
+			directive = m[2]
+		}
+		return indent + directive + "\n" + indent + "fastcgi_param SERVER_NAME $host;"
+	})
+	return updated, updated != confText
+}
+
 const nginxVHostTemplate = `server {
     listen 80;
     {{if .IPv6Enabled}}listen [::]:80;
@@ -186,6 +209,7 @@ server {
             set $fe_port 443;
         }
         include fastcgi_params;
+        fastcgi_param SERVER_NAME $host;
         fastcgi_param HTTPS $fe_https if_not_empty;
         fastcgi_param REQUEST_SCHEME $fe_scheme;
         fastcgi_param SERVER_PORT $fe_port;

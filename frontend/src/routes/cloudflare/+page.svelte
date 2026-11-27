@@ -1432,14 +1432,12 @@
 									</Table.Cell>
 									<Table.Cell data-label={t('cloudflare.exposuresTable.colTargetShort')} class="text-xs text-muted-foreground">
 										<div class="font-mono">{exp.service_url || t('cloudflare.exposuresTable.autoTarget')}</div>
-										{#if exp.http_host_header}
-											<div class="mt-0.5 text-[11px]">
-												Host: <span class="font-mono">{exp.http_host_header}</span>
-												{#if exp.no_tls_verify}
-													· <span class="font-mono">noTLSVerify</span>
-												{/if}
-											</div>
-										{/if}
+										<div class="mt-0.5 text-[11px]">
+											Host: <span class="font-mono">{exp.http_host_header || exp.public_host}</span>
+											{#if exp.no_tls_verify}
+												· <span class="font-mono">noTLSVerify</span>
+											{/if}
+										</div>
 									</Table.Cell>
 									<Table.Cell data-label={t('cloudflare.exposuresTable.colActions')} class="text-right">
 										<div class="flex justify-end gap-1.5">
