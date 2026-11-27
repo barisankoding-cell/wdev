@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.11.2] - 2026-11-27
+
+### 🐛 Perbaikan Bug
+- fix(cloudflare): sinkronkan exposure dengan vhost Nginx lokal (679f52b)
+
 ## [v2.11.1] - 2026-11-26
 
 ### 🐛 Perbaikan Bug
