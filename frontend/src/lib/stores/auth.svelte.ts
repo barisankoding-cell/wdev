@@ -102,6 +102,13 @@ class AuthStore {
 			// ignore
 		}
 		this.isAuthenticated = false;
+		if (typeof window !== 'undefined') {
+			try {
+				window.sessionStorage.removeItem('wdev:terminal:tabs:v1');
+			} catch {
+				// ignore
+			}
+		}
 		toast.info(t('auth.store.logoutTitle'), { description: t('auth.store.logoutDesc') });
 	}
 

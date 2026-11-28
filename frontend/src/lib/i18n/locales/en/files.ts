@@ -121,6 +121,7 @@ export const filesEn = {
 		deleteSelectedAria: 'Delete {count} selected items',
 		moreBatchActionsAria: 'More batch actions',
 		pasteShortBtn: 'Paste',
+		paginationItemLabel: 'items',
 		dialogs: {
 			newFileTitle: 'Create New File',
 			locationPrefix: 'Location: {path}',

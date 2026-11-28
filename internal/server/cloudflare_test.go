@@ -7,9 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"wdev/internal/auth"
 	"wdev/internal/cloudflare"
 	"wdev/internal/config"
+	"wdev/internal/installer"
+	"wdev/internal/runner"
+	"wdev/internal/site"
 	"wdev/internal/store"
 )
 
@@ -224,5 +229,216 @@ func TestCloudflareMultiProfileAPIHandlers(t *testing.T) {
 	}
 	if autoCertResp.Profile.Name != "studio-dev" {
 		t.Fatalf("expected auto cert profile studio-dev, got %q", autoCertResp.Profile.Name)
+	}
+}
+
+func TestPanelDomainCloudflareDetectionAndBind(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "cf-panel.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{
+		HTTPHost: "127.0.0.1",
+		HTTPPort: "3200",
+		WdevEtc:  filepath.Join(dir, "etc"),
+	}
+	cfMgr := cloudflare.New(cfg, db)
+	run := runner.New(db)
+	inst := installer.New(cfg, db)
+	siteMgr := site.New(cfg, db)
+	siteMgr.SetSkipNginxExec(true)
+	authMgr := auth.New(cfg, db)
+
+	srv := New(cfg, db, run, inst, siteMgr, nil, cfMgr, nil, nil, authMgr)
+	srv.installer = nil
+	handler := srv.wrapSecurityHeaders(srv.wrapPanelDomain(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux)))))
+
+	sessTok, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: sessTok}
+
+	failDNS := true
+	var ingressRules []map[string]any
+	var dnsCreated bool
+	var dnsDeleted bool
+
+	cfAPISrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"z1","name":"example.com","status":"active","account":{"id":"acct-123","name":"Kantor"}}],"result_info":{"page":1,"per_page":50,"total_pages":1,"count":1,"total_count":1}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-123/cfd_tunnel/11111111-1111-1111-1111-111111111111/configurations":
+			if len(ingressRules) == 0 {
+				ingressRules = []map[string]any{{"service": "http_status:404"}}
+			}
+			b, _ := json.Marshal(map[string]any{"success": true, "result": map[string]any{"config": map[string]any{"ingress": ingressRules}}})
+			_, _ = w.Write(b)
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acct-123/cfd_tunnel/11111111-1111-1111-1111-111111111111/configurations":
+			var body struct {
+				Config struct {
+					Ingress []map[string]any `json:"ingress"`
+				} `json:"config"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			ingressRules = body.Config.Ingress
+			b, _ := json.Marshal(map[string]any{"success": true, "result": map[string]any{"config": body.Config}})
+			_, _ = w.Write(b)
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/z1/dns_records":
+			if dnsCreated && !dnsDeleted {
+				_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"rec-panel","type":"CNAME","name":"panel.example.com","content":"11111111-1111-1111-1111-111111111111.cfargotunnel.com","proxied":true}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/z1/dns_records":
+			if failDNS {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":9109,"message":"Token lacks DNS:Edit"}]}`))
+				return
+			}
+			dnsCreated = true
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"rec-panel"}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/zones/z1/dns_records/rec-panel":
+			dnsDeleted = true
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"rec-panel"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer cfAPISrv.Close()
+	cfMgr.SetAPIBaseURL(cfAPISrv.URL)
+
+	// 1. Sebelum ada profil CF -> GET /api/panel/domain melaporkan cf_has_api=false
+	reqInit := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqInit.Host = "127.0.0.1:3200"
+	reqInit.AddCookie(sessCookie)
+	recInit := httptest.NewRecorder()
+	handler.ServeHTTP(recInit, reqInit)
+	if recInit.Code != http.StatusOK || !strings.Contains(recInit.Body.String(), `"cf_has_api":false`) {
+		t.Fatalf("GET initial = %d: %s", recInit.Code, recInit.Body.String())
+	}
+
+	// 2. Daftarkan profil token + API token
+	tokenRaw := base64.StdEncoding.EncodeToString([]byte(`{"a":"acct-123","t":"11111111-1111-1111-1111-111111111111","s":"secret"}`))
+	autoStart := false
+	if _, err := cfMgr.RegisterTokenProfile(cloudflare.TokenProfileOptions{
+		Name:      "kantor",
+		Token:     tokenRaw,
+		APIToken:  "api-tok-panel",
+		AutoStart: &autoStart,
+	}); err != nil {
+		t.Fatalf("RegisterTokenProfile: %v", err)
+	}
+
+	reqDetect := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqDetect.Host = "127.0.0.1:3200"
+	reqDetect.AddCookie(sessCookie)
+	recDetect := httptest.NewRecorder()
+	handler.ServeHTTP(recDetect, reqDetect)
+	if recDetect.Code != http.StatusOK || !strings.Contains(recDetect.Body.String(), `"cf_has_api":true`) || !strings.Contains(recDetect.Body.String(), `"kantor"`) {
+		t.Fatalf("GET with CF+API = %d: %s", recDetect.Code, recDetect.Body.String())
+	}
+
+	// 3. Jika DNS CNAME gagal saat block_direct_ip=true -> harus rollback (anti lockout)
+	reqBindFail := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel.example.com","ssl_mode":"cloudflare","cf_profile":"kantor","block_direct_ip":true}`))
+	reqBindFail.Host = "127.0.0.1:3200"
+	reqBindFail.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqBindFail.AddCookie(sessCookie)
+	recBindFail := httptest.NewRecorder()
+	handler.ServeHTTP(recBindFail, reqBindFail)
+	if recBindFail.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when DNS fails with block_direct_ip=true, got %d (%s)", recBindFail.Code, recBindFail.Body.String())
+	}
+	if authMgr.GetPanelDomain() != "" || authMgr.IsBlockDirectIP() {
+		t.Fatalf("expected panel domain rollback after DNS failure")
+	}
+
+	// 4. Bind via Cloudflare Tunnel + API sukses
+	failDNS = false
+	reqBind := httptest.NewRequest(http.MethodPost, "/api/panel/domain", strings.NewReader(`{"domain":"panel.example.com","ssl_mode":"cloudflare","cf_profile":"kantor","block_direct_ip":true}`))
+	reqBind.Host = "127.0.0.1:3200"
+	reqBind.Header.Set("Origin", "http://127.0.0.1:3200")
+	reqBind.AddCookie(sessCookie)
+	recBind := httptest.NewRecorder()
+	handler.ServeHTTP(recBind, reqBind)
+	if recBind.Code != http.StatusOK || !strings.Contains(recBind.Body.String(), `"bound"`) || !strings.Contains(recBind.Body.String(), `"ssl_provider":"cloudflare"`) {
+		t.Fatalf("POST bind cloudflare = %d: %s", recBind.Code, recBind.Body.String())
+	}
+	if !dnsCreated {
+		t.Fatalf("expected Cloudflare DNS CNAME to be created")
+	}
+	dom, sslOn, blockIP := authMgr.PanelDomainConfig()
+	if dom != "panel.example.com" || !sslOn || !blockIP {
+		t.Fatalf("unexpected PanelDomainConfig: dom=%q ssl=%v blockIP=%v", dom, sslOn, blockIP)
+	}
+
+	// Pastikan ingress mengarah langsung ke http://127.0.0.1:3200
+	foundPanelRule := false
+	for _, rule := range ingressRules {
+		if h, _ := rule["hostname"].(string); h == "panel.example.com" {
+			if svc, _ := rule["service"].(string); svc == "http://127.0.0.1:3200" {
+				foundPanelRule = true
+			}
+		}
+	}
+	if !foundPanelRule {
+		t.Fatalf("expected ingress rule panel.example.com -> http://127.0.0.1:3200, got: %#v", ingressRules)
+	}
+
+	// 5. Akses langsung via IP ditolak 403, akses lewat cloudflared loopback HTTPS diizinkan
+	reqDirectIP := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqDirectIP.Host = "103.171.85.72:3200"
+	reqDirectIP.AddCookie(sessCookie)
+	recDirectIP := httptest.NewRecorder()
+	handler.ServeHTTP(recDirectIP, reqDirectIP)
+	if recDirectIP.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 direct IP after CF bind, got %d", recDirectIP.Code)
+	}
+
+	reqCFPanel := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqCFPanel.Host = "panel.example.com"
+	reqCFPanel.RemoteAddr = "127.0.0.1:54321"
+	reqCFPanel.Header.Set("Cf-Visitor", `{"scheme":"https"}`)
+	reqCFPanel.AddCookie(sessCookie)
+	recCFPanel := httptest.NewRecorder()
+	handler.ServeHTTP(recCFPanel, reqCFPanel)
+	if recCFPanel.Code != http.StatusOK || !strings.Contains(recCFPanel.Body.String(), `"detected_cf_exposure"`) || !strings.Contains(recCFPanel.Body.String(), `"ssl_provider":"cloudflare"`) {
+		t.Fatalf("GET via cloudflared = %d: %s", recCFPanel.Code, recCFPanel.Body.String())
+	}
+
+	// 6. Unbind menghapus ikatan panel, rute tunnel, dan record DNS CNAME Cloudflare
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/panel/domain", strings.NewReader(`{"remove_vhost":true}`))
+	reqDel.Host = "panel.example.com"
+	reqDel.RemoteAddr = "127.0.0.1:54321"
+	reqDel.Header.Set("Cf-Visitor", `{"scheme":"https"}`)
+	reqDel.Header.Set("Origin", "https://panel.example.com")
+	reqDel.AddCookie(sessCookie)
+	recDel := httptest.NewRecorder()
+	handler.ServeHTTP(recDel, reqDel)
+	if recDel.Code != http.StatusOK || !dnsDeleted || !strings.Contains(recDel.Body.String(), `"dns_records_deleted":1`) {
+		t.Fatalf("DELETE cloudflare panel domain = %d (dnsDeleted=%v): %s", recDel.Code, dnsDeleted, recDel.Body.String())
+	}
+
+	// 7. Simulasikan rute Cloudflare manual langsung ke http://127.0.0.1:3200 sebelum bind -> GET harus mendeteksinya
+	dnsDeleted = false
+	if _, err := cfMgr.ExposeWithOptions(cloudflare.ExposeOptions{
+		LocalDomain: "panel.example.com",
+		PublicHost:  "panel.example.com",
+		Profile:     "kantor",
+		ServiceURL:  "http://127.0.0.1:3200",
+	}); err != nil {
+		t.Fatalf("ExposeWithOptions manual panel route: %v", err)
+	}
+	reqDetManual := httptest.NewRequest(http.MethodGet, "/api/panel/domain", nil)
+	reqDetManual.Host = "127.0.0.1:3200"
+	reqDetManual.AddCookie(sessCookie)
+	recDetManual := httptest.NewRecorder()
+	handler.ServeHTTP(recDetManual, reqDetManual)
+	if recDetManual.Code != http.StatusOK || !strings.Contains(recDetManual.Body.String(), `"public_host":"panel.example.com"`) {
+		t.Fatalf("expected detected_cf_exposure for direct port 3200 route, got %d: %s", recDetManual.Code, recDetManual.Body.String())
 	}
 }

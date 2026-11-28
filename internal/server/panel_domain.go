@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"wdev/internal/auth"
+	"wdev/internal/cloudflare"
 	"wdev/internal/site"
 	"wdev/internal/store"
 )
@@ -168,7 +170,11 @@ func (s *Server) cleanupPanelDomainResources(targetDomain string, deleteSite boo
 		status := s.cfMgr.GetStatus()
 		for _, exp := range status.Exposures {
 			if strings.EqualFold(exp.LocalDomain, targetDomain) || strings.EqualFold(exp.PublicHost, targetDomain) {
-				_ = s.cfMgr.Unexpose(exp.LocalDomain)
+				if exp.LocalDomain != "" {
+					if res, err := s.cfMgr.UnexposeWithResult(exp.LocalDomain, exp.Profile); err == nil && res != nil && res.DNSDeleted {
+						deletedDNS++
+					}
+				}
 			}
 		}
 	}
@@ -177,6 +183,142 @@ func (s *Server) cleanupPanelDomainResources(targetDomain string, deleteSite boo
 		_ = s.siteMgr.DeleteSite(targetDomain)
 	}
 	return deletedDNS
+}
+
+type panelCFProfileSummary struct {
+	Name        string `json:"name"`
+	AuthMode    string `json:"auth_mode"`
+	TunnelName  string `json:"tunnel_name,omitempty"`
+	TunnelID    string `json:"tunnel_id,omitempty"`
+	HasAPIToken bool   `json:"has_api_token"`
+	Active      bool   `json:"active"`
+	Ready       bool   `json:"ready"`
+}
+
+type panelCFExposureInfo struct {
+	Profile     string `json:"profile"`
+	LocalDomain string `json:"local_domain"`
+	PublicHost  string `json:"public_host"`
+	ServiceURL  string `json:"service_url,omitempty"`
+	URL         string `json:"url"`
+	Active      bool   `json:"active"`
+}
+
+type panelCFSummary struct {
+	Installed bool                    `json:"cf_installed"`
+	Active    bool                    `json:"cf_active"`
+	HasAPI    bool                    `json:"cf_has_api"`
+	Profiles  []panelCFProfileSummary `json:"cf_profiles"`
+	Exposure  *panelCFExposureInfo    `json:"detected_cf_exposure,omitempty"`
+}
+
+func isCFProfileReadyForPanel(p cloudflare.ProfileInfo) bool {
+	if !p.HasAPIToken {
+		return false
+	}
+	if p.AuthMode == "token" {
+		return strings.TrimSpace(p.AccountTag) != "" && strings.TrimSpace(p.TunnelID) != ""
+	}
+	return p.HasCredentials || p.HasCert
+}
+
+func isLoopbackPanelPortURL(rawURL string, panelPort int) bool {
+	if panelPort <= 0 {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+	return parsed.Port() == strconv.Itoa(panelPort)
+}
+
+func (s *Server) detectPanelCFSummary(boundDomain, detectedProxyDomain string, panelPort int, entrancePath string) panelCFSummary {
+	summary := panelCFSummary{
+		Profiles: []panelCFProfileSummary{},
+	}
+	if s.cfMgr == nil {
+		return summary
+	}
+
+	st := s.cfMgr.GetStatus()
+	summary.Installed = st.Installed
+	summary.Active = st.Active
+
+	profActive := make(map[string]bool, len(st.ProfileDetails))
+	for _, p := range st.ProfileDetails {
+		ready := isCFProfileReadyForPanel(p)
+		if ready {
+			summary.HasAPI = true
+		}
+		profActive[strings.ToLower(p.Name)] = p.Active
+		summary.Profiles = append(summary.Profiles, panelCFProfileSummary{
+			Name:        p.Name,
+			AuthMode:    p.AuthMode,
+			TunnelName:  p.TunnelName,
+			TunnelID:    p.TunnelID,
+			HasAPIToken: p.HasAPIToken,
+			Active:      p.Active,
+			Ready:       ready,
+		})
+	}
+
+	var matched *cloudflare.Exposure
+	pickByHost := func(host string) *cloudflare.Exposure {
+		if host == "" {
+			return nil
+		}
+		for i := range st.Exposures {
+			exp := &st.Exposures[i]
+			if strings.EqualFold(exp.PublicHost, host) || strings.EqualFold(exp.LocalDomain, host) {
+				return exp
+			}
+		}
+		return nil
+	}
+	if boundDomain != "" {
+		matched = pickByHost(boundDomain)
+	}
+	if matched == nil && detectedProxyDomain != "" {
+		matched = pickByHost(detectedProxyDomain)
+	}
+	if matched == nil {
+		for i := range st.Exposures {
+			exp := &st.Exposures[i]
+			if isLoopbackPanelPortURL(exp.ServiceURL, panelPort) {
+				matched = exp
+				break
+			}
+		}
+	}
+
+	if matched != nil && matched.PublicHost != "" {
+		active := profActive[strings.ToLower(matched.Profile)]
+		if !active && matched.Profile == "" {
+			active = st.Active
+		}
+		summary.Exposure = &panelCFExposureInfo{
+			Profile:     matched.Profile,
+			LocalDomain: matched.LocalDomain,
+			PublicHost:  matched.PublicHost,
+			ServiceURL:  matched.ServiceURL,
+			URL:         fmt.Sprintf("https://%s%s", matched.PublicHost, entrancePath),
+			Active:      active,
+		}
+	}
+
+	return summary
 }
 
 func (s *Server) availableRootDomainsForPanel() []string {
@@ -234,6 +376,8 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 			edgeConfigured = edgeCfg.Configured && edgeCfg.VPSNetbirdIP != ""
 		}
 
+		cfSummary := s.detectPanelCFSummary(domain, detectedProxyDomain, port, entrancePath)
+
 		var sslProvider string
 		var sslExpiresAt *time.Time
 		var sslDaysLeft *int
@@ -253,6 +397,10 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 						sslProvider = "edge"
 					}
 				}
+			}
+			if sslProvider == "" && sslEnabled && cfSummary.Exposure != nil &&
+				(strings.EqualFold(cfSummary.Exposure.PublicHost, domain) || strings.EqualFold(cfSummary.Exposure.LocalDomain, domain)) {
+				sslProvider = "cloudflare"
 			}
 		}
 
@@ -280,33 +428,39 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 		panelSSLExp, panelSSLDays := s.authMgr.GetPanelCertExpiry()
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"domain":                     domain,
-			"bound":                      isBound,
-			"domain_url":                 domainURL,
-			"detected_proxy_domain":      detectedProxyDomain,
-			"detected_proxy_url":         detectedProxyURL,
+			"domain":                      domain,
+			"bound":                       isBound,
+			"domain_url":                  domainURL,
+			"detected_proxy_domain":       detectedProxyDomain,
+			"detected_proxy_url":          detectedProxyURL,
 			"detected_proxy_ssl_provider": detectedProxySSLProvider,
-			"detected_proxy_exposed_to":  detectedProxyExposedTo,
-			"ssl_enabled":                sslEnabled,
-			"block_direct_ip":            blockIP,
-			"ssl_provider":               sslProvider,
-			"ssl_expires_at":             sslExpiresAt,
-			"ssl_days_left":              sslDaysLeft,
-			"panel_ssl_enabled":          panelSSLEnabled,
-			"panel_ssl_expires_at":       panelSSLExp,
-			"panel_ssl_days_left":        panelSSLDays,
-			"panel_port":                 port,
-			"entrance_path":              entrancePath,
-			"public_ip":                  pubIP,
-			"server_mode":                mode,
-			"edge_configured":            edgeConfigured,
-			"available_domains":          domains,
+			"detected_proxy_exposed_to":   detectedProxyExposedTo,
+			"ssl_enabled":                 sslEnabled,
+			"block_direct_ip":             blockIP,
+			"ssl_provider":                sslProvider,
+			"ssl_expires_at":              sslExpiresAt,
+			"ssl_days_left":               sslDaysLeft,
+			"panel_ssl_enabled":           panelSSLEnabled,
+			"panel_ssl_expires_at":        panelSSLExp,
+			"panel_ssl_days_left":         panelSSLDays,
+			"panel_port":                  port,
+			"entrance_path":               entrancePath,
+			"public_ip":                   pubIP,
+			"server_mode":                 mode,
+			"edge_configured":             edgeConfigured,
+			"available_domains":           domains,
+			"cf_installed":                cfSummary.Installed,
+			"cf_active":                   cfSummary.Active,
+			"cf_has_api":                  cfSummary.HasAPI,
+			"cf_profiles":                 cfSummary.Profiles,
+			"detected_cf_exposure":        cfSummary.Exposure,
 		})
 
 	case http.MethodPost:
 		var payload struct {
 			Domain        string `json:"domain"`
-			SSLMode       string `json:"ssl_mode"` // letsencrypt, local, external, none
+			SSLMode       string `json:"ssl_mode"` // letsencrypt, edge, cloudflare, local, external, none
+			CFProfile     string `json:"cf_profile"`
 			Email         string `json:"email"`
 			BlockDirectIP *bool  `json:"block_direct_ip"`
 			SyncDNS       *bool  `json:"sync_dns"`
@@ -328,12 +482,12 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 			sslMode = "letsencrypt"
 		}
 		switch sslMode {
-		case "letsencrypt", "edge", "local", "external", "none":
+		case "letsencrypt", "edge", "cloudflare", "local", "external", "none":
 		default:
-			writeError(w, http.StatusBadRequest, "ssl_mode tidak valid (gunakan: letsencrypt, edge, local, external, atau none)")
+			writeError(w, http.StatusBadRequest, "ssl_mode tidak valid (gunakan: letsencrypt, edge, cloudflare, local, external, atau none)")
 			return
 		}
-		if sslMode == "letsencrypt" || sslMode == "edge" {
+		if sslMode == "letsencrypt" || sslMode == "edge" || sslMode == "cloudflare" {
 			if err := site.ValidateLetsEncryptDomain(domain); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -375,15 +529,158 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 			syncDNS = *payload.SyncDNS
 		}
 
+		if sslMode == "cloudflare" {
+			if s.cfMgr == nil {
+				writeError(w, http.StatusBadRequest, "Manajer Cloudflare Tunnel tidak tersedia.")
+				return
+			}
+			cfStatus := s.cfMgr.GetStatus()
+			cfSummary := s.detectPanelCFSummary("", "", panelPort, "")
+			reqProf := strings.ToLower(strings.TrimSpace(payload.CFProfile))
+			var matchedProf *cloudflare.ProfileInfo
+			if reqProf != "" {
+				for i := range cfStatus.ProfileDetails {
+					if strings.EqualFold(cfStatus.ProfileDetails[i].Name, reqProf) {
+						p := cfStatus.ProfileDetails[i]
+						matchedProf = &p
+						break
+					}
+				}
+				if matchedProf == nil {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf("Profil Cloudflare %q tidak ditemukan.", reqProf))
+					return
+				}
+			} else {
+				var readyProfs []cloudflare.ProfileInfo
+				for _, p := range cfStatus.ProfileDetails {
+					if isCFProfileReadyForPanel(p) {
+						readyProfs = append(readyProfs, p)
+					}
+				}
+				if len(readyProfs) == 1 {
+					p := readyProfs[0]
+					matchedProf = &p
+				} else if len(readyProfs) > 1 {
+					writeError(w, http.StatusBadRequest, "Terdapat beberapa profil Cloudflare API; pilih profil Cloudflare Tunnel yang ingin digunakan.")
+					return
+				} else if len(cfStatus.ProfileDetails) == 1 {
+					p := cfStatus.ProfileDetails[0]
+					matchedProf = &p
+				} else {
+					writeError(w, http.StatusBadRequest, "Belum ada profil Cloudflare Tunnel yang terdaftar. Daftarkan profil & API Token terlebih dahulu di menu Cloudflare Tunnel.")
+					return
+				}
+			}
+
+			if matchedProf.AuthMode == "token" && !matchedProf.HasAPIToken {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("Profil Cloudflare %q menggunakan mode Token dan belum memiliki API Token. Pasang API Token (Zone:Read, DNS:Edit, Tunnel:Edit) atau gunakan mode Proxy Eksternal.", matchedProf.Name))
+				return
+			}
+			if matchedProf.AuthMode == "token" && (strings.TrimSpace(matchedProf.AccountTag) == "" || strings.TrimSpace(matchedProf.TunnelID) == "") {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("Profil token Cloudflare %q tidak memiliki metadata Account ID / Tunnel ID untuk pembaruan via API.", matchedProf.Name))
+				return
+			}
+
+			if cfSummary.Exposure != nil && !strings.EqualFold(cfSummary.Exposure.PublicHost, domain) {
+				writeError(w, http.StatusConflict, fmt.Sprintf("Port panel :%d sudah terekspos via Cloudflare Tunnel (%s pada profil %s). Hapus rute tersebut terlebih dahulu sebelum mengganti domain panel.", panelPort, cfSummary.Exposure.PublicHost, cfSummary.Exposure.Profile))
+				return
+			}
+
+			if matchedProf.AuthMode != "token" {
+				if payload.SudoPass != "" {
+					if !s.verifySudoPasswordWithRateLimit(w, r, payload.SudoPass, "Password sudo tidak valid: ") {
+						return
+					}
+				}
+				if s.installer != nil {
+					if reqSudo, _ := s.installer.CheckSudoRequired(); reqSudo {
+						writeJSON(w, http.StatusOK, map[string]any{
+							"status":  "sudo_required",
+							"message": "Menyimpan konfigurasi & me-restart layanan Cloudflare Tunnel memerlukan hak akses administrator (sudo).",
+						})
+						return
+					}
+				}
+			}
+
+			allowOverwrite := false
+			if chk, chkErr := s.cfMgr.CheckPublicHost(matchedProf.Name, domain, domain); chkErr == nil && !chk.Available {
+				samePanelExp := chk.ExistingExposure != nil &&
+					isLoopbackPanelPortURL(chk.ExistingExposure.ServiceURL, panelPort) &&
+					strings.EqualFold(chk.ExistingExposure.Profile, matchedProf.Name)
+				if !samePanelExp {
+					writeError(w, http.StatusConflict, chk.Message)
+					return
+				}
+				allowOverwrite = true
+			}
+
+			serviceURL := fmt.Sprintf("http://127.0.0.1:%d", panelPort)
+			noTLS := false
+			expRes, expErr := s.cfMgr.ExposeWithOptions(cloudflare.ExposeOptions{
+				LocalDomain: domain,
+				PublicHost:  domain,
+				Profile:     matchedProf.Name,
+				ServiceURL:  serviceURL,
+				NoTLSVerify: &noTLS,
+				Overwrite:   allowOverwrite,
+			})
+			if expErr != nil {
+				writeError(w, http.StatusBadRequest, expErr.Error())
+				return
+			}
+			if expRes != nil && expRes.DNSWarning != "" && blockIP {
+				_, _ = s.cfMgr.UnexposeWithResult(domain, matchedProf.Name)
+				writeError(w, http.StatusBadRequest, expRes.DNSWarning+" (binding domain & blokir IP dibatalkan agar akses panel Anda tidak terkunci)")
+				return
+			}
+
+			if err := s.authMgr.BindPanelDomain(domain, true, blockIP); err != nil {
+				_, _ = s.cfMgr.UnexposeWithResult(domain, matchedProf.Name)
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+
+			entrance := s.authMgr.GetSecurityEntrance()
+			entrancePath := ""
+			if entrance != "" {
+				entrancePath = "/" + entrance
+			}
+			domainURL := fmt.Sprintf("https://%s%s", domain, entrancePath)
+			resp := map[string]any{
+				"status":          "bound",
+				"domain":          domain,
+				"target_url":      domainURL,
+				"domain_url":      domainURL,
+				"ssl_enabled":     true,
+				"ssl_provider":    "cloudflare",
+				"block_direct_ip": blockIP,
+				"cf_profile":      matchedProf.Name,
+			}
+			if expRes != nil && expRes.DNSWarning != "" {
+				resp["dns_warning"] = expRes.DNSWarning
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+
 		if sslMode == "external" {
-			// Proxy eksternal / Cloudflare Tunnel: tidak perlu mengubah Nginx lokal.
+			// Proxy eksternal / Cloudflare Tunnel manual: tidak perlu mengubah Nginx lokal.
 			if err := s.authMgr.BindPanelDomain(domain, true, blockIP); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+			entrance := s.authMgr.GetSecurityEntrance()
+			entrancePath := ""
+			if entrance != "" {
+				entrancePath = "/" + entrance
+			}
+			domainURL := fmt.Sprintf("https://%s%s", domain, entrancePath)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":          "bound",
 				"domain":          domain,
+				"target_url":      domainURL,
+				"domain_url":      domainURL,
 				"ssl_enabled":     true,
 				"block_direct_ip": blockIP,
 			})
@@ -444,13 +741,14 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		boundDomain, _, _ := s.authMgr.PanelDomainConfig()
 		_, _, detectedProxyDomain, _ := s.detectExistingPanelDomain()
+		cfSummary := s.detectPanelCFSummary(boundDomain, detectedProxyDomain, s.panelPortNumber(), "")
 
 		if err := s.authMgr.UnbindPanelDomain(); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		targets := make([]string, 0, 2)
+		targets := make([]string, 0, 4)
 		seenTarget := make(map[string]bool)
 		addTarget := func(dom string) {
 			dom = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(dom), "."))
@@ -463,6 +761,10 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 		if removeVHost {
 			addTarget(boundDomain)
 			addTarget(detectedProxyDomain)
+			if cfSummary.Exposure != nil {
+				addTarget(cfSummary.Exposure.LocalDomain)
+				addTarget(cfSummary.Exposure.PublicHost)
+			}
 		} else if boundDomain == "" && detectedProxyDomain != "" {
 			addTarget(detectedProxyDomain)
 		}
@@ -474,6 +776,9 @@ func (s *Server) handlePanelDomain(w http.ResponseWriter, r *http.Request) {
 		deletedDom := boundDomain
 		if deletedDom == "" {
 			deletedDom = detectedProxyDomain
+		}
+		if deletedDom == "" && cfSummary.Exposure != nil {
+			deletedDom = cfSummary.Exposure.PublicHost
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":              "unbound",

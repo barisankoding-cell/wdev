@@ -8,7 +8,13 @@
 	import { onMount, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
-	export type TerminalPaneStatus = 'connecting' | 'connected' | 'exited' | 'error';
+	export type TerminalPaneStatus =
+		| 'connecting'
+		| 'connected'
+		| 'reconnecting'
+		| 'exited'
+		| 'idle_timeout'
+		| 'error';
 
 	export interface TerminalPaneMeta {
 		status: TerminalPaneStatus;
@@ -18,12 +24,17 @@
 		host?: string;
 		shell?: string;
 		cwd?: string;
+		keepAlive?: boolean;
 		idleTimeoutSeconds?: number;
+		detachTimeoutSeconds?: number;
+		idleWarningSeconds?: number;
 		exitCode?: number;
+		closeReason?: string;
 		error?: string;
 	}
 
 	let {
+		sessionId = '',
 		cwd = '',
 		shell = '',
 		user = '',
@@ -35,6 +46,7 @@
 		onMeta,
 		onUnlockRequired
 	}: {
+		sessionId?: string;
 		cwd?: string;
 		shell?: string;
 		user?: string;
@@ -47,6 +59,8 @@
 		onUnlockRequired?: () => void;
 	} = $props();
 
+	const MAX_AUTO_RETRIES = 3;
+
 	let hostEl = $state<HTMLDivElement | null>(null);
 	let term: Terminal | null = null;
 	let fitAddon: FitAddon | null = null;
@@ -54,7 +68,15 @@
 	let resizeObserver: ResizeObserver | null = null;
 	let disposed = false;
 	let fitTimer: ReturnType<typeof setTimeout> | null = null;
+	let retryTimer: ReturnType<typeof setTimeout> | null = null;
+	let idleCountdownTimer: ReturnType<typeof setInterval> | null = null;
 	const encoder = new TextEncoder();
+
+	let activeSessionId = '';
+	let singleUseToken = '';
+	let autoRetryCount = 0;
+	let wasReplaced = false;
+	let explicitClose = false;
 
 	let currentMeta: TerminalPaneMeta = {
 		status: 'connecting'
@@ -63,6 +85,30 @@
 	function emitMeta(patch: Partial<TerminalPaneMeta>) {
 		currentMeta = { ...currentMeta, ...patch };
 		onMeta?.(currentMeta);
+	}
+
+	function stopIdleCountdown() {
+		if (idleCountdownTimer) {
+			clearInterval(idleCountdownTimer);
+			idleCountdownTimer = null;
+		}
+	}
+
+	function startIdleCountdown(initialSeconds: number) {
+		stopIdleCountdown();
+		let remaining = Math.max(1, Math.round(initialSeconds));
+		emitMeta({ idleWarningSeconds: remaining });
+		idleCountdownTimer = setInterval(() => {
+			if (disposed) {
+				stopIdleCountdown();
+				return;
+			}
+			remaining = Math.max(0, remaining - 1);
+			emitMeta({ idleWarningSeconds: remaining > 0 ? remaining : undefined });
+			if (remaining <= 0) {
+				stopIdleCountdown();
+			}
+		}, 1000);
 	}
 
 	function sendResize(cols: number, rows: number) {
@@ -91,6 +137,11 @@
 	}
 
 	function closeSocket() {
+		if (retryTimer) {
+			clearTimeout(retryTimer);
+			retryTimer = null;
+		}
+		stopIdleCountdown();
 		if (socket) {
 			const ws = socket;
 			socket = null;
@@ -104,21 +155,35 @@
 		}
 	}
 
-	let activeToken = '';
-
-	function connectWS(overrideToken?: string) {
+	function connectWS(overrideToken?: string, options?: { forceFresh?: boolean }) {
 		if (disposed || !term) return;
 		closeSocket();
 
-		fitNow();
-		emitMeta({ status: 'connecting', error: undefined, exitCode: undefined });
+		if (options?.forceFresh) {
+			activeSessionId = '';
+			emitMeta({ sessionId: undefined });
+		}
 
-		const useToken = overrideToken !== undefined ? overrideToken : activeToken || token;
+		fitNow();
+		const isReattach = Boolean(activeSessionId);
+		emitMeta({
+			status: isReattach && autoRetryCount > 0 ? 'reconnecting' : 'connecting',
+			error: undefined,
+			exitCode: undefined,
+			closeReason: undefined,
+			idleWarningSeconds: undefined
+		});
+
+		let useToken = '';
 		if (overrideToken !== undefined) {
-			activeToken = ''; // token peluncuran satu kali pakai
+			useToken = overrideToken;
+		} else if (singleUseToken) {
+			useToken = singleUseToken;
+			singleUseToken = '';
 		}
 
 		const wsUrl = api.terminalWsUrl({
+			session_id: activeSessionId || undefined,
 			cwd: currentMeta.cwd || cwd,
 			shell: shell || undefined,
 			user: user || undefined,
@@ -133,6 +198,7 @@
 		ws.binaryType = 'arraybuffer';
 		socket = ws;
 		let wasOpened = false;
+		wasReplaced = false;
 
 		ws.onopen = () => {
 			if (socket !== ws || disposed) return;
@@ -141,7 +207,7 @@
 			if (term) {
 				sendResize(term.cols, term.rows);
 			}
-			emitMeta({ status: 'connected' });
+			emitMeta({ status: 'connected', error: undefined });
 			term?.focus();
 		};
 
@@ -155,34 +221,116 @@
 				try {
 					const msg = JSON.parse(ev.data) as {
 						type?: string;
+						code?: string | number;
+						reason?: string;
 						session_id?: string;
+						reattached?: boolean;
 						cwd?: string;
 						shell?: string;
 						user?: string;
 						is_root?: boolean;
 						host?: string;
+						keep_alive?: boolean;
+						enabled?: boolean;
 						idle_timeout_seconds?: number;
-						code?: number;
+						detach_timeout_seconds?: number;
+						remaining_seconds?: number;
 						message?: string;
 					};
 					if (msg.type === 'ready') {
+						const wasRetry = autoRetryCount > 0;
+						autoRetryCount = 0;
+						if (msg.reattached) {
+							term.reset();
+						}
+						activeSessionId = msg.session_id || activeSessionId;
 						emitMeta({
 							status: 'connected',
-							sessionId: msg.session_id,
+							sessionId: activeSessionId || undefined,
 							cwd: msg.cwd || currentMeta.cwd,
 							shell: msg.shell || currentMeta.shell,
 							user: msg.user,
 							isRoot: Boolean(msg.is_root),
 							host: msg.host,
-							idleTimeoutSeconds: msg.idle_timeout_seconds
+							keepAlive: Boolean(msg.keep_alive),
+							idleTimeoutSeconds: msg.idle_timeout_seconds,
+							detachTimeoutSeconds: msg.detach_timeout_seconds,
+							idleWarningSeconds: undefined,
+							closeReason: undefined,
+							error: undefined,
+							exitCode: undefined
 						});
+						if (msg.reattached && wasRetry) {
+							toast.success(t('terminal.toast.reattached'));
+						}
+					} else if (msg.type === 'idle_warning') {
+						startIdleCountdown(typeof msg.remaining_seconds === 'number' ? msg.remaining_seconds : 60);
+					} else if (msg.type === 'idle_extended') {
+						stopIdleCountdown();
+						emitMeta({
+							idleWarningSeconds: undefined,
+							idleTimeoutSeconds: msg.idle_timeout_seconds ?? currentMeta.idleTimeoutSeconds
+						});
+					} else if (msg.type === 'keepalive') {
+						const enabled = Boolean(msg.enabled);
+						if (enabled) {
+							stopIdleCountdown();
+						}
+						emitMeta({
+							keepAlive: enabled,
+							...(enabled ? { idleWarningSeconds: undefined } : {})
+						});
+					} else if (msg.type === 'replaced') {
+						wasReplaced = true;
+						stopIdleCountdown();
+						emitMeta({
+							status: 'error',
+							error: msg.message || t('terminal.pane.replacedLine')
+						});
+						term.writeln(`\r\n\x1b[33m${t('terminal.pane.replacedLine')}\x1b[0m`);
 					} else if (msg.type === 'exit') {
+						stopIdleCountdown();
+						activeSessionId = '';
 						const code = typeof msg.code === 'number' ? msg.code : 0;
-						emitMeta({ status: 'exited', exitCode: code });
-						term.writeln(`\r\n\x1b[90m${t('terminal.pane.exitLine', { code })}\x1b[0m`);
+						const isIdle = msg.reason === 'idle_timeout' || currentMeta.status === 'idle_timeout';
+						emitMeta({
+							status: isIdle ? 'idle_timeout' : 'exited',
+							sessionId: undefined,
+							exitCode: code,
+							closeReason: msg.reason || currentMeta.closeReason,
+							idleWarningSeconds: undefined
+						});
+						if (!isIdle) {
+							term.writeln(`\r\n\x1b[90m${t('terminal.pane.exitLine', { code })}\x1b[0m`);
+						}
 					} else if (msg.type === 'error') {
-						emitMeta({ status: 'error', error: msg.message || t('terminal.pane.ptyOpenFailed') });
-						term.writeln(`\r\n\x1b[31m[Error: ${msg.message || t('terminal.pane.ptySessionFailed')}]\x1b[0m`);
+						stopIdleCountdown();
+						if (msg.code === 'idle_timeout') {
+							activeSessionId = '';
+							emitMeta({
+								status: 'idle_timeout',
+								sessionId: undefined,
+								closeReason: 'idle_timeout',
+								idleWarningSeconds: undefined,
+								error: msg.message || t('terminal.idleClosedBanner')
+							});
+							term.writeln(
+								`\r\n\x1b[33m[Idle Timeout: ${msg.message || t('terminal.idleClosedBanner')}]\x1b[0m`
+							);
+						} else if (msg.code === 'session_not_found') {
+							activeSessionId = '';
+							emitMeta({
+								status: 'error',
+								sessionId: undefined,
+								error: msg.message || t('terminal.pane.sessionNotFoundLine')
+							});
+							term.writeln(`\r\n\x1b[33m${t('terminal.pane.sessionNotFoundLine')}\x1b[0m`);
+						} else {
+							emitMeta({ status: 'error', error: msg.message || t('terminal.pane.ptyOpenFailed') });
+							term.writeln(
+								`\r\n\x1b[31m[Error: ${msg.message || t('terminal.pane.ptySessionFailed')}]\x1b[0m`
+							);
+						}
 					}
 				} catch {
 					// Abaikan frame JSON yang tidak dikenal
@@ -192,15 +340,23 @@
 
 		ws.onerror = () => {
 			if (socket !== ws || disposed) return;
-			emitMeta({
-				status: 'error',
-				error: t('terminal.pane.wsFailed')
-			});
+			if (!wasOpened) {
+				emitMeta({
+					status: 'error',
+					error: t('terminal.pane.wsFailed')
+				});
+			}
 		};
 
 		ws.onclose = (ev) => {
 			if (socket !== ws || disposed) return;
 			socket = null;
+			stopIdleCountdown();
+
+			if (wasReplaced) {
+				return;
+			}
+
 			if (!wasOpened) {
 				emitMeta({
 					status: 'error',
@@ -209,7 +365,37 @@
 				onUnlockRequired?.();
 				return;
 			}
-			if (currentMeta.status === 'connected' || currentMeta.status === 'connecting') {
+
+			if (
+				explicitClose ||
+				currentMeta.status === 'exited' ||
+				currentMeta.status === 'idle_timeout'
+			) {
+				return;
+			}
+
+			// Jika terputus mendadak dan sesi backend masih ada, coba auto-reattach terlebih dahulu.
+			if (!ev.wasClean && activeSessionId && autoRetryCount < MAX_AUTO_RETRIES) {
+				autoRetryCount += 1;
+				const attempt = autoRetryCount;
+				const delayMs = attempt * 1200;
+				emitMeta({ status: 'reconnecting', error: undefined });
+				term?.writeln(
+					`\r\n\x1b[36m${t('terminal.pane.autoReconnectingLine', { attempt, max: MAX_AUTO_RETRIES })}\x1b[0m`
+				);
+				retryTimer = setTimeout(() => {
+					if (!disposed) {
+						connectWS();
+					}
+				}, delayMs);
+				return;
+			}
+
+			if (
+				currentMeta.status === 'connected' ||
+				currentMeta.status === 'connecting' ||
+				currentMeta.status === 'reconnecting'
+			) {
 				emitMeta({
 					status: ev.wasClean ? 'exited' : 'error',
 					error: ev.wasClean ? undefined : t('terminal.pane.disconnectedError')
@@ -278,6 +464,10 @@
 		});
 
 		const dataSub = xterm.onData((data) => {
+			if (currentMeta.idleWarningSeconds !== undefined) {
+				stopIdleCountdown();
+				emitMeta({ idleWarningSeconds: undefined });
+			}
 			if (socket && socket.readyState === WebSocket.OPEN) {
 				socket.send(encoder.encode(data));
 			}
@@ -298,6 +488,9 @@
 
 		term = xterm;
 		fitAddon = fit;
+		activeSessionId = sessionId || '';
+		singleUseToken = token || '';
+		currentMeta.sessionId = activeSessionId || undefined;
 
 		resizeObserver = new ResizeObserver(() => {
 			scheduleFit();
@@ -355,6 +548,10 @@
 			toast.error(t('terminal.pane.notConnected'));
 			return;
 		}
+		if (currentMeta.idleWarningSeconds !== undefined) {
+			stopIdleCountdown();
+			emitMeta({ idleWarningSeconds: undefined });
+		}
 		socket.send(encoder.encode(text));
 		term?.focus();
 	}
@@ -385,10 +582,74 @@
 		}
 	}
 
-	export function reconnect(overrideToken?: string) {
+	export function extendIdle() {
+		if (socket && socket.readyState === WebSocket.OPEN) {
+			socket.send(JSON.stringify({ type: 'extend' }));
+			stopIdleCountdown();
+			emitMeta({ idleWarningSeconds: undefined });
+			const mins = currentMeta.idleTimeoutSeconds
+				? Math.max(1, Math.round(currentMeta.idleTimeoutSeconds / 60))
+				: 15;
+			toast.success(t('terminal.toast.extended', { minutes: mins }));
+			term?.focus();
+			return;
+		}
+		if (activeSessionId) {
+			void api.extendTerminalSession(activeSessionId).then((res) => {
+				stopIdleCountdown();
+				emitMeta({ idleWarningSeconds: undefined, idleTimeoutSeconds: res.idle_timeout_seconds });
+				const mins = Math.max(1, Math.round((res.idle_timeout_seconds || 900) / 60));
+				toast.success(t('terminal.toast.extended', { minutes: mins }));
+			});
+		}
+	}
+
+	export function setKeepAlive(enabled: boolean) {
+		if (socket && socket.readyState === WebSocket.OPEN) {
+			socket.send(JSON.stringify({ type: 'keepalive', enabled }));
+			if (enabled) stopIdleCountdown();
+			emitMeta({
+				keepAlive: enabled,
+				...(enabled ? { idleWarningSeconds: undefined } : {})
+			});
+			toast.success(enabled ? t('terminal.toast.keepAliveEnabled') : t('terminal.toast.keepAliveDisabled'));
+			term?.focus();
+			return;
+		}
+		if (activeSessionId) {
+			void api.setTerminalSessionKeepAlive(activeSessionId, enabled).then((res) => {
+				if (res.keep_alive) stopIdleCountdown();
+				emitMeta({
+					keepAlive: res.keep_alive,
+					...(res.keep_alive ? { idleWarningSeconds: undefined } : {})
+				});
+				toast.success(
+					res.keep_alive ? t('terminal.toast.keepAliveEnabled') : t('terminal.toast.keepAliveDisabled')
+				);
+			});
+		}
+	}
+
+	export function reconnect(overrideToken?: string, forceFresh = false) {
 		if (!term) return;
-		term.writeln(`\r\n\x1b[36m${t('terminal.pane.reconnectingLine')}\x1b[0m`);
-		connectWS(overrideToken);
+		autoRetryCount = 0;
+		explicitClose = false;
+		if (forceFresh || !activeSessionId) {
+			term.writeln(`\r\n\x1b[36m${t('terminal.pane.reconnectingLine')}\x1b[0m`);
+		}
+		connectWS(overrideToken, { forceFresh });
+	}
+
+	export function closeSession() {
+		explicitClose = true;
+		if (socket && socket.readyState === WebSocket.OPEN) {
+			try {
+				socket.send(JSON.stringify({ type: 'close' }));
+			} catch {
+				// Abaikan error pengiriman close frame
+			}
+		}
+		closeSocket();
 	}
 </script>
 

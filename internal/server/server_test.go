@@ -1226,6 +1226,168 @@ func TestTerminalInfoAndWebSocketPTY(t *testing.T) {
 	}
 }
 
+func TestTerminalSessionDetachReattachKeepAliveAndAuth(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.New(filepath.Join(tmp, "term-reattach.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{HTTPHost: "127.0.0.1", HTTPPort: "3200", WdevEtc: filepath.Join(tmp, "etc"), WebRootBase: tmp}
+	inst := installer.New(cfg, db)
+	authMgr := auth.New(cfg, db)
+	_ = authMgr.SetPassword("ReattachPass#2026")
+	srv := New(cfg, db, runner.New(db), inst, nil, nil, nil, nil, nil, authMgr)
+	handler := srv.wrapSecurityHeaders(srv.wrapSecurityEntrance(srv.wrapAuth(srv.wrapCSRF(srv.mux))))
+
+	token, err := authMgr.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessCookie := &http.Cookie{Name: auth.CookieSessionName, Value: token}
+
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+	tsURL, _ := url.Parse(ts.URL)
+
+	headers := http.Header{}
+	headers.Set("Cookie", sessCookie.String())
+	headers.Set("Origin", "http://"+tsURL.Host)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/terminal/ws?shell=" + url.QueryEscape("/bin/sh") + "&cwd=" + url.QueryEscape(tmp)
+	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("initial WS dial failed: %v", err)
+	}
+
+	_ = conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, readyRaw, err := conn1.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read ready frame: %v", err)
+	}
+	var readyMsg struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(readyRaw, &readyMsg); err != nil || readyMsg.Type != "ready" || readyMsg.SessionID == "" {
+		t.Fatalf("unexpected ready frame: %s (%v)", string(readyRaw), err)
+	}
+
+	if err := conn1.WriteMessage(websocket.BinaryMessage, []byte("export WDEV_REATTACH_VAL=alive_ok && echo __FIRST_CONN__\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	var firstOut strings.Builder
+	for i := 0; i < 32 && !strings.Contains(firstOut.String(), "__FIRST_CONN__"); i++ {
+		_ = conn1.SetReadDeadline(time.Now().Add(3 * time.Second))
+		mt, data, rerr := conn1.ReadMessage()
+		if rerr != nil {
+			t.Fatalf("read first conn failed: %v", rerr)
+		}
+		if mt == websocket.BinaryMessage {
+			firstOut.Write(data)
+		}
+	}
+	if !strings.Contains(firstOut.String(), "__FIRST_CONN__") {
+		t.Fatalf("expected __FIRST_CONN__ output, got %q", firstOut.String())
+	}
+
+	// Simulate page refresh / accidental disconnect (close WS without sending exit)
+	_ = conn1.Close()
+	time.Sleep(80 * time.Millisecond)
+
+	// Verify session remains alive & detached via GET /api/terminal/sessions
+	doReq := func(method, path, body string) (int, []byte) {
+		req, _ := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		req.Header.Set("Origin", "http://"+tsURL.Host)
+		req.AddCookie(sessCookie)
+		resp, derr := http.DefaultClient.Do(req)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	codeList, bodyList := doReq(http.MethodGet, "/api/terminal/sessions", "")
+	if codeList != http.StatusOK || !strings.Contains(string(bodyList), readyMsg.SessionID) {
+		t.Fatalf("GET /api/terminal/sessions = %d, body=%s", codeList, string(bodyList))
+	}
+
+	// Toggle keep-alive and extend idle over HTTP API
+	if codeKA, bodyKA := doReq(http.MethodPost, "/api/terminal/sessions/"+readyMsg.SessionID+"/keepalive", `{"enabled":true}`); codeKA != http.StatusOK || !strings.Contains(string(bodyKA), `"keep_alive":true`) {
+		t.Fatalf("POST keepalive = %d, body=%s", codeKA, string(bodyKA))
+	}
+	if codeExt, bodyExt := doReq(http.MethodPost, "/api/terminal/sessions/"+readyMsg.SessionID+"/extend", ""); codeExt != http.StatusOK {
+		t.Fatalf("POST extend = %d, body=%s", codeExt, string(bodyExt))
+	}
+
+	// Enforce step-up on reattach too
+	srv.ensureTermSec().requireAll = true
+	reattachURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/terminal/ws?session_id=" + url.QueryEscape(readyMsg.SessionID)
+	if cBad, respBad, dialErr := websocket.DefaultDialer.Dial(reattachURL, headers); dialErr == nil {
+		_ = cBad.Close()
+		t.Fatal("expected step-up enforced on reattach when requireAll=true")
+	} else if respBad == nil || respBad.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 on locked reattach, got resp=%+v err=%v", respBad, dialErr)
+	}
+
+	codeUnlock, bodyUnlock := doReq(http.MethodPost, "/api/terminal/unlock", `{"password":"ReattachPass#2026","remember":false}`)
+	if codeUnlock != http.StatusOK {
+		t.Fatalf("POST unlock = %d, body=%s", codeUnlock, string(bodyUnlock))
+	}
+	var unlockRes struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(bodyUnlock, &unlockRes)
+
+	conn2, _, err := websocket.DefaultDialer.Dial(reattachURL+"&token="+url.QueryEscape(unlockRes.Token), headers)
+	if err != nil {
+		t.Fatalf("reattach WS dial with token failed: %v", err)
+	}
+	defer conn2.Close()
+
+	_ = conn2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, ready2Raw, err := conn2.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read reattached ready frame: %v", err)
+	}
+	if !strings.Contains(string(ready2Raw), `"reattached":true`) || !strings.Contains(string(ready2Raw), `"keep_alive":true`) {
+		t.Fatalf("expected reattached=true and keep_alive=true in ready frame, got %s", string(ready2Raw))
+	}
+
+	// Verify exported shell variable persisted across disconnect/reattach!
+	if err := conn2.WriteMessage(websocket.BinaryMessage, []byte("echo __VAR:$WDEV_REATTACH_VAL\n")); err != nil {
+		t.Fatal(err)
+	}
+	var secondOut strings.Builder
+	for i := 0; i < 64 && !strings.Contains(secondOut.String(), "__VAR:alive_ok"); i++ {
+		_ = conn2.SetReadDeadline(time.Now().Add(3 * time.Second))
+		mt, data, rerr := conn2.ReadMessage()
+		if rerr != nil {
+			t.Fatalf("read reattached conn failed: %v", rerr)
+		}
+		if mt == websocket.BinaryMessage {
+			secondOut.Write(data)
+		}
+	}
+	if !strings.Contains(secondOut.String(), "__FIRST_CONN__") || !strings.Contains(secondOut.String(), "__VAR:alive_ok") {
+		t.Fatalf("expected replayed history + preserved env var, got:\n%s", secondOut.String())
+	}
+
+	// Explicit DELETE closes session immediately
+	if codeDel, bodyDel := doReq(http.MethodDelete, "/api/terminal/sessions/"+readyMsg.SessionID, ""); codeDel != http.StatusOK {
+		t.Fatalf("DELETE session = %d, body=%s", codeDel, string(bodyDel))
+	}
+	time.Sleep(50 * time.Millisecond)
+	_, bodyAfterDel := doReq(http.MethodGet, "/api/terminal/sessions", "")
+	if strings.Contains(string(bodyAfterDel), readyMsg.SessionID) {
+		t.Fatalf("expected deleted session removed from list, got %s", string(bodyAfterDel))
+	}
+}
+
 func TestPanelDomainBindingSSLAndBlockIP(t *testing.T) {
 	tmp := t.TempDir()
 	db, err := store.New(filepath.Join(tmp, "panel-dom.db"))

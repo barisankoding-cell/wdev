@@ -18,11 +18,13 @@
 	import ModeSwitchModal from '#lib/components/modals/ModeSwitchModal.svelte';
 	import Login from '#lib/components/auth/Login.svelte';
 	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
+	import TerminalWorkspace from '#lib/components/terminal/TerminalWorkspace.svelte';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { themeStore } from '#lib/stores/theme.svelte.js';
 	import { authStore } from '#lib/stores/auth.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
+	import { terminalStore } from '#lib/stores/terminal.svelte.js';
 	import { i18n, t } from '#lib/i18n/index.svelte.js';
 	import {
 		getDefaultSeoDescription,
@@ -33,6 +35,20 @@
 	import type { LayoutProps } from './$types';
 
 	let { children }: LayoutProps = $props();
+
+	const isTerminalRoute = $derived(page.url.pathname === '/terminal');
+	const isFilesRoute = $derived(page.url.pathname === '/files');
+
+	$effect(() => {
+		if (!authStore.authChecked) return;
+		if (authStore.authEnabled && !authStore.isAuthenticated) {
+			terminalStore.reset();
+			return;
+		}
+		if (isTerminalRoute) {
+			terminalStore.activate();
+		}
+	});
 
 	const seoHead = $derived.by(() => {
 		if (!authStore.authChecked) {
@@ -111,13 +127,44 @@
 		{t('layout.skipToMain')}
 	</a>
 
-	<Sidebar.Provider>
+	<Sidebar.Provider
+		class={isTerminalRoute
+			? 'h-dvh max-h-dvh min-h-0 overflow-hidden'
+			: isFilesRoute
+				? 'md:h-dvh md:max-h-dvh md:min-h-0 md:overflow-hidden'
+				: ''}
+	>
 		<AppSidebar />
-		<Sidebar.Inset class="min-w-0">
+		<Sidebar.Inset
+			class={isTerminalRoute
+				? 'min-h-0 min-w-0 overflow-hidden'
+				: isFilesRoute
+					? 'min-w-0 md:min-h-0 md:overflow-hidden'
+					: 'min-w-0'}
+		>
 			<Topbar />
-			<div id="main-content" tabindex="-1" class="flex-1 px-3 py-4 sm:px-4 md:p-6">
-				<div class="mx-auto flex w-full max-w-7xl flex-col gap-5 sm:gap-6">
+			<div
+				id="main-content"
+				tabindex="-1"
+				class={isTerminalRoute
+					? 'flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 md:px-6 md:py-4'
+					: isFilesRoute
+						? 'flex-1 px-3 py-4 sm:px-4 md:flex md:min-h-0 md:flex-col md:overflow-hidden md:px-6 md:py-4'
+						: 'flex-1 px-3 py-4 sm:px-4 md:p-6'}
+			>
+				<div
+					class={isTerminalRoute
+						? 'mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col'
+						: isFilesRoute
+							? 'mx-auto flex w-full max-w-7xl flex-col gap-5 sm:gap-6 md:min-h-0 md:flex-1'
+							: 'mx-auto flex w-full max-w-7xl flex-col gap-5 sm:gap-6'}
+				>
 					{@render children()}
+					{#if terminalStore.activated}
+						<div class={isTerminalRoute ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+							<TerminalWorkspace visible={isTerminalRoute} />
+						</div>
+					{/if}
 				</div>
 			</div>
 		</Sidebar.Inset>

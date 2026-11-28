@@ -1209,11 +1209,33 @@ export interface TerminalInfo {
 	active_sessions: number;
 	max_sessions: number;
 	idle_timeout_seconds: number;
+	detach_timeout_seconds?: number;
 	is_https: boolean;
 	root_unlocked: boolean;
 	root_unlock_expires_at?: string;
 	step_up_always_required: boolean;
 	totp_required?: boolean;
+}
+
+export interface TerminalSessionInfo {
+	session_id: string;
+	panel_user?: string;
+	user: string;
+	is_root: boolean;
+	shell: string;
+	cwd: string;
+	hostname: string;
+	exec_label?: string;
+	started_at: string;
+	last_activity_at: string;
+	idle_timeout_seconds: number;
+	idle_remaining_seconds: number;
+	detach_timeout_seconds: number;
+	keep_alive: boolean;
+	attached: boolean;
+	detached_at?: string;
+	exited: boolean;
+	exit_code?: number;
 }
 
 export interface TerminalUnlockResponse {
@@ -1240,6 +1262,25 @@ export interface TerminalAuditRecord {
 	ended_at?: string;
 }
 
+export interface PanelCFProfileSummary {
+	name: string;
+	auth_mode: 'token' | 'cert' | string;
+	tunnel_name?: string;
+	tunnel_id?: string;
+	has_api_token: boolean;
+	active: boolean;
+	ready: boolean;
+}
+
+export interface PanelCFExposureInfo {
+	profile: string;
+	local_domain: string;
+	public_host: string;
+	service_url?: string;
+	url: string;
+	active: boolean;
+}
+
 export interface PanelDomainStatus {
 	domain: string;
 	bound?: boolean;
@@ -1262,11 +1303,17 @@ export interface PanelDomainStatus {
 	server_mode: string;
 	edge_configured?: boolean;
 	available_domains: string[];
+	cf_installed?: boolean;
+	cf_active?: boolean;
+	cf_has_api?: boolean;
+	cf_profiles?: PanelCFProfileSummary[];
+	detected_cf_exposure?: PanelCFExposureInfo | null;
 }
 
 export interface BindPanelDomainPayload {
 	domain: string;
-	ssl_mode: 'letsencrypt' | 'edge' | 'local' | 'external' | 'none';
+	ssl_mode: 'letsencrypt' | 'edge' | 'cloudflare' | 'local' | 'external' | 'none';
+	cf_profile?: string;
 	email?: string;
 	block_direct_ip?: boolean;
 	sync_dns?: boolean;
@@ -1277,7 +1324,11 @@ export interface BindPanelDomainResponse {
 	status: 'started' | 'bound' | 'sudo_required' | string;
 	task_id?: number;
 	domain?: string;
+	domain_url?: string;
 	target_url?: string;
+	ssl_provider?: string;
+	cf_profile?: string;
+	dns_warning?: string;
 	block_direct_ip?: boolean;
 	message?: string;
 }

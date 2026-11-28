@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -77,6 +76,8 @@ func (s *Server) registerTerminalRoutes() {
 	s.mux.HandleFunc("/api/terminal/unlock", s.handleTerminalUnlock)
 	s.mux.HandleFunc("/api/terminal/lock", s.handleTerminalLock)
 	s.mux.HandleFunc("/api/terminal/audit", s.handleTerminalAudit)
+	s.mux.HandleFunc("/api/terminal/sessions", s.handleTerminalSessions)
+	s.mux.HandleFunc("/api/terminal/sessions/", s.handleTerminalSessionAction)
 	s.mux.HandleFunc("/api/terminal/ws", s.handleTerminalWS)
 }
 
@@ -354,13 +355,118 @@ func (s *Server) handleTerminalAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, records)
 }
 
+func (s *Server) canAccessTerminalSession(r *http.Request, sess *terminal.Session) bool {
+	if sess == nil {
+		return false
+	}
+	if s.authMgr == nil || !s.authMgr.IsAuthEnabled() {
+		return true
+	}
+	_, panelUser, hasSession := s.sessionContextForRequest(r)
+	if !hasSession || panelUser == "" {
+		return false
+	}
+	if sess.PanelUser != "" && sess.PanelUser != panelUser {
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	_, panelUser, _ := s.sessionContextForRequest(r)
+	matchOwner := s.authMgr != nil && s.authMgr.IsAuthEnabled()
+	sessions := s.ensureTerminalManager().ListSessions(panelUser, matchOwner)
+	if sessions == nil {
+		sessions = []terminal.SessionSnapshot{}
+	}
+	writeJSON(w, http.StatusOK, sessions)
+}
+
+func (s *Server) handleTerminalSessionAction(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/terminal/sessions/"), "/")
+	if rest == "" {
+		writeError(w, http.StatusNotFound, "ID sesi terminal diperlukan")
+		return
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) > 2 {
+		writeError(w, http.StatusNotFound, "Endpoint sesi terminal tidak ditemukan")
+		return
+	}
+	sessionID := strings.TrimSpace(parts[0])
+	action := ""
+	if len(parts) == 2 {
+		action = strings.TrimSpace(parts[1])
+	}
+
+	mgr := s.ensureTerminalManager()
+	sess, ok := mgr.GetSession(sessionID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "Sesi terminal tidak ditemukan atau sudah berakhir")
+		return
+	}
+	if !s.canAccessTerminalSession(r, sess) {
+		writeError(w, http.StatusForbidden, "Anda tidak memiliki izin mengakses sesi terminal ini")
+		return
+	}
+
+	switch action {
+	case "":
+		if r.Method != http.MethodDelete {
+			writeMethodNotAllowed(w, r)
+			return
+		}
+		mgr.CloseSession(sessionID, "user_closed")
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":     "closed",
+			"session_id": sessionID,
+		})
+	case "keepalive":
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, r)
+			return
+		}
+		var payload struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "Payload JSON tidak valid")
+			return
+		}
+		sess.SetKeepAlive(payload.Enabled)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "ok",
+			"session_id": sessionID,
+			"keep_alive": sess.KeepAlive(),
+		})
+	case "extend":
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, r)
+			return
+		}
+		sec := sess.ExtendIdle()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":               "ok",
+			"session_id":           sessionID,
+			"idle_timeout_seconds": sec,
+		})
+	default:
+		writeError(w, http.StatusNotFound, "Aksi sesi terminal tidak dikenal")
+	}
+}
+
 // Origin WebSocket diverifikasi per request memakai helper s.checkWSOrigin.
 
 type wsClientControlMsg struct {
-	Type string `json:"type"`
-	Cols uint16 `json:"cols,omitempty"`
-	Rows uint16 `json:"rows,omitempty"`
-	Data string `json:"data,omitempty"`
+	Type    string `json:"type"`
+	Cols    uint16 `json:"cols,omitempty"`
+	Rows    uint16 `json:"rows,omitempty"`
+	Data    string `json:"data,omitempty"`
+	Enabled bool   `json:"enabled,omitempty"`
 }
 
 func parseQueryUint16(q url.Values, key string, fallback uint16) uint16 {
@@ -436,18 +542,45 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	mgr := s.ensureTerminalManager()
-	targetUser, err := mgr.ResolveTargetUser(q.Get("user"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
+	reqSessionID := strings.TrimSpace(q.Get("session_id"))
 
-	if ok, reason := s.authorizeTerminalLaunch(r, targetUser, q.Get("token")); !ok {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": reason,
-			"code":  "terminal_unlock_required",
-		})
-		return
+	var existingSess *terminal.Session
+	var targetUser terminal.TargetUser
+	reattachMissing := false
+
+	if reqSessionID != "" {
+		sess, ok := mgr.GetSession(reqSessionID)
+		if ok {
+			if !s.canAccessTerminalSession(r, sess) {
+				writeError(w, http.StatusForbidden, "Anda tidak memiliki izin mengakses sesi terminal ini")
+				return
+			}
+			targetUser = sess.TargetUser
+			if okAuth, reason := s.authorizeTerminalLaunch(r, targetUser, q.Get("token")); !okAuth {
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": reason,
+					"code":  "terminal_unlock_required",
+				})
+				return
+			}
+			existingSess = sess
+		} else {
+			reattachMissing = true
+		}
+	} else {
+		var err error
+		targetUser, err = mgr.ResolveTargetUser(q.Get("user"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if ok, reason := s.authorizeTerminalLaunch(r, targetUser, q.Get("token")); !ok {
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": reason,
+				"code":  "terminal_unlock_required",
+			})
+			return
+		}
 	}
 
 	upgrader := websocket.Upgrader{
@@ -460,14 +593,6 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-
-	opts := terminal.StartOptions{
-		User:  targetUser.Username,
-		Cwd:   q.Get("cwd"),
-		Shell: q.Get("shell"),
-		Cols:  parseQueryUint16(q, "cols", terminal.DefaultCols),
-		Rows:  parseQueryUint16(q, "rows", terminal.DefaultRows),
-	}
 
 	var wsMu sync.Mutex
 	sendTextJSON := func(payload any) error {
@@ -487,89 +612,163 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return conn.WriteMessage(websocket.BinaryMessage, data)
 	}
 
-	composeProject := strings.TrimSpace(q.Get("compose_project"))
-	composeService := strings.TrimSpace(q.Get("compose_service"))
-	if composeProject != "" || composeService != "" {
-		if composeProject == "" || composeService == "" {
-			_ = sendTextJSON(map[string]any{
-				"type":    "error",
-				"message": "Parameter compose_project dan compose_service keduanya wajib diisi",
-			})
-			return
-		}
-		execDir, execArgs, execLabel, execErr := s.ensureComposeManager().BuildExecCommand(
-			r.Context(),
-			composeProject,
-			composeService,
-			q.Get("shell"),
-		)
-		if execErr != nil {
-			_ = sendTextJSON(map[string]any{
-				"type":    "error",
-				"message": execErr.Error(),
-			})
-			return
-		}
-		opts.Cwd = execDir
-		opts.ExecBin = "docker"
-		opts.ExecArgs = execArgs
-		opts.ExecLabel = "compose:" + execLabel
-	}
-
-	sess, fallbackReason, err := mgr.StartSession(opts)
-	if err != nil {
+	if reattachMissing {
 		_ = sendTextJSON(map[string]any{
 			"type":    "error",
-			"message": err.Error(),
+			"code":    "session_not_found",
+			"message": "Sesi terminal sebelumnya sudah berakhir atau tidak ditemukan.",
 		})
+		wsMu.Lock()
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		wsMu.Unlock()
 		return
 	}
-	defer sess.Close()
 
+	var sess *terminal.Session
+	fallbackReason := ""
+	reattached := false
 	_, panelUser, _ := s.sessionContextForRequest(r)
-	clientIP := auth.ClientIP(r)
-	if s.store != nil {
-		_ = s.store.InsertTerminalAudit(store.TerminalAuditRecord{
-			SessionID:  sess.ID,
-			PanelUser:  panelUser,
-			TargetUser: sess.TargetUser.Username,
-			Shell:      sess.Shell,
-			Cwd:        sess.Cwd,
-			ClientIP:   clientIP,
-			Status:     "active",
-			StartedAt:  sess.StartedAt,
-		})
+
+	if existingSess != nil {
+		sess = existingSess
+		reattached = true
+		cols := parseQueryUint16(q, "cols", 0)
+		rows := parseQueryUint16(q, "rows", 0)
+		if cols > 0 && rows > 0 {
+			_ = sess.Resize(cols, rows)
+		}
+	} else {
+		opts := terminal.StartOptions{
+			PanelUser: panelUser,
+			User:      targetUser.Username,
+			Cwd:       q.Get("cwd"),
+			Shell:     q.Get("shell"),
+			Cols:      parseQueryUint16(q, "cols", terminal.DefaultCols),
+			Rows:      parseQueryUint16(q, "rows", terminal.DefaultRows),
+			Stream:    true,
+			OnExit: func(closedSess *terminal.Session, exitCode int, reason string) {
+				if s.store != nil {
+					finalStatus := "closed"
+					if reason == "idle_timeout" || reason == "detach_timeout" {
+						finalStatus = reason
+					}
+					_ = s.store.CompleteTerminalAudit(closedSess.ID, finalStatus, exitCode)
+				}
+			},
+		}
+
+		composeProject := strings.TrimSpace(q.Get("compose_project"))
+		composeService := strings.TrimSpace(q.Get("compose_service"))
+		if composeProject != "" || composeService != "" {
+			if composeProject == "" || composeService == "" {
+				_ = sendTextJSON(map[string]any{
+					"type":    "error",
+					"message": "Parameter compose_project dan compose_service keduanya wajib diisi",
+				})
+				return
+			}
+			execDir, execArgs, execLabel, execErr := s.ensureComposeManager().BuildExecCommand(
+				r.Context(),
+				composeProject,
+				composeService,
+				q.Get("shell"),
+			)
+			if execErr != nil {
+				_ = sendTextJSON(map[string]any{
+					"type":    "error",
+					"message": execErr.Error(),
+				})
+				return
+			}
+			opts.Cwd = execDir
+			opts.ExecBin = "docker"
+			opts.ExecArgs = execArgs
+			opts.ExecLabel = "compose:" + execLabel
+		}
+
+		var startErr error
+		sess, fallbackReason, startErr = mgr.StartSession(opts)
+		if startErr != nil {
+			_ = sendTextJSON(map[string]any{
+				"type":    "error",
+				"message": startErr.Error(),
+			})
+			return
+		}
+
+		clientIP := auth.ClientIP(r)
+		if s.store != nil {
+			_ = s.store.InsertTerminalAudit(store.TerminalAuditRecord{
+				SessionID:  sess.ID,
+				PanelUser:  panelUser,
+				TargetUser: sess.TargetUser.Username,
+				Shell:      sess.Shell,
+				Cwd:        sess.Cwd,
+				ClientIP:   clientIP,
+				Status:     "active",
+				StartedAt:  sess.StartedAt,
+			})
+		}
+
+		privBadge := "\x1b[32mnon-root\x1b[0m"
+		if sess.TargetUser.IsRoot {
+			privBadge = "\x1b[1;31mROOT\x1b[0m"
+		}
+		bannerHeader := "wdev PTY SSH Shell"
+		if opts.ExecLabel != "" {
+			bannerHeader = "wdev Container Exec PTY"
+		}
+		banner := fmt.Sprintf(
+			"\x1b[1;36m%s\x1b[0m \x1b[90m•\x1b[0m \x1b[32m%s@%s\x1b[0m [%s] \x1b[90m•\x1b[0m shell: \x1b[33m%s\x1b[0m\r\n\x1b[90mWorking Dir:\x1b[0m %s \x1b[90m• Auto-close idle %d menit\x1b[0m\r\n",
+			bannerHeader, sess.User, sess.Hostname, privBadge, sess.Shell, sess.Cwd, int(sess.IdleTimeout.Minutes()),
+		)
+		if fallbackReason != "" {
+			banner += fmt.Sprintf("\x1b[33mCatatan:\x1b[0m %s\r\n", fallbackReason)
+		}
+		banner += "\r\n"
+		sess.AppendBanner([]byte(banner))
 	}
+
+	snapshot, subCh, unsub, alreadyExited, exitCode, closeReason := sess.Subscribe()
+	defer unsub()
 
 	_ = sendTextJSON(map[string]any{
-		"type":                 "ready",
-		"session_id":           sess.ID,
-		"cwd":                  sess.Cwd,
-		"shell":                sess.Shell,
-		"user":                 sess.TargetUser.Username,
-		"is_root":              sess.TargetUser.IsRoot,
-		"host":                 sess.Hostname,
-		"fallback_reason":      fallbackReason,
-		"idle_timeout_seconds": int(sess.IdleTimeout.Seconds()),
+		"type":                   "ready",
+		"session_id":             sess.ID,
+		"reattached":             reattached,
+		"cwd":                    sess.Cwd,
+		"shell":                  sess.Shell,
+		"user":                   sess.TargetUser.Username,
+		"is_root":                sess.TargetUser.IsRoot,
+		"host":                   sess.Hostname,
+		"fallback_reason":        fallbackReason,
+		"keep_alive":             sess.KeepAlive(),
+		"idle_timeout_seconds":   int(sess.IdleTimeout.Seconds()),
+		"detach_timeout_seconds": int(sess.DetachTimeout.Seconds()),
 	})
 
-	privBadge := "\x1b[32mnon-root\x1b[0m"
-	if sess.TargetUser.IsRoot {
-		privBadge = "\x1b[1;31mROOT\x1b[0m"
+	if len(snapshot) > 0 {
+		_ = sendBinary(snapshot)
 	}
-	bannerHeader := "wdev PTY SSH Shell"
-	if opts.ExecLabel != "" {
-		bannerHeader = "wdev Container Exec PTY"
+
+	if alreadyExited {
+		if closeReason == "idle_timeout" {
+			_ = sendTextJSON(map[string]any{
+				"type":    "error",
+				"code":    "idle_timeout",
+				"message": "Sesi terminal ditutup otomatis karena idle terlalu lama.",
+			})
+		}
+		_ = sendTextJSON(map[string]any{
+			"type":   "exit",
+			"code":   exitCode,
+			"reason": closeReason,
+		})
+		wsMu.Lock()
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		wsMu.Unlock()
+		return
 	}
-	banner := fmt.Sprintf(
-		"\x1b[1;36m%s\x1b[0m \x1b[90m•\x1b[0m \x1b[32m%s@%s\x1b[0m [%s] \x1b[90m•\x1b[0m shell: \x1b[33m%s\x1b[0m\r\n\x1b[90mWorking Dir:\x1b[0m %s \x1b[90m• Auto-close idle %d menit\x1b[0m\r\n",
-		bannerHeader, sess.User, sess.Hostname, privBadge, sess.Shell, sess.Cwd, int(sess.IdleTimeout.Minutes()),
-	)
-	if fallbackReason != "" {
-		banner += fmt.Sprintf("\x1b[33mCatatan:\x1b[0m %s\r\n", fallbackReason)
-	}
-	banner += "\r\n"
-	_ = sendBinary([]byte(banner))
 
 	conn.SetReadLimit(1 << 20)
 	_ = conn.SetReadDeadline(time.Now().Add(termPongWait))
@@ -585,17 +784,6 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 			close(doneCh)
 		})
 	}
-
-	// Pastikan audit selesai tercatat bahkan bila WS klien putus mendadak sebelum shell Wait selesai
-	defer func() {
-		if s.store != nil {
-			finalStatus := "closed"
-			if sess.Reason() == "idle_timeout" {
-				finalStatus = "idle_timeout"
-			}
-			_ = s.store.CompleteTerminalAudit(sess.ID, finalStatus, 0)
-		}
-	}()
 
 	// Keepalive Ping untuk menjaga koneksi di belakang proxy / Cloudflare
 	go func() {
@@ -618,43 +806,56 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Pompa PTY stdout/stderr -> WebSocket
+	// Pompa stream PTY -> WebSocket
 	go func() {
 		defer stop()
-		buf := make([]byte, 32*1024)
 		for {
-			n, rerr := sess.Read(buf)
-			if n > 0 {
-				if werr := sendBinary(buf[:n]); werr != nil {
+			select {
+			case <-doneCh:
+				return
+			case ev, ok := <-subCh:
+				if !ok {
 					return
 				}
-			}
-			if rerr != nil {
-				if rerr != io.EOF {
-					_ = rerr
-				}
-				code, _ := sess.Wait()
-				finalStatus := "closed"
-				if sess.Reason() == "idle_timeout" {
-					finalStatus = "idle_timeout"
+				if ev.Replaced {
 					_ = sendTextJSON(map[string]any{
-						"type":    "error",
-						"code":    "idle_timeout",
-						"message": "Sesi terminal ditutup otomatis karena idle terlalu lama.",
+						"type":    "replaced",
+						"message": "Sesi terminal diambil alih oleh koneksi baru.",
+					})
+					wsMu.Lock()
+					_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+					wsMu.Unlock()
+					return
+				}
+				if len(ev.Data) > 0 {
+					if werr := sendBinary(ev.Data); werr != nil {
+						return
+					}
+				}
+				if ev.IdleWarning != nil {
+					_ = sendTextJSON(map[string]any{
+						"type":              "idle_warning",
+						"remaining_seconds": *ev.IdleWarning,
 					})
 				}
-				if s.store != nil {
-					_ = s.store.CompleteTerminalAudit(sess.ID, finalStatus, code)
+				if ev.Exited {
+					if ev.CloseReason == "idle_timeout" {
+						_ = sendTextJSON(map[string]any{
+							"type":    "error",
+							"code":    "idle_timeout",
+							"message": "Sesi terminal ditutup otomatis karena idle terlalu lama.",
+						})
+					}
+					_ = sendTextJSON(map[string]any{
+						"type":   "exit",
+						"code":   ev.ExitCode,
+						"reason": ev.CloseReason,
+					})
+					wsMu.Lock()
+					_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+					wsMu.Unlock()
+					return
 				}
-				_ = sendTextJSON(map[string]any{
-					"type":   "exit",
-					"code":   code,
-					"reason": sess.Reason(),
-				})
-				wsMu.Lock()
-				_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-				wsMu.Unlock()
-				return
 			}
 		}
 	}()
@@ -692,6 +893,21 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 					}
 				case "ping":
 					_ = sendTextJSON(map[string]string{"type": "pong"})
+				case "extend":
+					sec := sess.ExtendIdle()
+					_ = sendTextJSON(map[string]any{
+						"type":                 "idle_extended",
+						"idle_timeout_seconds": sec,
+					})
+				case "keepalive":
+					sess.SetKeepAlive(ctrl.Enabled)
+					_ = sendTextJSON(map[string]any{
+						"type":    "keepalive",
+						"enabled": sess.KeepAlive(),
+					})
+				case "close":
+					_ = sess.CloseWithReason("user_closed")
+					return
 				}
 			}
 		}

@@ -67,6 +67,7 @@ import type {
 	SetRelayPayload,
 	TerminalAuditRecord,
 	TerminalInfo,
+	TerminalSessionInfo,
 	TerminalUnlockResponse,
 	TOTPEnrollment,
 	TOTPStatus,
@@ -943,8 +944,28 @@ export const api = {
 		}),
 	getTerminalAudit: (limit = 50) =>
 		apiFetch<TerminalAuditRecord[]>(`/api/terminal/audit?limit=${limit}`),
+	listTerminalSessions: () => apiFetch<TerminalSessionInfo[]>('/api/terminal/sessions'),
+	closeTerminalSession: (sessionId: string) =>
+		apiFetch<{ status: string; session_id: string }>(
+			`/api/terminal/sessions/${encodeURIComponent(sessionId)}`,
+			{ method: 'DELETE' }
+		),
+	setTerminalSessionKeepAlive: (sessionId: string, enabled: boolean) =>
+		apiFetch<{ status: string; session_id: string; keep_alive: boolean }>(
+			`/api/terminal/sessions/${encodeURIComponent(sessionId)}/keepalive`,
+			{
+				method: 'POST',
+				body: JSON.stringify({ enabled })
+			}
+		),
+	extendTerminalSession: (sessionId: string) =>
+		apiFetch<{ status: string; session_id: string; idle_timeout_seconds: number }>(
+			`/api/terminal/sessions/${encodeURIComponent(sessionId)}/extend`,
+			{ method: 'POST' }
+		),
 	terminalWsUrl: (
 		opts: {
+			session_id?: string;
 			cwd?: string;
 			shell?: string;
 			user?: string;
@@ -957,6 +978,7 @@ export const api = {
 	) => {
 		const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const params = new URLSearchParams();
+		if (opts.session_id) params.set('session_id', opts.session_id);
 		if (opts.cwd) params.set('cwd', opts.cwd);
 		if (opts.shell) params.set('shell', opts.shell);
 		if (opts.user) params.set('user', opts.user);

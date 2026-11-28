@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,10 +25,13 @@ import (
 )
 
 const (
-	DefaultMaxSessions = 16
-	DefaultCols        = 120
-	DefaultRows        = 32
-	DefaultIdleTimeout = 15 * time.Minute
+	DefaultMaxSessions     = 16
+	DefaultCols            = 120
+	DefaultRows            = 32
+	DefaultIdleTimeout     = 15 * time.Minute
+	DefaultDetachTimeout   = 30 * time.Minute
+	DefaultIdleWarning     = 60 * time.Second
+	DefaultScrollbackBytes = 256 * 1024
 )
 
 // TargetUser mendeskripsikan akun Linux yang dapat dipilih untuk menjalankan shell PTY.
@@ -48,49 +52,176 @@ type Info struct {
 	ActiveSessions       int          `json:"active_sessions"`
 	MaxSessions          int          `json:"max_sessions"`
 	IdleTimeoutSeconds   int          `json:"idle_timeout_seconds"`
+	DetachTimeoutSeconds int          `json:"detach_timeout_seconds"`
 	IsHTTPS              bool         `json:"is_https"`
-	RootUnlocked         bool       `json:"root_unlocked"`
-	RootUnlockExpiresAt  *time.Time `json:"root_unlock_expires_at,omitempty"`
-	StepUpAlwaysRequired bool       `json:"step_up_always_required"`
-	TOTPRequired         bool       `json:"totp_required"`
+	RootUnlocked         bool         `json:"root_unlocked"`
+	RootUnlockExpiresAt  *time.Time   `json:"root_unlock_expires_at,omitempty"`
+	StepUpAlwaysRequired bool         `json:"step_up_always_required"`
+	TOTPRequired         bool         `json:"totp_required"`
+}
+
+// SessionSnapshot merangkum status sesi PTY yang sedang berjalan atau detached.
+type SessionSnapshot struct {
+	ID                 string     `json:"session_id"`
+	PanelUser          string     `json:"panel_user,omitempty"`
+	User               string     `json:"user"`
+	IsRoot             bool       `json:"is_root"`
+	Shell              string     `json:"shell"`
+	Cwd                string     `json:"cwd"`
+	Hostname           string     `json:"hostname"`
+	ExecLabel          string     `json:"exec_label,omitempty"`
+	StartedAt          time.Time  `json:"started_at"`
+	LastActivityAt     time.Time  `json:"last_activity_at"`
+	IdleTimeoutSeconds int        `json:"idle_timeout_seconds"`
+	IdleRemainingSec   int        `json:"idle_remaining_seconds"`
+	DetachTimeoutSec   int        `json:"detach_timeout_seconds"`
+	KeepAlive          bool       `json:"keep_alive"`
+	Attached           bool       `json:"attached"`
+	DetachedAt         *time.Time `json:"detached_at,omitempty"`
+	Exited             bool       `json:"exited"`
+	ExitCode           int        `json:"exit_code,omitempty"`
+}
+
+// SubscriberEvent merepresentasikan event live dari PTY ke WebSocket yang sedang terpasang.
+type SubscriberEvent struct {
+	Data        []byte
+	IdleWarning *int
+	Replaced    bool
+	Exited      bool
+	ExitCode    int
+	CloseReason string
+}
+
+type ringBuffer struct {
+	data []byte
+	pos  int
+	full bool
+}
+
+func newRingBuffer(capacity int) *ringBuffer {
+	if capacity <= 0 {
+		capacity = DefaultScrollbackBytes
+	}
+	return &ringBuffer{
+		data: make([]byte, capacity),
+	}
+}
+
+func (rb *ringBuffer) Write(p []byte) {
+	if len(p) == 0 || len(rb.data) == 0 {
+		return
+	}
+	capLen := len(rb.data)
+	if len(p) >= capLen {
+		copy(rb.data, p[len(p)-capLen:])
+		rb.pos = 0
+		rb.full = true
+		return
+	}
+	first := capLen - rb.pos
+	if len(p) <= first {
+		copy(rb.data[rb.pos:], p)
+		rb.pos += len(p)
+		if rb.pos == capLen {
+			rb.pos = 0
+			rb.full = true
+		}
+		return
+	}
+	copy(rb.data[rb.pos:], p[:first])
+	rem := len(p) - first
+	copy(rb.data[0:], p[first:])
+	rb.pos = rem
+	rb.full = true
+}
+
+func (rb *ringBuffer) Bytes() []byte {
+	if !rb.full {
+		if rb.pos == 0 {
+			return nil
+		}
+		out := make([]byte, rb.pos)
+		copy(out, rb.data[:rb.pos])
+		return out
+	}
+	capLen := len(rb.data)
+	out := make([]byte, capLen)
+	n := copy(out, rb.data[rb.pos:])
+	copy(out[n:], rb.data[:rb.pos])
+	// Lewati byte lanjutan UTF-8 terpotong di awal buffer hasil wrap.
+	trim := 0
+	for trim < 3 && trim < len(out) && (out[trim]&0xC0) == 0x80 {
+		trim++
+	}
+	if trim > 0 {
+		return out[trim:]
+	}
+	return out
 }
 
 // StartOptions mengonfigurasi pembukaan sesi terminal PTY baru.
 type StartOptions struct {
-	User        string
-	Cwd         string
-	Shell       string
-	ExecBin     string
-	ExecArgs    []string
-	ExecLabel   string
-	Cols        uint16
-	Rows        uint16
-	IdleTimeout time.Duration // 0 => DefaultIdleTimeout; < 0 => nonaktif
+	PanelUser     string
+	User          string
+	Cwd           string
+	Shell         string
+	ExecBin       string
+	ExecArgs      []string
+	ExecLabel     string
+	Cols          uint16
+	Rows          uint16
+	IdleTimeout   time.Duration // 0 => DefaultIdleTimeout; < 0 => nonaktif
+	DetachTimeout time.Duration // 0 => DefaultDetachTimeout; < 0 => nonaktif
+	IdleWarning   time.Duration // 0 => otomatis 60s bila IdleTimeout >= 2m; < 0 => nonaktif
+	Stream        bool          // true => jalankan read pump & ring buffer untuk attach/reattach WS
+	OnExit        func(sess *Session, exitCode int, reason string)
+}
+
+type sessionSubscriber struct {
+	id uint64
+	ch chan SubscriberEvent
 }
 
 // Session merepresentasikan satu proses shell interaktif berbasis PTY.
 type Session struct {
-	ID          string
-	TargetUser  TargetUser
-	Cwd         string
-	Shell       string
-	User        string
-	Hostname    string
-	StartedAt   time.Time
-	IdleTimeout time.Duration
+	ID            string
+	PanelUser     string
+	TargetUser    TargetUser
+	Cwd           string
+	Shell         string
+	User          string
+	Hostname      string
+	ExecLabel     string
+	StartedAt     time.Time
+	IdleTimeout   time.Duration
+	DetachTimeout time.Duration
+	IdleWarning   time.Duration
 
-	cmd           *exec.Cmd
-	ptmx          *os.File
-	pid           int
-	doneCh        chan struct{}
-	exitCode      int
-	exitErr       error
-	closeReasonMu sync.Mutex
-	closeReason   string
-	lastInputNano atomic.Int64
-	stopWatchCh   chan struct{}
-	closeOnce     sync.Once
-	onClose       func()
+	cmd                   *exec.Cmd
+	ptmx                  *os.File
+	pid                   int
+	doneCh                chan struct{}
+	exitCode              atomic.Int32
+	exitErr               error
+	closeReasonMu         sync.Mutex
+	closeReason           string
+	lastInputNano         atomic.Int64
+	lastOutputNano        atomic.Int64
+	lastActivityNano      atomic.Int64
+	warnedForActivityNano atomic.Int64
+	detachedAtNano        atomic.Int64
+	keepAlive             atomic.Bool
+	stopWatchCh           chan struct{}
+	closeOnce             sync.Once
+	onClose               func()
+	onExit                func(sess *Session, exitCode int, reason string)
+
+	streamOnce   sync.Once
+	streamMu     sync.Mutex
+	scrollback   *ringBuffer
+	subscribers  map[uint64]*sessionSubscriber
+	nextSubID    uint64
+	streamExited bool
 }
 
 // Manager mengelola siklus hidup sesi PTY interaktif secara aman.
@@ -419,18 +550,19 @@ func (m *Manager) SystemInfo() Info {
 	m.mu.Unlock()
 
 	return Info{
-		Hostname:           hostname,
-		OSName:             detectOSName(),
-		User:               defUser.Username,
-		DefaultUser:        defUser.Username,
-		AvailableUsers:     users,
-		IsDaemonRoot:       os.Geteuid() == 0,
-		Shell:              shells[0],
-		AvailableShells:    shells,
-		HomeDir:            defUser.HomeDir,
-		ActiveSessions:     active,
-		MaxSessions:        maxSess,
-		IdleTimeoutSeconds: int(DefaultIdleTimeout.Seconds()),
+		Hostname:             hostname,
+		OSName:               detectOSName(),
+		User:                 defUser.Username,
+		DefaultUser:          defUser.Username,
+		AvailableUsers:       users,
+		IsDaemonRoot:         os.Geteuid() == 0,
+		Shell:                shells[0],
+		AvailableShells:      shells,
+		HomeDir:              defUser.HomeDir,
+		ActiveSessions:       active,
+		MaxSessions:          maxSess,
+		IdleTimeoutSeconds:   int(DefaultIdleTimeout.Seconds()),
+		DetachTimeoutSeconds: int(DefaultDetachTimeout.Seconds()),
 	}
 }
 
@@ -561,6 +693,24 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 	idleTimeout := opts.IdleTimeout
 	if idleTimeout == 0 {
 		idleTimeout = DefaultIdleTimeout
+	} else if idleTimeout < 0 {
+		idleTimeout = 0
+	}
+
+	detachTimeout := opts.DetachTimeout
+	if detachTimeout == 0 {
+		detachTimeout = DefaultDetachTimeout
+	} else if detachTimeout < 0 {
+		detachTimeout = 0
+	}
+
+	idleWarning := opts.IdleWarning
+	if idleWarning == 0 {
+		if idleTimeout >= 2*time.Minute {
+			idleWarning = DefaultIdleWarning
+		}
+	} else if idleWarning < 0 {
+		idleWarning = 0
 	}
 
 	hostname, _ := os.Hostname()
@@ -639,22 +789,33 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 	}
 	_ = tty.Close()
 
+	now := time.Now()
 	sess := &Session{
-		ID:          sessionID,
-		TargetUser:  target,
-		Cwd:         cwd,
-		Shell:       displayShell,
-		User:        target.Username,
-		Hostname:    hostname,
-		StartedAt:   time.Now(),
-		IdleTimeout: idleTimeout,
-		cmd:         cmd,
-		ptmx:        ptmx,
-		pid:         cmd.Process.Pid,
-		doneCh:      make(chan struct{}),
-		stopWatchCh: make(chan struct{}),
+		ID:            sessionID,
+		PanelUser:     strings.TrimSpace(opts.PanelUser),
+		TargetUser:    target,
+		Cwd:           cwd,
+		Shell:         displayShell,
+		User:          target.Username,
+		Hostname:      hostname,
+		ExecLabel:     strings.TrimSpace(opts.ExecLabel),
+		StartedAt:     now,
+		IdleTimeout:   idleTimeout,
+		DetachTimeout: detachTimeout,
+		IdleWarning:   idleWarning,
+		cmd:           cmd,
+		ptmx:          ptmx,
+		pid:           cmd.Process.Pid,
+		doneCh:        make(chan struct{}),
+		stopWatchCh:   make(chan struct{}),
+		onExit:        opts.OnExit,
+		scrollback:    newRingBuffer(DefaultScrollbackBytes),
+		subscribers:   make(map[uint64]*sessionSubscriber),
 	}
-	sess.lastInputNano.Store(time.Now().UnixNano())
+	nowNano := now.UnixNano()
+	sess.lastInputNano.Store(nowNano)
+	sess.lastOutputNano.Store(nowNano)
+	sess.lastActivityNano.Store(nowNano)
 	sess.onClose = func() {
 		m.mu.Lock()
 		delete(m.sessions, sessionID)
@@ -665,8 +826,12 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 	m.sessions[sessionID] = sess
 	m.mu.Unlock()
 
-	if idleTimeout > 0 {
-		go sess.watchIdle(idleTimeout)
+	if idleTimeout > 0 || detachTimeout > 0 {
+		go sess.watchTimers()
+	}
+
+	if opts.Stream {
+		sess.ensureStreamPump()
 	}
 
 	go func() {
@@ -681,22 +846,270 @@ func (m *Manager) StartSession(opts StartOptions) (*Session, string, error) {
 		} else if cmd.ProcessState != nil {
 			code = cmd.ProcessState.ExitCode()
 		}
-		sess.exitCode = code
+		sess.exitCode.Store(int32(code))
 		sess.exitErr = waitErr
 		sess.onClose()
+		if sess.onExit != nil {
+			sess.onExit(sess, code, sess.Reason())
+		}
 		close(sess.doneCh)
 	}()
 
 	return sess, fallbackReason, nil
 }
 
-func (s *Session) watchIdle(timeout time.Duration) {
-	checkEvery := timeout / 4
+// GetSession mengembalikan sesi aktif berdasarkan ID.
+func (m *Manager) GetSession(id string) (*Session, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	sess, ok := m.sessions[id]
+	m.mu.Unlock()
+	if !ok || sess == nil {
+		return nil, false
+	}
+	return sess, true
+}
+
+// ListSessions mengembalikan daftar sesi PTY yang masih berjalan atau detached.
+func (m *Manager) ListSessions(panelUser string, matchOwner bool) []SessionSnapshot {
+	m.mu.Lock()
+	list := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if s == nil {
+			continue
+		}
+		if matchOwner && panelUser != "" && s.PanelUser != "" && s.PanelUser != panelUser {
+			continue
+		}
+		list = append(list, s)
+	}
+	m.mu.Unlock()
+
+	out := make([]SessionSnapshot, 0, len(list))
+	for _, s := range list {
+		out = append(out, s.Snapshot())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].StartedAt.Before(out[j].StartedAt)
+	})
+	return out
+}
+
+// CloseSession menghentikan sesi PTY berdasarkan ID secara eksplisit.
+func (m *Manager) CloseSession(id, reason string) bool {
+	sess, ok := m.GetSession(id)
+	if !ok {
+		return false
+	}
+	_ = sess.CloseWithReason(reason)
+	return true
+}
+
+func (s *Session) ensureStreamPump() {
+	s.streamOnce.Do(func() {
+		go s.readLoop()
+	})
+}
+
+func (s *Session) readLoop() {
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := s.ptmx.Read(buf)
+		if n > 0 {
+			now := time.Now().UnixNano()
+			s.lastOutputNano.Store(now)
+			s.lastActivityNano.Store(now)
+
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+
+			s.streamMu.Lock()
+			s.scrollback.Write(chunk)
+			s.broadcastLocked(SubscriberEvent{Data: chunk})
+			s.streamMu.Unlock()
+		}
+		if rerr != nil {
+			<-s.doneCh
+			s.streamMu.Lock()
+			s.streamExited = true
+			ev := SubscriberEvent{
+				Exited:      true,
+				ExitCode:    int(s.exitCode.Load()),
+				CloseReason: s.Reason(),
+			}
+			for id, sub := range s.subscribers {
+				select {
+				case sub.ch <- ev:
+				default:
+				}
+				close(sub.ch)
+				delete(s.subscribers, id)
+			}
+			s.streamMu.Unlock()
+			return
+		}
+	}
+}
+
+func (s *Session) broadcast(ev SubscriberEvent) {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	if s.streamExited {
+		return
+	}
+	s.broadcastLocked(ev)
+}
+
+func (s *Session) broadcastLocked(ev SubscriberEvent) {
+	for id, sub := range s.subscribers {
+		select {
+		case sub.ch <- ev:
+		default:
+			close(sub.ch)
+			delete(s.subscribers, id)
+		}
+	}
+	if len(s.subscribers) == 0 && !s.streamExited && s.detachedAtNano.Load() == 0 {
+		s.detachedAtNano.Store(time.Now().UnixNano())
+	}
+}
+
+// AppendBanner menyimpan banner awal ke scrollback buffer sesi agar ikut tampil saat reattach.
+func (s *Session) AppendBanner(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	s.streamMu.Lock()
+	s.scrollback.Write(data)
+	s.broadcastLocked(SubscriberEvent{Data: append([]byte(nil), data...)})
+	s.streamMu.Unlock()
+}
+
+// Subscribe mengambil snapshot scrollback secara atomik dan memasang subscriber stream live.
+// Jika sudah ada subscriber aktif sebelumnya, subscriber lama akan diganti secara bersih.
+func (s *Session) Subscribe() (snapshot []byte, ch <-chan SubscriberEvent, unsubscribe func(), exited bool, exitCode int, reason string) {
+	s.ensureStreamPump()
+
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+
+	snap := s.scrollback.Bytes()
+	if s.streamExited {
+		return snap, nil, func() {}, true, int(s.exitCode.Load()), s.Reason()
+	}
+
+	for id, old := range s.subscribers {
+		select {
+		case old.ch <- SubscriberEvent{Replaced: true}:
+		default:
+		}
+		close(old.ch)
+		delete(s.subscribers, id)
+	}
+
+	s.nextSubID++
+	subID := s.nextSubID
+	sub := &sessionSubscriber{
+		id: subID,
+		ch: make(chan SubscriberEvent, 256),
+	}
+	s.subscribers[subID] = sub
+	s.detachedAtNano.Store(0)
+
+	var unsubOnce sync.Once
+	unsub := func() {
+		unsubOnce.Do(func() {
+			s.streamMu.Lock()
+			if cur, ok := s.subscribers[subID]; ok && cur == sub {
+				delete(s.subscribers, subID)
+				close(sub.ch)
+				if len(s.subscribers) == 0 && !s.streamExited {
+					s.detachedAtNano.Store(time.Now().UnixNano())
+				}
+			}
+			s.streamMu.Unlock()
+		})
+	}
+	return snap, sub.ch, unsub, false, 0, ""
+}
+
+// ExtendIdle mereset timer idle sesi terminal.
+func (s *Session) ExtendIdle() int {
+	now := time.Now().UnixNano()
+	s.lastInputNano.Store(now)
+	s.lastActivityNano.Store(now)
+	s.warnedForActivityNano.Store(0)
+	return int(s.IdleTimeout.Seconds())
+}
+
+// SetKeepAlive mengaktifkan atau menonaktifkan mode keep-alive agar sesi tidak tertutup otomatis saat idle.
+func (s *Session) SetKeepAlive(enabled bool) {
+	s.keepAlive.Store(enabled)
+	now := time.Now().UnixNano()
+	s.lastActivityNano.Store(now)
+	s.warnedForActivityNano.Store(0)
+}
+
+// KeepAlive mengembalikan status keep-alive sesi saat ini.
+func (s *Session) KeepAlive() bool {
+	return s.keepAlive.Load()
+}
+
+// Snapshot mengembalikan metadata ringkas status sesi saat ini.
+func (s *Session) Snapshot() SessionSnapshot {
+	s.streamMu.Lock()
+	attached := len(s.subscribers) > 0
+	exited := s.streamExited
+	s.streamMu.Unlock()
+
+	lastAct := time.Unix(0, s.lastActivityNano.Load())
+	remSec := 0
+	if s.IdleTimeout > 0 && !s.keepAlive.Load() {
+		rem := s.IdleTimeout - time.Since(lastAct)
+		if rem > 0 {
+			remSec = int(rem.Seconds())
+		}
+	}
+	var detachedAt *time.Time
+	if det := s.detachedAtNano.Load(); det > 0 && !attached {
+		t := time.Unix(0, det)
+		detachedAt = &t
+	}
+	return SessionSnapshot{
+		ID:                 s.ID,
+		PanelUser:          s.PanelUser,
+		User:               s.User,
+		IsRoot:             s.TargetUser.IsRoot,
+		Shell:              s.Shell,
+		Cwd:                s.Cwd,
+		Hostname:           s.Hostname,
+		ExecLabel:          s.ExecLabel,
+		StartedAt:          s.StartedAt,
+		LastActivityAt:     lastAct,
+		IdleTimeoutSeconds: int(s.IdleTimeout.Seconds()),
+		IdleRemainingSec:   remSec,
+		DetachTimeoutSec:   int(s.DetachTimeout.Seconds()),
+		KeepAlive:          s.keepAlive.Load(),
+		Attached:           attached,
+		DetachedAt:         detachedAt,
+		Exited:             exited,
+		ExitCode:           int(s.exitCode.Load()),
+	}
+}
+
+func (s *Session) watchTimers() {
+	checkEvery := 5 * time.Second
+	if s.IdleTimeout > 0 && s.IdleTimeout/4 < checkEvery {
+		checkEvery = s.IdleTimeout / 4
+	}
+	if s.DetachTimeout > 0 && s.DetachTimeout/4 < checkEvery {
+		checkEvery = s.DetachTimeout / 4
+	}
 	if checkEvery < 50*time.Millisecond {
 		checkEvery = 50 * time.Millisecond
-	}
-	if checkEvery > 15*time.Second {
-		checkEvery = 15 * time.Second
 	}
 	ticker := time.NewTicker(checkEvery)
 	defer ticker.Stop()
@@ -708,10 +1121,32 @@ func (s *Session) watchIdle(timeout time.Duration) {
 		case <-s.doneCh:
 			return
 		case <-ticker.C:
-			last := time.Unix(0, s.lastInputNano.Load())
-			if time.Since(last) >= timeout {
-				_ = s.CloseWithReason("idle_timeout")
-				return
+			if s.DetachTimeout > 0 {
+				if detNano := s.detachedAtNano.Load(); detNano > 0 {
+					if time.Since(time.Unix(0, detNano)) >= s.DetachTimeout {
+						_ = s.CloseWithReason("detach_timeout")
+						return
+					}
+				}
+			}
+			if s.IdleTimeout > 0 && !s.keepAlive.Load() {
+				lastAct := s.lastActivityNano.Load()
+				elapsed := time.Since(time.Unix(0, lastAct))
+				if elapsed >= s.IdleTimeout {
+					_ = s.CloseWithReason("idle_timeout")
+					return
+				}
+				if s.IdleWarning > 0 && s.IdleTimeout > s.IdleWarning {
+					remaining := s.IdleTimeout - elapsed
+					if remaining <= s.IdleWarning && s.warnedForActivityNano.Load() != lastAct {
+						s.warnedForActivityNano.Store(lastAct)
+						remSec := int(remaining.Seconds())
+						if remSec < 1 {
+							remSec = 1
+						}
+						s.broadcast(SubscriberEvent{IdleWarning: &remSec})
+					}
+				}
 			}
 		}
 	}
@@ -725,7 +1160,10 @@ func (s *Session) Read(p []byte) (int, error) {
 // Write menulis byte input dari pengguna ke PTY master dan mereset idle timer.
 func (s *Session) Write(p []byte) (int, error) {
 	if len(p) > 0 {
-		s.lastInputNano.Store(time.Now().UnixNano())
+		now := time.Now().UnixNano()
+		s.lastInputNano.Store(now)
+		s.lastActivityNano.Store(now)
+		s.warnedForActivityNano.Store(0)
 	}
 	return s.ptmx.Write(p)
 }
@@ -742,7 +1180,7 @@ func (s *Session) Resize(cols, rows uint16) error {
 // Wait menunggu proses shell berhenti dan mengembalikan exit code.
 func (s *Session) Wait() (int, error) {
 	<-s.doneCh
-	return s.exitCode, s.exitErr
+	return int(s.exitCode.Load()), s.exitErr
 }
 
 // Reason mengembalikan alasan penutupan khusus bila sesi diputus paksa (mis. "idle_timeout").

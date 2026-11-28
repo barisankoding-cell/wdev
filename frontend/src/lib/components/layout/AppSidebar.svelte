@@ -3,6 +3,7 @@
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import { cp } from '#lib/stores/control-plane.svelte.js';
 	import { modeStore } from '#lib/stores/mode.svelte.js';
+	import { terminalStore } from '#lib/stores/terminal.svelte.js';
 	import { t } from '#lib/i18n/index.svelte.js';
 	import { useSidebar } from '#lib/components/ui/sidebar/index.js';
 	import WdevLogo from '#lib/components/shared/WdevLogo.svelte';
@@ -133,6 +134,14 @@
 										>
 											<Icon />
 											<span>{item.label}</span>
+											{#if item.href === '/terminal' && terminalStore.connectedCount > 0}
+												<span
+													class="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+												>
+													<span class="size-1.5 rounded-full bg-emerald-500"></span>
+													{terminalStore.connectedCount}
+												</span>
+											{/if}
 										</a>
 									{/snippet}
 								</Sidebar.MenuButton>

@@ -124,6 +124,7 @@ export const filesId: WidenStrings<typeof filesEn> = {
 		deleteSelectedAria: 'Hapus {count} item terpilih',
 		moreBatchActionsAria: 'Aksi batch lainnya',
 		pasteShortBtn: 'Tempel',
+		paginationItemLabel: 'item',
 		dialogs: {
 			newFileTitle: 'Buat File Baru',
 			locationPrefix: 'Lokasi: {path}',

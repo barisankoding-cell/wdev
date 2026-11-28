@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { api, ApiError } from '#lib/api/client.js';
 	import FileEditorModal from '#lib/components/modals/FileEditorModal.svelte';
+	import PaginationBar from '#lib/components/shared/PaginationBar.svelte';
 	import ResponsiveTableWrapper from '#lib/components/shared/ResponsiveTableWrapper.svelte';
 	import { Alert, AlertDescription, AlertTitle } from '#lib/components/ui/alert/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
@@ -89,6 +90,7 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import UploadIcon from '@lucide/svelte/icons/upload';
 	import XIcon from '@lucide/svelte/icons/x';
+	import { tick, untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	type SortKey = 'name' | 'size' | 'mod_time';
@@ -260,6 +262,16 @@
 	let mobileBulkSheetOpen = $state(false);
 	let breadcrumbScrollEl = $state<HTMLElement | null>(null);
 
+	// Pagination (dinamis menyesuaikan tinggi area daftar agar tidak perlu scroll)
+	const DEFAULT_PAGE_SIZE = 10;
+	const MOBILE_PAGE_SIZE = 10;
+	const BASE_ROW_PAD_Y = 11;
+	const MAX_ROW_EXTRA_PAD_Y = 5;
+	let currentPage = $state(1);
+	let pageSize = $state(DEFAULT_PAGE_SIZE);
+	let rowPadY = $state(BASE_ROW_PAD_Y);
+	let listContainerEl = $state<HTMLDivElement | null>(null);
+
 	let lastSyncedUrlParam: string | null = null;
 	let loadSerial = 0;
 
@@ -311,12 +323,17 @@
 		return list;
 	});
 
+	const totalPages = $derived(Math.max(1, Math.ceil(visibleEntries.length / pageSize)));
+	const pagedEntries = $derived(
+		visibleEntries.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+	);
+
 	const selectedSet = $derived(new Set(selectedPaths));
 	const allVisibleSelected = $derived(
-		visibleEntries.length > 0 && visibleEntries.every((e) => selectedSet.has(e.path))
+		pagedEntries.length > 0 && pagedEntries.every((e) => selectedSet.has(e.path))
 	);
 	const someVisibleSelected = $derived(
-		visibleEntries.some((e) => selectedSet.has(e.path)) && !allVisibleSelected
+		pagedEntries.some((e) => selectedSet.has(e.path)) && !allVisibleSelected
 	);
 
 	const breadcrumbs = $derived.by<BreadcrumbSegment[]>(() => {
@@ -434,7 +451,129 @@
 		if (sortBy === next) return;
 		sortBy = next;
 		sortDir = next === 'mod_time' ? 'desc' : 'asc';
+		currentPage = 1;
 	}
+
+	let lastFittedSignature = '';
+	let clampedLayoutKey = '';
+
+	function recalcPageSize() {
+		const el = listContainerEl;
+		if (!el || typeof window === 'undefined') return;
+		if (window.innerWidth < 768) {
+			if (pageSize !== MOBILE_PAGE_SIZE) {
+				pageSize = MOBILE_PAGE_SIZE;
+			}
+			if (rowPadY !== BASE_ROW_PAD_Y) {
+				rowPadY = BASE_ROW_PAD_Y;
+			}
+			return;
+		}
+		const w = el.clientWidth;
+		const h = el.clientHeight;
+		if (h < 80) return;
+
+		const desktopTable = w >= 704;
+		const layoutKey = `${h}:${isSearchMode}:${desktopTable}`;
+		if (clampedLayoutKey === layoutKey) return;
+
+		if (desktopTable) {
+			const thead = el.querySelector('thead');
+			const theadH = thead ? Math.ceil(thead.getBoundingClientRect().height) : 41;
+			const firstCell = el.querySelector('tbody td') as HTMLElement | null;
+			const renderedRows = el.querySelectorAll('tbody tr');
+			let baseRowH = isSearchMode ? 63 : 47;
+			if (renderedRows.length > 0) {
+				let minMeasured = Infinity;
+				for (const r of renderedRows) {
+					const rh = r.getBoundingClientRect().height;
+					if (rh > 0 && rh < minMeasured) minMeasured = rh;
+				}
+				if (Number.isFinite(minMeasured)) {
+					const appliedPadY = firstCell
+						? Number.parseFloat(getComputedStyle(firstCell).paddingTop) || BASE_ROW_PAD_Y
+						: BASE_ROW_PAD_Y;
+					const normalized = Math.ceil(minMeasured - 2 * Math.max(0, appliedPadY - BASE_ROW_PAD_Y));
+					baseRowH = Math.max(isSearchMode ? 58 : 44, normalized);
+				}
+			}
+
+			const availRowsH = Math.max(baseRowH, h - theadH - 6);
+			const next = Math.max(4, Math.floor(availRowsH / baseRowH));
+			const leftover = Math.max(0, availRowsH - next * baseRowH);
+			const extraPad = Math.min(MAX_ROW_EXTRA_PAD_Y, Math.floor(leftover / (next * 2)));
+			const nextRowPadY = BASE_ROW_PAD_Y + extraPad;
+
+			if (next !== pageSize) {
+				pageSize = next;
+			}
+			if (nextRowPadY !== rowPadY) {
+				rowPadY = nextRowPadY;
+			}
+		} else {
+			const headerBarH = 58;
+			const rowH = isSearchMode ? 80 : 62;
+			const availRowsH = Math.max(rowH, h - headerBarH - 6);
+			const next = Math.max(3, Math.floor(availRowsH / rowH));
+			if (next !== pageSize) {
+				pageSize = next;
+			}
+			if (rowPadY !== BASE_ROW_PAD_Y) {
+				rowPadY = BASE_ROW_PAD_Y;
+			}
+		}
+	}
+
+	$effect(() => {
+		if (currentPage > totalPages) {
+			currentPage = totalPages;
+		}
+	});
+
+	$effect(() => {
+		const el = listContainerEl;
+		void isSearchMode;
+		void currentPath;
+		if (!el || typeof ResizeObserver === 'undefined') return;
+		clampedLayoutKey = '';
+		untrack(() => recalcPageSize());
+		const ro = new ResizeObserver(() => {
+			recalcPageSize();
+		});
+		ro.observe(el);
+		return () => {
+			ro.disconnect();
+		};
+	});
+
+	$effect(() => {
+		const el = listContainerEl;
+		if (!el || typeof window === 'undefined' || window.innerWidth < 768) return;
+		const sig = `${currentPage}:${pageSize}:${rowPadY}:${pagedEntries.length}:${isSearchMode}:${el.clientHeight}`;
+		if (sig === lastFittedSignature) return;
+		lastFittedSignature = sig;
+		void tick().then(() => {
+			const box = listContainerEl;
+			if (!box) return;
+			const isDesktopTable = box.clientWidth >= 704;
+			const scrollBox = isDesktopTable
+				? (box.querySelector('.responsive-table-region') as HTMLElement | null)
+				: box;
+			if (scrollBox && scrollBox.scrollHeight > scrollBox.clientHeight + 2) {
+				clampedLayoutKey = `${box.clientHeight}:${isSearchMode}:${isDesktopTable}`;
+				if (isDesktopTable && rowPadY > BASE_ROW_PAD_Y) {
+					rowPadY = BASE_ROW_PAD_Y;
+					return;
+				}
+				if (pageSize > 3) {
+					const excess = scrollBox.scrollHeight - scrollBox.clientHeight;
+					const approxRowH = isDesktopTable ? (isSearchMode ? 63 : 47) : isSearchMode ? 80 : 62;
+					const step = Math.max(1, Math.ceil(excess / approxRowH));
+					pageSize = Math.max(3, pageSize - step);
+				}
+			}
+		});
+	});
 
 	function joinChildPath(dir: string, name: string): string {
 		const cleanDir = dir.replace(/\/+$/, '');
@@ -457,6 +596,9 @@
 
 	async function navigateTo(targetPath: string) {
 		const clean = targetPath.trim();
+		if (clean !== currentPath) {
+			currentPage = 1;
+		}
 		clearSearch();
 		lastSyncedUrlParam = clean;
 		const targetUrl = clean ? `/files?path=${encodeURIComponent(clean)}` : '/files';
@@ -468,6 +610,7 @@
 
 	async function loadDirectory(targetPath: string) {
 		const serial = ++loadSerial;
+		const prevPath = currentPath;
 		loading = true;
 		errorMsg = null;
 		selectedPaths = [];
@@ -477,6 +620,9 @@
 			listing = res;
 			pathInput = res.path;
 			pathEditMode = false;
+			if (res.path !== prevPath) {
+				currentPage = 1;
+			}
 		} catch (err) {
 			if (serial !== loadSerial) return;
 			errorMsg = formatErr(err, t('files.page.toast.loadDirFailed'));
@@ -507,6 +653,7 @@
 			sortBy = key;
 			sortDir = key === 'mod_time' ? 'desc' : 'asc';
 		}
+		currentPage = 1;
 	}
 
 	async function runSearch() {
@@ -518,6 +665,7 @@
 		searching = true;
 		errorMsg = null;
 		selectedPaths = [];
+		currentPage = 1;
 		try {
 			const res = await api.searchFiles(currentPath, q, showHidden);
 			searchResults = res.entries ?? [];
@@ -533,6 +681,7 @@
 		searchInput = '';
 		activeSearchQuery = '';
 		searchResults = null;
+		currentPage = 1;
 	}
 
 	function handleJumpSubmit(e: SubmitEvent) {
@@ -556,10 +705,17 @@
 	}
 
 	function toggleSelectAll(checked: boolean) {
+		const pagePathSet = new Set(pagedEntries.map((e) => e.path));
 		if (checked) {
-			selectedPaths = visibleEntries.map((e) => e.path);
+			const next = [...selectedPaths];
+			for (const entry of pagedEntries) {
+				if (!selectedSet.has(entry.path)) {
+					next.push(entry.path);
+				}
+			}
+			selectedPaths = next;
 		} else {
-			selectedPaths = [];
+			selectedPaths = selectedPaths.filter((p) => !pagePathSet.has(p));
 		}
 	}
 
@@ -1093,6 +1249,13 @@
 		contextMenu = null;
 	}
 
+	function runContextMenuAction(action: (entry: FileEntry) => void) {
+		const entry = contextMenu?.entry;
+		closeContextMenu();
+		if (!entry) return;
+		action(entry);
+	}
+
 	function closeMobileActionSheets() {
 		mobileFolderSheetOpen = false;
 		mobileEntrySheetOpen = false;
@@ -1155,9 +1318,9 @@
 	{/if}
 {/snippet}
 
-<div class={cn('flex flex-col gap-4 sm:gap-5', hasMobileBottomBar && 'pb-24 md:pb-0')}>
+<div class={cn('flex flex-col gap-4 sm:gap-5 md:min-h-0 md:flex-1', hasMobileBottomBar && 'pb-24 md:pb-0')}>
 	<!-- Page Header -->
-	<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+	<div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 		<div class="min-w-0">
 			<h1 class="text-xl font-bold tracking-tight text-balance sm:text-2xl">{t('files.page.title')}</h1>
 			<p class="text-muted-foreground text-xs sm:text-sm">
@@ -1246,7 +1409,7 @@
 	{#if roots.length > 0}
 		<nav
 			aria-label={t('files.page.quickAccessAria')}
-			class="flex items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0"
+			class="flex shrink-0 items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0"
 		>
 			<span class="text-muted-foreground shrink-0 text-xs font-medium uppercase tracking-wide">{t('files.page.quickAccessLabel')}</span>
 			{#each roots as root (root.path)}
@@ -1271,7 +1434,7 @@
 	<!-- Main Explorer Card (with drag-and-drop dropzone) -->
 	<Card
 		class={cn(
-			'relative flex min-h-[420px] flex-col transition-colors sm:min-h-[calc(100dvh-15rem)]',
+			'relative flex min-h-[420px] flex-col gap-0 overflow-hidden pb-0 transition-colors md:min-h-0 md:flex-1',
 			dragOver && 'border-primary ring-primary/30 ring-2'
 		)}
 		ondragenter={handleWorkspaceDragEnter}
@@ -1288,7 +1451,7 @@
 			</div>
 		{/if}
 
-		<CardHeader class="flex flex-col gap-3 pb-4">
+		<CardHeader class="flex shrink-0 flex-col gap-3 pb-4">
 			<!-- Toolbar Row: Up / Home / Refresh / Breadcrumb or Jump Path / Hidden Toggle / Search -->
 			<div class="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
 				<div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
@@ -1606,9 +1769,9 @@
 			</div>
 		</CardHeader>
 
-		<CardContent class="flex flex-1 flex-col pt-0">
+		<CardContent class="flex min-h-0 flex-1 flex-col pt-0 pb-4">
 			{#if errorMsg}
-				<Alert variant="destructive" class="mb-4">
+				<Alert variant="destructive" class="mb-4 shrink-0">
 					<CircleAlertIcon />
 					<AlertTitle>{t('files.page.loadDirFailedTitle')}</AlertTitle>
 					<AlertDescription class="flex flex-wrap items-center justify-between gap-2">
@@ -1627,7 +1790,7 @@
 					{/each}
 				</div>
 			{:else if visibleEntries.length === 0}
-				<Empty.Root class="flex min-h-[300px] flex-1 flex-col justify-center border sm:min-h-[360px]">
+				<Empty.Root class="flex min-h-[240px] flex-1 flex-col justify-center border md:min-h-0">
 					<Empty.Header>
 						<Empty.Media variant="icon">
 							<FolderOpenIcon class="size-5" />
@@ -1655,10 +1818,14 @@
 					{/if}
 				</Empty.Root>
 			{:else}
-				<div class="fm-list-container min-h-[300px] flex-1 sm:min-h-[360px]">
+				<div
+					bind:this={listContainerEl}
+					class="fm-list-container min-h-[240px] flex-1 md:min-h-0 md:overflow-hidden"
+					style:--fm-row-py={`${rowPadY}px`}
+				>
 					<!-- Desktop Table View (@container >= 44rem) -->
-					<div class="fm-desktop-view">
-						<ResponsiveTableWrapper label={t('files.page.tableAria')} stackOnMobile={false}>
+					<div class="fm-desktop-view md:h-full">
+						<ResponsiveTableWrapper label={t('files.page.tableAria')} stackOnMobile={false} class="md:max-h-full">
 							<Table>
 								<TableHeader>
 									<TableRow>
@@ -1730,7 +1897,7 @@
 									</TableRow>
 								</TableHeader>
 								<TableBody>
-									{#each visibleEntries as entry (entry.path)}
+									{#each pagedEntries as entry (entry.path)}
 										{@const checked = selectedSet.has(entry.path)}
 										<TableRow
 											class={cn(
@@ -1894,7 +2061,7 @@
 									aria-label={t('files.page.selectAllAria')}
 								/>
 								<span>
-									{allVisibleSelected ? t('files.page.mobileDeselectAll') : t('files.page.mobileSelectAll')} ({visibleEntries.length})
+									{allVisibleSelected ? t('files.page.mobileDeselectAll') : t('files.page.mobileSelectAll')} ({pagedEntries.length})
 								</span>
 							</label>
 
@@ -1930,12 +2097,12 @@
 
 						<!-- Compact Mobile File List -->
 						<ul class="divide-y divide-border overflow-hidden rounded-lg border bg-card">
-							{#each visibleEntries as entry, idx (entry.path)}
+							{#each pagedEntries as entry, idx (entry.path)}
 								{@const checked = selectedSet.has(entry.path)}
 								{@const checkId = `fm-mobile-row-${idx}`}
 								<li
 									class={cn(
-										'flex items-center gap-1 px-1.5 py-1 transition-colors',
+										'flex items-center gap-1.5 px-2 py-1.5 transition-colors',
 										checked && 'bg-primary/5'
 									)}
 									oncontextmenu={(e) => openContextMenu(e, entry)}
@@ -2001,6 +2168,15 @@
 				</div>
 			{/if}
 		</CardContent>
+		{#if !loading && visibleEntries.length > 0}
+			<PaginationBar
+				bind:page={currentPage}
+				totalItems={visibleEntries.length}
+				{pageSize}
+				itemLabel={t('files.page.paginationItemLabel')}
+				class="shrink-0 rounded-b-xl"
+			/>
+		{/if}
 	</Card>
 </div>
 
@@ -2979,11 +3155,6 @@
 <!-- Floating Right-Click Context Menu (Desktop) -->
 {#if contextMenu}
 	{@const targetEntry = contextMenu.entry}
-	{@const terminalDir = targetEntry
-		? targetEntry.is_dir
-			? targetEntry.path
-			: getParentPath(targetEntry.path)
-		: currentPath}
 	<div
 		role="menu"
 		tabindex="-1"
@@ -3008,10 +3179,7 @@
 					type="button"
 					role="menuitem"
 					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-					onclick={() => {
-						closeContextMenu();
-						void navigateTo(targetEntry.path);
-					}}
+					onclick={() => runContextMenuAction((entry) => void navigateTo(entry.path))}
 				>
 					<FolderOpenIcon class="size-3.5 text-amber-500" />
 					{t('files.page.menuOpenFolder')}
@@ -3021,10 +3189,7 @@
 					type="button"
 					role="menuitem"
 					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-					onclick={() => {
-						closeContextMenu();
-						openEditor(targetEntry);
-					}}
+					onclick={() => runContextMenuAction((entry) => openEditor(entry))}
 				>
 					<EyeIcon class="size-3.5 text-sky-500" />
 					{targetEntry.editable ? t('files.page.menuEditFile') : t('files.page.menuViewImage')}
@@ -3036,10 +3201,7 @@
 					type="button"
 					role="menuitem"
 					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-					onclick={() => {
-						closeContextMenu();
-						openExtractDialog(targetEntry);
-					}}
+					onclick={() => runContextMenuAction((entry) => openExtractDialog(entry))}
 				>
 					<FileArchiveIcon class="size-3.5 text-orange-500" />
 					{t('files.page.menuExtractArchive')}
@@ -3050,7 +3212,10 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-accent hover:text-accent-foreground text-primary flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs font-medium"
-				onclick={() => openTerminalAt(terminalDir)}
+				onclick={() =>
+					runContextMenuAction((entry) =>
+						openTerminalAt(entry.is_dir ? entry.path : getParentPath(entry.path))
+					)}
 			>
 				<SquareTerminalIcon class="size-3.5" />
 				{targetEntry.is_dir ? t('files.page.sheets.openTerminalHere') : t('files.page.sheets.openTerminalParent')}
@@ -3062,10 +3227,7 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-				onclick={() => {
-					closeContextMenu();
-					triggerDownload([targetEntry.path]);
-				}}
+				onclick={() => runContextMenuAction((entry) => triggerDownload([entry.path]))}
 			>
 				<DownloadIcon class="size-3.5" />
 				{targetEntry.is_dir ? t('files.page.contextMenu.downloadFolderShort') : t('files.page.contextMenu.downloadFileShort')}
@@ -3074,10 +3236,7 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-				onclick={() => {
-					closeContextMenu();
-					setClipboard('copy', [targetEntry.path]);
-				}}
+				onclick={() => runContextMenuAction((entry) => setClipboard('copy', [entry.path]))}
 			>
 				<CopyIcon class="size-3.5" />
 				{t('files.page.sheets.copyFull')}
@@ -3086,10 +3245,7 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-				onclick={() => {
-					closeContextMenu();
-					setClipboard('move', [targetEntry.path]);
-				}}
+				onclick={() => runContextMenuAction((entry) => setClipboard('move', [entry.path]))}
 			>
 				<ScissorsIcon class="size-3.5" />
 				{t('files.page.sheets.moveFull')}
@@ -3098,10 +3254,7 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-				onclick={() => {
-					closeContextMenu();
-					openRenameDialog(targetEntry);
-				}}
+				onclick={() => runContextMenuAction((entry) => openRenameDialog(entry))}
 			>
 				<PencilIcon class="size-3.5" />
 				{t('files.page.menuRename')}
@@ -3110,10 +3263,7 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-				onclick={() => {
-					closeContextMenu();
-					openChmodDialog([targetEntry]);
-				}}
+				onclick={() => runContextMenuAction((entry) => openChmodDialog([entry]))}
 			>
 				<LockIcon class="size-3.5" />
 				{t('files.page.contextMenu.permShort')}
@@ -3122,10 +3272,7 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-				onclick={() => {
-					closeContextMenu();
-					openCompressDialog([targetEntry.path]);
-				}}
+				onclick={() => runContextMenuAction((entry) => openCompressDialog([entry.path]))}
 			>
 				<FileArchiveIcon class="size-3.5" />
 				{t('files.page.sheets.compressToZip')}
@@ -3137,10 +3284,7 @@
 				type="button"
 				role="menuitem"
 				class="hover:bg-destructive/10 text-destructive flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-				onclick={() => {
-					closeContextMenu();
-					void confirmDelete([targetEntry.path]);
-				}}
+				onclick={() => runContextMenuAction((entry) => void confirmDelete([entry.path]))}
 			>
 				<Trash2Icon class="size-3.5" />
 				{t('files.page.menuDelete')}
@@ -3262,6 +3406,23 @@
 
 	.fm-desktop-view {
 		display: none;
+	}
+
+	.fm-desktop-view :global([data-slot='table-head']) {
+		padding-inline: 0.75rem;
+	}
+
+	.fm-desktop-view :global([data-slot='table-head']:has([role='checkbox'])) {
+		padding-left: 0.75rem;
+		padding-right: 0;
+	}
+
+	.fm-desktop-view :global([data-slot='table-cell']) {
+		padding: var(--fm-row-py, 11px) 0.75rem;
+	}
+
+	.fm-desktop-view :global([data-slot='table-cell']:has([role='checkbox'])) {
+		padding-right: 0;
 	}
 
 	@container fm-list (inline-size >= 44rem) {
