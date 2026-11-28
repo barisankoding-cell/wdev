@@ -15,6 +15,7 @@ export const toolchainsId: WidenStrings<typeof toolchainsEn> = {
 	latestRelease: 'Rilis Resmi Terbaru',
 	installNowBtn: 'Pasang Sekarang',
 	updateToBtn: 'Perbarui ke {version}',
+	sccacheStatsBtn: 'Statistik Sccache',
 	envTitle: 'Diagnostik Environment & PATH Toolchain',
 	envDesc: 'Sumber tunggal environment di {path} dan validasi symlink kanonik.',
 	auditBtn: 'Audit Duplikat',

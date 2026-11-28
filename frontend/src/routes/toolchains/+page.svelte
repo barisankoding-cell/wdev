@@ -18,6 +18,7 @@
 	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
 	import WrenchIcon from '@lucide/svelte/icons/wrench';
 	import FolderCheckIcon from '@lucide/svelte/icons/folder-check';
+	import ActivityIcon from '@lucide/svelte/icons/activity';
 
 	let toolchains = $state<ToolchainStatus[]>([]);
 	let loading = $state(true);
@@ -145,29 +146,35 @@
 						</div>
 					</Card.Content>
 
-					<Card.Footer>
-						{#if !item.installed}
-							<Button size="sm" class="w-full" onclick={() => cp.triggerInstall(item.install_component)}>
-								<DownloadIcon data-icon="inline-start" />
-								{t('toolchains.installNowBtn')}
-							</Button>
-						{:else if item.has_update}
-							<Button size="sm" class="w-full" onclick={() => cp.triggerInstall(item.install_component)}>
-								<ArrowUpCircleIcon data-icon="inline-start" />
-								{t('toolchains.updateToBtn', { version: item.latest_version })}
-							</Button>
-						{:else}
-							<Button
-								variant="outline"
-								size="sm"
-								class="w-full"
-								onclick={() => cp.triggerInstall(item.install_component)}
-							>
-								<RefreshCwIcon data-icon="inline-start" />
-								{t('common.actions.reinstall')}
-							</Button>
-						{/if}
-					</Card.Footer>
+	<Card.Footer class="flex flex-wrap gap-2">
+		{#if !item.installed}
+			<Button size="sm" class="flex-1" onclick={() => cp.triggerInstall(item.install_component)}>
+				<DownloadIcon data-icon="inline-start" />
+				{t('toolchains.installNowBtn')}
+			</Button>
+		{:else if item.has_update}
+			<Button size="sm" class="flex-1" onclick={() => cp.triggerInstall(item.install_component)}>
+				<ArrowUpCircleIcon data-icon="inline-start" />
+				{t('toolchains.updateToBtn', { version: item.latest_version })}
+			</Button>
+		{:else}
+			<Button
+				variant="outline"
+				size="sm"
+				class="flex-1"
+				onclick={() => cp.triggerInstall(item.install_component)}
+			>
+				<RefreshCwIcon data-icon="inline-start" />
+				{t('common.actions.reinstall')}
+			</Button>
+		{/if}
+		{#if item.id === 'rust' && item.installed}
+			<Button variant="secondary" size="sm" onclick={() => cp.openSccacheStats()}>
+				<ActivityIcon data-icon="inline-start" />
+				{t('toolchains.sccacheStatsBtn')}
+			</Button>
+		{/if}
+	</Card.Footer>
 				</Card.Root>
 			{/each}
 		</div>

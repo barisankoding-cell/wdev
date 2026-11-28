@@ -2644,6 +2644,9 @@ func TestHTTPAPIInternationalization(t *testing.T) {
 	// 4. Toolchains localization
 	assertContains("toolchains en", doReq(srv.mux, http.MethodGet, "/api/toolchains", "", ""), http.StatusOK, "Modern Rust compiler toolchain")
 	assertContains("toolchains id", doReq(srv.mux, http.MethodGet, "/api/toolchains?lang=id", "", ""), http.StatusOK, "Toolchain compiler Rust modern")
+	assertContains("sccache stats get", doReq(srv.mux, http.MethodGet, "/api/toolchains/sccache", "", ""), http.StatusOK, `"installed":`)
+	assertContains("sccache stats 405", doReq(srv.mux, http.MethodPost, "/api/toolchains/sccache", "", ""), http.StatusMethodNotAllowed, "Method not allowed")
+	assertContains("sccache zero 405", doReq(srv.mux, http.MethodGet, "/api/toolchains/sccache/zero", "", ""), http.StatusMethodNotAllowed, "Method not allowed")
 
 	// 5. Orca Commit AI presets, validation, and model endpoint localization
 	assertContains("orca-ai presets en", doReq(srv.mux, http.MethodGet, "/api/workspace/orca-ai", "", ""), http.StatusOK, "Concise Conventional Commits format in Indonesian")

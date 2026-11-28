@@ -21,6 +21,7 @@
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import LayersIcon from '@lucide/svelte/icons/layers';
+	import ActivityIcon from '@lucide/svelte/icons/activity';
 
 	const fullSetupSteps = $derived([
 		t('setup.fullSteps.s1'),
@@ -908,6 +909,19 @@
 													{t('common.actions.configure')}
 												</Button>
 											{/if}
+								{#if item.component === 'rust' && installed}
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										class="h-7 px-2 text-xs"
+										aria-label={t('setup.sccacheStatsAria')}
+										onclick={() => cp.openSccacheStats()}
+									>
+										<ActivityIcon class="size-3.5" data-icon="inline-start" />
+										{t('setup.sccacheStatsBtn')}
+									</Button>
+								{/if}
 											<Button
 												type="button"
 												variant="ghost"

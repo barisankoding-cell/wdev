@@ -62,6 +62,7 @@ var managedTools = []managedTool{
 	{Name: "cargo", Canonical: []string{"/usr/local/cargo/"}, DistroPkgs: []string{"rustc", "cargo", "rust"}},
 	{Name: "rustup", Canonical: []string{"/usr/local/cargo/"}, DistroPkgs: []string{"rustc", "cargo", "rust"}},
 	{Name: "mold", Canonical: []string{"/usr/local/mold/", "/usr/bin/mold"}, DistroPkgs: []string{"mold"}},
+	{Name: "sccache", Canonical: []string{"/usr/local/bin/sccache"}, DistroPkgs: []string{"sccache"}},
 	{Name: "flutter", Canonical: []string{"/usr/local/flutter/"}},
 	{Name: "dart", Canonical: []string{"/usr/local/flutter/"}},
 	{Name: "composer", Canonical: []string{"/usr/local/bin/composer"}, DistroPkgs: []string{"composer"}},
@@ -251,6 +252,9 @@ func (inst *Installer) AuditToolchain(ctx context.Context, cb LogCallback) []Fin
 	findings = append(findings, unusedHomeToolchainFindings(home)...)
 
 	if f := profileDriftFinding(envProfilePath, profileScript()); f != nil {
+		findings = append(findings, *f)
+	}
+	if f := cargoConfigDriftFinding(home); f != nil {
 		findings = append(findings, *f)
 	}
 

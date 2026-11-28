@@ -288,3 +288,43 @@ func TestDetectNerdFont(t *testing.T) {
 		t.Fatalf("DetectNerdFont = %q, want MesloLGS NF", got)
 	}
 }
+func TestProfileScriptSccacheWrapper(t *testing.T) {
+	tmpBin := filepath.Join(t.TempDir(), "sccache")
+	if err := os.WriteFile(tmpBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(profileScript(), `"/usr/local/bin/sccache"`, `"`+tmpBin+`"`)
+
+	run := func(extraEnv ...string) string {
+		t.Helper()
+		cmd := exec.Command("sh", "-c", script+"\nprintf '%s' \"${RUSTC_WRAPPER-UNSET}\"")
+		cmd.Env = append([]string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"}, extraEnv...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("gagal mengeksekusi profileScript: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+
+	if got := run(); got != tmpBin {
+		t.Fatalf("RUSTC_WRAPPER default = %q, want %q", got, tmpBin)
+	}
+	if got := run("RUSTC_WRAPPER="); got != "" {
+		t.Fatalf("RUSTC_WRAPPER kosong eksplisit tidak boleh ditimpa, dapat %q", got)
+	}
+	if got := run("RUSTC_WRAPPER=/custom/sccache"); got != "/custom/sccache" {
+		t.Fatalf("RUSTC_WRAPPER kustom tidak boleh ditimpa, dapat %q", got)
+	}
+
+	// Bila biner tidak ada, RUSTC_WRAPPER tetap tidak di-set.
+	missingScript := strings.ReplaceAll(profileScript(), `"/usr/local/bin/sccache"`, `"/nonexistent/sccache"`)
+	cmd := exec.Command("sh", "-c", missingScript+"\nprintf '%s' \"${RUSTC_WRAPPER-UNSET}\"")
+	cmd.Env = []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gagal mengeksekusi profileScript (missing): %v\n%s", err, out)
+	}
+	if string(out) != "UNSET" {
+		t.Fatalf("RUSTC_WRAPPER saat biner tidak ada = %q, want UNSET", string(out))
+	}
+}

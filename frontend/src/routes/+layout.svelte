@@ -11,6 +11,7 @@
 	import SudoDialog from '#lib/components/modals/SudoDialog.svelte';
 	import ConfirmDialog from '#lib/components/modals/ConfirmDialog.svelte';
 	import ServiceConfigModal from '#lib/components/modals/ServiceConfigModal.svelte';
+	import SccacheStatsModal from '#lib/components/modals/SccacheStatsModal.svelte';
 	import ChangeCredsModal from '#lib/components/modals/ChangeCredsModal.svelte';
 	import TwoFactorModal from '#lib/components/modals/TwoFactorModal.svelte';
 	import PanelDomainModal from '#lib/components/modals/PanelDomainModal.svelte';
@@ -123,6 +124,7 @@
 	</Sidebar.Provider>
 
 	<ServiceConfigModal />
+	<SccacheStatsModal />
 	<ChangeCredsModal />
 	<TwoFactorModal />
 	<PanelDomainModal />

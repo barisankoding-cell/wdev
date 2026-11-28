@@ -48,6 +48,8 @@ export const setupId: WidenStrings<typeof setupEn> = {
 	versionPrefix: 'Versi: {ver}',
 	autoLatest: 'Otomatis / Terbaru',
 	dockerConfigAria: 'Konfigurasi Docker Daemon',
+	sccacheStatsAria: 'Lihat statistik cache compiler Sccache',
+	sccacheStatsBtn: 'Statistik',
 	installOnlyAria: '{action} {label} saja',
 	reinstallVerb: 'Pasang ulang',
 	installVerb: 'Pasang',

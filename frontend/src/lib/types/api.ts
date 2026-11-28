@@ -242,6 +242,41 @@ export interface ToolchainStatus {
 	has_update: boolean;
 	install_component: string;
 }
+export interface SccacheStatsReport {
+	installed: boolean;
+	binary_path?: string;
+	version?: string;
+	target_user?: string;
+	user_cargo_config_path?: string;
+	user_cargo_configured: boolean;
+	system_cargo_config_path?: string;
+	system_cargo_configured: boolean;
+	profile_wrapper_enabled: boolean;
+	active_configured: boolean;
+	server_running: boolean;
+	compile_requests: number;
+	requests_executed: number;
+	cache_hits: number;
+	cache_misses: number;
+	cache_hit_rate: number;
+	cache_hits_by_lang?: Record<string, number>;
+	cache_misses_by_lang?: Record<string, number>;
+	cache_errors: number;
+	cache_timeouts: number;
+	compile_fails: number;
+	non_cacheable_calls: number;
+	non_cacheable_compiles: number;
+	unsupported_compiler: number;
+	cache_location?: string;
+	cache_size_bytes: number;
+	max_cache_size_bytes: number;
+	preprocessor_mode: boolean;
+	avg_cache_read_hit_ms: number;
+	avg_cache_write_ms: number;
+	avg_compiler_ms: number;
+	raw_output?: string;
+	error?: string;
+}
 
 export interface OrcaThinkingLevel {
 	id: string;

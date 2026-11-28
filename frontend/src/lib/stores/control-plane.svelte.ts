@@ -87,6 +87,7 @@ class ControlPlaneStore {
 	serviceConfigOpen = $state(false);
 	serviceConfigTarget = $state<ServiceConfigKey>('redis');
 	serviceConfigVersion = $state('');
+	sccacheStatsOpen = $state(false);
 
 	// Refresh listener signal incremented whenever SSE task finishes
 	refreshTick = $state(0);
@@ -508,6 +509,9 @@ class ControlPlaneStore {
 		this.serviceConfigTarget = service;
 		this.serviceConfigVersion = version;
 		this.serviceConfigOpen = true;
+	}
+	openSccacheStats() {
+		this.sccacheStatsOpen = true;
 	}
 
 	async runWithSudoRetry<T>(

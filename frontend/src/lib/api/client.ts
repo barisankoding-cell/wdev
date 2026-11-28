@@ -61,6 +61,7 @@ import type {
 	RelayDNSReport,
 	ResendSyncResult,
 	RRSet,
+	SccacheStatsReport,
 	ServerMode,
 	ServiceConfigKey,
 	SetRelayPayload,
@@ -377,6 +378,9 @@ export const api = {
 	getSetupComponents: () => apiFetch<Record<string, SetupComponentStatus>>('/api/setup/components'),
 	getToolchains: (refresh = false) =>
 		apiFetch<ToolchainStatus[]>(refresh ? '/api/toolchains?refresh=1' : '/api/toolchains'),
+	getSccacheStats: () => apiFetch<SccacheStatsReport>('/api/toolchains/sccache'),
+	zeroSccacheStats: () =>
+		apiFetch<SccacheStatsReport>('/api/toolchains/sccache/zero', { method: 'POST' }),
 	getEnvStatus: () => apiFetch<EnvStatusResponse>('/api/env'),
 	syncEnv: (sudoPass?: string) =>
 		apiFetch<{ status: string; task_id?: number; message?: string }>('/api/env/sync', {

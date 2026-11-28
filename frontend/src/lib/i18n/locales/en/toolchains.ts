@@ -12,6 +12,7 @@ export const toolchainsEn = {
 	latestRelease: 'Latest Official Release',
 	installNowBtn: 'Install Now',
 	updateToBtn: 'Update to {version}',
+	sccacheStatsBtn: 'Sccache Stats',
 	envTitle: 'Environment & Toolchain PATH Diagnostics',
 	envDesc: 'Single environment source in {path} and canonical symlink validation.',
 	auditBtn: 'Audit Duplicates',

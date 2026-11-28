@@ -498,7 +498,7 @@ func (inst *Installer) InstallNode(ctx context.Context, cb LogCallback, ver stri
 // 3. Rust, Mold Linker & Sccache
 func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 	cb("--- [3] Memasang Rust Toolchain, Mold Linker & Sccache ---")
-	inst.GuardToolchainColumns(ctx, cb, "rustc", "cargo", "rustup", "mold")
+	inst.GuardToolchainColumns(ctx, cb, "rustc", "cargo", "rustup", "mold", "sccache")
 
 	_ = inst.runCmd(ctx, cb, "mkdir", "-p", "/usr/local/cargo", "/usr/local/rustup")
 	_ = inst.runCmd(ctx, cb, "chmod", "755", "/usr/local/cargo", "/usr/local/rustup")
@@ -534,7 +534,17 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 	// Pastikan toolchain bersama dapat dibaca/dieksekusi user non-root tanpa membuka izin tulis global.
 	_ = inst.runCmd(ctx, cb, "chmod", "-R", "go-w,a+rX", "/usr/local/cargo", "/usr/local/rustup")
 
-	// 2. Mold Linker (Rilis Resmi GitHub rui314/mold)
+	// 2. Pastikan Clang tersedia (diperlukan sebagai linker driver untuk Mold)
+	if findTool("clang") == "" {
+		cb("Memasang Clang sebagai linker driver untuk Mold...")
+		if inst.isDebian {
+			_ = inst.runCmd(ctx, cb, "apt-get", "install", "-y", "clang")
+		} else {
+			_ = inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "clang")
+		}
+	}
+
+	// 3. Mold Linker (Rilis Resmi GitHub rui314/mold)
 	cb("Memasang Mold linker dari rilis resmi...")
 	if err := inst.installMoldOfficial(ctx, cb); err != nil {
 		cb(fmt.Sprintf("[WARN] Gagal memasang Mold resmi (%v), mencoba via repo sistem...", err))
@@ -542,6 +552,17 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 			_ = inst.runCmd(ctx, cb, "apt-get", "install", "-y", "mold")
 		} else {
 			_ = inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "mold")
+		}
+	}
+
+	// 4. Sccache Compiler Cache (Rilis Resmi GitHub mozilla/sccache)
+	cb("Memasang Sccache dari rilis resmi...")
+	if err := inst.installSccacheOfficial(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Gagal memasang Sccache resmi (%v), mencoba via repo sistem...", err))
+		if inst.isDebian {
+			_ = inst.runCmd(ctx, cb, "apt-get", "install", "-y", "sccache")
+		} else {
+			_ = inst.runCmd(ctx, cb, inst.pkgMgr, "install", "-y", "sccache")
 		}
 	}
 
@@ -556,11 +577,11 @@ func (inst *Installer) InstallRust(ctx context.Context, cb LogCallback) error {
 		}
 	}
 
-	// Hapus paket Rust/Cargo bawaan distro bila ada agar tidak duplikat
-	inst.removeDistroPackagesIfInstalled(ctx, cb, "rustc", "cargo", "rust")
+	// Hapus paket Rust/Cargo/Sccache bawaan distro bila ada agar tidak duplikat
+	inst.removeDistroPackagesIfInstalled(ctx, cb, "rustc", "cargo", "rust", "sccache")
 	inst.ensureWdevProfileEnv(ctx, cb)
 
-	cb("✓ Rust Toolchain & Mold siap digunakan.")
+	cb("✓ Rust Toolchain, Mold Linker & Sccache siap digunakan (sistem & user non-root).")
 	return nil
 }
 
@@ -2384,7 +2405,7 @@ func (inst *Installer) RunSelfCheck(ctx context.Context, cb LogCallback) error {
 		}
 	}
 
-	bins := []string{"git", "curl", "node", "npm", "go", "rustc", "cargo", "mold", "java", "flutter", "psql", "redis-cli", "nginx", "php", "composer", "mkcert", "zsh", "cloudflared", "netbird", "docker", "orca", "pdns_server", "stalwart", "stalwart-cli"}
+	bins := []string{"git", "curl", "node", "npm", "go", "rustc", "cargo", "mold", "sccache", "java", "flutter", "psql", "redis-cli", "nginx", "php", "composer", "mkcert", "zsh", "cloudflared", "netbird", "docker", "orca", "pdns_server", "stalwart", "stalwart-cli"}
 	for _, b := range bins {
 		checkBin(b)
 	}

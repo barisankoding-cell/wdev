@@ -63,7 +63,6 @@ var toolLinkSpecs = []toolLinkSpec{
 var canonicalMap = map[string]string{
 	"go":    "/usr/local/go/bin/go",
 	"gofmt": "/usr/local/go/bin/gofmt",
-	"mold":  "/usr/bin/mold",
 }
 
 func (s toolLinkSpec) allowed(target string) bool {
@@ -84,6 +83,9 @@ func (s toolLinkSpec) canonicalTarget() string {
 		return ""
 	}
 	for _, p := range s.prefixes {
+		if binCandidate := filepath.Join(p, "bin", s.link); fileExistsAt(binCandidate) {
+			return binCandidate
+		}
 		candidate := filepath.Join(p, s.link)
 		if fileExistsAt(candidate) {
 			return candidate
@@ -138,6 +140,9 @@ elif [ -n "${HOME:-}" ]; then
 	fi
 fi
 
+if [ -z "${RUSTC_WRAPPER+x}" ] && [ -x "/usr/local/bin/sccache" ]; then
+	export RUSTC_WRAPPER="/usr/local/bin/sccache"
+fi
 # Browser automation Orca ADE (satu-satunya definisi).
 if [ -z "${ORCA_BROWSER_EXECUTABLE:-}" ] || [ ! -x "${ORCA_BROWSER_EXECUTABLE:-}" ]; then
 	for _wdev_b in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/brave-browser /usr/bin/microsoft-edge-stable /usr/bin/microsoft-edge /snap/bin/chromium; do
@@ -249,6 +254,9 @@ func (inst *Installer) SyncToolchainEnv(ctx context.Context, cb LogCallback) err
 		cb(fmt.Sprintf(" ✓ RC root diselaraskan: %s", strings.Join(rootChanged, ", ")))
 	}
 
+	if err := inst.syncCargoToolchainConfig(ctx, cb); err != nil {
+		cb(fmt.Sprintf("[WARN] Gagal menyelaraskan konfigurasi Cargo: %v", err))
+	}
 	cb("✓ Environment toolchain sinkron (satu sumber: " + envProfilePath + ").")
 	return nil
 }
@@ -293,6 +301,7 @@ func ToolchainEnvReport() []string {
 
 	user, home := ResolveOrcaUser()
 	lines = append(lines, ShellEnvReport(user, home)...)
+	lines = append(lines, cargoConfigReport(home)...)
 	return lines
 }
 

@@ -51,9 +51,9 @@ type Server struct {
 	cfMgr          *cloudflare.Manager
 	pdnsMgr        *pdns.Manager
 	mailMgr        *mail.Manager
-	authMgr *auth.Manager
-	secMgr *security.Manager
-	svcCfgMgr *serviceconfig.Manager
+	authMgr        *auth.Manager
+	secMgr         *security.Manager
+	svcCfgMgr      *serviceconfig.Manager
 	fileMgr        *filemanager.Manager
 	termMgr        *terminal.Manager
 	composeMgr     *compose.Manager
@@ -184,6 +184,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/sudo/status", s.handleSudoStatus)
 	s.mux.HandleFunc("/api/sudo/verify", s.handleSudoVerify)
 	s.mux.HandleFunc("/api/toolchains", s.handleToolchains)
+	s.mux.HandleFunc("/api/toolchains/sccache", s.handleSccacheStats)
+	s.mux.HandleFunc("/api/toolchains/sccache/zero", s.handleSccacheZero)
 	s.mux.HandleFunc("/api/workspace/status", s.handleWorkspaceStatus)
 	s.mux.HandleFunc("/api/workspace/orca-pairing", s.handleWorkspaceOrcaPairing)
 	s.mux.HandleFunc("/api/workspace/orca-ai", s.handleWorkspaceOrcaAI)
@@ -334,11 +336,11 @@ func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
 				return
 			}
 		}
-	if s.authMgr == nil {
-		next.ServeHTTP(w, r)
-		return
-	}
-	entrance := s.authMgr.GetSecurityEntrance()
+		if s.authMgr == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		entrance := s.authMgr.GetSecurityEntrance()
 		if entrance == "" {
 			next.ServeHTTP(w, r)
 			return
@@ -393,23 +395,23 @@ func (s *Server) wrapSecurityEntrance(next http.Handler) http.Handler {
 			return
 		}
 
-	// 4. Catat percobaan tebakan path entrance non-root untuk anti-brute-force
-	if cleanPath != "" && !strings.HasPrefix(cleanURLPath, "/api/") &&
-		cleanURLPath != "/favicon.ico" && cleanURLPath != "/robots.txt" &&
-		cleanURLPath != "/manifest.webmanifest" && !strings.HasPrefix(cleanURLPath, "/.well-known/") &&
-		!strings.HasPrefix(cleanURLPath, "/apple-touch-icon") {
-		ip := auth.ClientIP(r)
-		s.authMgr.RecordLoginAttempt(ip, false)
-		if s.secMgr != nil {
-			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
-				SourceIP:   ip,
-				AttackType: security.AttackSecurityEntrance,
-				Severity:   security.SeverityMedium,
-				Target:     cleanURLPath,
-				Details:    "Probing invalid security entrance path",
-			})
+		// 4. Catat percobaan tebakan path entrance non-root untuk anti-brute-force
+		if cleanPath != "" && !strings.HasPrefix(cleanURLPath, "/api/") &&
+			cleanURLPath != "/favicon.ico" && cleanURLPath != "/robots.txt" &&
+			cleanURLPath != "/manifest.webmanifest" && !strings.HasPrefix(cleanURLPath, "/.well-known/") &&
+			!strings.HasPrefix(cleanURLPath, "/apple-touch-icon") {
+			ip := auth.ClientIP(r)
+			s.authMgr.RecordLoginAttempt(ip, false)
+			if s.secMgr != nil {
+				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+					SourceIP:   ip,
+					AttackType: security.AttackSecurityEntrance,
+					Severity:   security.SeverityMedium,
+					Target:     cleanURLPath,
+					Details:    "Probing invalid security entrance path",
+				})
+			}
 		}
-	}
 
 		// 5. Pengunjung belum melewati security entrance
 		if strings.HasPrefix(cleanURLPath, "/api/") {
@@ -487,12 +489,12 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if !allowed {
 		if s.secMgr != nil {
 			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
-				SourceIP: ip,
-				AttackType: security.AttackPanelBruteForce,
-				Severity: security.SeverityHigh,
-				Target: "/api/auth/login",
+				SourceIP:    ip,
+				AttackType:  security.AttackPanelBruteForce,
+				Severity:    security.SeverityHigh,
+				Target:      "/api/auth/login",
 				ActionTaken: security.ActionRateLimited,
-				Details: fmt.Sprintf("Rate limited: locked for %dm", int(wait.Minutes())+1),
+				Details:     fmt.Sprintf("Rate limited: locked for %dm", int(wait.Minutes())+1),
 			})
 		}
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(i18n.Pick(lang, "Too many failed login attempts. Account temporarily locked. Try again in %d minute(s).", "Terlalu banyak percobaan login gagal. Akun dikunci sementara. Coba lagi dalam %d menit."), int(wait.Minutes())+1))
@@ -503,11 +505,11 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		s.authMgr.RecordLoginAttempt(ip, false)
 		if s.secMgr != nil {
 			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
-				SourceIP: ip,
+				SourceIP:   ip,
 				AttackType: security.AttackPanelBruteForce,
-				Severity: security.SeverityMedium,
-				Target: "/api/auth/login",
-				Details: fmt.Sprintf("Failed login with username: %s", payload.Username),
+				Severity:   security.SeverityMedium,
+				Target:     "/api/auth/login",
+				Details:    fmt.Sprintf("Failed login with username: %s", payload.Username),
 			})
 		}
 		writeError(w, http.StatusUnauthorized, i18n.Pick(lang, "Invalid username or password", "Username atau kata sandi salah"))
@@ -555,12 +557,12 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name: auth.CookieSessionName,
-		Value: token,
-		Path: "/",
-		Expires: time.Now().Add(auth.SessionDuration),
+		Name:     auth.CookieSessionName,
+		Value:    token,
+		Path:     "/",
+		Expires:  time.Now().Add(auth.SessionDuration),
 		HttpOnly: true,
-		Secure: auth.IsHTTPS(r),
+		Secure:   auth.IsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -2837,6 +2839,34 @@ func (s *Server) handleToolchains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+func (s *Server) handleSccacheStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if s.installer == nil {
+		writeErrorLocale(w, r, http.StatusServiceUnavailable, "Installer unavailable", "Installer tidak tersedia")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.installer.GetSccacheStats(r.Context()))
+}
+
+func (s *Server) handleSccacheZero(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if s.installer == nil {
+		writeErrorLocale(w, r, http.StatusServiceUnavailable, "Installer unavailable", "Installer tidak tersedia")
+		return
+	}
+	rep, err := s.installer.ZeroSccacheStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (s *Server) handleSetupComponents(w http.ResponseWriter, r *http.Request) {

@@ -45,6 +45,8 @@ export const setupEn = {
 	versionPrefix: 'Version: {ver}',
 	autoLatest: 'Automatic / Latest',
 	dockerConfigAria: 'Configure Docker Daemon',
+	sccacheStatsAria: 'View Sccache compiler cache statistics',
+	sccacheStatsBtn: 'Stats',
 	installOnlyAria: '{action} {label} only',
 	reinstallVerb: 'Reinstall',
 	installVerb: 'Install',
