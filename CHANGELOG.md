@@ -1,5 +1,13 @@
 # Changelog
 
+## [v2.14.0] - 2026-11-28
+
+### 🚀 Fitur Baru
+- feat: persistensi sesi terminal dan manajemen Cloudflare panel (f219994)
+
+### 🔧 Pemeliharaan & Tooling
+- chore(web): perbarui versi aset statis SvelteKit (0652a74)
+
 ## [v2.13.0] - 2026-11-28
 
 ### 🚀 Fitur Baru
