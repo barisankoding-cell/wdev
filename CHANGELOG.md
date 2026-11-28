@@ -1,5 +1,14 @@
 # Changelog
 
+## [v2.13.0] - 2026-11-28
+
+### 🚀 Fitur Baru
+- feat: tambahkan statistik Sccache dan konfigurasi Rust (888ef09)
+- feat: tambahkan autentikasi 2FA TOTP dan CLI operasional (461bd07)
+
+### 🐛 Perbaikan Bug
+- fix: tampilkan runtime Managed App di CLI dan TUI (5f72aa8)
+
 ## [v2.12.0] - 2026-11-27
 
 ### 🚀 Fitur Baru
