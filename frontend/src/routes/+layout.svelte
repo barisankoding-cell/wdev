@@ -12,6 +12,7 @@
 	import ConfirmDialog from '#lib/components/modals/ConfirmDialog.svelte';
 	import ServiceConfigModal from '#lib/components/modals/ServiceConfigModal.svelte';
 	import ChangeCredsModal from '#lib/components/modals/ChangeCredsModal.svelte';
+	import TwoFactorModal from '#lib/components/modals/TwoFactorModal.svelte';
 	import PanelDomainModal from '#lib/components/modals/PanelDomainModal.svelte';
 	import ModeSwitchModal from '#lib/components/modals/ModeSwitchModal.svelte';
 	import Login from '#lib/components/auth/Login.svelte';
@@ -123,6 +124,7 @@
 
 	<ServiceConfigModal />
 	<ChangeCredsModal />
+	<TwoFactorModal />
 	<PanelDomainModal />
 	<ModeSwitchModal />
 	<TerminalDialog />

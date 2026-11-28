@@ -33,6 +33,7 @@ import type {
 	FileListResult,
 	FileRootInfo,
 	LoginPayload,
+	LoginResponse,
 	MailStatus,
 	ManagedRelayRecord,
 	ModeResponse,
@@ -66,6 +67,8 @@ import type {
 	TerminalAuditRecord,
 	TerminalInfo,
 	TerminalUnlockResponse,
+	TOTPEnrollment,
+	TOTPStatus,
 	SecurityEventsResponse,
 	SecurityMonitorStatusReport,
 	SecurityPolicyConfig,
@@ -678,7 +681,7 @@ export const api = {
 	// Panel Auth & Security
 	getAuthMe: () => apiFetch<AuthMeResponse>('/api/auth/me'),
 	login: (payload: LoginPayload) =>
-		apiFetch<{ status: string; message: string; username: string; token: string }>('/api/auth/login', {
+		apiFetch<LoginResponse>('/api/auth/login', {
 			method: 'POST',
 			body: JSON.stringify(payload)
 		}),
@@ -690,6 +693,38 @@ export const api = {
 		apiFetch<{ status: string; message: string }>('/api/auth/change-credentials', {
 			method: 'POST',
 			body: JSON.stringify(payload)
+		}),
+	get2FAStatus: () => apiFetch<TOTPStatus>('/api/auth/2fa/status'),
+	setup2FA: (password: string) =>
+		apiFetch<TOTPEnrollment>('/api/auth/2fa/setup', {
+			method: 'POST',
+			body: JSON.stringify({ password })
+		}),
+	verify2FA: (code: string) =>
+		apiFetch<{ status: string; message: string; recovery_codes: string[]; totp: TOTPStatus }>(
+			'/api/auth/2fa/verify',
+			{
+				method: 'POST',
+				body: JSON.stringify({ code })
+			}
+		),
+	disable2FA: (password: string, code: string) =>
+		apiFetch<{ status: string; message: string; totp: TOTPStatus }>('/api/auth/2fa/disable', {
+			method: 'POST',
+			body: JSON.stringify({ password, code })
+		}),
+	regenerate2FARecovery: (password: string, code: string) =>
+		apiFetch<{ status: string; message: string; recovery_codes: string[]; totp: TOTPStatus }>(
+			'/api/auth/2fa/recovery/regenerate',
+			{
+				method: 'POST',
+				body: JSON.stringify({ password, code })
+			}
+		),
+	update2FASettings: (terminal_required: boolean) =>
+		apiFetch<{ status: string; message: string; totp: TOTPStatus }>('/api/auth/2fa/settings', {
+			method: 'POST',
+			body: JSON.stringify({ terminal_required })
 		}),
 	getPanelDomain: () => apiFetch<PanelDomainStatus>('/api/panel/domain'),
 	bindPanelDomain: (payload: BindPanelDomainPayload) =>
@@ -893,10 +928,10 @@ export const api = {
 
 	// Interactive PTY Terminal
 	getTerminalInfo: () => apiFetch<TerminalInfo>('/api/terminal/info'),
-	unlockTerminal: (password: string, user = '', remember = true) =>
+	unlockTerminal: (password: string, user = '', remember = true, totp_code = '') =>
 		apiFetch<TerminalUnlockResponse>('/api/terminal/unlock', {
 			method: 'POST',
-			body: JSON.stringify({ password, user, remember })
+			body: JSON.stringify({ password, user, remember, ...(totp_code ? { totp_code } : {}) })
 		}),
 	lockTerminal: () =>
 		apiFetch<{ status: string; message: string }>('/api/terminal/lock', {

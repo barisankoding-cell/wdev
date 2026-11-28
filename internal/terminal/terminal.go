@@ -49,9 +49,10 @@ type Info struct {
 	MaxSessions          int          `json:"max_sessions"`
 	IdleTimeoutSeconds   int          `json:"idle_timeout_seconds"`
 	IsHTTPS              bool         `json:"is_https"`
-	RootUnlocked         bool         `json:"root_unlocked"`
-	RootUnlockExpiresAt  *time.Time   `json:"root_unlock_expires_at,omitempty"`
-	StepUpAlwaysRequired bool         `json:"step_up_always_required"`
+	RootUnlocked         bool       `json:"root_unlocked"`
+	RootUnlockExpiresAt  *time.Time `json:"root_unlock_expires_at,omitempty"`
+	StepUpAlwaysRequired bool       `json:"step_up_always_required"`
+	TOTPRequired         bool       `json:"totp_required"`
 }
 
 // StartOptions mengonfigurasi pembukaan sesi terminal PTY baru.

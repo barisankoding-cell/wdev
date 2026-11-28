@@ -38,6 +38,8 @@
 
 	let username = $state('');
 	let password = $state('');
+	let totpStep = $state(false);
+	let totpCode = $state('');
 	let showPassword = $state(false);
 	let capsLockOn = $state(false);
 	let recoveryOpen = $state(false);
@@ -60,6 +62,7 @@
 
 	let usernameInputRef = $state<HTMLInputElement | null>(null);
 	let passwordInputRef = $state<HTMLInputElement | null>(null);
+	let totpInputRef = $state<HTMLInputElement | null>(null);
 	let alertRef = $state<HTMLDivElement | null>(null);
 
 	const usernameErrorText = $derived.by(() => {
@@ -180,7 +183,36 @@
 			return;
 		}
 
+		if (totpStep) {
+			if (!totpCode.trim()) {
+				serverError = t('auth.totpRequired');
+				await tick();
+				totpInputRef?.focus();
+				return;
+			}
+			const result = await authStore.login(username.trim(), password, totpCode.trim());
+			if (!result.ok) {
+				serverError = result.error || t('auth.fallbackAuthError');
+				serverErrorStatus = result.status ?? 0;
+				if (result.status === 429) {
+					recoveryOpen = true;
+				}
+				await tick();
+				alertRef?.focus();
+			}
+			return;
+		}
+
 		const result = await authStore.login(username.trim(), password);
+		if (result.totpRequired) {
+			totpStep = true;
+			totpCode = '';
+			serverError = '';
+			serverErrorStatus = 0;
+			await tick();
+			totpInputRef?.focus();
+			return;
+		}
 		if (!result.ok) {
 			serverError = result.error || t('auth.fallbackAuthError');
 			serverErrorStatus = result.status ?? 0;
@@ -284,9 +316,13 @@
 		<main class="flex min-w-0 flex-1 flex-col items-center justify-start px-4 pt-6 pb-[max(2rem,env(safe-area-inset-bottom,0px))] sm:justify-center sm:px-8 sm:py-10">
 			<div class="flex min-w-0 w-full max-w-[400px] flex-col gap-6">
 				<div class="flex flex-col gap-1.5 text-left">
-					<h1 class="text-2xl font-semibold tracking-tight text-balance">{t('auth.title')}</h1>
+					<h1 class="text-2xl font-semibold tracking-tight text-balance">
+						{totpStep ? t('auth.totpTitle') : t('auth.title')}
+					</h1>
 					<p class="text-sm leading-relaxed text-pretty text-muted-foreground">
-						{t('auth.subtitle')}
+						{totpStep
+							? t('auth.totpSubtitle', { username: username.trim() || 'admin' })
+							: t('auth.subtitle')}
 					</p>
 				</div>
 
@@ -310,6 +346,67 @@
 				{/if}
 
 				<form method="post" novalidate onsubmit={handleSubmit} class="flex flex-col gap-5">
+					{#if totpStep}
+						<Field.FieldGroup class="gap-4">
+							<Field.Field data-disabled={authStore.loading ? 'true' : undefined}>
+								<Field.FieldLabel for="login-totp" class="text-sm font-medium">
+									{t('auth.totpLabel')} <span aria-hidden="true" class="text-destructive">*</span>
+								</Field.FieldLabel>
+								<InputGroup.Root class="login-input-group min-h-11 h-auto overflow-hidden">
+									<InputGroup.Addon align="inline-start">
+										<ShieldAlertIcon />
+									</InputGroup.Addon>
+									<InputGroup.Input
+										id="login-totp"
+										name="totp_code"
+										type="text"
+										placeholder={t('auth.totpPlaceholder')}
+										bind:ref={totpInputRef}
+										bind:value={totpCode}
+										disabled={authStore.loading}
+										required
+										autocomplete="one-time-code"
+										autocorrect="off"
+										autocapitalize="characters"
+										spellcheck={false}
+										enterkeyhint="done"
+										class="h-auto py-2.5 font-mono text-base tracking-widest"
+									/>
+								</InputGroup.Root>
+							</Field.Field>
+						</Field.FieldGroup>
+
+						<div class="flex flex-col gap-2">
+							<Button
+								type="submit"
+								size="lg"
+								class="min-h-11 h-auto w-full py-2.5 text-sm font-medium"
+								disabled={authStore.loading}
+							>
+								{#if authStore.loading}
+									<Spinner data-icon="inline-start" />
+									<span>{t('auth.verifyingBtn')}</span>
+								{:else}
+									<LogInIcon data-icon="inline-start" />
+									<span>{t('auth.totpVerifyBtn')}</span>
+								{/if}
+							</Button>
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								disabled={authStore.loading}
+								onclick={() => {
+									totpStep = false;
+									totpCode = '';
+									serverError = '';
+									serverErrorStatus = 0;
+								}}
+							>
+								{t('auth.totpBackBtn')}
+							</Button>
+						</div>
+					{:else}
 					<Field.FieldGroup class="gap-4">
 						<Field.Field
 							data-invalid={usernameInvalid ? 'true' : undefined}
@@ -437,6 +534,7 @@
 							<span>{t('auth.submitBtn')}</span>
 						{/if}
 					</Button>
+					{/if}
 				</form>
 
 				<Separator />

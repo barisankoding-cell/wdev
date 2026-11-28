@@ -803,6 +803,31 @@ func (m *Manager) SaveEnv(ctx context.Context, domain string, entries []EnvEntry
 	}, nil
 }
 
+// RunBuild menjalankan BuildCommand secara sinkron sambil mengalirkan output ke cb
+// dan otomatis me-restart unit systemd jika build berhasil dan restartAfter == true.
+func (m *Manager) RunBuild(ctx context.Context, domain string, restartAfter bool, cb func(string)) error {
+	if m.store == nil {
+		return fmt.Errorf("store tidak tersedia")
+	}
+	cleanDom := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(domain), "."), ".conf"))
+	rec, err := m.store.GetSiteApp(cleanDom)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		return fmt.Errorf("aplikasi terkelola %s tidak ditemukan", cleanDom)
+	}
+	buildCmd := strings.TrimSpace(rec.BuildCommand)
+	if buildCmd == "" {
+		return fmt.Errorf("aplikasi %s tidak memiliki build_command", cleanDom)
+	}
+	if cb == nil {
+		cb = func(string) {}
+	}
+	appCopy := *rec
+	return m.execBuildTask(ctx, appCopy, restartAfter, cb)
+}
+
 // StartBuild menjalankan BuildCommand melalui runner secara async sambil streaming output
 // dan otomatis me-restart unit systemd jika build berhasil dan restartAfter == true.
 func (m *Manager) StartBuild(r *runner.Runner, domain string, restartAfter bool) (int64, error) {
@@ -828,70 +853,74 @@ func (m *Manager) StartBuild(r *runner.Runner, domain string, restartAfter bool)
 	taskName := fmt.Sprintf("Build %s (%s)", cleanDom, rec.Runtime)
 	appCopy := *rec
 	return r.StartNativeTask(taskName, func(ctx context.Context, cb func(string)) error {
-		cb(fmt.Sprintf("== Memulai build %s [%s] di %s ==", appCopy.Domain, appCopy.Runtime, appCopy.WorkingDir))
-		cb(fmt.Sprintf("$ %s", appCopy.BuildCommand))
+		return m.execBuildTask(ctx, appCopy, restartAfter, cb)
+	})
+}
 
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", appCopy.BuildCommand)
-		cmd.Dir = appCopy.WorkingDir
-		cmd.Env = m.buildTaskEnv(ctx, appCopy)
+func (m *Manager) execBuildTask(ctx context.Context, appCopy store.SiteAppRecord, restartAfter bool, cb func(string)) error {
+	cb(fmt.Sprintf("== Memulai build %s [%s] di %s ==", appCopy.Domain, appCopy.Runtime, appCopy.WorkingDir))
+	cb(fmt.Sprintf("$ %s", appCopy.BuildCommand))
 
-		if os.Geteuid() == 0 && appCopy.RunUser != "" && appCopy.RunUser != "root" {
-			if u, uErr := user.Lookup(appCopy.RunUser); uErr == nil {
-				uid, uOk := strconv.Atoi(u.Uid)
-				gid, gOk := strconv.Atoi(u.Gid)
-				if uOk == nil && gOk == nil {
-					cmd.SysProcAttr = &syscall.SysProcAttr{
-						Credential: &syscall.Credential{
-							Uid: uint32(uid),
-							Gid: uint32(gid),
-						},
-					}
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", appCopy.BuildCommand)
+	cmd.Dir = appCopy.WorkingDir
+	cmd.Env = m.buildTaskEnv(ctx, appCopy)
+
+	if os.Geteuid() == 0 && appCopy.RunUser != "" && appCopy.RunUser != "root" {
+		if u, uErr := user.Lookup(appCopy.RunUser); uErr == nil {
+			uid, uOk := strconv.Atoi(u.Uid)
+			gid, gOk := strconv.Atoi(u.Gid)
+			if uOk == nil && gOk == nil {
+				cmd.SysProcAttr = &syscall.SysProcAttr{
+					Credential: &syscall.Credential{
+						Uid: uint32(uid),
+						Gid: uint32(gid),
+					},
 				}
 			}
 		}
+	}
 
-		pr, pw := io.Pipe()
-		cmd.Stdout = pw
-		cmd.Stderr = pw
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
 
-		if err := cmd.Start(); err != nil {
-			_ = pw.Close()
-			_ = m.store.UpdateSiteAppBuildStatus(appCopy.Domain, "failed", time.Now())
-			return fmt.Errorf("gagal menjalankan proses build: %w", err)
-		}
-
-		scanDone := make(chan struct{})
-		go func() {
-			defer close(scanDone)
-			sc := bufio.NewScanner(pr)
-			sc.Buffer(make([]byte, 64*1024), 1024*1024)
-			for sc.Scan() {
-				cb(sc.Text())
-			}
-		}()
-
-		waitErr := cmd.Wait()
+	if err := cmd.Start(); err != nil {
 		_ = pw.Close()
-		<-scanDone
+		_ = m.store.UpdateSiteAppBuildStatus(appCopy.Domain, "failed", time.Now())
+		return fmt.Errorf("gagal menjalankan proses build: %w", err)
+	}
 
-		if waitErr != nil {
-			_ = m.store.UpdateSiteAppBuildStatus(appCopy.Domain, "failed", time.Now())
-			return fmt.Errorf("build gagal: %w", waitErr)
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		sc := bufio.NewScanner(pr)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			cb(sc.Text())
 		}
+	}()
 
-		_ = m.store.UpdateSiteAppBuildStatus(appCopy.Domain, "success", time.Now())
-		cb("== Build selesai dengan sukses ==")
+	waitErr := cmd.Wait()
+	_ = pw.Close()
+	<-scanDone
 
-		if restartAfter {
-			unitName := UnitFilenameForDomain(appCopy.Domain)
-			cb(fmt.Sprintf("Me-restart service systemd %s...", unitName))
-			if out, rErr := m.exec.Run(ctx, "systemctl", "restart", unitName); rErr != nil {
-				return fmt.Errorf("build sukses, namun gagal me-restart %s: %w (%s)", unitName, rErr, out)
-			}
-			cb(fmt.Sprintf("Service %s berjalan dengan build terbaru.", unitName))
+	if waitErr != nil {
+		_ = m.store.UpdateSiteAppBuildStatus(appCopy.Domain, "failed", time.Now())
+		return fmt.Errorf("build gagal: %w", waitErr)
+	}
+
+	_ = m.store.UpdateSiteAppBuildStatus(appCopy.Domain, "success", time.Now())
+	cb("== Build selesai dengan sukses ==")
+
+	if restartAfter {
+		unitName := UnitFilenameForDomain(appCopy.Domain)
+		cb(fmt.Sprintf("Me-restart service systemd %s...", unitName))
+		if out, rErr := m.exec.Run(ctx, "systemctl", "restart", unitName); rErr != nil {
+			return fmt.Errorf("build sukses, namun gagal me-restart %s: %w (%s)", unitName, rErr, out)
 		}
-		return nil
-	})
+		cb(fmt.Sprintf("Service %s berjalan dengan build terbaru.", unitName))
+	}
+	return nil
 }
 
 // ReadLogs mengambil snapshot log terbaru dari journalctl untuk unit aplikasi.

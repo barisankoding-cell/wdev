@@ -200,6 +200,7 @@ func (s *Server) handleTerminalInfo(w http.ResponseWriter, r *http.Request) {
 	info.RootUnlocked = unlocked
 	info.RootUnlockExpiresAt = exp
 	info.StepUpAlwaysRequired = s.requiresStepUpForAllTerminalUsers()
+	info.TOTPRequired = s.authMgr != nil && s.authMgr.IsTOTPTerminalRequired()
 	writeJSON(w, http.StatusOK, info)
 }
 
@@ -210,6 +211,7 @@ func (s *Server) handleTerminalUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 	var payload struct {
 		Password string `json:"password"`
+		TOTPCode string `json:"totp_code"`
 		User     string `json:"user"`
 		Remember bool   `json:"remember"`
 	}
@@ -224,12 +226,12 @@ func (s *Server) handleTerminalUnlock(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			if s.secMgr != nil {
 				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
-					SourceIP:    ip,
-					AttackType:  security.AttackPanelBruteForce,
-					Severity:    security.SeverityHigh,
-					Target:      "/api/terminal/unlock",
+					SourceIP: ip,
+					AttackType: security.AttackPanelBruteForce,
+					Severity: security.SeverityHigh,
+					Target: "/api/terminal/unlock",
 					ActionTaken: security.ActionRateLimited,
-					Details:     fmt.Sprintf("Rate limited on terminal unlock: locked for %dm", int(wait.Minutes())+1),
+					Details: fmt.Sprintf("Rate limited on terminal unlock: locked for %dm", int(wait.Minutes())+1),
 				})
 			}
 			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Terlalu banyak percobaan sandi salah. Coba lagi dalam %d menit.", int(wait.Minutes())+1))
@@ -239,15 +241,31 @@ func (s *Server) handleTerminalUnlock(w http.ResponseWriter, r *http.Request) {
 			s.authMgr.RecordLoginAttempt(ip, false)
 			if s.secMgr != nil {
 				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
-					SourceIP:   ip,
+					SourceIP: ip,
 					AttackType: security.AttackPanelBruteForce,
-					Severity:   security.SeverityHigh,
-					Target:     "/api/terminal/unlock",
-					Details:    fmt.Sprintf("Incorrect panel password on terminal unlock (target user: %s)", payload.User),
+					Severity: security.SeverityHigh,
+					Target: "/api/terminal/unlock",
+					Details: fmt.Sprintf("Incorrect panel password on terminal unlock (target user: %s)", payload.User),
 				})
 			}
 			writeError(w, http.StatusUnauthorized, "Password panel tidak cocok")
 			return
+		}
+		if s.authMgr.IsTOTPTerminalRequired() {
+			if _, _, ok := s.authMgr.VerifyTOTP(payload.TOTPCode); !ok {
+				s.authMgr.RecordLoginAttempt(ip, false)
+				if s.secMgr != nil {
+					_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+						SourceIP:   ip,
+						AttackType: security.AttackPanelBruteForce,
+						Severity:   security.SeverityHigh,
+						Target:     "/api/terminal/unlock",
+						Details:    fmt.Sprintf("Invalid 2FA code on terminal unlock (target user: %s)", payload.User),
+					})
+				}
+				writeError(w, http.StatusUnauthorized, "Kode verifikasi 2FA tidak valid")
+				return
+			}
 		}
 		s.authMgr.RecordLoginAttempt(ip, true)
 	}

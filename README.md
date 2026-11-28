@@ -45,6 +45,7 @@ Antarmuka web modern dan responsif (dukungan bahasa **Inggris & Indonesia**, ser
 
 ### 2. Keamanan Panel (`aaPanel Security Architecture`)
 * **Security Entrance**: Path akses rahasia acak (`/<entrance>`); permintaan tanpa cookie entrance yang valid otomatis menerima halaman `404 Not Found`.
+* **Two-Factor Authentication (TOTP 2FA)**: Verifikasi 2 langkah berbasis RFC 6238 (QR Code setup untuk Google Authenticator / Authy / 1Password, 8 *recovery code* sekali pakai ber-hash SHA-256, proteksi anti-replay, serta opsi mewajibkan 2FA saat membuka Terminal Root PTY).
 * **Autentikasi & Anti-Brute-Force**: Hashing kata sandi PBKDF2-SHA256 (`210.000` iterasi), cookie sesi `HttpOnly` bertoken hash SHA-256, proteksi CSRF (`Origin`/`Referer`/`Sec-Fetch-Site` serta dukungan reverse proxy tepercaya), header keamanan HTTP (`CSP`, `X-Frame-Options: DENY`, `HSTS`), serta lockout 15 menit setelah 5 kali percobaan gagal.
 * **Force HTTPS Port Panel (`wdev panel ssl on|off`)**: Melayani HTTP dan HTTPS di port panel yang sama menggunakan multiplexer TLS (`tls_mux`) dengan sertifikat ECDSA self-signed dan pengalihan otomatis HTTP ke HTTPS.
 * **Pengikatan Domain Panel (`wdev panel domain`)**: Ikat domain khusus (mis. `panel.domainanda.com`) via reverse proxy Nginx dengan SSL `letsencrypt`, `edge`, `local`, `external`, atau `none`, serta opsi **blokir akses langsung via IP** (`wdev panel block-ip on|off`).
@@ -183,8 +184,9 @@ sudo wdev panel block-ip on|off                  # blokir atau izinkan akses lan
 sudo wdev panel entrance rahasia123              # atur path security entrance (atau 'off')
 sudo wdev panel username adminbaru               # ubah username panel
 sudo wdev panel password '<sandi_baru>'          # ubah kata sandi panel
-sudo wdev panel auth on|off                      # aktifkan / nonaktifkan proteksi login
-sudo wdev panel reset                            # reset kredensial & security entrance ke nilai acak baru
+sudo wdev panel auth on|off # aktifkan / nonaktifkan proteksi login
+sudo wdev panel 2fa status|disable|terminal <on|off> # kelola 2FA TOTP & kebijakan terminal root
+sudo wdev panel reset # reset kredensial, 2FA, & security entrance ke nilai acak baru
 ```
 
 ### Virtual Host, Runtime Switcher & Environment
@@ -217,6 +219,23 @@ wdev compose ps myapp
 wdev compose up myapp
 wdev compose logs myapp --tail 200
 wdev compose df
+
+# Managed App (Node.js / Go / Rust via systemd)
+sudo wdev app list
+sudo wdev app status api.example.com
+sudo wdev app build api.example.com
+sudo wdev app restart api.example.com
+sudo wdev app logs api.example.com --lines 100
+sudo wdev app env api.example.com set NODE_ENV=production --restart
+
+# Keamanan Server & Diagnostik Port
+sudo wdev security status
+sudo wdev security events --limit 20
+sudo wdev security blocked
+sudo wdev security block 203.0.113.10 --reason "Brute force" --hours 24
+sudo wdev security unblock 203.0.113.10
+sudo wdev security whitelist add 198.51.100.0/24
+wdev ports --refresh
 ```
 
 ### Padanan Perintah Helper Lama

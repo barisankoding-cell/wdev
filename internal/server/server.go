@@ -202,6 +202,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	s.mux.HandleFunc("/api/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("/api/auth/change-credentials", s.handleAuthChangeCredentials)
+	s.registerTOTPRoutes()
 	s.mux.HandleFunc("/api/panel/domain", s.handlePanelDomain)
 	s.mux.HandleFunc("/api/panel/domain/block-ip", s.handlePanelDomainBlockIP)
 	s.mux.HandleFunc("/api/panel/ssl", s.handlePanelSSL)
@@ -474,6 +475,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		TOTPCode string `json:"totp_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
@@ -485,12 +487,12 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if !allowed {
 		if s.secMgr != nil {
 			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
-				SourceIP:    ip,
-				AttackType:  security.AttackPanelBruteForce,
-				Severity:    security.SeverityHigh,
-				Target:      "/api/auth/login",
+				SourceIP: ip,
+				AttackType: security.AttackPanelBruteForce,
+				Severity: security.SeverityHigh,
+				Target: "/api/auth/login",
 				ActionTaken: security.ActionRateLimited,
-				Details:     fmt.Sprintf("Rate limited: locked for %dm", int(wait.Minutes())+1),
+				Details: fmt.Sprintf("Rate limited: locked for %dm", int(wait.Minutes())+1),
 			})
 		}
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(i18n.Pick(lang, "Too many failed login attempts. Account temporarily locked. Try again in %d minute(s).", "Terlalu banyak percobaan login gagal. Akun dikunci sementara. Coba lagi dalam %d menit."), int(wait.Minutes())+1))
@@ -501,15 +503,45 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		s.authMgr.RecordLoginAttempt(ip, false)
 		if s.secMgr != nil {
 			_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
-				SourceIP:   ip,
+				SourceIP: ip,
 				AttackType: security.AttackPanelBruteForce,
-				Severity:   security.SeverityMedium,
-				Target:     "/api/auth/login",
-				Details:    fmt.Sprintf("Failed login with username: %s", payload.Username),
+				Severity: security.SeverityMedium,
+				Target: "/api/auth/login",
+				Details: fmt.Sprintf("Failed login with username: %s", payload.Username),
 			})
 		}
 		writeError(w, http.StatusUnauthorized, i18n.Pick(lang, "Invalid username or password", "Username atau kata sandi salah"))
 		return
+	}
+
+	usedRecovery := false
+	recoveryRemaining := 0
+	if s.authMgr.IsAuthEnabled() && s.authMgr.IsTOTPEnabled() {
+		totpCode := strings.TrimSpace(payload.TOTPCode)
+		if totpCode == "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":        "totp_required",
+				"totp_required": true,
+				"message":       i18n.Pick(lang, "Two-factor authentication code required", "Kode autentikasi dua faktor (2FA) diperlukan"),
+			})
+			return
+		}
+		var ok bool
+		usedRecovery, recoveryRemaining, ok = s.authMgr.VerifyTOTP(totpCode)
+		if !ok {
+			s.authMgr.RecordLoginAttempt(ip, false)
+			if s.secMgr != nil {
+				_, _ = s.secMgr.RecordAttack(r.Context(), security.Event{
+					SourceIP:   ip,
+					AttackType: security.AttackPanelBruteForce,
+					Severity:   security.SeverityHigh,
+					Target:     "/api/auth/login",
+					Details:    fmt.Sprintf("Failed 2FA verification for username: %s", payload.Username),
+				})
+			}
+			writeError(w, http.StatusUnauthorized, i18n.Pick(lang, "Invalid 2FA verification code", "Kode verifikasi 2FA tidak valid"))
+			return
+		}
 	}
 
 	s.authMgr.RecordLoginAttempt(ip, true)
@@ -523,20 +555,25 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     auth.CookieSessionName,
-		Value:    token,
-		Path:     "/",
-		Expires:  time.Now().Add(auth.SessionDuration),
+		Name: auth.CookieSessionName,
+		Value: token,
+		Path: "/",
+		Expires: time.Now().Add(auth.SessionDuration),
 		HttpOnly: true,
-		Secure:   auth.IsHTTPS(r),
+		Secure: auth.IsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status":   "ok",
-		"message":  "Login berhasil",
+		"message":  i18n.Pick(lang, "Signed in successfully", "Login berhasil"),
 		"username": payload.Username,
-	})
+	}
+	if usedRecovery {
+		resp["used_recovery_code"] = true
+		resp["recovery_remaining"] = recoveryRemaining
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
@@ -585,10 +622,12 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 	username, valid := s.authMgr.ValidateSession(token)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"authenticated":    valid,
-		"username":         username,
-		"auth_enabled":     s.authMgr.IsAuthEnabled(),
-		"entrance_enabled": s.authMgr.GetSecurityEntrance() != "",
+		"authenticated":          valid,
+		"username":               username,
+		"auth_enabled":           s.authMgr.IsAuthEnabled(),
+		"entrance_enabled":       s.authMgr.GetSecurityEntrance() != "",
+		"totp_enabled":           s.authMgr.IsTOTPEnabled(),
+		"totp_terminal_required": s.authMgr.IsTOTPTerminalRequired(),
 	})
 }
 

@@ -56,6 +56,9 @@ export const layoutEn = {
 		taskRunningAria: 'Task is running',
 		signedInAs: 'Signed in as',
 		changeCreds: 'Change Credentials',
+		twoFactorAuth: 'Two-Factor Auth (2FA)',
+		twoFactorOn: 'Active',
+		twoFactorOff: 'Off',
 		panelDomainHttps: 'Panel Domain & HTTPS',
 		signOut: 'Sign Out'
 	},

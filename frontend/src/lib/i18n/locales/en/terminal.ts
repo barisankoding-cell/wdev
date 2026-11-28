@@ -40,6 +40,8 @@ export const terminalEn = {
 		descSuffix: 'admin panel password.',
 		passwordLabel: 'Admin Panel Password',
 		passwordPlaceholder: 'Enter admin panel password...',
+		totpLabel: '2FA Verification Code',
+		totpPlaceholder: '6-digit code or recovery code...',
 		targetFolder: 'Target folder:',
 		rememberLabel: 'Remember verification in this session for 10 minutes',
 		enterAsNonRoot: 'Open as {user} (Non-Root)',

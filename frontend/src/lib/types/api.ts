@@ -1053,11 +1053,40 @@ export interface AuthMeResponse {
 	username: string;
 	auth_enabled: boolean;
 	entrance_enabled: boolean;
+	totp_enabled?: boolean;
+	totp_terminal_required?: boolean;
 }
 
 export interface LoginPayload {
 	username: string;
 	password: string;
+	totp_code?: string;
+}
+
+export interface LoginResponse {
+	status: string;
+	message?: string;
+	username?: string;
+	token?: string;
+	totp_required?: boolean;
+	used_recovery_code?: boolean;
+	recovery_remaining?: number;
+}
+
+export interface TOTPStatus {
+	enabled: boolean;
+	pending: boolean;
+	terminal_required: boolean;
+	recovery_remaining: number;
+	issuer: string;
+	account: string;
+}
+
+export interface TOTPEnrollment {
+	secret: string;
+	otpauth_url: string;
+	issuer: string;
+	account: string;
 }
 
 export interface ChangeCredentialsPayload {
@@ -1149,6 +1178,7 @@ export interface TerminalInfo {
 	root_unlocked: boolean;
 	root_unlock_expires_at?: string;
 	step_up_always_required: boolean;
+	totp_required?: boolean;
 }
 
 export interface TerminalUnlockResponse {

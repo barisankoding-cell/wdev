@@ -53,8 +53,9 @@ PANEL & KEAMANAN (AAPANEL SECURITY STYLE):
   wdev panel username <usr> Ubah username admin panel
   wdev panel entrance <url> Atur path security entrance (contoh: wdev panel entrance secret)
   wdev panel entrance off   Nonaktifkan security entrance (akses langsung tanpa security path)
-  wdev panel auth <on|off>  Aktifkan / nonaktifkan proteksi login
-  wdev panel reset          Reset kredensial & security entrance ke nilai acak baru
+  wdev panel auth <on|off> Aktifkan / nonaktifkan proteksi login
+  wdev panel 2fa <status|disable|terminal> Kelola Two-Factor Auth (2FA) TOTP panel
+  wdev panel reset Reset kredensial & security entrance ke nilai acak baru
 
 MODE SERVER (3-MODE ARCHITECTURE):
   wdev mode                     Tampilkan mode aktif server saat ini
@@ -152,8 +153,22 @@ DOCKER & COMPOSE V5:
   wdev compose logs <nama> [service] [--tail 200]
                                        Tampilkan log container proyek
   wdev compose config <nama>           Tampilkan konfigurasi JSON hasil interpolasi Compose
-  wdev compose df | prune <target>     Pantau & bersihkan cache/image Docker
-`, Version)
+  wdev compose df | prune <target> Pantau & bersihkan cache/image Docker
+
+  MANAGED APP (NODE.JS / GO / RUST):
+  wdev app list [--json] Daftar aplikasi terkelola & status systemd
+  wdev app status <domain> [--json] Detail proses, PID, RAM & konfigurasi app
+  wdev app start|stop|restart <domain> Kendalikan unit systemd aplikasi
+  wdev app build <domain> [--no-restart] Jalankan build_command & restart service
+  wdev app logs <domain> [--lines 100] [-f] Lihat atau ikuti log journalctl aplikasi
+  wdev app env <domain> [list|get|set|unset] Kelola file .env aplikasi
+
+  KEAMANAN & DIAGNOSTIK PORT:
+  wdev security status|events|blocked|block|unblock|whitelist
+  Kelola pemantauan serangan & pemblokiran IP
+  wdev ports [--refresh] [--category <c>] [--status <s>] [--all] [--json]
+  Diagnostik port & jangkauan jaringan (Local/VPN/VPS)
+  `, Version)
 }
 
 func relayModeLabel(relayOnly bool) string {
@@ -209,6 +224,7 @@ func main() {
 	mailMgr := mail.New(cfg, db, pdnsMgr)
 	mailMgr.SetInstaller(inst.InstallMailStackWithDomain)
 	authMgr := auth.New(cfg, db)
+	svcCfgMgr := serviceconfig.New(inst.GetSudoPassword)
 	composeMgr := compose.New(cfg, db, inst.GetSudoPassword)
 
 	args := os.Args[1:]
@@ -2087,9 +2103,10 @@ func main() {
 		etcDBActive := etcStatErr == nil || os.IsPermission(etcStatErr) || exec.Command("systemctl", "is-active", "--quiet", "wdev").Run() == nil
 		if os.Geteuid() != 0 && cfg.DBPath != "/etc/wdev/wdev.db" && etcDBActive {
 			isSSLReadOnly := (sub == "ssl" || sub == "https") && (len(args) < 3 || strings.ToLower(strings.TrimSpace(args[2])) == "status")
-			if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" || sub == "domain" || sub == "block-ip" || ((sub == "ssl" || sub == "https") && !isSSLReadOnly) {
-				fmt.Fprintf(os.Stderr, "⚠️  Service sistem wdev aktif menggunakan /etc/wdev/wdev.db.\n")
-				fmt.Fprintf(os.Stderr, "   Jalankan dengan sudo agar perubahan berlaku ke panel aktif: sudo wdev panel %s ...\n", sub)
+			is2FAReadOnly := (sub == "2fa" || sub == "totp") && (len(args) < 3 || strings.ToLower(strings.TrimSpace(args[2])) == "status" || strings.ToLower(strings.TrimSpace(args[2])) == "info")
+			if sub == "password" || sub == "pass" || sub == "username" || sub == "user" || sub == "entrance" || sub == "url" || sub == "auth" || sub == "reset" || sub == "domain" || sub == "block-ip" || ((sub == "ssl" || sub == "https") && !isSSLReadOnly) || ((sub == "2fa" || sub == "totp") && !is2FAReadOnly) {
+				fmt.Fprintf(os.Stderr, "⚠️ Service sistem wdev aktif menggunakan /etc/wdev/wdev.db.\n")
+				fmt.Fprintf(os.Stderr, " Jalankan dengan sudo agar perubahan berlaku ke panel aktif: sudo wdev panel %s ...\n", sub)
 				os.Exit(1)
 			}
 		}
@@ -2168,6 +2185,8 @@ func main() {
 			} else {
 				fmt.Println("✓ PERINGATAN: Proteksi login panel dinonaktifkan!")
 			}
+		case "2fa", "totp":
+			handlePanel2FACLI(authMgr, args[2:])
 		case "reset":
 			info, err := authMgr.ResetCredentials()
 			if err != nil {
@@ -2489,6 +2508,15 @@ func main() {
 	case "compose":
 		handleComposeCLI(composeMgr, args[1:])
 
+	case "app", "apps":
+		handleAppCLI(cfg, db, siteAppMgr, args[1:])
+
+	case "security", "sec":
+		handleSecurityCLI(cfg, db, args[1:])
+
+	case "ports", "port":
+		handlePortsCLI(cfg, db, siteMgr, pdnsMgr, authMgr, svcCfgMgr, args[1:])
+
 	case "-v", "--version", "version":
 		fmt.Printf("wdev version %s\n", Version)
 
@@ -2511,10 +2539,11 @@ func printPanelHelp() {
   wdev panel password <pw>    Ubah kata sandi login panel
   wdev panel username <usr>   Ubah username login panel
   wdev panel entrance <path>  Atur path security entrance (contoh: wdev panel entrance secret)
-  wdev panel entrance off     Nonaktifkan security entrance
-  wdev panel auth on|off      Aktifkan / nonaktifkan proteksi login
-  wdev panel reset            Reset kredensial & security entrance ke nilai acak baru`)
-}
+  wdev panel entrance off Nonaktifkan security entrance
+  wdev panel auth on|off Aktifkan / nonaktifkan proteksi login
+  wdev panel 2fa status|disable|terminal Kelola Two-Factor Auth (2FA) TOTP panel
+  wdev panel reset Reset kredensial & security entrance ke nilai acak baru`)
+  }
 
 func printPanelInfo(info auth.PanelAccessInfo) {
 	fmt.Println("==================================================================")
@@ -2549,9 +2578,18 @@ func printPanelInfo(info auth.PanelAccessInfo) {
 		fmt.Println("  Security Entrance: (Nonaktif / Bebas Akses)")
 	}
 	if info.AuthEnabled {
-		fmt.Println("  Status Login     : Aktif (Protected)")
+		fmt.Println(" Status Login : Aktif (Protected)")
 	} else {
-		fmt.Println("  Status Login     : Nonaktif (Unprotected)")
+		fmt.Println(" Status Login : Nonaktif (Unprotected)")
+	}
+	if info.TOTPEnabled {
+		termNote := "Opsional di Terminal"
+		if info.TOTPTerminalRequired {
+			termNote = "Wajib di Terminal Root"
+		}
+		fmt.Printf(" Two-Factor (2FA) : Aktif (%s)\n", termNote)
+	} else {
+		fmt.Println(" Two-Factor (2FA) : Nonaktif")
 	}
 	fmt.Println("==================================================================")
 	fmt.Println("Catatan: Simpan URL dan kredensial ini baik-baik.")

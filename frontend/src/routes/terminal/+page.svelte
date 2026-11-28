@@ -84,6 +84,7 @@
 
 	// Step-up password unlock state
 	let unlockPassword = $state('');
+	let unlockTotpCode = $state('');
 	let unlockRemember = $state(true);
 	let unlockBusy = $state(false);
 	let unlockError = $state<string | null>(null);
@@ -183,6 +184,7 @@
 		activeTabId = id;
 		if (locked) {
 			unlockPassword = '';
+			unlockTotpCode = '';
 			unlockError = null;
 		}
 	}
@@ -226,11 +228,13 @@
 	async function submitUnlockTab(e: SubmitEvent, tab: TerminalTab) {
 		e.preventDefault();
 		if (!unlockPassword || unlockBusy) return;
+		if (info?.totp_required && !unlockTotpCode.trim()) return;
 		unlockBusy = true;
 		unlockError = null;
 		try {
-			const res = await api.unlockTerminal(unlockPassword, tab.user, unlockRemember);
+			const res = await api.unlockTerminal(unlockPassword, tab.user, unlockRemember, unlockTotpCode.trim());
 			unlockPassword = '';
+			unlockTotpCode = '';
 			if (info) {
 				info = {
 					...info,
@@ -713,6 +717,21 @@
 											</FieldDescription>
 										</Field>
 
+										{#if info?.totp_required}
+											<Field>
+												<FieldLabel for={`term-unlock-totp-${tab.id}`}>{t('terminal.unlock.totpLabel')}</FieldLabel>
+												<Input
+													id={`term-unlock-totp-${tab.id}`}
+													type="text"
+													autocomplete="one-time-code"
+													bind:value={unlockTotpCode}
+													placeholder={t('terminal.unlock.totpPlaceholder')}
+													class="font-mono tracking-wider"
+													required
+												/>
+											</Field>
+										{/if}
+
 										<label class="flex items-center gap-2 text-xs">
 											<Checkbox bind:checked={unlockRemember} />
 											<span>{t('terminal.unlock.rememberLabel')}</span>
@@ -742,7 +761,11 @@
 													{t('terminal.unlock.enterAsNonRoot', { user: safeUser.username })}
 												</Button>
 											{/if}
-											<Button type="submit" size="sm" disabled={unlockBusy || !unlockPassword}>
+											<Button
+												type="submit"
+												size="sm"
+												disabled={unlockBusy || !unlockPassword || (Boolean(info?.totp_required) && !unlockTotpCode.trim())}
+											>
 												{#if unlockBusy}
 													<Spinner class="size-4" />
 													{t('terminal.unlock.verifying')}

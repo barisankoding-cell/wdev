@@ -20,6 +20,7 @@
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import UserIcon from '@lucide/svelte/icons/user';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
+	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import NetworkIcon from '@lucide/svelte/icons/network';
@@ -149,6 +150,20 @@
 						<DropdownMenu.Item onclick={() => authStore.openChangeCreds()}>
 							<KeyRoundIcon class="size-4" />
 							<span>{t('layout.topbar.changeCreds')}</span>
+						</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={() => authStore.openTwoFactor()}>
+							<ShieldCheckIcon class="size-4" />
+							<span>{t('layout.topbar.twoFactorAuth')}</span>
+							<span
+								class={cn(
+									'ml-auto rounded px-1.5 py-0.5 text-[10px] font-semibold',
+									authStore.totpEnabled
+										? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+										: 'bg-muted text-muted-foreground'
+								)}
+							>
+								{authStore.totpEnabled ? t('layout.topbar.twoFactorOn') : t('layout.topbar.twoFactorOff')}
+							</span>
 						</DropdownMenu.Item>
 						<DropdownMenu.Separator />
 						<DropdownMenu.Item onclick={() => authStore.logout()} class="text-destructive focus:text-destructive">

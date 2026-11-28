@@ -18,10 +18,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"wdev/internal/auth"
+	"wdev/internal/config"
 	"wdev/internal/i18n"
 	"wdev/internal/monitor"
 	"wdev/internal/pdns"
 	"wdev/internal/serviceconfig"
+	"wdev/internal/site"
 	"wdev/internal/store"
 )
 
@@ -179,6 +182,29 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 	refresh := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
 	report := s.collectPortDiagnostics(r.Context(), refresh, lang)
 	writeJSON(w, http.StatusOK, report)
+}
+
+// InspectPorts menjalankan diagnostik port & jaringan secara langsung untuk CLI tanpa memulai HTTP server.
+func InspectPorts(
+	ctx context.Context,
+	cfg *config.Config,
+	s *store.Store,
+	siteMgr *site.Manager,
+	pdnsMgr *pdns.Manager,
+	authMgr *auth.Manager,
+	svcCfgMgr *serviceconfig.Manager,
+	forceRefresh bool,
+	lang string,
+) PortStatusReport {
+	srv := &Server{
+		cfg:       cfg,
+		store:     s,
+		siteMgr:   siteMgr,
+		pdnsMgr:   pdnsMgr,
+		authMgr:   authMgr,
+		svcCfgMgr: svcCfgMgr,
+	}
+	return srv.collectPortDiagnostics(ctx, forceRefresh, lang)
 }
 
 func (s *Server) defaultPortProbeDeps() portProbeDeps {

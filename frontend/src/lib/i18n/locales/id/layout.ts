@@ -59,6 +59,9 @@ export const layoutId: WidenStrings<typeof layoutEn> = {
 		taskRunningAria: 'Tugas sedang berjalan',
 		signedInAs: 'Masuk sebagai',
 		changeCreds: 'Ubah Kredensial',
+		twoFactorAuth: 'Autentikasi 2FA (TOTP)',
+		twoFactorOn: 'Aktif',
+		twoFactorOff: 'Nonaktif',
 		panelDomainHttps: 'Domain & HTTPS Panel',
 		signOut: 'Keluar Panel'
 	},

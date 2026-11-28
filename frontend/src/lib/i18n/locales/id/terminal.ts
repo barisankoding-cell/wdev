@@ -43,6 +43,8 @@ export const terminalId: WidenStrings<typeof terminalEn> = {
 		descSuffix: '.',
 		passwordLabel: 'Kata Sandi Panel Admin',
 		passwordPlaceholder: 'Masukkan kata sandi admin panel...',
+		totpLabel: 'Kode Verifikasi 2FA',
+		totpPlaceholder: 'Kode 6-digit atau recovery code...',
 		targetFolder: 'Target folder:',
 		rememberLabel: 'Ingat verifikasi di sesi ini selama 10 menit',
 		enterAsNonRoot: 'Masuk sebagai {user} (Non-Root)',

@@ -58,8 +58,11 @@ type Manager struct {
 	cfg   *config.Config
 	store *store.Store
 
-	limiterMu sync.Mutex
-	attempts  map[string]*attemptInfo
+	limiterMu      sync.Mutex
+	attempts       map[string]*attemptInfo
+	totpMu         sync.Mutex
+	lastTOTPStep   int64
+	lastTOTPSecret string
 }
 
 type PanelAccessInfo struct {
@@ -78,14 +81,17 @@ type PanelAccessInfo struct {
 	Password         string `json:"password"`
 	PasswordIsCustom bool   `json:"password_is_custom"`
 	SecurityEntrance string `json:"security_entrance"`
-	AuthEnabled      bool   `json:"auth_enabled"`
+	AuthEnabled bool `json:"auth_enabled"`
+	TOTPEnabled bool `json:"totp_enabled"`
+	TOTPTerminalRequired bool `json:"totp_terminal_required"`
 }
 
 func New(cfg *config.Config, s *store.Store) *Manager {
 	m := &Manager{
-		cfg:      cfg,
-		store:    s,
-		attempts: make(map[string]*attemptInfo),
+		cfg:          cfg,
+		store:        s,
+		attempts:     make(map[string]*attemptInfo),
+		lastTOTPStep: -1,
 	}
 	_ = m.EnsureInitialized()
 	return m
@@ -676,6 +682,7 @@ func (m *Manager) ResetCredentials() (PanelAccessInfo, error) {
 	_ = m.store.SetSetting(SettingSecurityEntrance, entrance)
 	_ = m.store.SetSetting(SettingEntranceSecret, newSecret)
 	_ = m.store.SetSetting(SettingAuthEnabled, "1")
+	_ = m.DisableTOTP()
 	_ = m.store.DeleteAllSessions()
 
 	return m.GetPanelAccessInfo("", ""), nil
@@ -746,7 +753,9 @@ func (m *Manager) GetPanelAccessInfo(publicIP, netbirdIP string) PanelAccessInfo
 		Password:         dispPass,
 		PasswordIsCustom: isCustom,
 		SecurityEntrance: entrancePath,
-		AuthEnabled:      authEnabled,
+		AuthEnabled: authEnabled,
+		TOTPEnabled: m.IsTOTPEnabled(),
+		TOTPTerminalRequired: m.IsTOTPTerminalRequired(),
 	}
 }
 
